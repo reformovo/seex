@@ -23,9 +23,11 @@ use pulseon_viewer::worker::{
     Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest, ReadWorker,
 };
 
+mod components;
 mod renderer;
 mod theme;
 
+use components::StatusTone;
 use renderer::{ChartAdapter, HoverPoint};
 use theme::ViewerTheme;
 
@@ -490,38 +492,25 @@ impl ViewerApp {
                                         let action_project_id = project_id.clone();
                                         let selected = selected_project_id.as_ref()
                                             == Some(&project.project_id);
-                                        div()
-                                            .id(("project", index))
-                                            .debug_selector(move || format!("project-row-{index}"))
-                                            .key_context(SELECTABLE_CONTEXT)
-                                            .tab_index(0)
-                                            .h(theme.spacing.tree_row_height)
-                                            .cursor_pointer()
-                                            .px_3()
-                                            .rounded(theme.spacing.corner_radius)
-                                            .flex()
-                                            .items_center()
-                                            .when(selected, |row| {
-                                                row.bg(theme.colors.element_active)
-                                            })
-                                            .hover(|style| {
-                                                style.bg(theme.colors.element_hover)
-                                            })
-                                            .focus(|style| {
-                                                style.border_1().border_color(theme.colors.focus)
-                                            })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.select_project(project_id.clone(), cx);
-                                            }))
-                                            .on_action(cx.listener(
-                                                move |this, _: &ActivateSelection, _, cx| {
-                                                    this.select_project(
-                                                        action_project_id.clone(),
-                                                        cx,
-                                                    );
-                                                },
-                                            ))
-                                            .child(project.name.clone())
+                                        components::sidebar_tree_row(
+                                            ("project", index),
+                                            theme,
+                                            selected,
+                                            false,
+                                        )
+                                        .debug_selector(move || format!("project-row-{index}"))
+                                        .key_context(SELECTABLE_CONTEXT)
+                                        .tab_index(0)
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.select_project(project_id.clone(), cx);
+                                        }))
+                                        .on_action(cx.listener(
+                                            move |this, _: &ActivateSelection, _, cx| {
+                                                this.select_project(action_project_id.clone(), cx);
+                                            },
+                                        ))
+                                        .child(project.name.clone())
                                     })
                                     .collect::<Vec<_>>()
                             }),
@@ -575,37 +564,21 @@ impl ViewerApp {
                                                 let can_toggle = selected
                                                     || this.core.selection().run_ids.len()
                                                         < MAX_SELECTED_RUNS;
-                                                div()
-                                                    .id(("run", index))
-                                                    .debug_selector(move || {
-                                                        format!("run-row-{index}")
-                                                    })
-                                                    .h(theme.spacing.tree_row_height)
-                                                    .flex()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .gap_2()
-                                                    .px_3()
-                                                    .whitespace_nowrap()
-                                                    .border_b_1()
-                                                    .border_color(theme.colors.border)
-                                                    .when(selected, |row| {
-                                                        row.bg(theme.colors.element_active)
-                                                    })
-                                                    .when(!can_toggle, |row| row.opacity(0.45))
-                                                    .when(can_toggle, |row| {
-                                                        let action_run_id = run_id.clone();
-                                                        row.key_context(SELECTABLE_CONTEXT)
+                                                components::sidebar_tree_row(
+                                                    ("run", index),
+                                                    theme,
+                                                    selected,
+                                                    !can_toggle,
+                                                )
+                                                .debug_selector(move || format!("run-row-{index}"))
+                                                .whitespace_nowrap()
+                                                .border_b_1()
+                                                .border_color(theme.colors.border)
+                                                .when(can_toggle, |row| {
+                                                    let action_run_id = run_id.clone();
+                                                    row.key_context(SELECTABLE_CONTEXT)
                                                             .tab_index(0)
                                                             .cursor_pointer()
-                                                            .hover(|style| {
-                                                                style.bg(theme.colors.element_hover)
-                                                            })
-                                                            .focus(|style| {
-                                                                style
-                                                                    .border_1()
-                                                                    .border_color(theme.colors.focus)
-                                                            })
                                                             .on_click(cx.listener(
                                                                 move |this, _, _, cx| {
                                                                     this.toggle_run(
@@ -625,26 +598,24 @@ impl ViewerApp {
                                                                     );
                                                                 },
                                                             ))
-                                                    })
-                                                    .child(
-                                                        div()
-                                                            .flex_shrink_0()
-                                                            .child(run.name.clone()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .debug_selector(move || {
-                                                                format!("run-meta-{index}")
-                                                            })
-                                                            .flex_shrink_0()
-                                                            .text_xs()
-                                                            .text_color(theme.colors.text_muted)
-                                                            .child(format!(
-                                                                "{} · {}",
-                                                                run.run_id.as_str(),
-                                                                run_status(run.status)
-                                                            )),
-                                                    )
+                                                })
+                                                .child(
+                                                    div().flex_shrink_0().child(run.name.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .debug_selector(move || {
+                                                            format!("run-meta-{index}")
+                                                        })
+                                                        .flex_shrink_0()
+                                                        .text_xs()
+                                                        .text_color(theme.colors.text_muted)
+                                                        .child(format!(
+                                                            "{} · {}",
+                                                            run.run_id.as_str(),
+                                                            run_status(run.status)
+                                                        )),
+                                                )
                                             })
                                             .collect::<Vec<_>>()
                                     }),
@@ -670,48 +641,30 @@ impl ViewerApp {
                                                     selected_metric_key.as_ref() == Some(metric);
                                                 let selected_metric = metric.clone();
                                                 let action_metric = selected_metric.clone();
-                                                div()
-                                                    .id(("metric", index))
-                                                    .debug_selector(move || {
-                                                        format!("metric-row-{index}")
-                                                    })
-                                                    .key_context(SELECTABLE_CONTEXT)
-                                                    .tab_index(0)
-                                                    .h(theme.spacing.tree_row_height)
-                                                    .cursor_pointer()
-                                                    .px_3()
-                                                    .rounded(theme.spacing.corner_radius)
-                                                    .flex()
-                                                    .items_center()
-                                                    .when(selected, |row| {
-                                                        row.bg(theme.colors.element_active)
-                                                    })
-                                                    .hover(|style| {
-                                                        style.bg(theme.colors.element_hover)
-                                                    })
-                                                    .focus(|style| {
-                                                        style
-                                                            .border_1()
-                                                            .border_color(theme.colors.focus)
-                                                    })
-                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                components::sidebar_tree_row(
+                                                    ("metric", index),
+                                                    theme,
+                                                    selected,
+                                                    false,
+                                                )
+                                                .debug_selector(move || {
+                                                    format!("metric-row-{index}")
+                                                })
+                                                .key_context(SELECTABLE_CONTEXT)
+                                                .tab_index(0)
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.select_metric(selected_metric.clone(), cx);
+                                                }))
+                                                .on_action(cx.listener(
+                                                    move |this, _: &ActivateSelection, _, cx| {
                                                         this.select_metric(
-                                                            selected_metric.clone(),
+                                                            action_metric.clone(),
                                                             cx,
                                                         );
-                                                    }))
-                                                    .on_action(cx.listener(
-                                                        move |this,
-                                                              _: &ActivateSelection,
-                                                              _,
-                                                            cx| {
-                                                            this.select_metric(
-                                                                action_metric.clone(),
-                                                                cx,
-                                                            );
-                                                        },
-                                                    ))
-                                                    .child(metric.as_str().to_owned())
+                                                    },
+                                                ))
+                                                .child(metric.as_str().to_owned())
                                             })
                                             .collect::<Vec<_>>()
                                     }),
@@ -878,29 +831,17 @@ impl ViewerApp {
             )
             .child(self.render_overview(cx))
             .children(pending.then(|| {
-                div()
+                components::status_badge(theme, StatusTone::Warning)
                     .absolute()
                     .top(px(84.))
                     .right(px(28.))
-                    .px_3()
-                    .py_2()
-                    .rounded(theme.spacing.corner_radius)
-                    .bg(theme.colors.warning_background)
-                    .text_color(theme.colors.warning_text)
-                    .text_sm()
                     .child("Updating viewport…")
             }))
             .children(self.hover.as_ref().map(|hover| {
-                div()
+                components::tooltip(theme)
                     .absolute()
                     .top(px(84.))
                     .left(px(100.))
-                    .px_3()
-                    .py_2()
-                    .rounded(theme.spacing.corner_radius)
-                    .bg(theme.colors.tooltip_background)
-                    .text_color(theme.colors.tooltip_text)
-                    .text_sm()
                     .child(format!("{} · {}", hover.run_name, hover.metric_key))
                     .child(hover_value_line(axis, hover))
             }))
@@ -1158,6 +1099,7 @@ impl Render for ViewerApp {
             .core
             .catalog()
             .is_some_and(|catalog| !catalog.projects.is_empty());
+        let can_refresh = self.source_path.is_some();
 
         div()
             .track_focus(&self.focus)
@@ -1194,32 +1136,45 @@ impl Render for ViewerApp {
                             .child(source),
                     ),
             )
+            .child(
+                components::tab_bar(theme)
+                    .child(
+                        components::analysis_tab("analysis-tab", theme, true)
+                            .debug_selector(|| "analysis-tab".to_owned())
+                            .tab_index(0)
+                            .child("Analysis"),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        components::icon_button("refresh-view", theme, false, !can_refresh)
+                            .debug_selector(|| "refresh-view".to_owned())
+                            .when(can_refresh, |button| {
+                                button
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.local_error = None;
+                                        this.refresh_catalog();
+                                        cx.notify();
+                                    }))
+                            })
+                            .child("↻"),
+                    ),
+            )
             .children(error.clone().map(|message| error_banner(message, theme)))
             .child(if has_catalog {
                 self.render_workspace(cx)
             } else {
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_4()
-                    .child(self.status())
+                components::empty_state(theme)
+                    .child(components::status_badge(theme, StatusTone::Info).child(self.status()))
                     .child(
-                        div()
-                            .id("open-project")
+                        components::toolbar_button("open-project", theme, true, false)
                             .debug_selector(|| "open-project".to_owned())
                             .key_context(SELECTABLE_CONTEXT)
                             .tab_index(0)
                             .cursor_pointer()
                             .px_4()
                             .py_2()
-                            .rounded(theme.spacing.corner_radius)
-                            .bg(theme.colors.accent)
                             .hover(|style| style.bg(theme.colors.accent_hover))
-                            .focus(|style| style.border_1().border_color(theme.colors.focus))
-                            .text_color(theme.colors.accent_text)
                             .on_click(cx.listener(|this, _, _, cx| this.open_picker(cx)))
                             .on_action(cx.listener(|this, _: &ActivateSelection, _, cx| {
                                 this.open_picker(cx)
@@ -1239,14 +1194,11 @@ fn section_label(label: &str, theme: ViewerTheme) -> gpui::Div {
 }
 
 fn error_banner(message: String, theme: ViewerTheme) -> gpui::Div {
-    div()
+    components::status_badge(theme, StatusTone::Error)
         .mx_5()
         .mt_3()
         .px_4()
         .py_3()
-        .rounded(theme.spacing.corner_radius)
-        .bg(theme.colors.error_background)
-        .text_color(theme.colors.error_text)
         .child(message)
 }
 
