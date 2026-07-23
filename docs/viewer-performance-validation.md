@@ -91,14 +91,21 @@ PULSEON_VIEWER_TRACE_FIXTURE_ROOT=/tmp/pulseon-viewer-trace \
   cargo test -p pulseon-viewer --release retained_multi_track_fixture \
   -- --ignored --nocapture
 
-PULSEON_VIEWER_WORKBENCH_PATH=/tmp/pulseon-viewer-trace/workbench.state \
-MTL_HUD_ENABLED=1 cargo run -p pulseon-viewer --release -- \
+env -i \
+  HOME="$HOME" USER="$USER" LOGNAME="$LOGNAME" \
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" \
+  PULSEON_VIEWER_WORKBENCH_PATH=/tmp/pulseon-viewer-trace/workbench.state \
+  MTL_HUD_ENABLED=1 \
+  ./target/release/pulseon-viewer \
   /tmp/pulseon-viewer-trace/duckdb
 ```
 
 Fixture generation refuses to overwrite a non-empty backend directory. Reuse
 the retained directory for repeat traces, or remove it deliberately before
-regenerating it.
+regenerating it. Metal traces embed the target process environment, so the
+viewer is launched with an explicit minimal environment and trace bundles must
+remain local, uncommitted validation artifacts.
 
 ## Automated Workbench Coverage
 
