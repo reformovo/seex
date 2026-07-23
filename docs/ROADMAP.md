@@ -335,7 +335,7 @@ roadmap phase identifiers.
 
 ##### Persistence and Recovery
 
-- [ ] Persist a versioned, viewer-owned workbench document containing imported
+- [x] Persist a versioned, viewer-owned workbench document containing imported
   source paths, Views, composite selections, selected Metric/inspector tab,
   dock visibility and dimensions, and presentation settings. Do not persist
   metric points, query snapshots, credentials, native connections, or renderer

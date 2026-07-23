@@ -29,6 +29,7 @@ use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::InspectorSnapshot;
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
 use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, TrackDensity};
+use pulseon_viewer::workbench_document::{SavedAnalysisView, SavedRunRef, WorkbenchDocument};
 use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest};
 
 mod assets;
@@ -173,6 +174,21 @@ actions!(
 );
 
 const SELECTABLE_CONTEXT: &str = "ViewerSelectable";
+const WORKBENCH_PATH_ENV: &str = "PULSEON_VIEWER_WORKBENCH_PATH";
+
+fn default_workbench_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os(WORKBENCH_PATH_ENV) {
+        return Some(PathBuf::from(path));
+    }
+    #[cfg(all(target_os = "macos", not(any(test, feature = "test-support"))))]
+    {
+        return std::env::var_os("HOME").map(|home| {
+            PathBuf::from(home).join("Library/Application Support/PulseOn Viewer/workbench.state")
+        });
+    }
+    #[allow(unreachable_code)]
+    None
+}
 
 pub fn run(project_path: Option<PathBuf>) {
     Application::new()
@@ -286,6 +302,8 @@ struct ViewerApp {
     zoom_task: Option<Task<()>>,
     detail_refresh_token: u64,
     detail_refresh_pending: bool,
+    workbench_path: Option<PathBuf>,
+    last_saved_workbench: Option<String>,
 }
 
 impl ViewerApp {
@@ -331,6 +349,8 @@ impl ViewerApp {
             zoom_task: None,
             detail_refresh_token: 0,
             detail_refresh_pending: false,
+            workbench_path: default_workbench_path(),
+            last_saved_workbench: None,
         };
         if let Some(path) = project_path {
             app.open_source(path, cx);
@@ -2940,6 +2960,91 @@ impl ViewerApp {
         self.zoom_task = None;
     }
 
+    fn workbench_document(&self) -> WorkbenchDocument {
+        let active_index = self.views.active_index();
+        let views = self
+            .views
+            .views()
+            .iter()
+            .enumerate()
+            .map(|(index, view)| {
+                let core = if index == active_index {
+                    &self.core
+                } else {
+                    &view.core
+                };
+                SavedAnalysisView {
+                    name: view.name.clone(),
+                    runs: view
+                        .runs
+                        .iter()
+                        .map(|run| SavedRunRef {
+                            source_path: self.sources.source(&run.source_id).map_or_else(
+                                || PathBuf::from(run.source_id.as_str()),
+                                |source| source.root_path.clone(),
+                            ),
+                            project_id: run.project_id.clone(),
+                            run_id: run.run_id.clone(),
+                        })
+                        .collect(),
+                    metrics: view
+                        .panels
+                        .iter()
+                        .map(|panel| panel.metric_key.as_str().to_owned())
+                        .collect(),
+                    selected_metric: view
+                        .selected_panel_id
+                        .as_ref()
+                        .and_then(|panel_id| {
+                            view.panels.iter().find(|panel| &panel.panel_id == panel_id)
+                        })
+                        .map(|panel| panel.metric_key.as_str().to_owned()),
+                    inspector_tab: view.inspector_tab,
+                    ranking_direction: view.ranking_direction,
+                    axis: core.axis(),
+                    track_density: view.track_density,
+                    viewport: core.brush().map(|brush| brush.selected()),
+                }
+            })
+            .collect();
+        WorkbenchDocument {
+            sources: self
+                .sources
+                .sources()
+                .map(|source| source.root_path.clone())
+                .collect(),
+            views,
+            active_view: active_index,
+            project_sidebar_visible: self.project_sidebar_visible,
+            project_sidebar_width: f32::from(self.project_sidebar_width),
+            metric_sidebar_compact: self.metric_sidebar_compact,
+            bottom_inspector_visible: self.bottom_inspector_visible,
+            bottom_inspector_height: f32::from(self.bottom_inspector_height),
+        }
+    }
+
+    fn persist_workbench_if_changed(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.workbench_path.clone() else {
+            return;
+        };
+        let document = self.workbench_document();
+        let encoded = document.encode();
+        if self.last_saved_workbench.as_deref() == Some(&encoded) {
+            return;
+        }
+        self.last_saved_workbench = Some(encoded);
+        let save = cx.background_spawn(async move { document.save(&path) });
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = save.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.local_error = Some(error.to_string());
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
     fn reconcile_canvas_widths(&mut self, scale_factor: f32, cx: &mut Context<Self>) {
         let (overview, detail) = self.chart_adapter.borrow().physical_widths(scale_factor);
         let overview_changed = overview.is_some_and(|width| width != self.overview_width);
@@ -2961,6 +3066,7 @@ impl ViewerApp {
 
 impl Render for ViewerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.persist_workbench_if_changed(cx);
         self.theme = ViewerTheme::for_appearance(window.appearance());
         let theme = self.theme;
         self.reconcile_canvas_widths(window.scale_factor(), cx);
@@ -3700,6 +3806,43 @@ mod tests {
                     .expect("viewer should remain open"),
                 AlignmentAxis::ElapsedTime
             );
+        }
+
+        #[gpui::test]
+        fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAppContext) {
+            let root = tempfile::tempdir().expect("test directory should be created");
+            let path = root.path().join("workbench.state");
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, None);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.workbench_path = Some(path.clone());
+                    viewer.last_saved_workbench = None;
+                    viewer.project_sidebar_visible = false;
+                    viewer.project_sidebar_width = px(288.);
+                    viewer.metric_sidebar_compact = true;
+                    viewer.bottom_inspector_height = px(260.);
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            let mut loaded = None;
+            for _ in 0..1_000 {
+                cx.run_until_parked();
+                loaded =
+                    WorkbenchDocument::load(&path).expect("saved document should remain readable");
+                if loaded.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let loaded = loaded.expect("workbench document should be saved");
+
+            assert!(!loaded.project_sidebar_visible);
+            assert_eq!(loaded.project_sidebar_width, 288.);
+            assert!(loaded.metric_sidebar_compact);
+            assert_eq!(loaded.bottom_inspector_height, 260.);
+            assert_eq!(loaded.views.len(), 1);
+            assert!(loaded.views[0].metrics.is_empty());
         }
 
         #[gpui::test]

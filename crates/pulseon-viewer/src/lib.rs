@@ -9,6 +9,7 @@ pub mod query;
 pub mod registry;
 mod source;
 pub mod workbench;
+pub mod workbench_document;
 pub mod worker;
 
 pub use source::SourceError;

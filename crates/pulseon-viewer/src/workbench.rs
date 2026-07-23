@@ -134,6 +134,13 @@ impl AnalysisViews {
         &self.views
     }
 
+    pub fn active_index(&self) -> usize {
+        self.views
+            .iter()
+            .position(|view| view.view_id == self.active_view_id)
+            .expect("active Analysis View must remain in the collection")
+    }
+
     pub fn active(&self) -> &AnalysisView {
         self.views
             .iter()
