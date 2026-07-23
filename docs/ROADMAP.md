@@ -239,11 +239,12 @@ roadmap phase identifiers.
 
 ##### Zed-Aligned Visual Foundation
 
-- [ ] Use [Zed](https://github.com/zed-industries/zed) as the visual and
+- [x] Use [Zed](https://github.com/zed-industries/zed) as the visual and
   interaction reference, initially pinned to commit
   [`40dc154a`](https://github.com/zed-industries/zed/commit/40dc154a7cc28270d2319873b0881ef053dc22b9).
   Record any deliberate reference update. Do not follow a moving `main` during
-  implementation.
+  implementation. The durable source map and update procedure live in
+  [`viewer-zed-ui-reference.md`](viewer-zed-ui-reference.md).
 - [ ] Add viewer-owned semantic theme and spacing tokens modeled on Zed's UI
   roles: window, panel, elevated surface, border, text, muted text, hover,
   active, focus, disabled, accent, and status. Remove feature-level hard-coded
