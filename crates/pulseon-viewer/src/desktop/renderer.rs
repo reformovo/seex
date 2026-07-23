@@ -37,12 +37,6 @@ struct GpuiPathKey {
     partial: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-enum ChartKind {
-    Detail,
-    Overview,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrushDragTarget {
     Start,
@@ -53,9 +47,7 @@ pub enum BrushDragTarget {
 #[derive(Default)]
 pub struct ChartAdapter {
     detail_projection_cache: PathCache,
-    overview_projection_cache: PathCache,
     detail_gpui_paths: HashMap<String, (GpuiPathKey, Path<Pixels>)>,
-    overview_gpui_paths: HashMap<String, (GpuiPathKey, Path<Pixels>)>,
     detail_bounds: Option<Bounds<Pixels>>,
     overview_bounds: Option<Bounds<Pixels>>,
 }
@@ -68,9 +60,7 @@ struct PreparedChart {
 impl ChartAdapter {
     pub fn clear(&mut self) {
         self.detail_projection_cache.clear();
-        self.overview_projection_cache.clear();
         self.detail_gpui_paths.clear();
-        self.overview_gpui_paths.clear();
         self.detail_bounds = None;
         self.overview_bounds = None;
     }
@@ -78,17 +68,13 @@ impl ChartAdapter {
     fn prepare(
         &mut self,
         snapshot: &CurveSnapshot,
-        kind: ChartKind,
         revision: u64,
         viewport: Viewport,
         bounds: Bounds<Pixels>,
         appearance: WindowAppearance,
     ) -> PreparedChart {
         let theme = ViewerTheme::for_appearance(appearance);
-        match kind {
-            ChartKind::Detail => self.detail_bounds = Some(bounds),
-            ChartKind::Overview => self.overview_bounds = Some(bounds),
-        }
+        self.detail_bounds = Some(bounds);
         let Ok(canvas) =
             CanvasSize::new(f64::from(bounds.size.width), f64::from(bounds.size.height))
         else {
@@ -120,16 +106,8 @@ impl ChartAdapter {
                 dark: theme.dark,
                 partial,
             };
-            let (projection_cache, gpui_paths) = match kind {
-                ChartKind::Detail => (
-                    &mut self.detail_projection_cache,
-                    &mut self.detail_gpui_paths,
-                ),
-                ChartKind::Overview => (
-                    &mut self.overview_projection_cache,
-                    &mut self.overview_gpui_paths,
-                ),
-            };
+            let projection_cache = &mut self.detail_projection_cache;
+            let gpui_paths = &mut self.detail_gpui_paths;
             let cache_id = series.id().as_str();
             let path = if let Some((cached_key, path)) = gpui_paths.get(cache_id)
                 && cached_key == &key
@@ -329,19 +307,6 @@ pub fn selection_covered(snapshot: &CurveSnapshot, selected: AxisRange) -> bool 
         && snapshot.viewport.end() as f64 >= selected.end()
 }
 
-pub fn overview_viewport(snapshot: &CurveSnapshot, brush: BrushState) -> Option<Viewport> {
-    visible_y_range_for(
-        snapshot
-            .series
-            .iter()
-            .filter_map(|curve| curve.chart_series.as_ref()),
-        brush.home(),
-    )
-    .ok()
-    .flatten()
-    .map(|y| Viewport::new(brush.home(), y))
-}
-
 pub fn detail_canvas(
     adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
     snapshot: Arc<CurveSnapshot>,
@@ -353,7 +318,6 @@ pub fn detail_canvas(
             let resized = adapter.borrow().detail_bounds != Some(bounds);
             let prepared = adapter.borrow_mut().prepare(
                 &snapshot,
-                ChartKind::Detail,
                 revision,
                 viewport,
                 bounds,
@@ -388,33 +352,28 @@ pub fn detail_canvas(
     )
 }
 
-pub fn overview_canvas(
+pub fn timeline_canvas(
     adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
-    snapshot: Arc<CurveSnapshot>,
-    revision: u64,
-    viewport: Viewport,
     brush: BrushState,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
         move |bounds, window, _| {
             let resized = adapter.borrow().overview_bounds != Some(bounds);
-            let prepared = adapter.borrow_mut().prepare(
-                &snapshot,
-                ChartKind::Overview,
-                revision,
-                viewport,
-                bounds,
-                window.appearance(),
-            );
+            adapter.borrow_mut().overview_bounds = Some(bounds);
             if resized {
                 window.request_animation_frame();
             }
-            prepared
+            ViewerTheme::for_appearance(window.appearance())
         },
-        move |bounds, prepared, window, _| {
+        move |bounds, theme, window, _| {
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                for (path, color) in prepared.paths {
-                    window.paint_path(path, color);
+                for index in 0..=6 {
+                    let ratio = index as f32 / 6.;
+                    let x = bounds.origin.x + bounds.size.width * ratio;
+                    window.paint_quad(fill(
+                        Bounds::new(point(x, bounds.origin.y), size(px(1.), bounds.size.height)),
+                        theme.colors.chart_grid,
+                    ));
                 }
                 let start_ratio = ((brush.selected().start() - brush.home().start())
                     / brush.home().span()) as f32;
@@ -427,7 +386,7 @@ pub fn overview_canvas(
                         point(start, bounds.origin.y),
                         size(end - start, bounds.size.height),
                     ),
-                    prepared.theme.colors.brush_selection,
+                    theme.colors.brush_selection,
                 ));
                 for x in [start, end] {
                     window.paint_quad(fill(
@@ -435,7 +394,7 @@ pub fn overview_canvas(
                             point(x - px(4.), bounds.origin.y),
                             size(px(8.), bounds.size.height),
                         ),
-                        prepared.theme.colors.accent,
+                        theme.colors.accent,
                     ));
                 }
             });
@@ -756,29 +715,14 @@ mod tests {
         let viewport = Viewport::new(home, range(0., 11.));
         let bounds = Bounds::new(point(px(0.), px(0.)), size(px(2_500.), px(800.)));
         let mut adapter = ChartAdapter::default();
-        black_box(adapter.prepare(
-            &snapshot,
-            ChartKind::Detail,
-            1,
-            viewport,
-            bounds,
-            WindowAppearance::Light,
-        ));
+        black_box(adapter.prepare(&snapshot, 1, viewport, bounds, WindowAppearance::Light));
         measure_cpu_budget("cached path preparation", 20, 200, || {
-            black_box(adapter.prepare(
-                &snapshot,
-                ChartKind::Detail,
-                1,
-                viewport,
-                bounds,
-                WindowAppearance::Light,
-            ));
+            black_box(adapter.prepare(&snapshot, 1, viewport, bounds, WindowAppearance::Light));
         });
         let mut revision = 2;
         measure_cpu_budget("uncached path preparation", 20, 200, || {
             black_box(adapter.prepare(
                 &snapshot,
-                ChartKind::Detail,
                 revision,
                 viewport,
                 bounds,

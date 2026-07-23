@@ -1,6 +1,10 @@
+use std::collections::HashMap;
+
+use pulseon_model::alignment::AlignmentViewport;
+use pulseon_model::metric::MetricKey;
+
 use crate::coordination::AnalysisViewId;
 use crate::core::{DataSourceId, RunRef, SelectionError, ViewerCore, toggle_run_selection};
-use pulseon_model::metric::MetricKey;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TrackDensity {
@@ -21,6 +25,7 @@ pub struct AnalysisView {
     pub local_error: Option<String>,
     pub overview_revision: u64,
     pub detail_revision: u64,
+    pub timeline_extents: HashMap<MetricKey, AlignmentViewport>,
 }
 
 pub struct AnalysisViews {
@@ -41,6 +46,7 @@ impl Default for AnalysisViews {
             local_error: None,
             overview_revision: 0,
             detail_revision: 0,
+            timeline_extents: HashMap::new(),
         };
         Self {
             active_view_id: view.view_id.clone(),
@@ -81,6 +87,7 @@ impl AnalysisViews {
             local_error: None,
             overview_revision: 0,
             detail_revision: 0,
+            timeline_extents: HashMap::new(),
         });
         self.active_view_id = view_id.clone();
         view_id
@@ -99,6 +106,7 @@ impl AnalysisViews {
             local_error: active.local_error,
             overview_revision: active.overview_revision,
             detail_revision: active.detail_revision,
+            timeline_extents: active.timeline_extents,
         });
         self.active_view_id = view_id.clone();
         view_id
@@ -141,13 +149,41 @@ impl AnalysisViews {
     }
 
     pub fn toggle_active_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
-        toggle_run_selection(&mut self.active_mut().runs, run)
+        let selected = toggle_run_selection(&mut self.active_mut().runs, run)?;
+        self.active_mut().timeline_extents.clear();
+        Ok(selected)
     }
 
     pub fn select_active_metric(&mut self, metric_key: MetricKey) {
         if !self.active().metrics.contains(&metric_key) {
             self.active_mut().metrics.push(metric_key);
         }
+    }
+
+    pub fn record_active_metric_extent(
+        &mut self,
+        metric_key: MetricKey,
+        extent: Option<AlignmentViewport>,
+    ) -> Option<AlignmentViewport> {
+        if let Some(extent) = extent {
+            self.active_mut()
+                .timeline_extents
+                .insert(metric_key, extent);
+        } else {
+            self.active_mut().timeline_extents.remove(&metric_key);
+        }
+        self.active()
+            .timeline_extents
+            .values()
+            .copied()
+            .reduce(|left, right| {
+                AlignmentViewport::new(left.start().min(right.start()), left.end().max(right.end()))
+                    .expect("valid timeline extents must have a valid union")
+            })
+    }
+
+    pub fn clear_active_timeline_extents(&mut self) {
+        self.active_mut().timeline_extents.clear();
     }
 
     pub fn remove_source(&mut self, source_id: &DataSourceId) {
@@ -217,5 +253,23 @@ mod tests {
             views.active().core.axis(),
             pulseon_model::alignment::AlignmentAxis::Step
         );
+    }
+
+    #[test]
+    fn timeline_home_is_the_union_of_loaded_metric_extents() {
+        let mut views = AnalysisViews::default();
+        views.record_active_metric_extent(
+            MetricKey::from_string("loss"),
+            Some(AlignmentViewport::new(10, 20).expect("test extent should be valid")),
+        );
+
+        let home = views
+            .record_active_metric_extent(
+                MetricKey::from_string("accuracy"),
+                Some(AlignmentViewport::new(5, 15).expect("test extent should be valid")),
+            )
+            .expect("metric extents should produce a timeline home");
+
+        assert_eq!((home.start(), home.end()), (5, 20));
     }
 }

@@ -262,6 +262,29 @@ impl ViewerCore {
         true
     }
 
+    pub fn set_timeline_home(&mut self, range: AlignmentViewport) {
+        let Ok(home) = AxisRange::new(range.start() as f64, range.end() as f64) else {
+            return;
+        };
+        let previous = self.brush.map(BrushState::selected);
+        let Ok(mut brush) = BrushState::new(home) else {
+            return;
+        };
+        if let Some(previous) = previous {
+            let start = previous.start().clamp(home.start(), home.end());
+            let end = previous.end().clamp(home.start(), home.end());
+            if end - start >= 1. {
+                let _ = brush.resize_start(start);
+                let _ = brush.resize_end(end);
+            }
+        }
+        self.brush = Some(brush);
+    }
+
+    pub fn install_overview(&mut self, snapshot: CurveSnapshot) {
+        self.apply_overview(snapshot);
+    }
+
     /// Marks one request stream pending without clearing its current snapshot.
     pub fn begin(
         &mut self,

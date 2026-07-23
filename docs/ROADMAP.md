@@ -299,7 +299,7 @@ roadmap phase identifiers.
 
 ##### Metric Sidebar, Shared Timeline, and Tracks
 
-- [ ] Render one sticky shared timeline brush per View. Its home range is the
+- [x] Render one sticky shared timeline brush per View. Its home range is the
   union of valid selected Run/metric extents; it renders navigation ticks and
   selection rather than a synthetic metric aggregation and spans only the
   chart-track column.

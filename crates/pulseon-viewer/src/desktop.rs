@@ -18,11 +18,14 @@ use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunStatus};
 use pulseon_model::types::ProjectId;
 use pulseon_viewer::coordination::AnalysisViewId;
+use pulseon_viewer::coordination::{
+    MetricPanelId, PanelReadCoordinator, PanelReadOutcome, PanelReadRequest, PanelReadTag,
+};
 use pulseon_viewer::core::{
     ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore, run_matches_filter,
 };
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
-use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
+use pulseon_viewer::query::{CurveSelection, DetailRequest};
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
 use pulseon_viewer::workbench::AnalysisViews;
 use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest};
@@ -173,6 +176,7 @@ struct ViewerApp {
     run_list: RunListCache,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
     views: AnalysisViews,
+    panel_reads: PanelReadCoordinator,
     renaming_view: Option<AnalysisViewId>,
     view_name_draft: String,
     project_sidebar_visible: bool,
@@ -206,6 +210,7 @@ impl ViewerApp {
             run_list: RunListCache::default(),
             expanded_projects: HashSet::new(),
             views: AnalysisViews::default(),
+            panel_reads: PanelReadCoordinator::default(),
             renaming_view: None,
             view_name_draft: String::new(),
             project_sidebar_visible: true,
@@ -273,6 +278,19 @@ impl ViewerApp {
         track_in_core: bool,
         cx: &mut Context<Self>,
     ) {
+        let generation = Generation(self.next_generation);
+        self.next_generation = self.next_generation.saturating_add(1);
+        self.submit_source_generation(source_id, generation, request, track_in_core, cx);
+    }
+
+    fn submit_source_generation(
+        &mut self,
+        source_id: DataSourceId,
+        generation: Generation,
+        request: ReadRequest,
+        track_in_core: bool,
+        cx: &mut Context<Self>,
+    ) {
         match self.sources.activate(&source_id) {
             Ok(Some(events)) => self.listen_for_events(source_id.clone(), events, cx),
             Ok(None) => {}
@@ -281,8 +299,6 @@ impl ViewerApp {
                 return;
             }
         }
-        let generation = Generation(self.next_generation);
-        self.next_generation = self.next_generation.saturating_add(1);
         match self.sources.submit(&source_id, generation, request.clone()) {
             Ok(()) if track_in_core => self.core.begin(generation, source_id, &request),
             Ok(()) => {}
@@ -316,6 +332,36 @@ impl ViewerApp {
         self.sources.apply_event(&event);
         let kind = event.kind;
         let revision = event.generation.0;
+        if kind == ReadKind::Overview {
+            if let PanelReadOutcome::Completed(completed) = self.panel_reads.apply(event) {
+                if completed.tag.view_id != self.views.active().view_id {
+                    return;
+                }
+                if !completed.source_errors.is_empty() {
+                    self.local_error = Some(
+                        completed
+                            .source_errors
+                            .iter()
+                            .map(|failure| format!("{}: {}", failure.source_id, failure.message))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    );
+                }
+                if let Some(snapshot) = completed.curves {
+                    self.overview_revision = completed.tag.generation.0;
+                    let extent = snapshot.real_range;
+                    self.core.install_overview(snapshot);
+                    if let Some(metric_key) = self.core.selection().metric_key.clone()
+                        && let Some(home) =
+                            self.views.record_active_metric_extent(metric_key, extent)
+                    {
+                        self.core.set_timeline_home(home);
+                    }
+                    self.request_detail(cx);
+                }
+            }
+            return;
+        }
         let succeeded = event.result.is_ok();
         if self.core.apply(event) != ApplyOutcome::Applied || !succeeded {
             return;
@@ -325,10 +371,7 @@ impl ViewerApp {
         }
         match kind {
             ReadKind::Catalog if self.curve_selection().is_some() => self.request_overview(cx),
-            ReadKind::Overview => {
-                self.overview_revision = revision;
-                self.request_detail(cx);
-            }
+            ReadKind::Overview => {}
             ReadKind::Detail => self.detail_revision = revision,
             ReadKind::Catalog => {}
         }
@@ -348,16 +391,38 @@ impl ViewerApp {
     }
 
     fn request_overview(&mut self, cx: &mut Context<Self>) {
-        let Some(selection) = self.curve_selection() else {
+        let runs = self.views.active().runs.clone();
+        if runs.is_empty() {
+            return;
+        }
+        let Some(metric_key) = self.core.selection().metric_key.clone() else {
             return;
         };
-        self.submit(
-            ReadRequest::Overview(OverviewRequest {
-                selection,
+        let generation = Generation(self.next_generation);
+        self.next_generation = self.next_generation.saturating_add(1);
+        let tag = PanelReadTag {
+            view_id: self.views.active().view_id.clone(),
+            panel_id: MetricPanelId::from_string(metric_key.as_str()),
+            generation,
+        };
+        let planned = match self.panel_reads.begin(
+            tag,
+            PanelReadRequest::Overview {
+                runs,
+                metric_key,
+                axis: self.core.axis(),
                 physical_width: self.overview_width,
-            }),
-            cx,
-        );
+            },
+        ) {
+            Ok(planned) => planned,
+            Err(error) => {
+                self.local_error = Some(error.to_string());
+                return;
+            }
+        };
+        for read in planned {
+            self.submit_source_generation(read.source_id, read.generation, read.request, false, cx);
+        }
     }
 
     fn request_detail(&mut self, cx: &mut Context<Self>) {
@@ -489,6 +554,8 @@ impl ViewerApp {
     }
 
     fn store_active_view_state(&mut self) {
+        let view_id = self.views.active().view_id.clone();
+        self.panel_reads.deactivate_view(&view_id);
         self.core.cancel_pending();
         let view = self.views.active_mut();
         view.core = std::mem::take(&mut self.core);
@@ -637,12 +704,14 @@ impl ViewerApp {
     }
 
     fn on_step(&mut self, _: &UseStep, _: &mut Window, cx: &mut Context<Self>) {
+        self.views.clear_active_timeline_extents();
         self.core.select_axis(AlignmentAxis::Step);
         self.request_overview(cx);
         cx.notify();
     }
 
     fn on_elapsed(&mut self, _: &UseElapsed, _: &mut Window, cx: &mut Context<Self>) {
+        self.views.clear_active_timeline_extents();
         self.core.select_axis(AlignmentAxis::ElapsedTime);
         self.request_overview(cx);
         cx.notify();
@@ -1522,13 +1591,7 @@ impl ViewerApp {
 
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
-        let Some(snapshot) = self.core.overview_shared() else {
-            return div().h(px(96.));
-        };
         let Some(brush) = self.core.brush() else {
-            return div().h(px(96.));
-        };
-        let Some(viewport) = renderer::overview_viewport(&snapshot, brush) else {
             return div().h(px(96.));
         };
         let adapter = Rc::clone(&self.chart_adapter);
@@ -1548,16 +1611,7 @@ impl ViewerApp {
                     .border_1()
                     .border_color(theme.colors.border)
                     .bg(theme.colors.surface)
-                    .child(
-                        renderer::overview_canvas(
-                            adapter,
-                            snapshot,
-                            self.overview_revision,
-                            viewport,
-                            brush,
-                        )
-                        .size_full(),
-                    )
+                    .child(renderer::timeline_canvas(adapter, brush).size_full())
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -2205,6 +2259,33 @@ mod tests {
             )
         }
 
+        fn fixture_with_extent(end_step: i64) -> (tempfile::TempDir, ProjectId, RunId) {
+            let root = tempfile::tempdir().expect("test directory should be created");
+            let client = NativeClient::open(root.path()).expect("test client should open");
+            let project = client
+                .create_project("viewer", Some(ProjectId::from_string("project")))
+                .expect("test project should be created");
+            let run = client
+                .create_run(
+                    &project.project_id,
+                    "baseline",
+                    Some(RunId::from_string("run")),
+                )
+                .expect("test Run should be created");
+            let handle = client.run_handle(run.clone());
+            handle
+                .log_metric_at_step("loss", 0, 1.)
+                .expect("test metric should be logged");
+            handle
+                .log_metric_at_step("loss", end_step, 0.5)
+                .expect("test metric should be logged");
+            client
+                .finish_run(&run.run_id)
+                .expect("test Run should finish");
+            client.shutdown(None).expect("test client should shut down");
+            (root, project.project_id, run.run_id)
+        }
+
         fn open_viewer(
             cx: &mut TestAppContext,
             project_path: Option<PathBuf>,
@@ -2546,6 +2627,78 @@ mod tests {
                     .read_with(&cx, |viewer, _| viewer.views.active().runs.len())
                     .expect("viewer should remain open"),
                 2
+            );
+        }
+
+        #[gpui::test]
+        fn shared_timeline_unions_extents_from_multiple_sources(cx: &mut TestAppContext) {
+            let (first, first_project, first_run) = fixture_with_extent(10);
+            let (second, second_project, second_run) = fixture_with_extent(20);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(first.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.open_source(second.path().to_path_buf(), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| viewer.sources.sources().len() == 2);
+
+            for (root, project_id, run_id) in [
+                (first.path(), first_project, first_run),
+                (second.path(), second_project, second_run),
+            ] {
+                let source_id = DataSourceId::from_path(root);
+                window
+                    .update(&mut cx, |viewer, _, cx| {
+                        viewer.activate_tree_project(
+                            source_id.clone(),
+                            root.to_path_buf(),
+                            project_id.clone(),
+                            cx,
+                        );
+                    })
+                    .expect("viewer should remain open");
+                wait_for_viewer(window, &cx, |viewer| {
+                    viewer.sources.source(&source_id).is_some_and(|source| {
+                        source.catalog.runs.iter().any(|run| run.run_id == run_id)
+                    })
+                });
+                window
+                    .update(&mut cx, |viewer, _, cx| {
+                        viewer.toggle_tree_run(
+                            RunRef::new(source_id.clone(), project_id.clone(), run_id.clone()),
+                            root.to_path_buf(),
+                            cx,
+                        );
+                    })
+                    .expect("viewer should remain open");
+            }
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .core
+                    .catalog()
+                    .is_some_and(|catalog| catalog.metric_keys.len() == 1)
+            });
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .core
+                    .overview()
+                    .is_some_and(|snapshot| snapshot.series.len() == 2)
+            });
+
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| {
+                        viewer.core.brush().map(|brush| brush.home().end())
+                    })
+                    .expect("viewer should remain open"),
+                Some(20.)
             );
         }
 
