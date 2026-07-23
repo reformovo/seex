@@ -275,7 +275,7 @@ roadmap phase identifiers.
 
 ##### Project and Run Sidebar
 
-- [ ] Replace the single-source selectors with a searchable, collapsible
+- [x] Replace the single-source selectors with a searchable, collapsible
   Project/Run sidebar over all imported sources. Keep it as an independent,
   full-height application-shell region outside the Analysis workspace, qualify
   name collisions with source identity, and retain unavailable sources with

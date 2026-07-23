@@ -11,12 +11,16 @@ pub enum StatusTone {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IconName {
+    ChevronDown,
+    ChevronRight,
     Refresh,
 }
 
 impl IconName {
     const fn path(self) -> &'static str {
         match self {
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
             Self::Refresh => "icons/refresh.svg",
         }
     }
@@ -196,5 +200,7 @@ mod tests {
     #[test]
     fn icon_name_has_a_stable_asset_path() {
         assert_eq!(IconName::Refresh.path(), "icons/refresh.svg");
+        assert_eq!(IconName::ChevronDown.path(), "icons/chevron-down.svg");
+        assert_eq!(IconName::ChevronRight.path(), "icons/chevron-right.svg");
     }
 }
