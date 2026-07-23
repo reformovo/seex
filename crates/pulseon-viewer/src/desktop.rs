@@ -2363,6 +2363,7 @@ impl ViewerApp {
         let track = self.render_metric_track(&panel, cx);
         div()
             .flex()
+            .w_full()
             .h(row_height)
             .min_h(row_height)
             .border_b_1()
@@ -4576,6 +4577,15 @@ mod tests {
                         .all(|panel| panel.detail.is_some())
             });
 
+            let workspace = cx
+                .debug_bounds("analysis-workspace")
+                .expect("Analysis workspace should render");
+            let track_scroll = cx
+                .debug_bounds("metric-track-scroll")
+                .expect("Metric track viewport should render");
+            assert_eq!(track_scroll.origin.x, workspace.origin.x);
+            assert_eq!(track_scroll.size.width, workspace.size.width);
+
             for metric in ["metric-0", "metric-1"] {
                 let sidebar = cx
                     .debug_bounds(if metric == "metric-0" {
@@ -4591,8 +4601,21 @@ mod tests {
                         "metric-track:metric-1"
                     })
                     .expect("Metric track should render");
+                let canvas = cx
+                    .debug_bounds(if metric == "metric-0" {
+                        "metric-canvas:metric-0"
+                    } else {
+                        "metric-canvas:metric-1"
+                    })
+                    .expect("Metric canvas should render");
                 assert_eq!(sidebar.origin.y, track.origin.y);
                 assert_eq!(sidebar.size.height, track.size.height);
+                assert_eq!(track.origin.x, sidebar.origin.x + sidebar.size.width);
+                assert_eq!(
+                    track.origin.x + track.size.width,
+                    workspace.origin.x + workspace.size.width
+                );
+                assert!(canvas.size.width > px(0.));
             }
             let (ranges, unavailable) = window
                 .read_with(&cx, |viewer, _| {
