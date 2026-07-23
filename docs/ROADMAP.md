@@ -289,7 +289,7 @@ roadmap phase identifiers.
 
 ##### Analysis Views
 
-- [ ] Add top tabs for creating an empty View, duplicating the active View,
+- [x] Add top tabs for creating an empty View, duplicating the active View,
   activating, renaming, and closing Views. Place this bar inside the Analysis
   workspace so it never spans the independent Project/Run sidebar. Closing the
   last View creates a new empty View.

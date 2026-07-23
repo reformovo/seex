@@ -17,13 +17,14 @@ use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason};
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunStatus};
 use pulseon_model::types::ProjectId;
+use pulseon_viewer::coordination::AnalysisViewId;
 use pulseon_viewer::core::{
     ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore, run_matches_filter,
-    toggle_run_selection,
 };
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
+use pulseon_viewer::workbench::AnalysisViews;
 use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest};
 
 mod assets;
@@ -167,10 +168,13 @@ struct ViewerApp {
     theme: ViewerTheme,
     focus: FocusHandle,
     filter_focus: FocusHandle,
+    view_name_focus: FocusHandle,
     run_filter: String,
     run_list: RunListCache,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
-    active_view_runs: Vec<RunRef>,
+    views: AnalysisViews,
+    renaming_view: Option<AnalysisViewId>,
+    view_name_draft: String,
     project_sidebar_visible: bool,
     source_menu: Option<DataSourceId>,
     source_path: Option<PathBuf>,
@@ -197,10 +201,13 @@ impl ViewerApp {
             theme: ViewerTheme::for_appearance(window.appearance()),
             focus,
             filter_focus: cx.focus_handle().tab_stop(true),
+            view_name_focus: cx.focus_handle().tab_stop(true),
             run_filter: String::new(),
             run_list: RunListCache::default(),
             expanded_projects: HashSet::new(),
-            active_view_runs: Vec::new(),
+            views: AnalysisViews::default(),
+            renaming_view: None,
+            view_name_draft: String::new(),
             project_sidebar_visible: true,
             source_menu: None,
             source_path: None,
@@ -439,6 +446,76 @@ impl ViewerApp {
         cx.notify();
     }
 
+    fn create_analysis_view(&mut self, cx: &mut Context<Self>) {
+        self.views.create_empty();
+        self.renaming_view = None;
+        cx.notify();
+    }
+
+    fn duplicate_analysis_view(&mut self, cx: &mut Context<Self>) {
+        self.views.duplicate_active();
+        self.renaming_view = None;
+        cx.notify();
+    }
+
+    fn activate_analysis_view(&mut self, view_id: &AnalysisViewId, cx: &mut Context<Self>) {
+        if self.views.activate(view_id) {
+            self.renaming_view = None;
+            cx.notify();
+        }
+    }
+
+    fn close_analysis_view(&mut self, view_id: &AnalysisViewId, cx: &mut Context<Self>) {
+        if self.views.close(view_id) {
+            self.renaming_view = None;
+            cx.notify();
+        }
+    }
+
+    fn begin_rename_analysis_view(
+        &mut self,
+        view_id: AnalysisViewId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(view) = self
+            .views
+            .views()
+            .iter()
+            .find(|view| view.view_id == view_id)
+        else {
+            return;
+        };
+        self.view_name_draft.clone_from(&view.name);
+        self.renaming_view = Some(view_id);
+        self.view_name_focus.focus(window);
+        cx.notify();
+    }
+
+    fn on_view_name_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        match event.keystroke.key.as_str() {
+            "enter" => {
+                if let Some(view_id) = self.renaming_view.take() {
+                    self.views.rename(&view_id, &self.view_name_draft);
+                }
+            }
+            "escape" => self.renaming_view = None,
+            "backspace" => {
+                self.view_name_draft.pop();
+            }
+            _ if !event.keystroke.modifiers.platform && !event.keystroke.modifiers.control => {
+                if let Some(text) = event.keystroke.key_char.as_deref()
+                    && !text.chars().any(char::is_control)
+                {
+                    self.view_name_draft.push_str(text);
+                }
+            }
+            _ => return,
+        }
+        cx.stop_propagation();
+        cx.notify();
+    }
+
     fn refresh_source(&mut self, source_id: DataSourceId, cx: &mut Context<Self>) {
         let active = self.core.selection().source_id.as_ref() == Some(&source_id);
         let project_id = active
@@ -495,8 +572,7 @@ impl ViewerApp {
         self.event_tasks.remove(source_id);
         self.expanded_projects
             .retain(|(selected_source, _)| selected_source != source_id);
-        self.active_view_runs
-            .retain(|run| &run.source_id != source_id);
+        self.views.remove_source(source_id);
         self.source_menu = None;
         if active {
             self.core = ViewerCore::default();
@@ -568,7 +644,7 @@ impl ViewerApp {
     }
 
     fn toggle_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
-        match toggle_run_selection(&mut self.active_view_runs, run.clone()) {
+        match self.views.toggle_active_run(run.clone()) {
             Ok(selected) => {
                 self.local_error = None;
                 let core_selected = self.core.selection().runs.contains(&run);
@@ -615,7 +691,7 @@ impl ViewerApp {
     fn render_project_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let sources = self.sources.sources().cloned().collect::<Vec<_>>();
-        let selected_runs = self.active_view_runs.clone();
+        let selected_runs = self.views.active().runs.clone();
         let expanded = self.expanded_projects.clone();
         let query = self.run_filter.trim().to_lowercase();
         let filter_focus = self.filter_focus.clone();
@@ -965,7 +1041,7 @@ impl ViewerApp {
         let selected_metric_key = selection.metric_key.clone();
         let has_project = selected_project_id.is_some();
         let filter_focus = self.filter_focus.clone();
-        let selected_count = self.active_view_runs.len();
+        let selected_count = self.views.active().runs.len();
         let source_id = selection
             .source_id
             .clone()
@@ -1615,6 +1691,11 @@ impl Render for ViewerApp {
             .catalog()
             .is_some_and(|catalog| !catalog.projects.is_empty());
         let can_refresh = self.source_path.is_some();
+        let views = self.views.views().to_vec();
+        let active_view_id = self.views.active().view_id.clone();
+        let renaming_view = self.renaming_view.clone();
+        let view_name_focus = self.view_name_focus.clone();
+        let view_name_draft = self.view_name_draft.clone();
 
         div()
             .track_focus(&self.focus)
@@ -1670,11 +1751,110 @@ impl Render for ViewerApp {
                             .overflow_hidden()
                             .child(
                                 components::tab_bar(theme)
+                                    .children(views.into_iter().enumerate().map(|(index, view)| {
+                                        let selected = view.view_id == active_view_id;
+                                        let activate_id = view.view_id.clone();
+                                        let close_id = view.view_id.clone();
+                                        let editing = renaming_view.as_ref() == Some(&view.view_id);
+                                        let focus = view_name_focus.clone();
+                                        components::analysis_tab(
+                                            SharedString::from(format!(
+                                                "analysis-tab:{}",
+                                                view.view_id
+                                            )),
+                                            theme,
+                                            selected,
+                                        )
+                                        .debug_selector(move || {
+                                            if selected {
+                                                "analysis-tab".to_owned()
+                                            } else {
+                                                format!("analysis-tab-{index}")
+                                            }
+                                        })
+                                        .tab_index(0)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.activate_analysis_view(&activate_id, cx);
+                                        }))
+                                        .child(if editing {
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "rename-view:{}",
+                                                    view.view_id
+                                                )))
+                                                .track_focus(&focus)
+                                                .on_key_down(cx.listener(Self::on_view_name_key))
+                                                .child(view_name_draft.clone())
+                                        } else {
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "view-name:{}",
+                                                    view.view_id
+                                                )))
+                                                .child(view.name)
+                                        })
+                                        .child(
+                                            components::icon_button(
+                                                SharedString::from(format!(
+                                                    "close-view:{}",
+                                                    close_id
+                                                )),
+                                                theme,
+                                                false,
+                                                false,
+                                            )
+                                            .debug_selector(move || {
+                                                if selected {
+                                                    "close-active-view".to_owned()
+                                                } else {
+                                                    format!("close-view-{index}")
+                                                }
+                                            })
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.close_analysis_view(&close_id, cx);
+                                                cx.stop_propagation();
+                                            }))
+                                            .child(components::icon(IconName::Close, theme)),
+                                        )
+                                    }))
                                     .child(
-                                        components::analysis_tab("analysis-tab", theme, true)
-                                            .debug_selector(|| "analysis-tab".to_owned())
-                                            .tab_index(0)
-                                            .child("Analysis"),
+                                        components::toolbar_button(
+                                            "duplicate-view",
+                                            theme,
+                                            false,
+                                            false,
+                                        )
+                                        .debug_selector(|| "duplicate-view".to_owned())
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.duplicate_analysis_view(cx);
+                                        }))
+                                        .child("Duplicate"),
+                                    )
+                                    .child(
+                                        components::toolbar_button(
+                                            "rename-view",
+                                            theme,
+                                            false,
+                                            false,
+                                        )
+                                        .debug_selector(|| "rename-view".to_owned())
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let view_id = this.views.active().view_id.clone();
+                                            this.begin_rename_analysis_view(view_id, window, cx);
+                                        }))
+                                        .child("Rename"),
+                                    )
+                                    .child(
+                                        components::icon_button("new-view", theme, false, false)
+                                            .debug_selector(|| "new-view".to_owned())
+                                            .cursor_pointer()
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.create_analysis_view(cx);
+                                            }))
+                                            .child(components::icon(IconName::Plus, theme)),
                                     )
                                     .child(div().flex_1())
                                     .child(
@@ -1925,8 +2105,8 @@ mod tests {
     #[cfg(feature = "test-support")]
     mod gpui_tests {
         use gpui::{
-            Modifiers, ScrollDelta, TestAppContext, TouchPhase, VisualTestContext, WindowHandle,
-            point,
+            Keystroke, Modifiers, ScrollDelta, TestAppContext, TouchPhase, VisualTestContext,
+            WindowHandle, point,
         };
         use pulseon_core::engine::client::NativeClient;
 
@@ -2092,6 +2272,76 @@ mod tests {
         }
 
         #[gpui::test]
+        fn analysis_view_tabs_manage_the_active_view_lifecycle(cx: &mut TestAppContext) {
+            let (window, mut cx) = open_viewer(cx, None);
+
+            let new_view = cx
+                .debug_bounds("new-view")
+                .expect("new View control should render");
+            cx.simulate_click(new_view.center(), Modifiers::default());
+            let duplicate = cx
+                .debug_bounds("duplicate-view")
+                .expect("duplicate View control should render");
+            cx.simulate_click(duplicate.center(), Modifiers::default());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.views.views().len())
+                    .expect("viewer should remain open"),
+                3
+            );
+
+            let rename = cx
+                .debug_bounds("rename-view")
+                .expect("rename View control should render");
+            assert!(rename.size.width > px(0.));
+            window
+                .update(&mut cx, |viewer, window, cx| {
+                    let view_id = viewer.views.active().view_id.clone();
+                    viewer.begin_rename_analysis_view(view_id, window, cx);
+                    viewer.on_view_name_key(
+                        &KeyDownEvent {
+                            keystroke: Keystroke {
+                                key: "x".to_owned(),
+                                key_char: Some("x".to_owned()),
+                                ..Keystroke::default()
+                            },
+                            is_held: false,
+                        },
+                        window,
+                        cx,
+                    );
+                    viewer.on_view_name_key(
+                        &KeyDownEvent {
+                            keystroke: Keystroke {
+                                key: "enter".to_owned(),
+                                ..Keystroke::default()
+                            },
+                            is_held: false,
+                        },
+                        window,
+                        cx,
+                    );
+                })
+                .expect("viewer should remain open");
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.views.active().name.ends_with('x'))
+                    .expect("viewer should remain open")
+            );
+
+            let close = cx
+                .debug_bounds("close-active-view")
+                .expect("active View close control should render");
+            cx.simulate_click(close.center(), Modifiers::default());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.views.views().len())
+                    .expect("viewer should remain open"),
+                2
+            );
+        }
+
+        #[gpui::test]
         fn worker_events_update_the_entity_without_render_polling(cx: &mut TestAppContext) {
             let (root, _, _) = fixture(1);
             cx.executor().allow_parking();
@@ -2224,7 +2474,7 @@ mod tests {
             }
             assert_eq!(
                 window
-                    .read_with(&cx, |viewer, _| viewer.active_view_runs.len())
+                    .read_with(&cx, |viewer, _| viewer.views.active().runs.len())
                     .expect("viewer should remain open"),
                 2
             );

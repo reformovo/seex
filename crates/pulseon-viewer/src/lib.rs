@@ -8,6 +8,7 @@ pub mod model;
 pub mod query;
 pub mod registry;
 mod source;
+pub mod workbench;
 pub mod worker;
 
 pub use source::SourceError;

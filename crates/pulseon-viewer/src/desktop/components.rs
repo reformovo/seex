@@ -13,6 +13,7 @@ pub enum StatusTone {
 pub enum IconName {
     ChevronDown,
     ChevronRight,
+    Close,
     Ellipsis,
     Plus,
     Refresh,
@@ -23,6 +24,7 @@ impl IconName {
         match self {
             Self::ChevronDown => "icons/chevron-down.svg",
             Self::ChevronRight => "icons/chevron-right.svg",
+            Self::Close => "icons/close.svg",
             Self::Ellipsis => "icons/ellipsis.svg",
             Self::Plus => "icons/plus.svg",
             Self::Refresh => "icons/refresh.svg",
@@ -206,6 +208,7 @@ mod tests {
         assert_eq!(IconName::Refresh.path(), "icons/refresh.svg");
         assert_eq!(IconName::ChevronDown.path(), "icons/chevron-down.svg");
         assert_eq!(IconName::ChevronRight.path(), "icons/chevron-right.svg");
+        assert_eq!(IconName::Close.path(), "icons/close.svg");
         assert_eq!(IconName::Ellipsis.path(), "icons/ellipsis.svg");
         assert_eq!(IconName::Plus.path(), "icons/plus.svg");
     }
