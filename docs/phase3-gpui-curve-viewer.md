@@ -3,6 +3,10 @@
 > Status: pre-1.0 PulseOn 0.2.x implementation plan. ADR 0011 accepts the
 > desktop-first renderer boundary; this plan may change during validation.
 
+> Roadmap note: this document preserves the original single-panel baseline.
+> [`ROADMAP.md`](ROADMAP.md) is authoritative for later sequencing: the
+> multi-project workbench is Phase 3E and macOS ARM64 release is Phase 3F.
+
 ## Outcome
 
 Phase 3 delivers an unsigned macOS ARM64 `pulseon-viewer` binary for comparing
@@ -138,7 +142,7 @@ value.
   rejection, both catalog backends, local path resolution, and error states.
 - Record storage query timings separately from renderer frame timings.
 
-### 3E: macOS ARM64 Release
+### Original macOS ARM64 Release Plan (Roadmap Phase 3F)
 
 - Pin GPUI 0.2.2 as a macOS-only dependency with default features disabled and
   `font-kit` enabled; do not use `gpui-component`, runtime shaders, or Blade.

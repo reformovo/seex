@@ -8,6 +8,17 @@ context defines the product language used across native architecture decisions.
 **Project**:
 A lightweight namespace for related training runs.
 
+**Data source**:
+An imported reference that makes one local native project store available to
+the analysis workbench. One data source may contain multiple Projects.
+
+**Analysis View**:
+A named analysis workspace with its own selected Runs, metric panels, alignment,
+and horizontal viewport.
+
+**Metric panel**:
+One chart of a metric key across the Runs selected in an Analysis View.
+
 **Run**:
 One training execution with a user-supplied or generated run identifier.
 _Avoid_: Experiment

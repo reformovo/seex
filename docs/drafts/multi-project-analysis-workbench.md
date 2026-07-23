@@ -1,6 +1,7 @@
 # Multi-Project Analysis Workbench
 
-> Status: product and architecture draft, not an accepted decision or roadmap commitment.
+> Status: design source for Roadmap Phase 3E. The Roadmap defines committed
+> delivery scope; unresolved details in this document remain provisional.
 
 ## Outcome
 
@@ -28,28 +29,64 @@ This draft proposes three additional terms:
   panels, alignment settings, and presentation state.
 - **Metric panel**: one chart card for one metric key within an Analysis View.
 
-If accepted, add these definitions without implementation details to `CONTEXT.md`.
+These definitions are recorded without implementation details in `CONTEXT.md`.
 
 ## Experience
 
 ```text
 + Projects / Runs ------+ [Overview] [Training] [Ablation] [+] --------+
 | + Import Source       | Runs: 6 | Metrics: 4 | Step | Refresh        |
+|                       +-----------------------------------------------+
+| v Project A           | |<==== shared timeline brush ====>|          |
+|   [x] baseline        +----------------------+------------------------+
+|   [x] candidate       | train/loss           | train/lr               |
+|                       | detail chart         | detail chart           |
 |                       +----------------------+------------------------+
-| v Project A           | train/loss           | train/lr               |
-|   [x] baseline        | chart + brush         | chart + brush          |
-|   [x] candidate       +----------------------+------------------------+
 | v Project B           | train/accuracy       | eval/loss              |
-|   [x] control         | chart + brush         | chart + brush          |
+|   [x] control         | detail chart         | detail chart           |
 |   [ ] candidate       |                       |                        |
 +-----------------------+-----------------------+------------------------+
 ```
 
+## Zed-Aligned UI Contract
+
+The workbench follows [Zed](https://github.com/zed-industries/zed)'s visual and
+interaction language. The initial reference is Zed commit
+[`40dc154a`](https://github.com/zed-industries/zed/commit/40dc154a7cc28270d2319873b0881ef053dc22b9),
+including its `theme`, `ui`, `title_bar`, `project_panel`, and `workspace`
+boundaries. Reference updates must be explicit so a moving upstream `main`
+cannot silently change PulseOn's acceptance target.
+
+Zed is also the direct implementation reference, while PulseOn retains a local
+component boundary compatible with its pinned GPUI runtime:
+
+- directly adapt relevant Zed component structure, theme tokens, icons, and
+  interaction logic where compatible;
+- keep the adapted components viewer-owned instead of depending on whole Zed
+  application crates whose GPUI revision and dependency graph differ;
+- use semantic theme roles instead of feature-level hard-coded RGB values;
+- preserve Zed's compact density, typography hierarchy, one-pixel separators,
+  restrained elevation, subtle rounded selections, and low-noise surfaces;
+- cover inactive, hovered, active, selected, focused, disabled, pending, and
+  error states consistently across mouse and keyboard interaction; and
+- keep light and dark appearances structurally identical, changing palette
+  tokens rather than component layout.
+
+Initial viewer-owned primitives should cover the application chrome, tab bar,
+sidebar tree row, toolbar button, icon button, popover, tooltip, status badge,
+empty state, and focus ring. Zed's current default-density geometry—roughly
+32-pixel tab containers and 28-pixel tree rows—is the starting point, adjusted
+only when chart readability or accessibility provides measured evidence.
+
+Visual acceptance compares the shell, tabs, Project tree, toolbar, popovers,
+typography, spacing, interaction states, and theme hierarchy side by side with
+the pinned reference at representative window sizes and display scale factors.
+
 ### Sidebar
 
-- Show a searchable, collapsible Project tree similar to the reference Codex
-  sidebar. Flatten healthy sources while retaining source identity for errors
-  and disambiguation.
+- Show a searchable, collapsible Project tree following Zed project-panel row,
+  disclosure, hover, selection, focus, and context-menu behavior. Flatten
+  healthy sources while retaining source identity for errors and disambiguation.
 - Show Runs under each Project with selection, lifecycle status, and a compact
   secondary identifier. Checkboxes reflect the active View's selection.
 - Continue to allow at most 10 selected Runs per View.
@@ -70,18 +107,38 @@ If accepted, add these definitions without implementation details to `CONTEXT.md
   Refresh, Reset View, grid density, and pending/error status.
 - Closing the last View creates a fresh empty View.
 
+### Shared Timeline Brush
+
+- Render one sticky timeline brush below the active View toolbar, spanning the
+  full metric-grid width. Metric panels do not render individual brushes.
+- The timeline is a navigation ruler with ticks and selection shading, not a
+  synthetic aggregation of unrelated metric values.
+- Its home range is the union of valid overview extents for the active View's
+  selected Runs and metrics. Empty panels do not collapse a valid shared range.
+- Dragging either handle resizes the shared viewport; dragging the selection
+  pans it. All visible panels reproject against the transient viewport together.
+- `Command-+` zooms in, `Command--` zooms out, and `Command-0` resets to the
+  home range. Zoom anchors at the pointer's axis position when it is over the
+  timeline or a chart, otherwise at the viewport midpoint.
+- GPUI actions should expose persistent names such as `ZoomIn`, `ZoomOut`, and
+  `ResetView`. Bind both `cmd-=` and `cmd-shift-=` for keyboard layouts that
+  produce `+` through Shift, plus `cmd--` for zoom out.
+- The selected range may extend through visible panels as subtle vertical edge
+  guides, matching timeline tools without obscuring chart evidence.
+
 ### Metric Grid
 
 - Render one independently identifiable panel per selected metric in a
   responsive, scrollable grid. Narrow windows fall back to one column without
   shrinking charts below a usable interaction size.
-- Each panel keeps its title, evidence legend, detail chart, overview brush,
-  hover state, pending indicator, and panel-level error.
+- Each panel keeps its title, evidence legend, detail chart, hover state,
+  pending indicator, and panel-level error. Overview evidence still contributes
+  to the shared home range but does not require a per-panel overview path.
 - Reordering or removing one panel must not invalidate unaffected panels.
 - The metric picker shows the selected Runs' metric union. A Run without a
   selected metric remains in that panel's legend as unavailable evidence.
-- Only panels in the active View and near the visible scroll region prepare
-  GPUI geometry or request new detail data.
+- Only panels in the active View and within one viewport of the visible scroll
+  region prepare GPUI geometry or request new detail data.
 
 ## Stable Selection Identity
 
@@ -105,10 +162,10 @@ Workbench
 
 Analysis View
   ordered RunRefs and MetricPanels
-  alignment and presentation settings
+  alignment, shared brush, pointer anchor, and presentation settings
 
 Metric panel
-  overview/detail snapshots, brush, and hover state
+  overview/detail snapshots and hover state
   generations, pending state, and renderer cache revision
 ```
 
@@ -128,12 +185,14 @@ foreground before changing workbench or panel state.
   result only while all identities still match current state.
 - Coalesce pending work per source and panel. Newer generations replace older
   overview or detail work that has not started.
-- Wheel/pinch updates the viewport immediately and submits detail work only
-  after 100 ms without another event.
+- Wheel/pinch and keyboard zoom update the shared viewport immediately. One
+  View-level trailing timer fans out detail work to visible panels only after
+  100 ms without another event, including held-key repeats.
 - Running native queries may finish, but stale results cannot replace current
   View or viewport state.
-- Inactive Views issue no viewport queries. Off-screen panels keep their latest
-  snapshot but suspend geometry preparation and refresh work.
+- Inactive Views issue no viewport queries. Off-screen panels may contribute
+  their overview extent to the shared home range, but suspend geometry
+  preparation and detail refresh work.
 
 Cross-source aggregation belongs to viewer coordination. Native connections
 must not cross worker threads or weaken the storage ownership boundary.
@@ -155,7 +214,7 @@ format, migration policy, and location remain open.
 - Keep native queries and cross-source merging off the UI thread.
 - Prepare visible-panel paths only; cache by panel revision, viewport, canvas,
   and theme.
-- Do not query per wheel event or refresh inactive Views.
+- Do not prepare duplicate overview paths or query per wheel/key event.
 - Bound worker concurrency so sources and panels cannot create unbounded query
   fan-out.
 - Measure frames separately from storage latency, then validate a multi-panel View.
@@ -181,8 +240,8 @@ enter source paths, modules, functions, tests, environment variables, or comment
   with explicit unavailable evidence where appropriate.
 - Switch between Views with different selections; each restores its own brush,
   snapshots, and pending generations.
-- Rapidly zoom a visible panel; feedback stays immediate while queries remain
-  trailing-debounced and coalesced.
+- Rapidly zoom with wheel, `Command-+`, or `Command--`; the shared viewport and
+  visible panels respond immediately while queries stay debounced and coalesced.
 - Scroll a large grid; off-screen panels stop preparing geometry and do not
   initiate viewport refreshes.
 - Remove or move one source; other sources remain usable and saved selections
@@ -192,9 +251,4 @@ enter source paths, modules, functions, tests, environment variables, or comment
 
 ## Open Questions
 
-- Are x viewports independent, linked per View by default, or explicitly linked?
-- Should name collisions reveal source grouping in the Project tree?
-- How many panels should be prepared around the visible scroll region?
-- Does a new View start empty or copy the active Run selection?
-- Is panel resizing initially required, or are grid-density choices sufficient?
 - What persistence format and application-support path form the compatibility boundary?

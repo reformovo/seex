@@ -148,10 +148,12 @@ the pre-1.0 CLI JSON envelope with version 2.
 
 ### Phase 3: GPUI Desktop Viewer
 
-The decision-complete implementation and validation contract lives in
-[`docs/phase3-gpui-curve-viewer.md`](phase3-gpui-curve-viewer.md). A million
-points is a storage-source scale; GPUI renders only fixed-budget overview and
-detail reductions selected through a brush.
+The original single-panel implementation and validation contract lives in
+[`docs/phase3-gpui-curve-viewer.md`](phase3-gpui-curve-viewer.md). The
+multi-project workbench extension is defined in
+[`docs/drafts/multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md).
+A million points is a storage-source scale; GPUI renders only fixed-budget
+storage reductions selected through a shared viewport.
 
 #### Phase 3A: Renderer-Independent Brush Contract
 
@@ -205,25 +207,140 @@ detail reductions selected through a brush.
   picker cancellation, command behavior, resize budgets, brush synchronization,
   pending results, hover, and stale-result rejection.
 
-#### Phase 3D: Performance and Product Validation
+#### Phase 3D: Scale and Automated Performance Baseline
 
 - [x] Build a deterministic fixture with 10 Runs and 1,000,000 effective source
   points per series. Assert that the viewer receives only the requested
   overview/detail budgets plus contract-defined neighbors.
 - [x] Validate that narrowing the brush keeps the detail budget fixed, narrows
   the storage viewport, and never crops or resamples viewer-owned points.
-- [ ] Measure storage query latency separately from rendering. In a macOS ARM64
-  release build, verify cached brush, pan, zoom, path preparation, and hit
-  testing at p95 <= 8.33 ms with no sample above 16.7 ms; separately validate
-  stable 120 FPS on a 120 Hz ProMotion display after initial load.
+- [x] Measure DuckDB and SQLite overview, full-detail, and narrow-detail query
+  latency separately from rendering, including cold and warm samples.
+- [x] In a macOS ARM64 release build, verify cached brush, pan, zoom, path
+  preparation, and hit testing at p95 <= 8.33 ms with no sample above 16.7 ms.
 - [x] Pass formatting, workspace Clippy, Rust tests, viewer release build,
   maturin develop/build, Pyright, and pytest; document any exact environmental
   blocker, including a missing Xcode Metal Toolchain.
 
-Automated measurements and the remaining 120 Hz trace procedure are recorded
-in [`viewer-performance-validation.md`](viewer-performance-validation.md).
+Automated measurements are recorded in
+[`viewer-performance-validation.md`](viewer-performance-validation.md). The
+single-panel UI is no longer the durable product surface, so its outstanding
+manual display trace is carried into Phase 3E and must validate the final
+shared-timeline, multi-panel interaction path.
 
-#### Phase 3E: macOS ARM64 Release
+#### Phase 3E: Multi-Project Analysis Workbench
+
+The workbench implements the product and architecture contract in
+[`multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md).
+It does not change the public Python API, native catalog or Parquet schemas,
+comparison semantics, runtime dependency set, CI, or release behavior without
+separate approval. Product code uses durable workbench terminology and never
+roadmap phase identifiers.
+
+##### Zed-Aligned Visual Foundation
+
+- [ ] Use [Zed](https://github.com/zed-industries/zed) as the visual and
+  interaction reference, initially pinned to commit
+  [`40dc154a`](https://github.com/zed-industries/zed/commit/40dc154a7cc28270d2319873b0881ef053dc22b9).
+  Record any deliberate reference update. Do not follow a moving `main` during
+  implementation.
+- [ ] Add viewer-owned semantic theme and spacing tokens modeled on Zed's UI
+  roles: window, panel, elevated surface, border, text, muted text, hover,
+  active, focus, disabled, accent, and status. Remove feature-level hard-coded
+  RGB values and preserve the same hierarchy in light and dark appearance.
+- [ ] Build viewer-owned tab bar, sidebar tree row, toolbar/icon button,
+  popover, tooltip, status badge, empty state, and focus-ring primitives with
+  Zed-consistent compact geometry, typography, one-pixel separators, selected
+  surfaces, and complete hover/active/focused/disabled states.
+- [ ] Use Zed's `theme`, `ui`, `title_bar`, `project_panel`, and `workspace`
+  crates as direct implementation references. Adapt relevant component
+  structure, tokens, icons, and interaction logic into viewer-owned code. Do
+  not depend on whole Zed application crates because their GPUI revision and
+  dependency graph differ from the viewer's pinned runtime.
+
+##### Workbench Identity and Multi-Source Reads
+
+- [ ] Add viewer-local `DataSourceId` and composite
+  `RunRef = DataSourceId + ProjectId + RunId` identities. Use the full identity
+  for selection, series colors, caches, hover, requests, and stale-result
+  reconciliation while preserving existing storage/model identities.
+- [ ] Add a retained source registry and bounded read coordination for multiple
+  local native stores. Support DuckDB and SQLite together, keep each native
+  connection worker-owned, lazily activate source sessions, and preserve
+  source-specific loading and error state.
+- [ ] Fan panel reads out by source and merge immutable evidence at the viewer
+  boundary. One source failure must not erase another source's drawable
+  results, and inactive or superseded View/panel generations must be ignored.
+
+##### Project and Run Sidebar
+
+- [ ] Replace the single-source selectors with a searchable, collapsible
+  Project/Run sidebar over all imported sources. Qualify name collisions with
+  source identity and keep unavailable sources visible with actionable state.
+- [ ] Add Import Source, reveal path, refresh, and remove-from-workbench
+  actions. Removing an import must never delete or mutate native data.
+- [ ] Make Run checkboxes reflect the active Analysis View and retain the
+  existing limit of 10 selected Runs per View across Project/source boundaries.
+
+##### Analysis Views
+
+- [ ] Add top tabs for creating an empty View, duplicating the active View,
+  activating, renaming, and closing Views. Closing the last View creates a new
+  empty View.
+- [ ] Give each View independent ordered Runs and metrics, alignment axis, grid
+  density, shared viewport, snapshots, pending generations, and errors. View
+  switching must not share mutable selection or brush state implicitly.
+
+##### Shared Timeline and Metric Panels
+
+- [ ] Render one sticky shared timeline brush per View. Its home range is the
+  union of valid selected Run/metric extents; it renders navigation ticks and
+  selection rather than a synthetic metric aggregation.
+- [ ] Support handle resize, selected-window pan, wheel/pinch zoom,
+  `Command-+`, `Command--`, and `Command-0`. Reproject cached evidence
+  immediately, then use one View-level 100 ms trailing debounce before
+  requesting visible-panel detail.
+- [ ] Render one detail-only Metric panel per selected metric in a responsive,
+  scrollable grid with fixed density choices. Preserve unavailable evidence in
+  legends, independent y ranges, hover, panel errors, ordering, and removal.
+- [ ] Derive each visible panel's storage budget from its own physical plot
+  width and independently reduce every Run/metric series. Prepare visible
+  panels plus one viewport of overscan; off-screen panels contribute extents
+  but do not issue detail queries or prepare GPUI paths.
+
+##### Persistence and Recovery
+
+- [ ] Persist a versioned, viewer-owned workbench document containing imported
+  source paths, Views, composite selections, and presentation settings. Do not
+  persist metric points, query snapshots, credentials, native connections, or
+  renderer geometry.
+- [ ] Restore state without mutating native stores and reconcile moved or
+  missing sources, removed Projects/Runs, duplicate identifiers, unknown
+  metrics, and unsupported document versions explicitly.
+
+##### Validation Gates
+
+- [ ] Cover mixed DuckDB/SQLite sources, duplicate Project/Run identifiers,
+  partial source failure, cross-Project selection, View isolation, shared
+  viewport synchronization, keyboard zoom, query coalescing, panel visibility,
+  stale results, persistence round trips, and unavailable-source recovery.
+- [ ] Compare the application shell, tabs, Project tree, toolbars, popovers,
+  interaction states, typography, spacing, and light/dark hierarchy against the
+  pinned Zed reference at representative window sizes and display scales.
+- [ ] Validate a representative View with 10 Runs and at least six visible
+  Metric panels. Preserve storage point budgets, the Phase 3D CPU thresholds,
+  bounded query concurrency, and responsive interaction while sources are
+  pending.
+- [ ] On the active high-refresh display, record its configured refresh rate
+  and a Metal System Trace for shared-brush resize/pan, chart pan, wheel/pinch
+  and keyboard zoom, hover, scrolling, and View switching. Sustain the
+  configured rate after warm-up with no viewer-caused presentation spanning
+  two refresh periods; at 280 Hz that boundary is approximately 7.14 ms.
+- [ ] Pass formatting, workspace Clippy, Rust tests, viewer release build,
+  maturin develop/build, Pyright, and pytest, and update the persistent
+  performance record with exact commands, machine, display, and conclusions.
+
+#### Phase 3F: macOS ARM64 Release
 
 - [ ] Add a macOS ARM64 viewer CI job that installs or verifies the Xcode Metal
   Toolchain, runs viewer tests, and builds the unsigned release binary without
@@ -268,8 +385,9 @@ in [`viewer-performance-validation.md`](viewer-performance-validation.md).
 
 - [ ] Evaluate the [research driver](drafts/autoresearch-control-loop-notes.md)
   without moving source or Git mutation into PulseOn Core.
-- [ ] Design workspace hierarchy, config/tag filtering, export, Web UI, MCP,
-  and other agent-facing surfaces as independently reviewable roadmap phases.
+- [ ] Design config/tag filtering, export, Web UI, MCP, and other agent-facing
+  surfaces as independently reviewable roadmap phases after the local analysis
+  workbench is validated.
 
 ## 1.0 / Stable Contract
 

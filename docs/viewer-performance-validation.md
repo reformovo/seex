@@ -8,13 +8,15 @@
 - Rust: 1.97.1
 - Xcode: 26.6 (17F113)
 - Metal compiler: Xcode Metal Toolchain 17.6.109.0
-- Display target: built-in Liquid Retina XDR with ProMotion enabled
+- Display target: external display configured at 280 Hz; model and resolution
+  were not recorded
 
-The automated scale, CPU, build, type, and test gates pass. The interactive
-120 Hz Metal trace remains pending because the current automation session
-cannot synthesize and record the required continuous gestures, and macOS denied
-screen capture. The Roadmap frame-rate item remains open until that trace is
-recorded.
+The automated scale, CPU, build, type, and test gates pass. An exploratory
+single-panel run displayed 280 FPS on the external 280 Hz display, but the
+persistent record does not yet contain the required gesture-by-gesture missed
+presentation analysis. Because the planned shared timeline and multi-panel
+workbench replace this hot path, the final display gate is carried into Roadmap
+Phase 3E rather than closing against the transitional single-panel UI.
 
 ## Scale Fixture and Query Contract
 
@@ -62,19 +64,23 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Uncached path preparation | 200 | 7.621 ms | 7.892 ms | 8.075 ms |
 | Hit testing | 200 | 0.196 ms | 0.208 ms | 0.255 ms |
 
-## 120 Hz Product Check
+## High-Refresh Product Check
 
 The release viewer opened the retained 10-million-point DuckDB Project with
 `MTL_HUD_ENABLED=1`, and Metal HUD initialized frame interval, present delay,
-FPS, and logical FPS metrics. This confirms the release binary and HUD can run
-against the scale fixture, but it is not the required interaction evidence.
+FPS, and logical FPS metrics. The observed display rate was 280 FPS on the
+external 280 Hz display. This confirms that the release binary and HUD can run
+against the scale fixture, but it is not the final multi-panel interaction
+evidence.
 
-To close the remaining gate, capture a Metal System Trace on the built-in
-ProMotion display after initial detail load and a five-second warm-up. Exercise
-brush handle resize, selected-window drag, main-chart pan, wheel or pinch zoom,
-and hover continuously for ten seconds each. The HUD must sustain 120 FPS and
-the trace must show no viewer-caused presentation spanning two 120 Hz refresh
-periods. Record the trace conclusion here before closing the Roadmap item.
+To close the Phase 3E gate, capture a Metal System Trace after the shared
+timeline and Metric panel grid are implemented, initial detail loading has
+finished, and the UI has warmed for five seconds. Exercise shared-brush resize
+and pan, chart pan, wheel/pinch and keyboard zoom, hover, grid scrolling, and
+View switching. Record the display's configured rate and require no
+viewer-caused presentation spanning two refresh periods. At 280 Hz, two periods
+are approximately 7.14 ms. Record the trace conclusion here; do not commit the
+local trace bundle.
 
 ## Verification
 
