@@ -226,12 +226,19 @@ impl ReadWorker {
     ///
     /// Returns an I/O error when the operating system cannot spawn the thread.
     pub fn spawn(root_path: &Path) -> Result<Self, std::io::Error> {
+        Self::spawn_with_gate(root_path, Arc::new(ReadConcurrencyGate::new(1)))
+    }
+
+    pub(crate) fn spawn_with_gate(
+        root_path: &Path,
+        gate: Arc<ReadConcurrencyGate>,
+    ) -> Result<Self, std::io::Error> {
         let root_path = root_path.to_path_buf();
         let (request_tx, request_rx) = mpsc::channel();
         let (event_tx, event_rx) = read_event_channel();
         let thread = thread::Builder::new()
             .name("pulseon-native-reader".to_owned())
-            .spawn(move || worker_loop(root_path, request_rx, event_tx))?;
+            .spawn(move || worker_loop(root_path, request_rx, event_tx, gate))?;
         Ok(Self {
             requests: Some(request_tx),
             events: Some(event_rx),
@@ -283,6 +290,54 @@ impl ReadWorker {
     }
 }
 
+pub(crate) struct ReadConcurrencyGate {
+    active: Mutex<usize>,
+    available: Condvar,
+    limit: usize,
+}
+
+impl ReadConcurrencyGate {
+    pub(crate) fn new(limit: usize) -> Self {
+        assert!(limit > 0, "read concurrency limit must be positive");
+        Self {
+            active: Mutex::new(0),
+            available: Condvar::new(),
+            limit,
+        }
+    }
+
+    fn acquire(&self) -> ReadPermit<'_> {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        while *active == self.limit {
+            active = self
+                .available
+                .wait(active)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        *active += 1;
+        ReadPermit { gate: self }
+    }
+}
+
+struct ReadPermit<'a> {
+    gate: &'a ReadConcurrencyGate,
+}
+
+impl Drop for ReadPermit<'_> {
+    fn drop(&mut self) {
+        let mut active = self
+            .gate
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        *active -= 1;
+        self.gate.available.notify_one();
+    }
+}
+
 impl Drop for ReadWorker {
     fn drop(&mut self) {
         self.requests.take();
@@ -322,7 +377,12 @@ impl PendingRequests {
     }
 }
 
-fn worker_loop(root_path: PathBuf, requests: Receiver<TaggedRequest>, events: ReadEventSender) {
+fn worker_loop(
+    root_path: PathBuf,
+    requests: Receiver<TaggedRequest>,
+    events: ReadEventSender,
+    gate: Arc<ReadConcurrencyGate>,
+) {
     let mut session = None;
     while let Ok(first) = requests.recv() {
         let mut pending = PendingRequests::default();
@@ -334,6 +394,7 @@ fn worker_loop(root_path: PathBuf, requests: Receiver<TaggedRequest>, events: Re
             let Some(request) = pending.take_next() else {
                 break;
             };
+            let _permit = gate.acquire();
             let event = execute(&root_path, &mut session, request);
             if !events.send(event) {
                 return;
@@ -433,5 +494,29 @@ mod tests {
 
         assert!(worker.take_event_receiver().is_some());
         assert!(worker.take_event_receiver().is_none());
+    }
+
+    #[test]
+    fn concurrency_gate_blocks_reads_beyond_its_limit() {
+        let gate = Arc::new(ReadConcurrencyGate::new(1));
+        let first = gate.acquire();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let waiting_gate = Arc::clone(&gate);
+        let waiting = thread::spawn(move || {
+            let _permit = waiting_gate.acquire();
+            acquired_tx
+                .send(())
+                .expect("test receiver should remain open");
+        });
+
+        assert_eq!(
+            acquired_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        drop(first);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("waiting read should acquire the released permit");
+        waiting.join().expect("waiting thread should not panic");
     }
 }

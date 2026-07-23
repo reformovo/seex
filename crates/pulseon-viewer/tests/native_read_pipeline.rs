@@ -15,6 +15,7 @@ use pulseon_viewer::SourceError;
 use pulseon_viewer::core::{ApplyOutcome, DataSourceId, RunRef, ViewerCore, ViewerSelection};
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
+use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
 use pulseon_viewer::worker::{
     Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
 };
@@ -380,6 +381,54 @@ fn both_catalog_backends_preserve_query_and_refresh_contracts() -> Result<(), Bo
     assert_backend_contract(&duckdb, true)?;
     let sqlite = fixture(CatalogBackend::Sqlite, true)?;
     assert_backend_contract(&sqlite, false)?;
+    Ok(())
+}
+
+#[test]
+fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Error>> {
+    let duckdb = fixture(CatalogBackend::DuckDb, false)?;
+    let sqlite = fixture(CatalogBackend::Sqlite, true)?;
+    let mut registry = SourceRegistry::default();
+    let duckdb_id = registry.import(duckdb.root_path().to_path_buf());
+    let sqlite_id = registry.import(sqlite.root_path().to_path_buf());
+    let duckdb_events = registry
+        .activate(&duckdb_id)?
+        .ok_or("DuckDB source should return an event stream")?;
+    let sqlite_events = registry
+        .activate(&sqlite_id)?
+        .ok_or("SQLite source should return an event stream")?;
+
+    registry.submit(
+        &duckdb_id,
+        Generation(1),
+        ReadRequest::Discover(DiscoveryRequest::default()),
+    )?;
+    registry.submit(
+        &sqlite_id,
+        Generation(2),
+        ReadRequest::Discover(DiscoveryRequest::default()),
+    )?;
+    let duckdb_event = duckdb_events.recv_timeout(EVENT_TIMEOUT)?;
+    let sqlite_event = sqlite_events.recv_timeout(EVENT_TIMEOUT)?;
+    assert!(matches!(
+        &duckdb_event.result,
+        Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
+    ));
+    assert!(matches!(
+        &sqlite_event.result,
+        Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
+    ));
+    registry.apply_event(&duckdb_event);
+    registry.apply_event(&sqlite_event);
+
+    assert_eq!(
+        registry.source(&duckdb_id).map(|source| &source.status),
+        Some(&SourceStatus::Ready)
+    );
+    assert_eq!(
+        registry.source(&sqlite_id).map(|source| &source.status),
+        Some(&SourceStatus::Ready)
+    );
     Ok(())
 }
 

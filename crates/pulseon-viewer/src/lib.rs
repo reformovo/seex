@@ -5,6 +5,7 @@
 pub mod core;
 pub mod model;
 pub mod query;
+pub mod registry;
 mod source;
 pub mod worker;
 

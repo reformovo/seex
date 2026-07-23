@@ -265,7 +265,7 @@ roadmap phase identifiers.
   `RunRef = DataSourceId + ProjectId + RunId` identities. Use the full identity
   for selection, series colors, caches, hover, requests, and stale-result
   reconciliation while preserving existing storage/model identities.
-- [ ] Add a retained source registry and bounded read coordination for multiple
+- [x] Add a retained source registry and bounded read coordination for multiple
   local native stores. Support DuckDB and SQLite together, keep each native
   connection worker-owned, lazily activate source sessions, and preserve
   source-specific loading and error state.

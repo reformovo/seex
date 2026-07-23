@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,9 +22,8 @@ use pulseon_viewer::core::{
 };
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
-use pulseon_viewer::worker::{
-    Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest, ReadWorker,
-};
+use pulseon_viewer::registry::SourceRegistry;
+use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest};
 
 mod assets;
 mod components;
@@ -165,8 +165,8 @@ struct ViewerApp {
     run_filter: String,
     run_list: RunListCache,
     source_path: Option<PathBuf>,
-    worker: Option<ReadWorker>,
-    event_task: Option<Task<()>>,
+    sources: SourceRegistry,
+    event_tasks: HashMap<DataSourceId, Task<()>>,
     core: ViewerCore,
     next_generation: u64,
     local_error: Option<String>,
@@ -191,8 +191,8 @@ impl ViewerApp {
             run_filter: String::new(),
             run_list: RunListCache::default(),
             source_path: None,
-            worker: None,
-            event_task: None,
+            sources: SourceRegistry::default(),
+            event_tasks: HashMap::new(),
             core: ViewerCore::default(),
             next_generation: 1,
             local_error: None,
@@ -212,63 +212,64 @@ impl ViewerApp {
     }
 
     fn open_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.event_task = None;
-        self.worker = None;
-        self.core.reset_source(DataSourceId::from_path(&path));
+        let source_id = self.sources.import(path.clone());
+        self.core.reset_source(source_id);
         self.run_list = RunListCache::default();
         self.chart_adapter.borrow_mut().clear();
         self.hover = None;
         self.drag = None;
         self.zoom_task = None;
         self.local_error = None;
-        self.source_path = Some(path.clone());
-        match ReadWorker::spawn(&path) {
-            Ok(mut worker) => {
-                let Some(events) = worker.take_event_receiver() else {
-                    self.local_error = Some("native read worker has no event stream".to_owned());
-                    return;
-                };
-                self.worker = Some(worker);
-                self.listen_for_events(events, cx);
-                self.refresh_catalog();
-            }
-            Err(error) => self.local_error = Some(error.to_string()),
-        }
+        self.source_path = Some(path);
+        self.refresh_catalog(cx);
     }
 
-    fn refresh_catalog(&mut self) {
+    fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
         let selection = self.core.selection();
-        self.submit(ReadRequest::Discover(DiscoveryRequest {
-            project_id: selection.project_id.clone(),
-            selected_run_ids: selection
-                .runs
-                .iter()
-                .map(|run| run.run_id.clone())
-                .collect(),
-        }));
+        self.submit(
+            ReadRequest::Discover(DiscoveryRequest {
+                project_id: selection.project_id.clone(),
+                selected_run_ids: selection
+                    .runs
+                    .iter()
+                    .map(|run| run.run_id.clone())
+                    .collect(),
+            }),
+            cx,
+        );
     }
 
-    fn submit(&mut self, request: ReadRequest) {
-        let Some(worker) = self.worker.as_ref() else {
-            return;
-        };
+    fn submit(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
         let Some(source_id) = self.core.selection().source_id.clone() else {
             return;
         };
+        match self.sources.activate(&source_id) {
+            Ok(Some(events)) => self.listen_for_events(source_id.clone(), events, cx),
+            Ok(None) => {}
+            Err(error) => {
+                self.local_error = Some(error.to_string());
+                return;
+            }
+        }
         let generation = Generation(self.next_generation);
         self.next_generation = self.next_generation.saturating_add(1);
-        match worker.submit(source_id.clone(), generation, request.clone()) {
+        match self.sources.submit(&source_id, generation, request.clone()) {
             Ok(()) => self.core.begin(generation, source_id, &request),
             Err(error) => self.local_error = Some(error.to_string()),
         }
     }
 
-    fn listen_for_events(&mut self, events: ReadEventReceiver, cx: &mut Context<Self>) {
-        self.event_task = Some(cx.spawn(async move |this, cx| {
+    fn listen_for_events(
+        &mut self,
+        source_id: DataSourceId,
+        events: ReadEventReceiver,
+        cx: &mut Context<Self>,
+    ) {
+        let task = cx.spawn(async move |this, cx| {
             while let Some(event) = events.recv().await {
                 if this
                     .update(cx, |this, cx| {
-                        this.apply_event(event);
+                        this.apply_event(event, cx);
                         cx.notify();
                     })
                     .is_err()
@@ -276,10 +277,12 @@ impl ViewerApp {
                     break;
                 }
             }
-        }));
+        });
+        self.event_tasks.insert(source_id, task);
     }
 
-    fn apply_event(&mut self, event: ReadEvent) {
+    fn apply_event(&mut self, event: ReadEvent, cx: &mut Context<Self>) {
+        self.sources.apply_event(&event);
         let kind = event.kind;
         let revision = event.generation.0;
         let succeeded = event.result.is_ok();
@@ -290,10 +293,10 @@ impl ViewerApp {
             self.run_list.rebuild(self.core.catalog(), &self.run_filter);
         }
         match kind {
-            ReadKind::Catalog if self.curve_selection().is_some() => self.request_overview(),
+            ReadKind::Catalog if self.curve_selection().is_some() => self.request_overview(cx),
             ReadKind::Overview => {
                 self.overview_revision = revision;
-                self.request_detail();
+                self.request_detail(cx);
             }
             ReadKind::Detail => self.detail_revision = revision,
             ReadKind::Catalog => {}
@@ -313,28 +316,34 @@ impl ViewerApp {
         })
     }
 
-    fn request_overview(&mut self) {
+    fn request_overview(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.curve_selection() else {
             return;
         };
-        self.submit(ReadRequest::Overview(OverviewRequest {
-            selection,
-            physical_width: self.overview_width,
-        }));
+        self.submit(
+            ReadRequest::Overview(OverviewRequest {
+                selection,
+                physical_width: self.overview_width,
+            }),
+            cx,
+        );
     }
 
-    fn request_detail(&mut self) {
+    fn request_detail(&mut self, cx: &mut Context<Self>) {
         let Some(selection) = self.curve_selection() else {
             return;
         };
         let Some(viewport) = self.core.selected_viewport() else {
             return;
         };
-        self.submit(ReadRequest::Detail(DetailRequest {
-            selection,
-            viewport,
-            physical_width: self.detail_width,
-        }));
+        self.submit(
+            ReadRequest::Detail(DetailRequest {
+                selection,
+                viewport,
+                physical_width: self.detail_width,
+            }),
+            cx,
+        );
     }
 
     fn open_picker(&mut self, cx: &mut Context<Self>) {
@@ -391,26 +400,26 @@ impl ViewerApp {
 
     fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.local_error = None;
-        self.refresh_catalog();
+        self.refresh_catalog(cx);
         cx.notify();
     }
 
     fn on_reset(&mut self, _: &ResetView, _: &mut Window, cx: &mut Context<Self>) {
         if self.core.reset_view() {
-            self.request_detail();
+            self.request_detail(cx);
         }
         cx.notify();
     }
 
     fn on_step(&mut self, _: &UseStep, _: &mut Window, cx: &mut Context<Self>) {
         self.core.select_axis(AlignmentAxis::Step);
-        self.request_overview();
+        self.request_overview(cx);
         cx.notify();
     }
 
     fn on_elapsed(&mut self, _: &UseElapsed, _: &mut Window, cx: &mut Context<Self>) {
         self.core.select_axis(AlignmentAxis::ElapsedTime);
-        self.request_overview();
+        self.request_overview(cx);
         cx.notify();
     }
 
@@ -418,7 +427,7 @@ impl ViewerApp {
         self.core.select_project(Some(project_id));
         self.run_filter.clear();
         self.run_list.rebuild(self.core.catalog(), &self.run_filter);
-        self.refresh_catalog();
+        self.refresh_catalog(cx);
         cx.notify();
     }
 
@@ -426,7 +435,7 @@ impl ViewerApp {
         match self.core.toggle_run(run) {
             Ok(_) => {
                 self.local_error = None;
-                self.refresh_catalog();
+                self.refresh_catalog(cx);
             }
             Err(error) => self.local_error = Some(error.to_string()),
         }
@@ -435,7 +444,7 @@ impl ViewerApp {
 
     fn select_metric(&mut self, metric_key: MetricKey, cx: &mut Context<Self>) {
         self.core.select_metric(Some(metric_key));
-        self.request_overview();
+        self.request_overview(cx);
         cx.notify();
     }
 
@@ -1049,7 +1058,7 @@ impl ViewerApp {
 
     fn finish_drag(&mut self, cx: &mut Context<Self>) {
         if self.drag.take().is_some() {
-            self.request_detail();
+            self.request_detail(cx);
             cx.notify();
         }
     }
@@ -1078,7 +1087,7 @@ impl ViewerApp {
         self.zoom_task = Some(cx.spawn(async move |this, cx| {
             timer.await;
             let _ = this.update(cx, |this, cx| {
-                this.request_detail();
+                this.request_detail(cx);
                 cx.notify();
             });
         }));
@@ -1086,7 +1095,7 @@ impl ViewerApp {
         cx.notify();
     }
 
-    fn reconcile_canvas_widths(&mut self, scale_factor: f32) {
+    fn reconcile_canvas_widths(&mut self, scale_factor: f32, cx: &mut Context<Self>) {
         let (overview, detail) = self.chart_adapter.borrow().physical_widths(scale_factor);
         let overview_changed = overview.is_some_and(|width| width != self.overview_width);
         let detail_changed = detail.is_some_and(|width| width != self.detail_width);
@@ -1097,10 +1106,10 @@ impl ViewerApp {
             self.detail_width = width;
         }
         if overview_changed {
-            self.request_overview();
+            self.request_overview(cx);
         }
         if detail_changed {
-            self.request_detail();
+            self.request_detail(cx);
         }
     }
 }
@@ -1109,7 +1118,7 @@ impl Render for ViewerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.theme = ViewerTheme::for_appearance(window.appearance());
         let theme = self.theme;
-        self.reconcile_canvas_widths(window.scale_factor());
+        self.reconcile_canvas_widths(window.scale_factor(), cx);
         let source = self.source_path.as_ref().map_or_else(
             || "No project open".to_owned(),
             |path| path.display().to_string(),
@@ -1173,7 +1182,7 @@ impl Render for ViewerApp {
                                     .cursor_pointer()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.local_error = None;
-                                        this.refresh_catalog();
+                                        this.refresh_catalog(cx);
                                         cx.notify();
                                     }))
                             })
