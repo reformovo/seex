@@ -352,10 +352,87 @@ impl ViewerApp {
             workbench_path: default_workbench_path(),
             last_saved_workbench: None,
         };
+        if let Some(path) = app.workbench_path.clone() {
+            match WorkbenchDocument::load(&path) {
+                Ok(Some(document)) => app.restore_workbench(document, cx),
+                Ok(None) => {}
+                Err(error) => {
+                    app.local_error = Some(error.to_string());
+                    app.workbench_path = None;
+                }
+            }
+        }
         if let Some(path) = project_path {
             app.open_source(path, cx);
         }
         app
+    }
+
+    fn restore_workbench(&mut self, document: WorkbenchDocument, cx: &mut Context<Self>) {
+        self.project_sidebar_visible = document.project_sidebar_visible;
+        self.project_sidebar_width = px(document.project_sidebar_width.clamp(180., 600.));
+        self.metric_sidebar_compact = document.metric_sidebar_compact;
+        self.bottom_inspector_height = px(document.bottom_inspector_height.clamp(120., 600.));
+        let mut source_paths = document.sources.clone();
+        for path in document
+            .views
+            .iter()
+            .flat_map(|view| view.runs.iter().map(|run| &run.source_path))
+        {
+            if !source_paths.contains(path) {
+                source_paths.push(path.clone());
+            }
+        }
+        for path in &source_paths {
+            let source_id = self.sources.import(path.clone());
+            if !path.is_dir() {
+                self.sources.mark_unavailable(
+                    &source_id,
+                    format!("source path is unavailable: {}", path.display()),
+                );
+            }
+        }
+        let (views, issues) = AnalysisViews::restore(&document);
+        self.views = views;
+        self.restore_active_view_state();
+        self.bottom_inspector_visible =
+            document.bottom_inspector_visible && self.views.active().selected_panel_id.is_some();
+        self.last_saved_workbench = Some(document.encode());
+        if !issues.is_empty() {
+            self.local_error = Some(issues.join("; "));
+        }
+        let source_ids = self
+            .sources
+            .sources()
+            .filter(|source| source.root_path.is_dir())
+            .map(|source| source.source_id.clone())
+            .collect::<Vec<_>>();
+        for source_id in source_ids {
+            let track_in_core = self.core.selection().source_id.as_ref() == Some(&source_id);
+            self.submit_to_source(
+                source_id,
+                ReadRequest::Discover(DiscoveryRequest {
+                    project_id: track_in_core
+                        .then(|| self.core.selection().project_id.clone())
+                        .flatten(),
+                    selected_run_ids: if track_in_core {
+                        self.core
+                            .selection()
+                            .runs
+                            .iter()
+                            .filter(|run| {
+                                self.core.selection().source_id.as_ref() == Some(&run.source_id)
+                            })
+                            .map(|run| run.run_id.clone())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                }),
+                track_in_core,
+                cx,
+            );
+        }
     }
 
     fn open_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -455,7 +532,31 @@ impl ViewerApp {
     }
 
     fn apply_event(&mut self, event: ReadEvent, cx: &mut Context<Self>) {
-        self.sources.apply_event(&event);
+        let catalog_project = self.sources.apply_event(&event);
+        if let (Some(project_id), Ok(pulseon_viewer::worker::ReadSnapshot::Catalog(snapshot))) =
+            (catalog_project, &event.result)
+        {
+            let available_runs = snapshot
+                .runs
+                .iter()
+                .filter(|run| run.project_id == project_id)
+                .map(|run| run.run_id.clone())
+                .collect::<Vec<_>>();
+            let removed =
+                self.views
+                    .reconcile_source_project(&event.source_id, &project_id, &available_runs);
+            for run in &removed {
+                if self.core.selection().runs.contains(run) {
+                    let _ = self.core.toggle_run(run.clone());
+                }
+            }
+            if !removed.is_empty() {
+                self.local_error = Some(format!(
+                    "{} persisted Run selection(s) are no longer available",
+                    removed.len()
+                ));
+            }
+        }
         let kind = event.kind;
         if matches!(
             kind,
@@ -3703,6 +3804,44 @@ mod tests {
             (root, project.project_id, run.run_id)
         }
 
+        fn saved_workbench(
+            source_path: PathBuf,
+            project_id: ProjectId,
+            runs: Vec<RunId>,
+            metric: &str,
+        ) -> WorkbenchDocument {
+            WorkbenchDocument {
+                sources: vec![source_path.clone()],
+                views: vec![SavedAnalysisView {
+                    name: "Restored".to_owned(),
+                    runs: runs
+                        .into_iter()
+                        .map(|run_id| SavedRunRef {
+                            source_path: source_path.clone(),
+                            project_id: project_id.clone(),
+                            run_id,
+                        })
+                        .collect(),
+                    metrics: vec![metric.to_owned()],
+                    selected_metric: Some(metric.to_owned()),
+                    inspector_tab: InspectorTab::Evidence,
+                    ranking_direction: Some(ObjectiveDirection::Minimize),
+                    axis: AlignmentAxis::Step,
+                    track_density: TrackDensity::Compact,
+                    viewport: Some(
+                        pulseon_chart_core::AxisRange::new(0., 10.)
+                            .expect("test viewport should be valid"),
+                    ),
+                }],
+                active_view: 0,
+                project_sidebar_visible: false,
+                project_sidebar_width: 280.,
+                metric_sidebar_compact: true,
+                bottom_inspector_visible: true,
+                bottom_inspector_height: 260.,
+            }
+        }
+
         fn open_viewer(
             cx: &mut TestAppContext,
             project_path: Option<PathBuf>,
@@ -3843,6 +3982,82 @@ mod tests {
             assert_eq!(loaded.bottom_inspector_height, 260.);
             assert_eq!(loaded.views.len(), 1);
             assert!(loaded.views[0].metrics.is_empty());
+        }
+
+        #[gpui::test]
+        fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
+            let document = saved_workbench(
+                root.path().to_path_buf(),
+                project_id,
+                vec![run_id.clone(), RunId::from_string("removed")],
+                "unknown-metric",
+            );
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, None);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.restore_workbench(document, cx);
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().runs.len() == 1
+                    && viewer.views.active().runs[0].run_id == run_id
+                    && viewer.views.active().panels[0]
+                        .overview
+                        .as_ref()
+                        .is_some_and(|snapshot| {
+                            snapshot.series.iter().all(|series| {
+                                series.evidence.completeness == EvidenceCompleteness::Unavailable
+                            })
+                        })
+            });
+
+            assert!(root.path().exists());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer
+                        .local_error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("no longer available")))
+                    .expect("viewer should remain open")
+            );
+        }
+
+        #[gpui::test]
+        fn restored_missing_sources_remain_visible_without_creating_native_state(
+            cx: &mut TestAppContext,
+        ) {
+            let root = tempfile::tempdir().expect("test directory should be created");
+            let missing = root.path().join("moved-source");
+            let document = saved_workbench(
+                missing.clone(),
+                ProjectId::from_string("project"),
+                vec![RunId::from_string("run")],
+                "loss",
+            );
+            let (window, mut cx) = open_viewer(cx, None);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.restore_workbench(document, cx);
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+
+            let status = window
+                .read_with(&cx, |viewer, _| {
+                    viewer
+                        .sources
+                        .sources()
+                        .next()
+                        .map(|source| (source.root_path.clone(), source.status.clone()))
+                })
+                .expect("viewer should remain open")
+                .expect("missing source should remain listed");
+            assert_eq!(status.0, missing);
+            assert!(matches!(status.1, SourceStatus::Failed(_)));
+            assert!(!missing.exists());
         }
 
         #[gpui::test]

@@ -82,6 +82,12 @@ impl SourceRegistry {
         self.entry(source_id).map(|entry| &entry.source)
     }
 
+    pub fn mark_unavailable(&mut self, source_id: &DataSourceId, message: String) {
+        if let Ok(entry) = self.entry_mut(source_id) {
+            entry.source.status = SourceStatus::Failed(message);
+        }
+    }
+
     /// Removes viewer ownership without touching the native source path.
     pub fn remove(&mut self, source_id: &DataSourceId) -> Option<ImportedSource> {
         let index = self
@@ -157,9 +163,9 @@ impl SourceRegistry {
     }
 
     /// Reconciles one worker event into its source-specific health state.
-    pub fn apply_event(&mut self, event: &ReadEvent) {
+    pub fn apply_event(&mut self, event: &ReadEvent) -> Option<ProjectId> {
         let Ok(entry) = self.entry_mut(&event.source_id) else {
-            return;
+            return None;
         };
         let catalog_project = entry.catalog_requests.remove(&event.generation).flatten();
         if let Ok(crate::worker::ReadSnapshot::Catalog(snapshot)) = &event.result {
@@ -173,6 +179,7 @@ impl SourceRegistry {
             Ok(_) => SourceStatus::Ready,
             Err(error) => SourceStatus::Failed(error.to_string()),
         };
+        catalog_project
     }
 
     fn entry(&self, source_id: &DataSourceId) -> Option<&SourceEntry> {

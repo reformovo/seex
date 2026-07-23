@@ -253,9 +253,13 @@ inspector tab, dock visibility and dimensions, presentation state, and safe
 preferences. It must not store metric points, query snapshots, credentials,
 connections, or renderer geometry.
 
-Loading must tolerate unavailable sources, removed Projects or Runs, unknown
-metrics, and unsupported state versions without mutating source data. The exact
-format, migration policy, and location remain open.
+Loading tolerates unavailable sources, removed Projects or Runs, and unknown
+metrics without mutating source data. The viewer owns a dependency-free,
+length-safe hexadecimal text document headed by `pulseon-workbench 1`, stored
+at `~/Library/Application Support/PulseOn Viewer/workbench.state` on macOS.
+`PULSEON_VIEWER_WORKBENCH_PATH` overrides the location for controlled testing.
+Writes replace a temporary sibling atomically. Unsupported versions are
+reported and left untouched; v1 has no implicit migration path.
 
 ## Performance Contract
 
@@ -307,4 +311,5 @@ enter source paths, modules, functions, tests, environment variables, or comment
 
 ## Open Questions
 
-- What persistence format and application-support path form the compatibility boundary?
+- What explicit migration command should be introduced if a future workbench
+  document version cannot be read losslessly?

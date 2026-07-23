@@ -4,10 +4,15 @@ use std::sync::Arc;
 use pulseon_model::alignment::AlignmentViewport;
 use pulseon_model::comparison::ObjectiveDirection;
 use pulseon_model::metric::MetricKey;
+use pulseon_model::run::RunId;
+use pulseon_model::types::ProjectId;
 
 use crate::coordination::{AnalysisViewId, MetricPanelId, SourceReadFailure};
-use crate::core::{DataSourceId, RunRef, SelectionError, ViewerCore, toggle_run_selection};
+use crate::core::{
+    DataSourceId, RunRef, SelectionError, ViewerCore, ViewerSelection, toggle_run_selection,
+};
 use crate::query::{CurveSnapshot, InspectorSnapshot};
+use crate::workbench_document::WorkbenchDocument;
 use crate::worker::{Generation, ReadKind};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -130,6 +135,114 @@ impl Default for AnalysisViews {
 }
 
 impl AnalysisViews {
+    pub fn restore(document: &WorkbenchDocument) -> (Self, Vec<String>) {
+        let mut issues = Vec::new();
+        let mut views = Vec::new();
+        for (index, saved) in document.views.iter().enumerate() {
+            let mut runs = Vec::new();
+            for saved_run in &saved.runs {
+                let run = RunRef::new(
+                    DataSourceId::from_path(&saved_run.source_path),
+                    saved_run.project_id.clone(),
+                    saved_run.run_id.clone(),
+                );
+                if runs.contains(&run) {
+                    issues.push(format!(
+                        "View {:?} contains duplicate Run {}",
+                        saved.name,
+                        saved_run.run_id.as_str()
+                    ));
+                } else if runs.len() == crate::core::MAX_SELECTED_RUNS {
+                    issues.push(format!(
+                        "View {:?} exceeds the 10 Run selection limit",
+                        saved.name
+                    ));
+                } else {
+                    runs.push(run);
+                }
+            }
+            let mut panels = Vec::new();
+            for metric in &saved.metrics {
+                let metric_key = MetricKey::from_string(metric);
+                if panels
+                    .iter()
+                    .any(|panel: &MetricPanel| panel.metric_key == metric_key)
+                {
+                    issues.push(format!(
+                        "View {:?} contains duplicate Metric {metric:?}",
+                        saved.name
+                    ));
+                } else {
+                    panels.push(MetricPanel::new(metric_key));
+                }
+            }
+            let selected_panel_id = saved.selected_metric.as_ref().and_then(|selected| {
+                panels
+                    .iter()
+                    .find(|panel| panel.metric_key.as_str() == selected)
+                    .map(|panel| panel.panel_id.clone())
+            });
+            if saved.selected_metric.is_some() && selected_panel_id.is_none() {
+                issues.push(format!(
+                    "View {:?} selected an unknown persisted Metric",
+                    saved.name
+                ));
+            }
+            let mut core = ViewerCore::new(ViewerSelection {
+                source_id: runs.first().map(|run| run.source_id.clone()),
+                project_id: runs.first().map(|run| run.project_id.clone()),
+                runs: runs.clone(),
+                metric_key: selected_panel_id.as_ref().and_then(|panel_id| {
+                    panels
+                        .iter()
+                        .find(|panel| &panel.panel_id == panel_id)
+                        .map(|panel| panel.metric_key.clone())
+                }),
+            });
+            core.select_axis(saved.axis);
+            if let Some(viewport) = saved.viewport
+                && let Ok(viewport) = AlignmentViewport::new(
+                    viewport.start().floor() as i64,
+                    viewport.end().ceil() as i64,
+                )
+            {
+                core.set_timeline_home(viewport);
+            }
+            views.push(AnalysisView {
+                view_id: AnalysisViewId::from_string(format!("view-{}", index + 1)),
+                name: saved.name.clone(),
+                runs,
+                panels,
+                selected_panel_id,
+                inspector_tab: saved.inspector_tab,
+                ranking_direction: saved.ranking_direction,
+                track_density: saved.track_density,
+                core,
+                local_error: None,
+                overview_revision: 0,
+                detail_revision: 0,
+                timeline_extents: HashMap::new(),
+            });
+        }
+        if views.is_empty() {
+            return (Self::default(), issues);
+        }
+        let active = document.active_view.min(views.len() - 1);
+        if active != document.active_view {
+            issues.push("persisted active View index is unavailable".to_owned());
+        }
+        let active_view_id = views[active].view_id.clone();
+        let next_id = views.len() as u64 + 1;
+        (
+            Self {
+                views,
+                active_view_id,
+                next_id,
+            },
+            issues,
+        )
+    }
+
     pub fn views(&self) -> &[AnalysisView] {
         &self.views
     }
@@ -308,6 +421,35 @@ impl AnalysisViews {
         self.active_mut().ranking_direction = Some(direction);
     }
 
+    pub fn reconcile_source_project(
+        &mut self,
+        source_id: &DataSourceId,
+        project_id: &ProjectId,
+        available_runs: &[RunId],
+    ) -> Vec<RunRef> {
+        let mut removed = Vec::new();
+        for view in &mut self.views {
+            let stale = view
+                .runs
+                .iter()
+                .filter(|run| {
+                    &run.source_id == source_id
+                        && &run.project_id == project_id
+                        && !available_runs.contains(&run.run_id)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for run in &stale {
+                if view.core.selection().runs.contains(run) {
+                    let _ = view.core.toggle_run(run.clone());
+                }
+            }
+            view.runs.retain(|run| !stale.contains(run));
+            removed.extend(stale);
+        }
+        removed
+    }
+
     pub fn begin_active_panel_read(
         &mut self,
         panel_id: &MetricPanelId,
@@ -472,6 +614,11 @@ impl AnalysisViews {
 
 #[cfg(test)]
 mod tests {
+    use pulseon_chart_core::AxisRange;
+    use pulseon_model::alignment::AlignmentAxis;
+
+    use crate::workbench_document::{SavedAnalysisView, SavedRunRef};
+
     use super::*;
 
     #[test]
@@ -552,6 +699,42 @@ mod tests {
         assert!(views.activate(&second_view));
         assert_eq!(views.active().selected_panel_id.as_ref(), Some(&accuracy));
         assert_eq!(views.active().inspector_tab, InspectorTab::Ranking);
+    }
+
+    #[test]
+    fn restore_reports_duplicate_identities_and_unknown_selection() {
+        let saved_run = SavedRunRef {
+            source_path: "/tmp/source".into(),
+            project_id: ProjectId::from_string("project"),
+            run_id: RunId::from_string("run"),
+        };
+        let document = WorkbenchDocument {
+            sources: vec![saved_run.source_path.clone()],
+            views: vec![SavedAnalysisView {
+                name: "Duplicates".to_owned(),
+                runs: vec![saved_run.clone(), saved_run],
+                metrics: vec!["loss".to_owned(), "loss".to_owned()],
+                selected_metric: Some("unknown".to_owned()),
+                inspector_tab: InspectorTab::Summary,
+                ranking_direction: None,
+                axis: AlignmentAxis::Step,
+                track_density: TrackDensity::Comfortable,
+                viewport: Some(AxisRange::new(0., 1.).expect("viewport should be valid")),
+            }],
+            active_view: 0,
+            project_sidebar_visible: true,
+            project_sidebar_width: 320.,
+            metric_sidebar_compact: false,
+            bottom_inspector_visible: false,
+            bottom_inspector_height: 220.,
+        };
+
+        let (views, issues) = AnalysisViews::restore(&document);
+
+        assert_eq!(views.active().runs.len(), 1);
+        assert_eq!(views.active().panels.len(), 1);
+        assert!(views.active().selected_panel_id.is_none());
+        assert_eq!(issues.len(), 3);
     }
 
     #[test]

@@ -340,7 +340,7 @@ roadmap phase identifiers.
   dock visibility and dimensions, and presentation settings. Do not persist
   metric points, query snapshots, credentials, native connections, or renderer
   geometry.
-- [ ] Restore state without mutating native stores and reconcile moved or
+- [x] Restore state without mutating native stores and reconcile moved or
   missing sources, removed Projects/Runs, duplicate identifiers, unknown
   metrics, and unsupported document versions explicitly.
 
