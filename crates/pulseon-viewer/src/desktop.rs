@@ -89,6 +89,7 @@ actions!(
         OpenProject,
         Refresh,
         ResetView,
+        ToggleProjectSidebar,
         UseStep,
         UseElapsed,
         ActivateSelection,
@@ -105,6 +106,7 @@ pub fn run(project_path: Option<PathBuf>) {
             cx.bind_keys([
                 KeyBinding::new("cmd-o", OpenProject, None),
                 KeyBinding::new("cmd-r", Refresh, None),
+                KeyBinding::new("cmd-shift-b", ToggleProjectSidebar, None),
                 KeyBinding::new("cmd-0", ResetView, None),
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("enter", ActivateSelection, Some(SELECTABLE_CONTEXT)),
@@ -142,7 +144,7 @@ fn menus() -> Vec<Menu> {
         Menu {
             name: "File".into(),
             items: vec![
-                MenuItem::action("Open Project…", OpenProject),
+                MenuItem::action("Import Source…", OpenProject),
                 MenuItem::action("Refresh", Refresh),
             ],
         },
@@ -150,6 +152,8 @@ fn menus() -> Vec<Menu> {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Reset View", ResetView),
+                MenuItem::separator(),
+                MenuItem::action("Toggle Project Sidebar", ToggleProjectSidebar),
                 MenuItem::separator(),
                 MenuItem::action("Step", UseStep),
                 MenuItem::action("Elapsed", UseElapsed),
@@ -165,6 +169,8 @@ struct ViewerApp {
     run_filter: String,
     run_list: RunListCache,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
+    project_sidebar_visible: bool,
+    source_menu: Option<DataSourceId>,
     source_path: Option<PathBuf>,
     sources: SourceRegistry,
     event_tasks: HashMap<DataSourceId, Task<()>>,
@@ -192,6 +198,8 @@ impl ViewerApp {
             run_filter: String::new(),
             run_list: RunListCache::default(),
             expanded_projects: HashSet::new(),
+            project_sidebar_visible: true,
+            source_menu: None,
             source_path: None,
             sources: SourceRegistry::default(),
             event_tasks: HashMap::new(),
@@ -245,6 +253,16 @@ impl ViewerApp {
         let Some(source_id) = self.core.selection().source_id.clone() else {
             return;
         };
+        self.submit_to_source(source_id, request, true, cx);
+    }
+
+    fn submit_to_source(
+        &mut self,
+        source_id: DataSourceId,
+        request: ReadRequest,
+        track_in_core: bool,
+        cx: &mut Context<Self>,
+    ) {
         match self.sources.activate(&source_id) {
             Ok(Some(events)) => self.listen_for_events(source_id.clone(), events, cx),
             Ok(None) => {}
@@ -256,7 +274,8 @@ impl ViewerApp {
         let generation = Generation(self.next_generation);
         self.next_generation = self.next_generation.saturating_add(1);
         match self.sources.submit(&source_id, generation, request.clone()) {
-            Ok(()) => self.core.begin(generation, source_id, &request),
+            Ok(()) if track_in_core => self.core.begin(generation, source_id, &request),
+            Ok(()) => {}
             Err(error) => self.local_error = Some(error.to_string()),
         }
     }
@@ -353,7 +372,7 @@ impl ViewerApp {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some(SharedString::from("Open Project")),
+            prompt: Some(SharedString::from("Import PulseOn Source")),
         });
         cx.spawn(async move |this, cx| {
             let result = prompt.await;
@@ -381,7 +400,7 @@ impl ViewerApp {
 
     fn status(&self) -> SharedString {
         if self.source_path.is_none() {
-            return "Open a local PulseOn project to compare Runs.".into();
+            return "Import a local PulseOn source to compare Runs.".into();
         }
         if self.core.catalog().is_none() && self.core.is_pending(ReadKind::Catalog) {
             return "Loading Projects…".into();
@@ -403,6 +422,84 @@ impl ViewerApp {
     fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.local_error = None;
         self.refresh_catalog(cx);
+        cx.notify();
+    }
+
+    fn on_toggle_project_sidebar(
+        &mut self,
+        _: &ToggleProjectSidebar,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_sidebar_visible = !self.project_sidebar_visible;
+        self.source_menu = None;
+        cx.notify();
+    }
+
+    fn refresh_source(&mut self, source_id: DataSourceId, cx: &mut Context<Self>) {
+        let active = self.core.selection().source_id.as_ref() == Some(&source_id);
+        let project_id = active
+            .then(|| self.core.selection().project_id.clone())
+            .flatten();
+        self.submit_to_source(
+            source_id,
+            ReadRequest::Discover(DiscoveryRequest {
+                project_id,
+                selected_run_ids: if active {
+                    self.core
+                        .selection()
+                        .runs
+                        .iter()
+                        .map(|run| run.run_id.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            }),
+            active,
+            cx,
+        );
+        self.source_menu = None;
+        cx.notify();
+    }
+
+    fn reveal_source(&mut self, source_id: &DataSourceId, cx: &mut Context<Self>) {
+        let Some(source) = self.sources.source(source_id) else {
+            return;
+        };
+        #[cfg(target_os = "macos")]
+        if let Err(error) = std::process::Command::new("open")
+            .arg("-R")
+            .arg(&source.root_path)
+            .spawn()
+        {
+            self.local_error = Some(format!("failed to reveal source: {error}"));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.local_error = Some(format!(
+                "Reveal is unavailable on this platform: {}",
+                source.root_path.display()
+            ));
+        }
+        self.source_menu = None;
+        cx.notify();
+    }
+
+    fn remove_source(&mut self, source_id: &DataSourceId, cx: &mut Context<Self>) {
+        let active = self.core.selection().source_id.as_ref() == Some(source_id);
+        self.sources.remove(source_id);
+        self.event_tasks.remove(source_id);
+        self.expanded_projects
+            .retain(|(selected_source, _)| selected_source != source_id);
+        self.source_menu = None;
+        if active {
+            self.core = ViewerCore::default();
+            self.source_path = None;
+            self.run_list = RunListCache::default();
+            self.chart_adapter.borrow_mut().clear();
+            self.hover = None;
+        }
         cx.notify();
     }
 
@@ -528,7 +625,20 @@ impl ViewerApp {
             .bg(theme.colors.panel)
             .border_r_1()
             .border_color(theme.colors.border)
-            .child(section_label("Projects", theme))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(section_label("Projects", theme))
+                    .child(
+                        components::icon_button("import-source", theme, false, false)
+                            .debug_selector(|| "import-source".to_owned())
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| this.open_picker(cx)))
+                            .child(components::icon(IconName::Plus, theme)),
+                    ),
+            )
             .child(
                 div()
                     .id("project-run-filter")
@@ -571,6 +681,11 @@ impl ViewerApp {
                         };
                         let retry_path = source.root_path.clone();
                         let source_failed = matches!(source.status, SourceStatus::Failed(_));
+                        let menu_open = self.source_menu.as_ref() == Some(&source.source_id);
+                        let menu_source_id = source.source_id.clone();
+                        let reveal_source_id = source.source_id.clone();
+                        let refresh_source_id = source.source_id.clone();
+                        let remove_source_id = source.source_id.clone();
                         div()
                             .mb_2()
                             .child(
@@ -606,8 +721,85 @@ impl ViewerApp {
                                             theme.colors.text_muted
                                         })
                                         .child(status),
+                                )
+                                .child(
+                                    components::icon_button(
+                                        SharedString::from(format!(
+                                            "source-menu:{}",
+                                            source.source_id
+                                        )),
+                                        theme,
+                                        menu_open,
+                                        false,
+                                    )
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if this.source_menu.as_ref() == Some(&menu_source_id) {
+                                            this.source_menu = None;
+                                        } else {
+                                            this.source_menu = Some(menu_source_id.clone());
+                                        }
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }))
+                                    .child(components::icon(IconName::Ellipsis, theme)),
                                 ),
                             )
+                            .children(menu_open.then(|| {
+                                components::popover(theme)
+                                    .ml_2()
+                                    .mb_2()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        components::toolbar_button(
+                                            SharedString::from(format!(
+                                                "reveal-source:{}",
+                                                reveal_source_id
+                                            )),
+                                            theme,
+                                            false,
+                                            false,
+                                        )
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.reveal_source(&reveal_source_id, cx);
+                                        }))
+                                        .child("Reveal in Finder"),
+                                    )
+                                    .child(
+                                        components::toolbar_button(
+                                            SharedString::from(format!(
+                                                "refresh-source:{}",
+                                                refresh_source_id
+                                            )),
+                                            theme,
+                                            false,
+                                            false,
+                                        )
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.refresh_source(refresh_source_id.clone(), cx);
+                                        }))
+                                        .child("Refresh"),
+                                    )
+                                    .child(
+                                        components::toolbar_button(
+                                            SharedString::from(format!(
+                                                "remove-source:{}",
+                                                remove_source_id
+                                            )),
+                                            theme,
+                                            false,
+                                            false,
+                                        )
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.remove_source(&remove_source_id, cx);
+                                        }))
+                                        .child("Remove from Workbench"),
+                                    )
+                            }))
                             .children(source.catalog.projects.into_iter().enumerate().filter_map(|(project_index, project)| {
                                 let project_runs = source
                                     .catalog
@@ -1417,6 +1609,7 @@ impl Render for ViewerApp {
             .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_reset))
+            .on_action(cx.listener(Self::on_toggle_project_sidebar))
             .on_action(cx.listener(Self::on_step))
             .on_action(cx.listener(Self::on_elapsed))
             .flex()
@@ -1451,7 +1644,10 @@ impl Render for ViewerApp {
                     .flex()
                     .flex_1()
                     .overflow_hidden()
-                    .child(self.render_project_sidebar(cx))
+                    .children(
+                        self.project_sidebar_visible
+                            .then(|| self.render_project_sidebar(cx)),
+                    )
                     .child(
                         div()
                             .flex()
@@ -1519,7 +1715,7 @@ impl Render for ViewerApp {
                                                 this.open_picker(cx)
                                             },
                                         ))
-                                        .child("Open Project…"),
+                                        .child("Import Source…"),
                                     )
                             }),
                     ),
@@ -1858,6 +2054,28 @@ mod tests {
                     .expect("viewer should remain open"),
                 AlignmentAxis::ElapsedTime
             );
+        }
+
+        #[gpui::test]
+        fn project_sidebar_toggle_expands_the_analysis_workspace(cx: &mut TestAppContext) {
+            let (window, mut cx) = open_viewer(cx, None);
+            let analysis_before = cx
+                .debug_bounds("analysis-tab")
+                .expect("Analysis workspace should render");
+            assert!(cx.debug_bounds("project-run-tree").is_some());
+
+            cx.dispatch_action(ToggleProjectSidebar);
+
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.project_sidebar_visible)
+                    .expect("viewer should remain open")
+            );
+            assert!(cx.debug_bounds("project-run-tree").is_none());
+            let analysis_after = cx
+                .debug_bounds("analysis-tab")
+                .expect("Analysis workspace should remain rendered");
+            assert!(analysis_after.origin.x < analysis_before.origin.x);
         }
 
         #[gpui::test]

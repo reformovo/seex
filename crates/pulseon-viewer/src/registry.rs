@@ -82,6 +82,15 @@ impl SourceRegistry {
         self.entry(source_id).map(|entry| &entry.source)
     }
 
+    /// Removes viewer ownership without touching the native source path.
+    pub fn remove(&mut self, source_id: &DataSourceId) -> Option<ImportedSource> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| &entry.source.source_id == source_id)?;
+        Some(self.entries.remove(index).source)
+    }
+
     /// Lazily starts the source worker and returns its event stream once.
     ///
     /// # Errors
@@ -367,5 +376,23 @@ mod tests {
                 .iter()
                 .any(|run| run.project_id == project.project_id)
         }));
+    }
+
+    #[test]
+    fn removing_an_import_does_not_delete_native_data() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let marker = root.path().join("native-data");
+        std::fs::write(&marker, "retained")?;
+        let mut registry = SourceRegistry::default();
+        let source_id = registry.import(root.path().to_path_buf());
+
+        let removed = registry
+            .remove(&source_id)
+            .expect("imported source should be removable");
+
+        assert_eq!(removed.root_path, root.path());
+        assert_eq!(std::fs::read_to_string(marker)?, "retained");
+        assert!(registry.source(&source_id).is_none());
+        Ok(())
     }
 }

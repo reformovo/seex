@@ -280,7 +280,7 @@ roadmap phase identifiers.
   full-height application-shell region outside the Analysis workspace, qualify
   name collisions with source identity, and retain unavailable sources with
   actionable state.
-- [ ] Add Import Source, reveal path, refresh, and remove-from-workbench
+- [x] Add Import Source, reveal path, refresh, and remove-from-workbench
   actions plus `ToggleProjectSidebar`. Removing an import must never delete or
   mutate native data; hiding the sidebar expands the complete Analysis
   workspace.
