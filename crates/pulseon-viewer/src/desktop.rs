@@ -27,7 +27,7 @@ use pulseon_viewer::core::{
 };
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
-use pulseon_viewer::workbench::{AnalysisViews, MetricPanel, TrackDensity};
+use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, TrackDensity};
 use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest};
 
 mod assets;
@@ -49,8 +49,16 @@ enum DragGesture {
     },
     Detail {
         panel_id: MetricPanelId,
+        origin_x: f64,
         last_x: f64,
+        moved: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InspectorResize {
+    start_y: gpui::Pixels,
+    start_height: gpui::Pixels,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -243,6 +251,9 @@ struct ViewerApp {
     renaming_view: Option<AnalysisViewId>,
     view_name_draft: String,
     project_sidebar_visible: bool,
+    bottom_inspector_visible: bool,
+    bottom_inspector_height: gpui::Pixels,
+    inspector_resize: Option<InspectorResize>,
     source_menu: Option<DataSourceId>,
     source_path: Option<PathBuf>,
     sources: SourceRegistry,
@@ -283,6 +294,9 @@ impl ViewerApp {
             renaming_view: None,
             view_name_draft: String::new(),
             project_sidebar_visible: true,
+            bottom_inspector_visible: false,
+            bottom_inspector_height: px(220.),
+            inspector_resize: None,
             source_menu: None,
             source_path: None,
             sources: SourceRegistry::default(),
@@ -973,6 +987,48 @@ impl ViewerApp {
         cx.notify();
     }
 
+    fn show_metric_inspector(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
+        if !self.views.select_active_panel(panel_id) {
+            return;
+        }
+        let metric_key = self
+            .views
+            .active_panel(panel_id)
+            .map(|panel| panel.metric_key.clone());
+        self.core.select_metric(metric_key);
+        self.bottom_inspector_visible = true;
+        cx.notify();
+    }
+
+    fn select_inspector_tab(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
+        self.views.set_active_inspector_tab(tab);
+        cx.notify();
+    }
+
+    fn begin_inspector_resize(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        self.inspector_resize = Some(InspectorResize {
+            start_y: event.position.y,
+            start_height: self.bottom_inspector_height,
+        });
+        cx.notify();
+    }
+
+    fn move_inspector_resize(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(resize) = self.inspector_resize else {
+            return;
+        };
+        self.bottom_inspector_height = (resize.start_height + resize.start_y - event.position.y)
+            .max(px(120.))
+            .min(px(600.));
+        cx.notify();
+    }
+
+    fn finish_inspector_resize(&mut self, cx: &mut Context<Self>) {
+        if self.inspector_resize.take().is_some() {
+            cx.notify();
+        }
+    }
+
     fn remove_metric_panel(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
         if self.views.remove_active_panel(panel_id) {
             self.track_adapters.remove(panel_id);
@@ -1635,6 +1691,9 @@ impl ViewerApp {
             plot_inset: theme.spacing.content_padding * 2.,
         };
         let scroll = self.metric_scroll.clone();
+        let inspector = self
+            .bottom_inspector_visible
+            .then(|| self.render_bottom_inspector(cx));
 
         div()
             .flex_1()
@@ -1702,6 +1761,141 @@ impl ViewerApp {
                 .with_decoration(observer)
                 .debug_selector(|| "metric-track-scroll".to_owned())
                 .flex_1(),
+            )
+            .children(inspector)
+    }
+
+    fn render_bottom_inspector(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let theme = self.theme;
+        let active_tab = self.views.active().inspector_tab;
+        let metric_name = self
+            .views
+            .active()
+            .selected_panel_id
+            .as_ref()
+            .and_then(|panel_id| self.views.active_panel(panel_id))
+            .map_or_else(
+                || "No Metric selected".to_owned(),
+                |panel| panel.metric_key.as_str().to_owned(),
+            );
+        let body = match active_tab {
+            InspectorTab::Summary => {
+                div().child("Exact viewport Summary statistics will appear here.")
+            }
+            InspectorTab::Ranking => {
+                div().child("Choose minimize or maximize to calculate Project rankings.")
+            }
+            InspectorTab::Evidence => {
+                div().child("Evidence completeness and storage provenance will appear here.")
+            }
+        };
+
+        div()
+            .id("bottom-inspector")
+            .debug_selector(|| "bottom-inspector".to_owned())
+            .h(self.bottom_inspector_height)
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .bg(theme.colors.surface)
+            .border_t_1()
+            .border_color(theme.colors.border)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.dragging() {
+                    this.move_inspector_resize(event, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.finish_inspector_resize(cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.finish_inspector_resize(cx);
+                }),
+            )
+            .child(
+                div()
+                    .id("bottom-inspector-resize")
+                    .debug_selector(|| "bottom-inspector-resize".to_owned())
+                    .h(px(5.))
+                    .flex_shrink_0()
+                    .cursor(gpui::CursorStyle::ResizeUpDown)
+                    .hover(|style| style.bg(theme.colors.focus))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                            this.begin_inspector_resize(event, cx);
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .h(theme.spacing.tab_height)
+                    .flex_shrink_0()
+                    .px(theme.spacing.panel_padding)
+                    .border_b_1()
+                    .border_color(theme.colors.border)
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .mr_3()
+                            .child(metric_name),
+                    )
+                    .child(
+                        components::toolbar_button(
+                            "inspector-summary",
+                            theme,
+                            active_tab == InspectorTab::Summary,
+                            false,
+                        )
+                        .debug_selector(|| "inspector-summary".to_owned())
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.select_inspector_tab(InspectorTab::Summary, cx);
+                        }))
+                        .child("Summary"),
+                    )
+                    .child(
+                        components::toolbar_button(
+                            "inspector-ranking",
+                            theme,
+                            active_tab == InspectorTab::Ranking,
+                            false,
+                        )
+                        .debug_selector(|| "inspector-ranking".to_owned())
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.select_inspector_tab(InspectorTab::Ranking, cx);
+                        }))
+                        .child("Ranking"),
+                    )
+                    .child(
+                        components::toolbar_button(
+                            "inspector-evidence",
+                            theme,
+                            active_tab == InspectorTab::Evidence,
+                            false,
+                        )
+                        .debug_selector(|| "inspector-evidence".to_owned())
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.select_inspector_tab(InspectorTab::Evidence, cx);
+                        }))
+                        .child("Evidence"),
+                    ),
+            )
+            .child(
+                body.flex_1()
+                    .p(theme.spacing.content_padding)
+                    .text_sm()
+                    .text_color(theme.colors.text_muted),
             )
     }
 
@@ -1793,6 +1987,10 @@ impl ViewerApp {
         let theme = self.theme;
         let panel_id = panel.panel_id.clone();
         let remove_id = panel_id.clone();
+        let select_id = panel_id.clone();
+        let drag_id = panel_id.clone();
+        let finish_id = panel_id.clone();
+        let selected = self.views.active().selected_panel_id.as_ref() == Some(&panel_id);
         let error_count = panel.source_errors.len();
         let track = self.render_metric_track(&panel, cx);
         div()
@@ -1803,6 +2001,10 @@ impl ViewerApp {
             .border_color(theme.colors.border)
             .child(
                 div()
+                    .id(SharedString::from(format!(
+                        "metric-sidebar-row:{}",
+                        panel_id.as_str()
+                    )))
                     .debug_selector({
                         let panel_id = panel_id.clone();
                         move || format!("metric-sidebar-row:{}", panel_id.as_str())
@@ -1814,9 +2016,17 @@ impl ViewerApp {
                     .items_start()
                     .justify_between()
                     .p(theme.spacing.panel_padding)
-                    .bg(theme.colors.panel)
+                    .bg(if selected {
+                        theme.colors.element_active
+                    } else {
+                        theme.colors.panel
+                    })
                     .border_r_1()
                     .border_color(theme.colors.border)
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.show_metric_inspector(&select_id, cx);
+                    }))
                     .child(
                         div()
                             .flex()
@@ -1840,16 +2050,47 @@ impl ViewerApp {
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.remove_metric_panel(&remove_id, cx);
+                            cx.stop_propagation();
                         }))
                         .child(components::icon(IconName::Close, theme)),
                     ),
             )
             .child(
                 div()
+                    .id(SharedString::from(format!(
+                        "metric-track:{}",
+                        panel_id.as_str()
+                    )))
                     .debug_selector(move || format!("metric-track:{}", panel_id.as_str()))
                     .flex_1()
                     .h_full()
                     .overflow_hidden()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.begin_track_drag(drag_id.clone(), event, cx);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                        if event.dragging() {
+                            this.move_detail_drag(event, cx);
+                        }
+                    }))
+                    .on_click(cx.listener(move |this, event, _, cx| {
+                        this.finish_track_click(&finish_id, event, cx);
+                    }))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                            this.finish_moved_track_drag(cx);
+                        }),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                            this.finish_moved_track_drag(cx);
+                        }),
+                    )
                     .child(track),
             )
     }
@@ -1889,7 +2130,6 @@ impl ViewerApp {
         };
         let paint_adapter = Rc::clone(&adapter);
         let hit_panel = panel_id.clone();
-        let drag_panel = panel_id.clone();
         let zoom_panel = panel_id.clone();
         let leave_panel = panel_id.clone();
         div()
@@ -1918,22 +2158,10 @@ impl ViewerApp {
                         .size_full(),
                     )
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-                        if event.dragging() {
-                            this.move_detail_drag(event, cx);
-                        } else {
+                        if !event.dragging() {
                             this.update_track_hover(&hit_panel, event, cx);
                         }
                     }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                            this.begin_track_drag(drag_panel.clone(), event, cx);
-                        }),
-                    )
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_drag(cx)),
-                    )
                     .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
                         this.zoom_track(&zoom_panel, event, cx);
                     }))
@@ -2265,7 +2493,9 @@ impl ViewerApp {
             .detail_axis_at(range, event.position)
             .map(|_| DragGesture::Detail {
                 panel_id: MetricPanelId::from_string("legacy-detail"),
+                origin_x: f64::from(event.position.x),
                 last_x: f64::from(event.position.x),
+                moved: false,
             });
         self.hover = None;
         cx.notify();
@@ -2275,32 +2505,39 @@ impl ViewerApp {
         &mut self,
         panel_id: MetricPanelId,
         event: &MouseDownEvent,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) {
-        let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
-            return;
-        };
-        self.drag = self
-            .track_adapters
-            .get(&panel_id)
-            .and_then(|adapter| adapter.borrow().detail_axis_at(range, event.position))
-            .map(|_| DragGesture::Detail {
-                panel_id: panel_id.clone(),
-                last_x: f64::from(event.position.x),
-            });
+        self.drag = Some(DragGesture::Detail {
+            panel_id: panel_id.clone(),
+            origin_x: f64::from(event.position.x),
+            last_x: f64::from(event.position.x),
+            moved: false,
+        });
         self.track_hovers.remove(&panel_id);
-        cx.notify();
     }
 
     fn move_detail_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
         let Some(DragGesture::Detail {
             panel_id,
+            origin_x,
             mut last_x,
+            mut moved,
         }) = self.drag.clone()
         else {
             return;
         };
+        let current_x = f64::from(event.position.x);
+        if !moved && (current_x - origin_x).abs() < 3. {
+            return;
+        }
+        moved = true;
         let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
+            self.drag = Some(DragGesture::Detail {
+                panel_id,
+                origin_x,
+                last_x: current_x,
+                moved,
+            });
             return;
         };
         let adapter = if panel_id.as_str() == "legacy-detail" {
@@ -2308,23 +2545,63 @@ impl ViewerApp {
         } else {
             self.track_adapters.get(&panel_id).cloned()
         };
-        let Some(delta) = adapter.and_then(|adapter| {
+        let delta = adapter.and_then(|adapter| {
             adapter
                 .borrow()
                 .detail_pan_delta(range, last_x, event.position)
-        }) else {
-            return;
-        };
-        if let Some(brush) = self.core.brush_mut() {
+        });
+        if let Some(delta) = delta
+            && let Some(brush) = self.core.brush_mut()
+        {
             let _ = brush.pan_by(delta);
         }
-        last_x = f64::from(event.position.x);
-        self.drag = Some(DragGesture::Detail { panel_id, last_x });
+        last_x = current_x;
+        self.drag = Some(DragGesture::Detail {
+            panel_id,
+            origin_x,
+            last_x,
+            moved,
+        });
         cx.notify();
     }
 
+    fn finish_track_click(
+        &mut self,
+        panel_id: &MetricPanelId,
+        event: &gpui::ClickEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let is_click = match event {
+            gpui::ClickEvent::Mouse(event) => {
+                let delta = event.up.position - event.down.position;
+                f32::from(delta.x).abs() < 3. && f32::from(delta.y).abs() < 3.
+            }
+            gpui::ClickEvent::Keyboard(_) => true,
+        };
+        if is_click {
+            self.drag = None;
+            self.show_metric_inspector(panel_id, cx);
+        }
+    }
+
+    fn finish_moved_track_drag(&mut self, cx: &mut Context<Self>) {
+        if self
+            .drag
+            .as_ref()
+            .is_some_and(|gesture| matches!(gesture, DragGesture::Detail { moved: true, .. }))
+        {
+            self.drag.take();
+            self.request_detail(cx);
+            cx.notify();
+        }
+    }
+
     fn finish_drag(&mut self, cx: &mut Context<Self>) {
-        if self.drag.take().is_some() {
+        let should_refresh = self
+            .drag
+            .take()
+            .is_some_and(|gesture| !matches!(gesture, DragGesture::Detail { moved: false, .. }));
+        if should_refresh {
             self.request_detail(cx);
             cx.notify();
         }
@@ -3543,6 +3820,124 @@ mod tests {
                     })
                     .expect("viewer should remain open"),
                 ["metric-1".to_owned()]
+            );
+        }
+
+        #[gpui::test]
+        fn metric_click_opens_a_resizable_inspector_without_gesture_toggles(
+            cx: &mut TestAppContext,
+        ) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            assert!(cx.debug_bounds("bottom-inspector").is_none());
+
+            let metric_row = cx
+                .debug_bounds("metric-sidebar-row:loss")
+                .expect("Metric sidebar row should render");
+            cx.simulate_click(metric_row.center(), Modifiers::default());
+            assert!(cx.debug_bounds("bottom-inspector").is_some());
+
+            let ranking = cx
+                .debug_bounds("inspector-ranking")
+                .expect("Ranking inspector tab should render");
+            cx.simulate_click(ranking.center(), Modifiers::default());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.views.active().inspector_tab)
+                    .expect("viewer should remain open"),
+                InspectorTab::Ranking
+            );
+
+            let previous_height = window
+                .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.begin_inspector_resize(
+                        &MouseDownEvent {
+                            position: point(px(0.), px(300.)),
+                            modifiers: Modifiers::default(),
+                            button: MouseButton::Left,
+                            click_count: 1,
+                            first_mouse: false,
+                        },
+                        cx,
+                    );
+                    viewer.move_inspector_resize(
+                        &MouseMoveEvent {
+                            position: point(px(0.), px(340.)),
+                            modifiers: Modifiers::default(),
+                            pressed_button: Some(MouseButton::Left),
+                        },
+                        cx,
+                    );
+                    viewer.finish_inspector_resize(cx);
+                })
+                .expect("viewer should remain open");
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
+                    .expect("viewer should remain open")
+                    < previous_height
+            );
+
+            let panel_id = MetricPanelId::from_string("loss");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.bottom_inspector_visible = false;
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            let track = cx
+                .debug_bounds("metric-canvas:loss")
+                .expect("Metric chart canvas should render");
+            cx.simulate_mouse_down(track.center(), MouseButton::Left, Modifiers::default());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.drag.is_some())
+                    .expect("viewer should remain open")
+            );
+            cx.simulate_mouse_up(track.center(), MouseButton::Left, Modifiers::default());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.drag.is_none())
+                    .expect("viewer should remain open")
+            );
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.bottom_inspector_visible)
+                    .expect("viewer should remain open")
+            );
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.bottom_inspector_visible = false;
+                    viewer.drag = Some(DragGesture::Detail {
+                        panel_id: panel_id.clone(),
+                        origin_x: 100.,
+                        last_x: 120.,
+                        moved: true,
+                    });
+                    viewer.finish_moved_track_drag(cx);
+                    viewer.drag = Some(DragGesture::BrushWindow { last_axis: 10. });
+                    viewer.finish_drag(cx);
+                    viewer.zoom_from_keyboard(1.25, cx);
+                })
+                .expect("viewer should remain open");
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.bottom_inspector_visible)
+                    .expect("viewer should remain open")
             );
         }
 

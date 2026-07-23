@@ -17,6 +17,14 @@ pub enum TrackDensity {
     Spacious,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InspectorTab {
+    #[default]
+    Summary,
+    Ranking,
+    Evidence,
+}
+
 #[derive(Clone)]
 pub struct MetricPanel {
     pub panel_id: MetricPanelId,
@@ -72,6 +80,7 @@ pub struct AnalysisView {
     pub runs: Vec<RunRef>,
     pub panels: Vec<MetricPanel>,
     pub selected_panel_id: Option<MetricPanelId>,
+    pub inspector_tab: InspectorTab,
     pub track_density: TrackDensity,
     pub core: ViewerCore,
     pub local_error: Option<String>,
@@ -94,6 +103,7 @@ impl Default for AnalysisViews {
             runs: Vec::new(),
             panels: Vec::new(),
             selected_panel_id: None,
+            inspector_tab: InspectorTab::default(),
             track_density: TrackDensity::default(),
             core: ViewerCore::default(),
             local_error: None,
@@ -136,6 +146,7 @@ impl AnalysisViews {
             runs: Vec::new(),
             panels: Vec::new(),
             selected_panel_id: None,
+            inspector_tab: InspectorTab::default(),
             track_density: TrackDensity::default(),
             core: ViewerCore::default(),
             local_error: None,
@@ -156,6 +167,7 @@ impl AnalysisViews {
             runs: active.runs,
             panels: active.panels,
             selected_panel_id: active.selected_panel_id,
+            inspector_tab: active.inspector_tab,
             track_density: active.track_density,
             core: active.core,
             local_error: active.local_error,
@@ -259,6 +271,18 @@ impl AnalysisViews {
             .panels
             .iter_mut()
             .find(|panel| &panel.panel_id == panel_id)
+    }
+
+    pub fn select_active_panel(&mut self, panel_id: &MetricPanelId) -> bool {
+        if self.active_panel(panel_id).is_none() {
+            return false;
+        }
+        self.active_mut().selected_panel_id = Some(panel_id.clone());
+        true
+    }
+
+    pub fn set_active_inspector_tab(&mut self, tab: InspectorTab) {
+        self.active_mut().inspector_tab = tab;
     }
 
     pub fn begin_active_panel_read(
@@ -455,6 +479,26 @@ mod tests {
             views.active().core.axis(),
             pulseon_model::alignment::AlignmentAxis::Step
         );
+    }
+
+    #[test]
+    fn metric_selection_and_inspector_tab_are_isolated_per_view() {
+        let mut views = AnalysisViews::default();
+        let first_view = views.active().view_id.clone();
+        let loss = views.select_active_metric(MetricKey::from_string("loss"));
+        views.set_active_inspector_tab(InspectorTab::Evidence);
+
+        let second_view = views.create_empty();
+        let accuracy = views.select_active_metric(MetricKey::from_string("accuracy"));
+        views.set_active_inspector_tab(InspectorTab::Ranking);
+        assert!(views.select_active_panel(&accuracy));
+        assert!(views.activate(&first_view));
+
+        assert_eq!(views.active().selected_panel_id.as_ref(), Some(&loss));
+        assert_eq!(views.active().inspector_tab, InspectorTab::Evidence);
+        assert!(views.activate(&second_view));
+        assert_eq!(views.active().selected_panel_id.as_ref(), Some(&accuracy));
+        assert_eq!(views.active().inspector_tab, InspectorTab::Ranking);
     }
 
     #[test]

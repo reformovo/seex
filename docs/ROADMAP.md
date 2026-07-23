@@ -319,7 +319,7 @@ roadmap phase identifiers.
 
 ##### Bottom Inspector and Dock Visibility
 
-- [ ] Add a resizable Bottom inspector inside the Analysis workspace, spanning
+- [x] Add a resizable Bottom inspector inside the Analysis workspace, spanning
   the Metric sidebar and chart column but not the independent Project/Run
   sidebar. A click without a drag on a Metric row or chart track selects it and
   opens `Summary`, `Ranking`, and `Evidence`; pan/zoom/brush gestures never
