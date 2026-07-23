@@ -346,7 +346,7 @@ roadmap phase identifiers.
 
 ##### Validation Gates
 
-- [ ] Cover mixed DuckDB/SQLite sources, duplicate Project/Run identifiers,
+- [x] Cover mixed DuckDB/SQLite sources, duplicate Project/Run identifiers,
   partial source failure, cross-Project selection, View isolation, shared
   viewport synchronization, keyboard zoom, query coalescing, panel visibility,
   synchronized Metric tracks, click-versus-drag inspector behavior, exact

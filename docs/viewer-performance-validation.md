@@ -82,6 +82,29 @@ viewer-caused presentation spanning two refresh periods. At 280 Hz, two periods
 are approximately 7.14 ms. Record the trace conclusion here; do not commit the
 local trace bundle.
 
+## Automated Workbench Coverage
+
+The multi-project workbench contract is covered by direct behavioral tests:
+
+- `source_registry_reads_duckdb_and_sqlite_together`, composite-identity Core
+  tests, and `panel_requests_are_partitioned_by_source_with_full_run_references`
+  cover mixed backends and duplicate native identifiers;
+- `source_failures_do_not_erase_other_sources_drawable_series` and
+  `superseded_and_inactive_view_results_are_ignored` cover partial failure and
+  stale cross-source results;
+- `shared_timeline_unions_extents_from_multiple_sources`, Analysis View
+  lifecycle/isolation tests, and the keyboard zoom tests cover cross-Project
+  selection, shared viewport synchronization, and View isolation;
+- worker coalescing, visible-overscan scheduling, aligned Metric row/track, and
+  dock action tests cover query pressure, panel visibility, synchronized tracks,
+  and independent dock visibility;
+- `metric_click_opens_a_resizable_inspector_without_gesture_toggles`, exact
+  inspector assertions, and Project-scoped ranking tests cover click-versus-drag,
+  Summary/Ranking/Evidence, and explicit objective direction; and
+- workbench document round trips plus healthy, removed-Run, unknown-Metric,
+  duplicate-identity, unsupported-version, and missing-source recovery tests
+  cover persistence and unavailable-source reconciliation without native writes.
+
 ## Verification
 
 Passed:
