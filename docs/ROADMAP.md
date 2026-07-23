@@ -293,7 +293,7 @@ roadmap phase identifiers.
   activating, renaming, and closing Views. Place this bar inside the Analysis
   workspace so it never spans the independent Project/Run sidebar. Closing the
   last View creates a new empty View.
-- [ ] Give each View independent ordered Runs and metrics, alignment axis, grid
+- [ ] Give each View independent ordered Runs and metrics, alignment axis, track
   density, shared viewport, snapshots, pending generations, and errors. View
   switching must not share mutable selection or brush state implicitly.
 
@@ -306,15 +306,15 @@ roadmap phase identifiers.
 - [ ] Support handle resize, selected-window pan, wheel/pinch zoom,
   `Command-+`, `Command--`, and `Command-0`. Reproject cached evidence
   immediately, then use one View-level 100 ms trailing debounce before
-  requesting visible-panel detail.
+  requesting visible-track detail.
 - [ ] Render a Metric sidebar inside the Analysis workspace and one aligned
   detail chart track per selected metric. Synchronize row heights and vertical
   scrolling, keep horizontal navigation in the chart column, and preserve
   unavailable evidence, independent y ranges, hover, errors, ordering, and
   removal.
-- [ ] Derive each visible panel's storage budget from its own physical plot
+- [ ] Derive each visible track's storage budget from its own physical plot
   width and independently reduce every Run/metric series. Prepare visible
-  tracks plus one viewport of overscan; off-screen panels contribute extents
+  tracks plus one viewport of overscan; off-screen tracks contribute extents
   but do not issue detail queries or prepare GPUI paths.
 
 ##### Bottom Inspector and Dock Visibility

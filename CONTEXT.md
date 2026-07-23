@@ -17,7 +17,8 @@ A named analysis workspace with its own selected Runs, metric panels, alignment,
 and horizontal viewport.
 
 **Metric panel**:
-One chart of a metric key across the Runs selected in an Analysis View.
+One aligned chart track for a metric key across the Runs selected in an
+Analysis View.
 
 **Run**:
 One training execution with a user-supplied or generated run identifier.

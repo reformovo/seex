@@ -10,7 +10,7 @@ Evolve the single-source, single-metric viewer into a local analysis workbench t
 - retains multiple imported local data sources;
 - selects Runs across Projects and data sources;
 - supports multiple analysis Views in one window; and
-- renders one chart panel for every metric selected in the active View.
+- renders one aligned chart track for every metric selected in the active View.
 
 Preserve the native storage boundary, evidence semantics, public Python API,
 catalog and Parquet schemas, and renderer-independent chart model.
@@ -27,25 +27,38 @@ This draft proposes three additional terms:
   multiple Projects.
 - **Analysis View**: a named workspace tab containing a Run selection, metric
   panels, alignment settings, and presentation state.
-- **Metric panel**: one chart card for one metric key within an Analysis View.
+- **Metric panel**: one aligned chart track for one metric key within an
+  Analysis View.
 
 These definitions are recorded without implementation details in `CONTEXT.md`.
 
 ## Experience
 
 ```text
-+ Projects / Runs ------+ [Overview] [Training] [Ablation] [+] --------+
-| + Import Source       | Runs: 6 | Metrics: 4 | Step | Refresh        |
-|                       +-----------------------------------------------+
-| v Project A           | |<==== shared timeline brush ====>|          |
-|   [x] baseline        +----------------------+------------------------+
-|   [x] candidate       | train/loss           | train/lr               |
-|                       | detail chart         | detail chart           |
-|                       +----------------------+------------------------+
-| v Project B           | train/accuracy       | eval/loss              |
-|   [x] control         | detail chart         | detail chart           |
-|   [ ] candidate       |                       |                        |
-+-----------------------+-----------------------+------------------------+
++ Project / Run sidebar + Analysis View tabs / toolbar ----------------+
+| + Import Source       + Metric sidebar ----+ Shared timeline / brush |
+| v Project A           | train/loss         | loss chart track        |
+|   [x] baseline        | train/lr           | lr chart track          |
+|   [x] candidate       | eval/loss          | eval chart track        |
+| v Project B           +--------------------+-------------------------+
+|   [x] control         | Summary | Ranking | Evidence                 |
+|   [ ] candidate       | selected metric details                     |
++-----------------------+----------------------------------------------+
+```
+
+The Project/Run sidebar is an independent application-shell region. The View
+bar, Metric sidebar, chart tracks, and Bottom inspector are nested inside the
+Analysis workspace to its right:
+
+```text
+Application shell
+  Project/Run sidebar
+  Analysis workspace
+    View tab bar and toolbar
+    Track workspace
+      Metric sidebar
+      shared timeline and chart tracks
+    Bottom inspector
 ```
 
 ## Zed-Aligned UI Contract
@@ -82,11 +95,14 @@ Visual acceptance compares the shell, tabs, Project tree, toolbar, popovers,
 typography, spacing, interaction states, and theme hierarchy side by side with
 the pinned reference at representative window sizes and display scale factors.
 
-### Sidebar
+### Project and Run Sidebar
 
 - Show a searchable, collapsible Project tree following Zed project-panel row,
   disclosure, hover, selection, focus, and context-menu behavior. Flatten
   healthy sources while retaining source identity for errors and disambiguation.
+- Keep this sidebar independent of the Analysis workspace and full-height below
+  any native window title bar. Hiding it expands the complete Analysis
+  workspace rather than only the chart area.
 - Show Runs under each Project with selection, lifecycle status, and a compact
   secondary identifier. Checkboxes reflect the active View's selection.
 - Continue to allow at most 10 selected Runs per View.
@@ -95,50 +111,76 @@ the pinned reference at representative window sizes and display scale factors.
 - Keep unavailable sources visible with a reconnect/error treatment rather
   than silently removing their Projects and selections.
 
-### View Tabs and Toolbar
+### Analysis Workspace and View Bar
 
-- Use a compact tab strip with create, activate, rename, duplicate, close, and
-  overflow actions.
+- Place the View tab strip and toolbar at the top of the Analysis workspace
+  only; they do not extend across the independent Project/Run sidebar. Provide
+  create, activate, rename, duplicate, close, and overflow actions.
 - Each View owns its name, ordered Runs and metrics, alignment axis, panel
-  order, grid density, and chart viewport state.
+  order, track density, and chart viewport state.
 - A new View starts empty or duplicates the active View explicitly; Views must
   never share mutable selection state implicitly.
 - The active toolbar exposes metric selection, Step/Elapsed alignment,
-  Refresh, Reset View, grid density, and pending/error status.
+  Refresh, Reset View, track density, and pending/error status.
 - Closing the last View creates a fresh empty View.
+
+### Metric Sidebar and Chart Tracks
+
+- Place a second sidebar inside the Analysis workspace below the View bar. It
+  lists selected metrics and compact availability/status information.
+- Align every Metric sidebar row with exactly one chart track. The sidebar and
+  chart column share vertical scrolling and row heights; horizontal pan and
+  zoom affect only the chart column.
+- Selecting either a Metric row or its chart track selects the same Metric
+  panel. Reordering or removing a row must not invalidate unaffected tracks.
+- The metric picker shows the selected Runs' metric union. A Run without a
+  selected metric remains in that track's legend as unavailable evidence.
+- The Metric sidebar is resizable and may collapse to a compact presentation
+  without clearing the View's metric selection.
+- Only tracks in the active View and within one viewport of the visible scroll
+  region prepare GPUI geometry or request new detail data.
 
 ### Shared Timeline Brush
 
 - Render one sticky timeline brush below the active View toolbar, spanning the
-  full metric-grid width. Metric panels do not render individual brushes.
+  chart-track column rather than the Project or Metric sidebars. Metric tracks
+  do not render individual brushes.
 - The timeline is a navigation ruler with ticks and selection shading, not a
   synthetic aggregation of unrelated metric values.
 - Its home range is the union of valid overview extents for the active View's
   selected Runs and metrics. Empty panels do not collapse a valid shared range.
 - Dragging either handle resizes the shared viewport; dragging the selection
-  pans it. All visible panels reproject against the transient viewport together.
+  pans it. All visible tracks reproject against the transient viewport together.
 - `Command-+` zooms in, `Command--` zooms out, and `Command-0` resets to the
   home range. Zoom anchors at the pointer's axis position when it is over the
   timeline or a chart, otherwise at the viewport midpoint.
 - GPUI actions should expose persistent names such as `ZoomIn`, `ZoomOut`, and
   `ResetView`. Bind both `cmd-=` and `cmd-shift-=` for keyboard layouts that
   produce `+` through Shift, plus `cmd--` for zoom out.
-- The selected range may extend through visible panels as subtle vertical edge
+- The selected range may extend through visible tracks as subtle vertical edge
   guides, matching timeline tools without obscuring chart evidence.
 
-### Metric Grid
+### Bottom Inspector
 
-- Render one independently identifiable panel per selected metric in a
-  responsive, scrollable grid. Narrow windows fall back to one column without
-  shrinking charts below a usable interaction size.
-- Each panel keeps its title, evidence legend, detail chart, hover state,
-  pending indicator, and panel-level error. Overview evidence still contributes
-  to the shared home range but does not require a per-panel overview path.
-- Reordering or removing one panel must not invalidate unaffected panels.
-- The metric picker shows the selected Runs' metric union. A Run without a
-  selected metric remains in that panel's legend as unavailable evidence.
-- Only panels in the active View and within one viewport of the visible scroll
-  region prepare GPUI geometry or request new detail data.
+- Place a resizable Bottom inspector below the Track workspace and entirely
+  inside the Analysis workspace. It spans the Metric sidebar and chart column
+  but never extends under the independent Project/Run sidebar.
+- A click without a drag on a Metric row or chart track selects that Metric and
+  reveals the inspector. Chart pan, brush drag, wheel, and pinch gestures must
+  not reveal or toggle it accidentally.
+- Provide `Summary`, `Ranking`, and `Evidence` tabs. Preserve the selected
+  Metric and inspector tab when the inspector is hidden or a View is inactive.
+- `Summary` reports exact viewport-scoped count, minimum, maximum, mean, and
+  last value per Run. It must not derive statistics from reduced renderer
+  points.
+- `Ranking` requires an explicit minimize/maximize direction. It uses existing
+  ranking semantics within each Project; a cross-Project View shows grouped
+  Project rankings rather than inventing one global rank.
+- `Evidence` reports completeness, reasons, source row count, reduction state,
+  Run status, Project, and Data source identity.
+- Expose persistent actions such as `ToggleProjectSidebar`,
+  `ToggleMetricSidebar`, `ToggleBottomInspector`, and `ShowMetricInspector`.
+  Project sidebar and Bottom inspector visibility are independent.
 
 ## Stable Selection Identity
 
@@ -159,14 +201,17 @@ model crates retain their existing Project and Run types.
 Workbench
   imported data sources and source sessions
   ordered Analysis Views and active View identity
+  Project sidebar visibility and width
+  Bottom inspector visibility and height
 
 Analysis View
   ordered RunRefs and MetricPanels
   alignment, shared brush, pointer anchor, and presentation settings
+  selected Metric panel and inspector tab
 
 Metric panel
   overview/detail snapshots and hover state
-  generations, pending state, and renderer cache revision
+  detail/summary/ranking generations, pending state, and renderer cache revision
 ```
 
 Render callbacks consume immutable or plain local snapshots and must not
@@ -186,13 +231,16 @@ foreground before changing workbench or panel state.
 - Coalesce pending work per source and panel. Newer generations replace older
   overview or detail work that has not started.
 - Wheel/pinch and keyboard zoom update the shared viewport immediately. One
-  View-level trailing timer fans out detail work to visible panels only after
+  View-level trailing timer fans out detail work to visible tracks only after
   100 ms without another event, including held-key repeats.
 - Running native queries may finish, but stale results cannot replace current
   View or viewport state.
 - Inactive Views issue no viewport queries. Off-screen panels may contribute
   their overview extent to the shared home range, but suspend geometry
   preparation and detail refresh work.
+- Summary and Ranking use exact background storage queries, never reduced chart
+  points. Tag results with source, View, Metric panel, viewport, direction, and
+  generation so stale inspector results cannot replace current selection.
 
 Cross-source aggregation belongs to viewer coordination. Native connections
 must not cross worker threads or weaken the storage ownership boundary.
@@ -200,9 +248,10 @@ must not cross worker threads or weaken the storage ownership boundary.
 ## Persistence
 
 Import implies persistence across restarts. Viewer-owned application data may
-store source paths, View definitions, composite selections, presentation state,
-and safe preferences. It must not store metric points, query snapshots,
-credentials, connections, or renderer geometry.
+store source paths, View definitions, composite selections, selected Metric and
+inspector tab, dock visibility and dimensions, presentation state, and safe
+preferences. It must not store metric points, query snapshots, credentials,
+connections, or renderer geometry.
 
 Loading must tolerate unavailable sources, removed Projects or Runs, unknown
 metrics, and unsupported state versions without mutating source data. The exact
@@ -225,9 +274,10 @@ format, migration policy, and location remain open.
    retaining the current single-panel UI.
 2. Add retained data sources and the collapsible Project/Run sidebar.
 3. Add Analysis View tabs with independent in-memory Run selections.
-4. Split chart state into Metric panels and render the responsive metric grid.
-5. Add visible-panel scheduling, cross-source merging, and performance gates.
-6. Add versioned persistence and unavailable-source recovery.
+4. Split chart state into Metric panels and render aligned Metric/sidebar tracks.
+5. Add the exact Summary/Ranking/Evidence Bottom inspector and dock controls.
+6. Add visible-track scheduling, cross-source merging, and performance gates.
+7. Add versioned persistence and unavailable-source recovery.
 
 Each slice uses persistent product names. Roadmap phase identifiers must not
 enter source paths, modules, functions, tests, environment variables, or comments.
@@ -241,9 +291,15 @@ enter source paths, modules, functions, tests, environment variables, or comment
 - Switch between Views with different selections; each restores its own brush,
   snapshots, and pending generations.
 - Rapidly zoom with wheel, `Command-+`, or `Command--`; the shared viewport and
-  visible panels respond immediately while queries stay debounced and coalesced.
-- Scroll a large grid; off-screen panels stop preparing geometry and do not
-  initiate viewport refreshes.
+  visible tracks respond immediately while queries stay debounced and coalesced.
+- Scroll many tracks; Metric rows remain aligned while off-screen tracks stop
+  preparing geometry and do not initiate viewport refreshes.
+- Select a chart without dragging; the Bottom inspector opens with exact
+  Summary evidence. Pan the same chart; the inspector does not toggle.
+- Hide Project sidebar and Bottom inspector independently; the Analysis
+  workspace reflows and both regions restore their previous dimensions.
+- Rank a cross-Project selection; results remain grouped by Project and retain
+  the explicitly selected objective direction.
 - Remove or move one source; other sources remain usable and saved selections
   reconcile without modifying native data.
 - Restart; imported sources and View definitions return while query snapshots
