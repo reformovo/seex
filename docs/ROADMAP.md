@@ -307,7 +307,7 @@ roadmap phase identifiers.
   `Command-+`, `Command--`, and `Command-0`. Reproject cached evidence
   immediately, then use one View-level 100 ms trailing debounce before
   requesting visible-track detail.
-- [ ] Render a Metric sidebar inside the Analysis workspace and one aligned
+- [x] Render a Metric sidebar inside the Analysis workspace and one aligned
   detail chart track per selected metric. Synchronize row heights and vertical
   scrolling, keep horizontal navigation in the chart column, and preserve
   unavailable evidence, independent y ranges, hover, errors, ordering, and

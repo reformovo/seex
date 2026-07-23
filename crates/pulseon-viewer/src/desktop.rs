@@ -12,7 +12,7 @@ use gpui::{
     Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size, uniform_list,
 };
 use pulseon_chart_core::BrushState;
-use pulseon_model::alignment::AlignmentAxis;
+use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
 use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason};
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunStatus};
@@ -25,9 +25,8 @@ use pulseon_viewer::core::{
     ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore, run_matches_filter,
 };
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
-use pulseon_viewer::query::{CurveSelection, DetailRequest};
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
-use pulseon_viewer::workbench::AnalysisViews;
+use pulseon_viewer::workbench::{AnalysisViews, MetricPanel, TrackDensity};
 use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest};
 
 mod assets;
@@ -40,12 +39,17 @@ use components::{IconName, StatusTone};
 use renderer::{ChartAdapter, HoverPoint};
 use theme::ViewerTheme;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum DragGesture {
     BrushStart,
     BrushEnd,
-    BrushWindow { last_axis: f64 },
-    Detail { last_x: f64 },
+    BrushWindow {
+        last_axis: f64,
+    },
+    Detail {
+        panel_id: MetricPanelId,
+        last_x: f64,
+    },
 }
 
 fn update_brush_drag(brush: &mut BrushState, gesture: &mut DragGesture, axis: f64) {
@@ -195,6 +199,8 @@ struct ViewerApp {
     next_generation: u64,
     local_error: Option<String>,
     chart_adapter: Rc<RefCell<ChartAdapter>>,
+    track_adapters: HashMap<MetricPanelId, Rc<RefCell<ChartAdapter>>>,
+    track_hovers: HashMap<MetricPanelId, HoverPoint>,
     overview_revision: u64,
     detail_revision: u64,
     overview_width: u32,
@@ -229,6 +235,8 @@ impl ViewerApp {
             next_generation: 1,
             local_error: None,
             chart_adapter: Rc::new(RefCell::new(ChartAdapter::default())),
+            track_adapters: HashMap::new(),
+            track_hovers: HashMap::new(),
             overview_revision: 0,
             detail_revision: 0,
             overview_width: 1_000,
@@ -248,6 +256,8 @@ impl ViewerApp {
         self.core.reset_source(source_id);
         self.run_list = RunListCache::default();
         self.chart_adapter.borrow_mut().clear();
+        self.track_adapters.clear();
+        self.track_hovers.clear();
         self.hover = None;
         self.drag = None;
         self.zoom_task = None;
@@ -338,12 +348,20 @@ impl ViewerApp {
     fn apply_event(&mut self, event: ReadEvent, cx: &mut Context<Self>) {
         self.sources.apply_event(&event);
         let kind = event.kind;
-        let revision = event.generation.0;
-        if kind == ReadKind::Overview {
+        if matches!(kind, ReadKind::Overview | ReadKind::Detail) {
             if let PanelReadOutcome::Completed(completed) = self.panel_reads.apply(event) {
                 if completed.tag.view_id != self.views.active().view_id {
                     return;
                 }
+                let panel_id = completed.tag.panel_id.clone();
+                let metric_key = self
+                    .views
+                    .active_panel(&panel_id)
+                    .map(|panel| panel.metric_key.clone());
+                let extent = completed
+                    .curves
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.real_range);
                 if !completed.source_errors.is_empty() {
                     self.local_error = Some(
                         completed
@@ -354,17 +372,23 @@ impl ViewerApp {
                             .join("; "),
                     );
                 }
-                if let Some(snapshot) = completed.curves {
-                    self.overview_revision = completed.tag.generation.0;
-                    let extent = snapshot.real_range;
-                    self.core.install_overview(snapshot);
-                    if let Some(metric_key) = self.core.selection().metric_key.clone()
+                let accepted = self.views.complete_active_panel_read(
+                    &panel_id,
+                    kind,
+                    completed.tag.generation,
+                    completed.curves,
+                    completed.source_errors,
+                );
+                if accepted && kind == ReadKind::Overview {
+                    if let Some(metric_key) = metric_key
                         && let Some(home) =
                             self.views.record_active_metric_extent(metric_key, extent)
                     {
                         self.core.set_timeline_home(home);
                     }
-                    self.request_detail(cx);
+                    if let Some(viewport) = self.core.selected_viewport() {
+                        self.request_panel_detail(&panel_id, viewport, cx);
+                    }
                 }
             }
             return;
@@ -377,39 +401,47 @@ impl ViewerApp {
             self.run_list.rebuild(self.core.catalog(), &self.run_filter);
         }
         match kind {
-            ReadKind::Catalog if self.curve_selection().is_some() => self.request_overview(cx),
-            ReadKind::Overview => {}
-            ReadKind::Detail => self.detail_revision = revision,
+            ReadKind::Catalog
+                if !self.views.active().runs.is_empty()
+                    && !self.views.active().panels.is_empty() =>
+            {
+                self.request_overview(cx)
+            }
+            ReadKind::Overview | ReadKind::Detail => {}
             ReadKind::Catalog => {}
         }
     }
 
-    fn curve_selection(&self) -> Option<CurveSelection> {
-        let selection = self.core.selection();
-        if selection.runs.is_empty() {
-            return None;
+    fn request_overview(&mut self, cx: &mut Context<Self>) {
+        let panel_ids = self
+            .views
+            .active()
+            .panels
+            .iter()
+            .map(|panel| panel.panel_id.clone())
+            .collect::<Vec<_>>();
+        for panel_id in panel_ids {
+            self.request_panel_overview(&panel_id, cx);
         }
-        Some(CurveSelection {
-            source_id: selection.source_id.clone()?,
-            runs: selection.runs.clone(),
-            metric_key: selection.metric_key.clone()?,
-            axis: self.core.axis(),
-        })
     }
 
-    fn request_overview(&mut self, cx: &mut Context<Self>) {
+    fn request_panel_overview(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
         let runs = self.views.active().runs.clone();
+        let Some(metric_key) = self
+            .views
+            .active_panel(panel_id)
+            .map(|panel| panel.metric_key.clone())
+        else {
+            return;
+        };
         if runs.is_empty() {
             return;
         }
-        let Some(metric_key) = self.core.selection().metric_key.clone() else {
-            return;
-        };
         let generation = Generation(self.next_generation);
         self.next_generation = self.next_generation.saturating_add(1);
         let tag = PanelReadTag {
             view_id: self.views.active().view_id.clone(),
-            panel_id: MetricPanelId::from_string(metric_key.as_str()),
+            panel_id: panel_id.clone(),
             generation,
         };
         let planned = match self.panel_reads.begin(
@@ -427,26 +459,74 @@ impl ViewerApp {
                 return;
             }
         };
+        self.views
+            .begin_active_panel_read(panel_id, ReadKind::Overview, generation);
         for read in planned {
             self.submit_source_generation(read.source_id, read.generation, read.request, false, cx);
         }
     }
 
     fn request_detail(&mut self, cx: &mut Context<Self>) {
-        let Some(selection) = self.curve_selection() else {
-            return;
-        };
         let Some(viewport) = self.core.selected_viewport() else {
             return;
         };
-        self.submit(
-            ReadRequest::Detail(DetailRequest {
-                selection,
+        let panel_ids = self
+            .views
+            .active()
+            .panels
+            .iter()
+            .map(|panel| panel.panel_id.clone())
+            .collect::<Vec<_>>();
+        for panel_id in panel_ids {
+            self.request_panel_detail(&panel_id, viewport, cx);
+        }
+    }
+
+    fn request_panel_detail(
+        &mut self,
+        panel_id: &MetricPanelId,
+        viewport: AlignmentViewport,
+        cx: &mut Context<Self>,
+    ) {
+        let runs = self.views.active().runs.clone();
+        let Some(metric_key) = self
+            .views
+            .active_panel(panel_id)
+            .map(|panel| panel.metric_key.clone())
+        else {
+            return;
+        };
+        if runs.is_empty() {
+            return;
+        }
+        let generation = Generation(self.next_generation);
+        self.next_generation = self.next_generation.saturating_add(1);
+        let tag = PanelReadTag {
+            view_id: self.views.active().view_id.clone(),
+            panel_id: panel_id.clone(),
+            generation,
+        };
+        let planned = match self.panel_reads.begin(
+            tag,
+            PanelReadRequest::Detail {
+                runs,
+                metric_key,
+                axis: self.core.axis(),
                 viewport,
                 physical_width: self.detail_width,
-            }),
-            cx,
-        );
+            },
+        ) {
+            Ok(planned) => planned,
+            Err(error) => {
+                self.local_error = Some(error.to_string());
+                return;
+            }
+        };
+        self.views
+            .begin_active_panel_read(panel_id, ReadKind::Detail, generation);
+        for read in planned {
+            self.submit_source_generation(read.source_id, read.generation, read.request, false, cx);
+        }
     }
 
     fn open_picker(&mut self, cx: &mut Context<Self>) {
@@ -586,6 +666,8 @@ impl ViewerApp {
             .map(|source| source.root_path.clone());
         self.run_list.rebuild(self.core.catalog(), &self.run_filter);
         self.chart_adapter.borrow_mut().clear();
+        self.track_adapters.clear();
+        self.track_hovers.clear();
         self.hover = None;
         self.drag = None;
         self.zoom_task = None;
@@ -809,10 +891,44 @@ impl ViewerApp {
     }
 
     fn select_metric(&mut self, metric_key: MetricKey, cx: &mut Context<Self>) {
-        self.views.select_active_metric(metric_key.clone());
+        let panel_id = self.views.select_active_metric(metric_key.clone());
         self.core.select_metric(Some(metric_key));
-        self.request_overview(cx);
+        self.request_panel_overview(&panel_id, cx);
         cx.notify();
+    }
+
+    fn remove_metric_panel(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
+        if self.views.remove_active_panel(panel_id) {
+            self.track_adapters.remove(panel_id);
+            self.track_hovers.remove(panel_id);
+            let selected_metric = self
+                .views
+                .active()
+                .selected_panel_id
+                .as_ref()
+                .and_then(|selected| self.views.active_panel(selected))
+                .map(|panel| panel.metric_key.clone());
+            self.core.select_metric(selected_metric);
+            if let Some(home) = self
+                .views
+                .active()
+                .timeline_extents
+                .values()
+                .copied()
+                .reduce(|left, right| {
+                    AlignmentViewport::new(
+                        left.start().min(right.start()),
+                        left.end().max(right.end()),
+                    )
+                    .expect("valid panel extents must have a valid union")
+                })
+            {
+                self.core.set_timeline_home(home);
+            } else {
+                self.core.clear_timeline();
+            }
+            cx.notify();
+        }
     }
 
     fn on_filter_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -1175,6 +1291,9 @@ impl ViewerApp {
     }
 
     fn render_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        if !self.views.active().panels.is_empty() {
+            return self.render_metric_workspace(cx);
+        }
         let theme = self.theme;
         let catalog = self
             .core
@@ -1410,6 +1529,260 @@ impl ViewerApp {
                     }),
             )
             .child(div().flex_1().h_full().overflow_hidden().child(main))
+    }
+
+    fn render_metric_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = self.theme;
+        let panels = self.views.active().panels.clone();
+        let selected = panels
+            .iter()
+            .map(|panel| panel.metric_key.clone())
+            .collect::<HashSet<_>>();
+        let available = self
+            .core
+            .catalog()
+            .map(|catalog| catalog.metric_keys.clone())
+            .unwrap_or_default();
+        let row_height = match self.views.active().track_density {
+            TrackDensity::Compact => px(180.),
+            TrackDensity::Comfortable => px(240.),
+            TrackDensity::Spacious => px(320.),
+        };
+        let timeline = self.render_overview(cx);
+        let rows = panels
+            .into_iter()
+            .map(|panel| self.render_metric_row(panel, row_height, cx))
+            .collect::<Vec<_>>();
+
+        div()
+            .flex_1()
+            .h_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(theme.colors.border)
+                    .child(
+                        div()
+                            .w(theme.spacing.sidebar_width)
+                            .flex_shrink_0()
+                            .p(theme.spacing.panel_padding)
+                            .bg(theme.colors.panel)
+                            .border_r_1()
+                            .border_color(theme.colors.border)
+                            .child(section_label("Metrics", theme))
+                            .children(
+                                available
+                                    .into_iter()
+                                    .filter(|metric| !selected.contains(metric))
+                                    .map(|metric| {
+                                        let action_metric = metric.clone();
+                                        components::toolbar_button(
+                                            SharedString::from(format!(
+                                                "add-metric:{}",
+                                                metric.as_str()
+                                            )),
+                                            theme,
+                                            false,
+                                            false,
+                                        )
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.select_metric(action_metric.clone(), cx);
+                                        }))
+                                        .child(format!("+ {}", metric.as_str()))
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .px(theme.spacing.content_padding)
+                            .child(timeline),
+                    ),
+            )
+            .child(
+                div()
+                    .id("metric-track-scroll")
+                    .debug_selector(|| "metric-track-scroll".to_owned())
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .children(rows),
+            )
+    }
+
+    fn render_metric_row(
+        &mut self,
+        panel: MetricPanel,
+        row_height: gpui::Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let theme = self.theme;
+        let panel_id = panel.panel_id.clone();
+        let remove_id = panel_id.clone();
+        let error_count = panel.source_errors.len();
+        let track = self.render_metric_track(&panel, cx);
+        div()
+            .flex()
+            .h(row_height)
+            .min_h(row_height)
+            .border_b_1()
+            .border_color(theme.colors.border)
+            .child(
+                div()
+                    .debug_selector({
+                        let panel_id = panel_id.clone();
+                        move || format!("metric-sidebar-row:{}", panel_id.as_str())
+                    })
+                    .w(theme.spacing.sidebar_width)
+                    .h_full()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .p(theme.spacing.panel_padding)
+                    .bg(theme.colors.panel)
+                    .border_r_1()
+                    .border_color(theme.colors.border)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(panel.metric_key.as_str().to_owned())
+                            .children((error_count > 0).then(|| {
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.colors.error_text)
+                                    .child(format!("{error_count} source error(s)"))
+                            })),
+                    )
+                    .child(
+                        components::icon_button(
+                            SharedString::from(format!("remove-metric:{}", panel_id.as_str())),
+                            theme,
+                            false,
+                            false,
+                        )
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.remove_metric_panel(&remove_id, cx);
+                        }))
+                        .child(components::icon(IconName::Close, theme)),
+                    ),
+            )
+            .child(
+                div()
+                    .debug_selector(move || format!("metric-track:{}", panel_id.as_str()))
+                    .flex_1()
+                    .h_full()
+                    .overflow_hidden()
+                    .child(track),
+            )
+    }
+
+    fn render_metric_track(&mut self, panel: &MetricPanel, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = self.theme;
+        let panel_id = panel.panel_id.clone();
+        let adapter = Rc::clone(
+            self.track_adapters
+                .entry(panel_id.clone())
+                .or_insert_with(|| Rc::new(RefCell::new(ChartAdapter::default()))),
+        );
+        let Some(snapshot) = panel.detail.clone() else {
+            let message = if panel.is_pending(ReadKind::Detail) {
+                "Loading viewport…"
+            } else if panel.overview.is_some() {
+                "No drawable evidence is available for this metric."
+            } else {
+                "Loading metric extent…"
+            };
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(theme.colors.text_muted)
+                .child(message);
+        };
+        let selected = self.core.brush().map(|brush| brush.selected());
+        let Some(viewport) = renderer::detail_viewport(&snapshot, selected) else {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child("No drawable evidence is available in this viewport.");
+        };
+        let paint_adapter = Rc::clone(&adapter);
+        let hit_panel = panel_id.clone();
+        let drag_panel = panel_id.clone();
+        let zoom_panel = panel_id.clone();
+        let leave_panel = panel_id.clone();
+        div()
+            .relative()
+            .size_full()
+            .p(theme.spacing.content_padding)
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "metric-canvas:{}",
+                        panel_id.as_str()
+                    )))
+                    .debug_selector({
+                        let panel_id = panel_id.clone();
+                        move || format!("metric-canvas:{}", panel_id.as_str())
+                    })
+                    .size_full()
+                    .cursor_crosshair()
+                    .child(
+                        renderer::detail_canvas(
+                            paint_adapter,
+                            snapshot,
+                            panel.detail_revision,
+                            viewport,
+                        )
+                        .size_full(),
+                    )
+                    .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
+                        if event.dragging() {
+                            this.move_detail_drag(event, cx);
+                        } else {
+                            this.update_track_hover(&hit_panel, event, cx);
+                        }
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.begin_track_drag(drag_panel.clone(), event, cx);
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_drag(cx)),
+                    )
+                    .on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
+                        this.zoom_track(&zoom_panel, event, cx);
+                    }))
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        if !hovered {
+                            this.track_hovers.remove(&leave_panel);
+                            cx.notify();
+                        }
+                    })),
+            )
+            .children(self.track_hovers.get(&panel_id).map(|hover| {
+                components::tooltip(theme)
+                    .absolute()
+                    .top_2()
+                    .left_2()
+                    .child(format!("{} · {}", hover.run_name, hover.metric_key))
+                    .child(hover_value_line(self.core.axis(), hover))
+            }))
     }
 
     fn render_detail(&mut self, cx: &mut Context<Self>) -> gpui::Div {
@@ -1693,7 +2066,7 @@ impl ViewerApp {
     }
 
     fn move_brush_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let Some(mut gesture) = self.drag else {
+        let Some(mut gesture) = self.drag.clone() else {
             return;
         };
         let Some(brush) = self.core.brush() else {
@@ -1722,31 +2095,62 @@ impl ViewerApp {
             .borrow()
             .detail_axis_at(range, event.position)
             .map(|_| DragGesture::Detail {
+                panel_id: MetricPanelId::from_string("legacy-detail"),
                 last_x: f64::from(event.position.x),
             });
         self.hover = None;
         cx.notify();
     }
 
+    fn begin_track_drag(
+        &mut self,
+        panel_id: MetricPanelId,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
+            return;
+        };
+        self.drag = self
+            .track_adapters
+            .get(&panel_id)
+            .and_then(|adapter| adapter.borrow().detail_axis_at(range, event.position))
+            .map(|_| DragGesture::Detail {
+                panel_id: panel_id.clone(),
+                last_x: f64::from(event.position.x),
+            });
+        self.track_hovers.remove(&panel_id);
+        cx.notify();
+    }
+
     fn move_detail_drag(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let Some(DragGesture::Detail { mut last_x }) = self.drag else {
+        let Some(DragGesture::Detail {
+            panel_id,
+            mut last_x,
+        }) = self.drag.clone()
+        else {
             return;
         };
         let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
             return;
         };
-        let Some(delta) =
-            self.chart_adapter
+        let adapter = if panel_id.as_str() == "legacy-detail" {
+            Some(Rc::clone(&self.chart_adapter))
+        } else {
+            self.track_adapters.get(&panel_id).cloned()
+        };
+        let Some(delta) = adapter.and_then(|adapter| {
+            adapter
                 .borrow()
                 .detail_pan_delta(range, last_x, event.position)
-        else {
+        }) else {
             return;
         };
         if let Some(brush) = self.core.brush_mut() {
             let _ = brush.pan_by(delta);
         }
         last_x = f64::from(event.position.x);
-        self.drag = Some(DragGesture::Detail { last_x });
+        self.drag = Some(DragGesture::Detail { panel_id, last_x });
         cx.notify();
     }
 
@@ -1779,6 +2183,66 @@ impl ViewerApp {
         }
         self.schedule_detail_refresh(cx);
         cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn zoom_track(
+        &mut self,
+        panel_id: &MetricPanelId,
+        event: &ScrollWheelEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
+            return;
+        };
+        let Some(anchor) = self
+            .track_adapters
+            .get(panel_id)
+            .and_then(|adapter| adapter.borrow().detail_axis_at(range, event.position))
+        else {
+            return;
+        };
+        let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+        let factor = f64::from((-delta / 240.).exp().clamp(0.5, 2.));
+        if self
+            .core
+            .brush_mut()
+            .is_none_or(|brush| brush.zoom_at(anchor, factor).is_err())
+        {
+            return;
+        }
+        self.schedule_detail_refresh(cx);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn update_track_hover(
+        &mut self,
+        panel_id: &MetricPanelId,
+        event: &MouseMoveEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.views.active_panel(panel_id) else {
+            return;
+        };
+        let Some(snapshot) = panel.detail.as_ref() else {
+            return;
+        };
+        let Some(viewport) =
+            renderer::detail_viewport(snapshot, self.core.brush().map(|brush| brush.selected()))
+        else {
+            return;
+        };
+        let hover = self.track_adapters.get(panel_id).and_then(|adapter| {
+            adapter
+                .borrow()
+                .hit_test(snapshot, viewport, event.position)
+        });
+        if let Some(hover) = hover {
+            self.track_hovers.insert(panel_id.clone(), hover);
+        } else {
+            self.track_hovers.remove(panel_id);
+        }
         cx.notify();
     }
 
@@ -2350,7 +2814,7 @@ mod tests {
             cx: &VisualTestContext,
             condition: impl Fn(&ViewerApp) -> bool,
         ) {
-            for _ in 0..200 {
+            for _ in 0..1_000 {
                 cx.run_until_parked();
                 let ready = window
                     .read_with(cx, |viewer, _| condition(viewer))
@@ -2725,8 +3189,11 @@ mod tests {
                 .expect("viewer should remain open");
             wait_for_viewer(window, &cx, |viewer| {
                 viewer
-                    .core
-                    .overview()
+                    .views
+                    .active()
+                    .panels
+                    .first()
+                    .and_then(|panel| panel.overview.as_deref())
                     .is_some_and(|snapshot| snapshot.series.len() == 2)
             });
 
@@ -2765,6 +3232,124 @@ mod tests {
         }
 
         #[gpui::test]
+        fn metric_sidebar_rows_align_with_independent_chart_tracks(cx: &mut TestAppContext) {
+            let (root, project_id, first_run_id) = fixture_with_runs(2, 2);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 2);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let source_id = viewer
+                        .core
+                        .selection()
+                        .source_id
+                        .clone()
+                        .expect("fixture source should be selected");
+                    viewer.toggle_run(
+                        RunRef::new(
+                            source_id,
+                            project_id,
+                            RunId::from_string(
+                                "run-1-with-a-very-long-identifier-that-requires-horizontal-scrolling",
+                            ),
+                        ),
+                        cx,
+                    );
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .core
+                    .catalog()
+                    .is_some_and(|catalog| catalog.metric_keys.len() == 2)
+            });
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                    viewer.select_metric(MetricKey::from_string("metric-1"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels.len() == 2
+                    && viewer
+                        .views
+                        .active()
+                        .panels
+                        .iter()
+                        .all(|panel| panel.detail.is_some())
+            });
+
+            for metric in ["metric-0", "metric-1"] {
+                let sidebar = cx
+                    .debug_bounds(if metric == "metric-0" {
+                        "metric-sidebar-row:metric-0"
+                    } else {
+                        "metric-sidebar-row:metric-1"
+                    })
+                    .expect("Metric sidebar row should render");
+                let track = cx
+                    .debug_bounds(if metric == "metric-0" {
+                        "metric-track:metric-0"
+                    } else {
+                        "metric-track:metric-1"
+                    })
+                    .expect("Metric track should render");
+                assert_eq!(sidebar.origin.y, track.origin.y);
+                assert_eq!(sidebar.size.height, track.size.height);
+            }
+            let (ranges, unavailable) = window
+                .read_with(&cx, |viewer, _| {
+                    let selected = viewer.core.brush().map(|brush| brush.selected());
+                    let ranges = viewer
+                        .views
+                        .active()
+                        .panels
+                        .iter()
+                        .map(|panel| {
+                            renderer::detail_viewport(
+                                panel.detail.as_deref().expect("detail should be loaded"),
+                                selected,
+                            )
+                            .expect("detail should be drawable")
+                            .y
+                        })
+                        .collect::<Vec<_>>();
+                    let unavailable = viewer.views.active().panels.iter().all(|panel| {
+                        panel.detail.as_ref().is_some_and(|snapshot| {
+                            snapshot.series.iter().any(|series| {
+                                series.evidence.completeness == EvidenceCompleteness::Unavailable
+                            })
+                        })
+                    });
+                    (ranges, unavailable)
+                })
+                .expect("viewer should remain open");
+            assert_ne!(ranges[0], ranges[1]);
+            assert!(unavailable);
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.remove_metric_panel(&MetricPanelId::from_string("metric-0"), cx);
+                })
+                .expect("viewer should remain open");
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| {
+                        viewer
+                            .views
+                            .active()
+                            .panels
+                            .iter()
+                            .map(|panel| panel.metric_key.as_str().to_owned())
+                            .collect::<Vec<_>>()
+                    })
+                    .expect("viewer should remain open"),
+                ["metric-1".to_owned()]
+            );
+        }
+
+        #[gpui::test]
         fn zoom_debounce_commits_only_the_latest_wheel_event(cx: &mut TestAppContext) {
             let (root, project_id, run_id) = fixture(1);
             cx.executor().allow_parking();
@@ -2776,15 +3361,27 @@ mod tests {
                     viewer.select_metric(MetricKey::from_string("metric-0"), cx);
                 })
                 .expect("viewer should remain open");
-            wait_for_viewer(window, &cx, |viewer| viewer.core.detail().is_some());
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .views
+                    .active()
+                    .panels
+                    .first()
+                    .is_some_and(|panel| panel.detail.is_some())
+            });
             let chart = cx
-                .debug_bounds("detail-chart")
+                .debug_bounds("metric-canvas:metric-0")
                 .expect("detail chart should be rendered");
             window
                 .update(&mut cx, |_, _, cx| cx.notify())
                 .expect("viewer should remain open");
             wait_for_viewer(window, &cx, |viewer| {
-                !viewer.core.is_pending(ReadKind::Detail)
+                viewer
+                    .views
+                    .active()
+                    .panels
+                    .first()
+                    .is_some_and(|panel| !panel.is_pending(ReadKind::Detail))
             });
             let before = window
                 .read_with(&cx, |viewer, _| viewer.next_generation)
@@ -2821,12 +3418,24 @@ mod tests {
                     viewer.select_metric(MetricKey::from_string("loss"), cx);
                 })
                 .expect("viewer should remain open");
-            wait_for_viewer(window, &cx, |viewer| viewer.core.detail().is_some());
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .views
+                    .active()
+                    .panels
+                    .first()
+                    .is_some_and(|panel| panel.detail.is_some())
+            });
             window
                 .update(&mut cx, |_, _, cx| cx.notify())
                 .expect("viewer should remain open");
             wait_for_viewer(window, &cx, |viewer| {
-                !viewer.core.is_pending(ReadKind::Detail)
+                viewer
+                    .views
+                    .active()
+                    .panels
+                    .first()
+                    .is_some_and(|panel| !panel.is_pending(ReadKind::Detail))
             });
             let (before_generation, before_span) = window
                 .read_with(&cx, |viewer, _| {

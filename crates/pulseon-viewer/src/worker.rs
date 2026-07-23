@@ -350,30 +350,54 @@ impl Drop for ReadWorker {
 #[derive(Default)]
 struct PendingRequests {
     discover: Option<TaggedRequest>,
-    overview: Option<TaggedRequest>,
-    detail: Option<TaggedRequest>,
+    overview: Vec<TaggedRequest>,
+    detail: Vec<TaggedRequest>,
 }
 
 impl PendingRequests {
     fn push(&mut self, tagged: TaggedRequest) {
-        let slot = match &tagged.request {
-            ReadRequest::Discover(_) => &mut self.discover,
-            ReadRequest::Overview(_) => &mut self.overview,
-            ReadRequest::Detail(_) => &mut self.detail,
-        };
-        if slot
-            .as_ref()
-            .is_none_or(|pending| tagged.generation >= pending.generation)
-        {
-            *slot = Some(tagged);
+        match &tagged.request {
+            ReadRequest::Discover(_) => {
+                if self
+                    .discover
+                    .as_ref()
+                    .is_none_or(|pending| tagged.generation >= pending.generation)
+                {
+                    self.discover = Some(tagged);
+                }
+            }
+            ReadRequest::Overview(_) => push_curve_request(&mut self.overview, tagged),
+            ReadRequest::Detail(_) => push_curve_request(&mut self.detail, tagged),
         }
     }
 
     fn take_next(&mut self) -> Option<TaggedRequest> {
         self.discover
             .take()
-            .or_else(|| self.overview.take())
-            .or_else(|| self.detail.take())
+            .or_else(|| (!self.overview.is_empty()).then(|| self.overview.remove(0)))
+            .or_else(|| (!self.detail.is_empty()).then(|| self.detail.remove(0)))
+    }
+}
+
+fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) {
+    let metric_key = match &tagged.request {
+        ReadRequest::Overview(request) => &request.selection.metric_key,
+        ReadRequest::Detail(request) => &request.selection.metric_key,
+        ReadRequest::Discover(_) => return,
+    };
+    if let Some(index) = pending.iter().position(|candidate| {
+        candidate.source_id == tagged.source_id
+            && match &candidate.request {
+                ReadRequest::Overview(request) => &request.selection.metric_key == metric_key,
+                ReadRequest::Detail(request) => &request.selection.metric_key == metric_key,
+                ReadRequest::Discover(_) => false,
+            }
+    }) {
+        if tagged.generation >= pending[index].generation {
+            pending[index] = tagged;
+        }
+    } else {
+        pending.push(tagged);
     }
 }
 
@@ -432,7 +456,24 @@ fn execute(
 
 #[cfg(test)]
 mod tests {
+    use pulseon_model::alignment::AlignmentAxis;
+    use pulseon_model::metric::MetricKey;
+
+    use crate::query::CurveSelection;
+
     use super::*;
+
+    fn overview_request(metric: &str) -> ReadRequest {
+        ReadRequest::Overview(OverviewRequest {
+            selection: CurveSelection {
+                source_id: DataSourceId::from_string("source"),
+                runs: Vec::new(),
+                metric_key: MetricKey::from_string(metric),
+                axis: AlignmentAxis::Step,
+            },
+            physical_width: 1_000,
+        })
+    }
 
     #[test]
     fn dropping_worker_does_not_wait_for_running_thread() {
@@ -479,6 +520,27 @@ mod tests {
         assert_eq!(
             pending.take_next().map(|request| request.generation),
             Some(Generation(2))
+        );
+    }
+
+    #[test]
+    fn pending_curve_requests_coalesce_per_metric_panel() {
+        let mut pending = PendingRequests::default();
+        for (generation, metric) in [(1, "loss"), (2, "accuracy"), (3, "loss")] {
+            pending.push(TaggedRequest {
+                source_id: DataSourceId::from_string("source"),
+                generation: Generation(generation),
+                request: overview_request(metric),
+            });
+        }
+
+        assert_eq!(
+            [pending.take_next(), pending.take_next()].map(|request| {
+                request
+                    .expect("both metric panels should retain pending work")
+                    .generation
+            }),
+            [Generation(3), Generation(2)]
         );
     }
 

@@ -1,10 +1,13 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use pulseon_model::alignment::AlignmentViewport;
 use pulseon_model::metric::MetricKey;
 
-use crate::coordination::AnalysisViewId;
+use crate::coordination::{AnalysisViewId, MetricPanelId, SourceReadFailure};
 use crate::core::{DataSourceId, RunRef, SelectionError, ViewerCore, toggle_run_selection};
+use crate::query::CurveSnapshot;
+use crate::worker::{Generation, ReadKind};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TrackDensity {
@@ -15,11 +18,49 @@ pub enum TrackDensity {
 }
 
 #[derive(Clone)]
+pub struct MetricPanel {
+    pub panel_id: MetricPanelId,
+    pub metric_key: MetricKey,
+    pub overview: Option<Arc<CurveSnapshot>>,
+    pub detail: Option<Arc<CurveSnapshot>>,
+    pub source_errors: Vec<SourceReadFailure>,
+    pub overview_generation: Option<Generation>,
+    pub detail_generation: Option<Generation>,
+    pub overview_revision: u64,
+    pub detail_revision: u64,
+}
+
+impl MetricPanel {
+    fn new(metric_key: MetricKey) -> Self {
+        Self {
+            panel_id: MetricPanelId::from_string(metric_key.as_str()),
+            metric_key,
+            overview: None,
+            detail: None,
+            source_errors: Vec::new(),
+            overview_generation: None,
+            detail_generation: None,
+            overview_revision: 0,
+            detail_revision: 0,
+        }
+    }
+
+    pub fn is_pending(&self, kind: ReadKind) -> bool {
+        match kind {
+            ReadKind::Overview => self.overview_generation.is_some(),
+            ReadKind::Detail => self.detail_generation.is_some(),
+            ReadKind::Catalog => false,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct AnalysisView {
     pub view_id: AnalysisViewId,
     pub name: String,
     pub runs: Vec<RunRef>,
-    pub metrics: Vec<MetricKey>,
+    pub panels: Vec<MetricPanel>,
+    pub selected_panel_id: Option<MetricPanelId>,
     pub track_density: TrackDensity,
     pub core: ViewerCore,
     pub local_error: Option<String>,
@@ -40,7 +81,8 @@ impl Default for AnalysisViews {
             view_id: AnalysisViewId::from_string("view-1"),
             name: "View 1".to_owned(),
             runs: Vec::new(),
-            metrics: Vec::new(),
+            panels: Vec::new(),
+            selected_panel_id: None,
             track_density: TrackDensity::default(),
             core: ViewerCore::default(),
             local_error: None,
@@ -81,7 +123,8 @@ impl AnalysisViews {
             view_id: view_id.clone(),
             name: format!("View {}", self.views.len() + 1),
             runs: Vec::new(),
-            metrics: Vec::new(),
+            panels: Vec::new(),
+            selected_panel_id: None,
             track_density: TrackDensity::default(),
             core: ViewerCore::default(),
             local_error: None,
@@ -100,7 +143,8 @@ impl AnalysisViews {
             view_id: view_id.clone(),
             name: format!("{} Copy", active.name),
             runs: active.runs,
-            metrics: active.metrics,
+            panels: active.panels,
+            selected_panel_id: active.selected_panel_id,
             track_density: active.track_density,
             core: active.core,
             local_error: active.local_error,
@@ -150,14 +194,113 @@ impl AnalysisViews {
 
     pub fn toggle_active_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
         let selected = toggle_run_selection(&mut self.active_mut().runs, run)?;
-        self.active_mut().timeline_extents.clear();
+        self.invalidate_active_panels();
         Ok(selected)
     }
 
-    pub fn select_active_metric(&mut self, metric_key: MetricKey) {
-        if !self.active().metrics.contains(&metric_key) {
-            self.active_mut().metrics.push(metric_key);
+    pub fn select_active_metric(&mut self, metric_key: MetricKey) -> MetricPanelId {
+        if let Some(panel) = self
+            .active()
+            .panels
+            .iter()
+            .find(|panel| panel.metric_key == metric_key)
+        {
+            let panel_id = panel.panel_id.clone();
+            self.active_mut().selected_panel_id = Some(panel_id.clone());
+            return panel_id;
         }
+        let panel = MetricPanel::new(metric_key);
+        let panel_id = panel.panel_id.clone();
+        self.active_mut().panels.push(panel);
+        self.active_mut().selected_panel_id = Some(panel_id.clone());
+        panel_id
+    }
+
+    pub fn remove_active_panel(&mut self, panel_id: &MetricPanelId) -> bool {
+        let view = self.active_mut();
+        let Some(index) = view
+            .panels
+            .iter()
+            .position(|panel| &panel.panel_id == panel_id)
+        else {
+            return false;
+        };
+        let removed = view.panels.remove(index);
+        view.timeline_extents.remove(&removed.metric_key);
+        if view.selected_panel_id.as_ref() == Some(panel_id) {
+            view.selected_panel_id = view
+                .panels
+                .get(index.min(view.panels.len().saturating_sub(1)))
+                .map(|panel| panel.panel_id.clone());
+        }
+        true
+    }
+
+    pub fn active_panel(&self, panel_id: &MetricPanelId) -> Option<&MetricPanel> {
+        self.active()
+            .panels
+            .iter()
+            .find(|panel| &panel.panel_id == panel_id)
+    }
+
+    pub fn active_panel_mut(&mut self, panel_id: &MetricPanelId) -> Option<&mut MetricPanel> {
+        self.active_mut()
+            .panels
+            .iter_mut()
+            .find(|panel| &panel.panel_id == panel_id)
+    }
+
+    pub fn begin_active_panel_read(
+        &mut self,
+        panel_id: &MetricPanelId,
+        kind: ReadKind,
+        generation: Generation,
+    ) {
+        let Some(panel) = self.active_panel_mut(panel_id) else {
+            return;
+        };
+        match kind {
+            ReadKind::Overview => panel.overview_generation = Some(generation),
+            ReadKind::Detail => panel.detail_generation = Some(generation),
+            ReadKind::Catalog => {}
+        }
+    }
+
+    pub fn complete_active_panel_read(
+        &mut self,
+        panel_id: &MetricPanelId,
+        kind: ReadKind,
+        generation: Generation,
+        snapshot: Option<CurveSnapshot>,
+        source_errors: Vec<SourceReadFailure>,
+    ) -> bool {
+        let Some(panel) = self.active_panel_mut(panel_id) else {
+            return false;
+        };
+        let expected = match kind {
+            ReadKind::Overview => &mut panel.overview_generation,
+            ReadKind::Detail => &mut panel.detail_generation,
+            ReadKind::Catalog => return false,
+        };
+        if *expected != Some(generation) {
+            return false;
+        }
+        *expected = None;
+        panel.source_errors = source_errors;
+        if let Some(snapshot) = snapshot {
+            match kind {
+                ReadKind::Overview => {
+                    panel.overview_revision = generation.0;
+                    panel.overview = Some(Arc::new(snapshot));
+                }
+                ReadKind::Detail => {
+                    panel.detail_revision = generation.0;
+                    panel.detail = Some(Arc::new(snapshot));
+                }
+                ReadKind::Catalog => {}
+            }
+        }
+        true
     }
 
     pub fn record_active_metric_extent(
@@ -183,12 +326,35 @@ impl AnalysisViews {
     }
 
     pub fn clear_active_timeline_extents(&mut self) {
-        self.active_mut().timeline_extents.clear();
+        self.invalidate_active_panels();
     }
 
     pub fn remove_source(&mut self, source_id: &DataSourceId) {
         for view in &mut self.views {
+            let previous = view.runs.len();
             view.runs.retain(|run| &run.source_id != source_id);
+            if view.runs.len() != previous {
+                view.timeline_extents.clear();
+                for panel in &mut view.panels {
+                    panel.overview = None;
+                    panel.detail = None;
+                    panel.source_errors.clear();
+                    panel.overview_generation = None;
+                    panel.detail_generation = None;
+                }
+            }
+        }
+    }
+
+    fn invalidate_active_panels(&mut self) {
+        let view = self.active_mut();
+        view.timeline_extents.clear();
+        for panel in &mut view.panels {
+            panel.overview = None;
+            panel.detail = None;
+            panel.source_errors.clear();
+            panel.overview_generation = None;
+            panel.detail_generation = None;
         }
     }
 
@@ -233,7 +399,7 @@ mod tests {
 
         let duplicate = views.duplicate_active();
         views.active_mut().runs.clear();
-        views.active_mut().metrics.clear();
+        views.active_mut().panels.clear();
         views
             .active_mut()
             .core
@@ -241,14 +407,22 @@ mod tests {
         assert!(views.activate(&AnalysisViewId::from_string("view-1")));
 
         assert_eq!(views.active().runs.len(), 1);
-        assert_eq!(views.active().metrics, [MetricKey::from_string("loss")]);
+        assert_eq!(
+            views
+                .active()
+                .panels
+                .iter()
+                .map(|panel| panel.metric_key.clone())
+                .collect::<Vec<_>>(),
+            [MetricKey::from_string("loss")]
+        );
         assert_eq!(
             views.active().core.axis(),
             pulseon_model::alignment::AlignmentAxis::ElapsedTime
         );
         assert!(views.activate(&duplicate));
         assert!(views.active().runs.is_empty());
-        assert!(views.active().metrics.is_empty());
+        assert!(views.active().panels.is_empty());
         assert_eq!(
             views.active().core.axis(),
             pulseon_model::alignment::AlignmentAxis::Step
@@ -271,5 +445,47 @@ mod tests {
             .expect("metric extents should produce a timeline home");
 
         assert_eq!((home.start(), home.end()), (5, 20));
+    }
+
+    #[test]
+    fn metric_panels_keep_independent_generations_and_source_errors() {
+        let mut views = AnalysisViews::default();
+        let first = views.select_active_metric(MetricKey::from_string("loss"));
+        let second = views.select_active_metric(MetricKey::from_string("accuracy"));
+        views.begin_active_panel_read(&first, ReadKind::Detail, Generation(1));
+        views.begin_active_panel_read(&second, ReadKind::Detail, Generation(2));
+
+        assert!(!views.complete_active_panel_read(
+            &first,
+            ReadKind::Detail,
+            Generation(2),
+            None,
+            Vec::new(),
+        ));
+        assert!(views.complete_active_panel_read(
+            &second,
+            ReadKind::Detail,
+            Generation(2),
+            None,
+            vec![SourceReadFailure {
+                source_id: DataSourceId::from_string("source-b"),
+                message: "unavailable".to_owned(),
+            }],
+        ));
+
+        assert!(
+            views
+                .active_panel(&first)
+                .expect("first panel should exist")
+                .is_pending(ReadKind::Detail)
+        );
+        assert_eq!(
+            views
+                .active_panel(&second)
+                .expect("second panel should exist")
+                .source_errors
+                .len(),
+            1
+        );
     }
 }

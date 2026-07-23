@@ -285,6 +285,10 @@ impl ViewerCore {
         self.apply_overview(snapshot);
     }
 
+    pub fn clear_timeline(&mut self) {
+        self.brush = None;
+    }
+
     /// Marks one request stream pending without clearing its current snapshot.
     pub fn begin(
         &mut self,

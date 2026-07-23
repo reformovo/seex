@@ -17,6 +17,10 @@ impl AnalysisViewId {
     pub fn from_string(value: impl Into<String>) -> Self {
         Self(value.into())
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl fmt::Display for AnalysisViewId {
@@ -31,6 +35,10 @@ pub struct MetricPanelId(String);
 impl MetricPanelId {
     pub fn from_string(value: impl Into<String>) -> Self {
         Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
