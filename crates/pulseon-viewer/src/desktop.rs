@@ -19,6 +19,7 @@ use pulseon_model::run::{Run, RunStatus};
 use pulseon_model::types::ProjectId;
 use pulseon_viewer::core::{
     ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore, run_matches_filter,
+    toggle_run_selection,
 };
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
@@ -169,6 +170,7 @@ struct ViewerApp {
     run_filter: String,
     run_list: RunListCache,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
+    active_view_runs: Vec<RunRef>,
     project_sidebar_visible: bool,
     source_menu: Option<DataSourceId>,
     source_path: Option<PathBuf>,
@@ -198,6 +200,7 @@ impl ViewerApp {
             run_filter: String::new(),
             run_list: RunListCache::default(),
             expanded_projects: HashSet::new(),
+            active_view_runs: Vec::new(),
             project_sidebar_visible: true,
             source_menu: None,
             source_path: None,
@@ -492,6 +495,8 @@ impl ViewerApp {
         self.event_tasks.remove(source_id);
         self.expanded_projects
             .retain(|(selected_source, _)| selected_source != source_id);
+        self.active_view_runs
+            .retain(|run| &run.source_id != source_id);
         self.source_menu = None;
         if active {
             self.core = ViewerCore::default();
@@ -563,9 +568,17 @@ impl ViewerApp {
     }
 
     fn toggle_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
-        match self.core.toggle_run(run) {
-            Ok(_) => {
+        match toggle_run_selection(&mut self.active_view_runs, run.clone()) {
+            Ok(selected) => {
                 self.local_error = None;
+                let core_selected = self.core.selection().runs.contains(&run);
+                if selected != core_selected
+                    && let Err(error) = self.core.toggle_run(run)
+                {
+                    self.local_error = Some(error.to_string());
+                    cx.notify();
+                    return;
+                }
                 self.refresh_catalog(cx);
             }
             Err(error) => self.local_error = Some(error.to_string()),
@@ -602,7 +615,7 @@ impl ViewerApp {
     fn render_project_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let sources = self.sources.sources().cloned().collect::<Vec<_>>();
-        let selected_runs = self.core.selection().runs.clone();
+        let selected_runs = self.active_view_runs.clone();
         let expanded = self.expanded_projects.clone();
         let query = self.run_filter.trim().to_lowercase();
         let filter_focus = self.filter_focus.clone();
@@ -952,7 +965,7 @@ impl ViewerApp {
         let selected_metric_key = selection.metric_key.clone();
         let has_project = selected_project_id.is_some();
         let filter_focus = self.filter_focus.clone();
-        let selected_count = selection.runs.len();
+        let selected_count = self.active_view_runs.len();
         let source_id = selection
             .source_id
             .clone()
@@ -2188,6 +2201,33 @@ mod tests {
             assert!(cx.debug_bounds("project-tree-row-0-0").is_some());
             assert!(cx.debug_bounds("project-tree-row-1-0").is_some());
             assert!(cx.debug_bounds("analysis-tab").is_some());
+
+            for (source_index, project_selector, run_selector) in [
+                (0, "project-tree-row-0-0", "project-tree-run-0-0-0"),
+                (1, "project-tree-row-1-0", "project-tree-run-1-0-0"),
+            ] {
+                let project = cx
+                    .debug_bounds(project_selector)
+                    .expect("Project row should be rendered");
+                cx.simulate_click(project.center(), Modifiers::default());
+                wait_for_viewer(window, &cx, |viewer| {
+                    viewer
+                        .sources
+                        .sources()
+                        .nth(source_index)
+                        .is_some_and(|source| !source.catalog.runs.is_empty())
+                });
+                let run = cx
+                    .debug_bounds(run_selector)
+                    .expect("Run row should be rendered");
+                cx.simulate_click(run.center(), Modifiers::default());
+            }
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.active_view_runs.len())
+                    .expect("viewer should remain open"),
+                2
+            );
         }
 
         #[gpui::test]

@@ -284,7 +284,7 @@ roadmap phase identifiers.
   actions plus `ToggleProjectSidebar`. Removing an import must never delete or
   mutate native data; hiding the sidebar expands the complete Analysis
   workspace.
-- [ ] Make Run checkboxes reflect the active Analysis View and retain the
+- [x] Make Run checkboxes reflect the active Analysis View and retain the
   existing limit of 10 selected Runs per View across Project/source boundaries.
 
 ##### Analysis Views

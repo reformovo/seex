@@ -234,22 +234,9 @@ impl ViewerCore {
     ///
     /// Returns [`SelectionError::RunLimit`] when adding an eleventh Run.
     pub fn toggle_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
-        if let Some(index) = self
-            .selection
-            .runs
-            .iter()
-            .position(|selected| selected == &run)
-        {
-            self.selection.runs.remove(index);
-            self.clear_curves();
-            return Ok(false);
-        }
-        if self.selection.runs.len() == MAX_SELECTED_RUNS {
-            return Err(SelectionError::RunLimit);
-        }
-        self.selection.runs.push(run);
+        let selected = toggle_run_selection(&mut self.selection.runs, run)?;
         self.clear_curves();
-        Ok(true)
+        Ok(selected)
     }
 
     pub fn select_metric(&mut self, metric_key: Option<MetricKey>) {
@@ -385,6 +372,23 @@ impl ViewerCore {
         self.expected[kind_index(ReadKind::Detail)] = None;
         self.last_error = None;
     }
+}
+
+/// Toggles one composite Run identity in a View-owned ordered selection.
+///
+/// # Errors
+///
+/// Returns [`SelectionError::RunLimit`] when adding an eleventh Run.
+pub fn toggle_run_selection(runs: &mut Vec<RunRef>, run: RunRef) -> Result<bool, SelectionError> {
+    if let Some(index) = runs.iter().position(|selected| selected == &run) {
+        runs.remove(index);
+        return Ok(false);
+    }
+    if runs.len() == MAX_SELECTED_RUNS {
+        return Err(SelectionError::RunLimit);
+    }
+    runs.push(run);
+    Ok(true)
 }
 
 const fn kind_index(kind: ReadKind) -> usize {
@@ -548,6 +552,21 @@ mod tests {
             Err(SelectionError::RunLimit)
         );
         assert_eq!(core.selection().runs.len(), MAX_SELECTED_RUNS);
+    }
+
+    #[test]
+    fn view_selection_limit_counts_runs_across_sources() {
+        let mut runs = (0..MAX_SELECTED_RUNS)
+            .map(|index| run_ref(&format!("source-{index}"), "project", "run"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            toggle_run_selection(
+                &mut runs,
+                run_ref("another-source", "project", "another-run")
+            ),
+            Err(SelectionError::RunLimit)
+        );
     }
 
     #[test]
