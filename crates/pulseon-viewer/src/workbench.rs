@@ -28,6 +28,8 @@ pub struct MetricPanel {
     pub detail_generation: Option<Generation>,
     pub overview_revision: u64,
     pub detail_revision: u64,
+    pub physical_width: u32,
+    pub requested_detail_viewport: Option<AlignmentViewport>,
 }
 
 impl MetricPanel {
@@ -42,6 +44,8 @@ impl MetricPanel {
             detail_generation: None,
             overview_revision: 0,
             detail_revision: 0,
+            physical_width: 1_000,
+            requested_detail_viewport: None,
         }
     }
 
@@ -51,6 +55,13 @@ impl MetricPanel {
             ReadKind::Detail => self.detail_generation.is_some(),
             ReadKind::Catalog => false,
         }
+    }
+
+    pub fn needs_detail(&self, viewport: AlignmentViewport, physical_width: u32) -> bool {
+        !self.is_pending(ReadKind::Detail)
+            && (self.detail.is_none()
+                || self.requested_detail_viewport != Some(viewport)
+                || self.physical_width != physical_width)
     }
 }
 
@@ -266,6 +277,21 @@ impl AnalysisViews {
         }
     }
 
+    pub fn begin_active_panel_detail(
+        &mut self,
+        panel_id: &MetricPanelId,
+        generation: Generation,
+        viewport: AlignmentViewport,
+        physical_width: u32,
+    ) {
+        let Some(panel) = self.active_panel_mut(panel_id) else {
+            return;
+        };
+        panel.detail_generation = Some(generation);
+        panel.requested_detail_viewport = Some(viewport);
+        panel.physical_width = physical_width;
+    }
+
     pub fn complete_active_panel_read(
         &mut self,
         panel_id: &MetricPanelId,
@@ -341,6 +367,7 @@ impl AnalysisViews {
                     panel.source_errors.clear();
                     panel.overview_generation = None;
                     panel.detail_generation = None;
+                    panel.requested_detail_viewport = None;
                 }
             }
         }
@@ -355,6 +382,7 @@ impl AnalysisViews {
             panel.source_errors.clear();
             panel.overview_generation = None;
             panel.detail_generation = None;
+            panel.requested_detail_viewport = None;
         }
     }
 

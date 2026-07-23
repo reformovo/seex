@@ -312,7 +312,7 @@ roadmap phase identifiers.
   scrolling, keep horizontal navigation in the chart column, and preserve
   unavailable evidence, independent y ranges, hover, errors, ordering, and
   removal.
-- [ ] Derive each visible track's storage budget from its own physical plot
+- [x] Derive each visible track's storage budget from its own physical plot
   width and independently reduce every Run/metric series. Prepare visible
   tracks plus one viewport of overscan; off-screen tracks contribute extents
   but do not issue detail queries or prepare GPUI paths.

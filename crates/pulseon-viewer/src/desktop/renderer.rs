@@ -65,6 +65,24 @@ impl ChartAdapter {
         self.overview_bounds = None;
     }
 
+    pub fn warm_projection(
+        &mut self,
+        snapshot: &CurveSnapshot,
+        revision: u64,
+        viewport: Viewport,
+        canvas: CanvasSize,
+    ) {
+        for series in snapshot
+            .series
+            .iter()
+            .filter_map(|curve| curve.chart_series.as_ref())
+        {
+            let _ = self
+                .detail_projection_cache
+                .path_for(series, revision, viewport, canvas);
+        }
+    }
+
     fn prepare(
         &mut self,
         snapshot: &CurveSnapshot,

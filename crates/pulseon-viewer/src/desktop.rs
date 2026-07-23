@@ -6,12 +6,13 @@ use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    App, Application, Bounds, Context, FocusHandle, KeyBinding, KeyDownEvent,
+    AnyElement, App, Application, Bounds, Context, EntityId, FocusHandle, KeyBinding, KeyDownEvent,
     ListHorizontalSizingBehavior, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent, SharedString, SystemMenuType, Task,
-    Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size, uniform_list,
+    MouseUpEvent, PathPromptOptions, Point, Render, ScrollWheelEvent, SharedString, SystemMenuType,
+    Task, UniformListDecoration, UniformListScrollHandle, Window, WindowBounds, WindowOptions,
+    actions, div, prelude::*, px, size, uniform_list,
 };
-use pulseon_chart_core::BrushState;
+use pulseon_chart_core::{BrushState, CanvasSize};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
 use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason};
 use pulseon_model::metric::MetricKey;
@@ -50,6 +51,57 @@ enum DragGesture {
         panel_id: MetricPanelId,
         last_x: f64,
     },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TrackViewport {
+    visible: Range<usize>,
+    overscan: Range<usize>,
+    logical_width_bits: u32,
+    physical_width: u32,
+}
+
+#[derive(Clone)]
+struct TrackViewportObserver {
+    state: Rc<RefCell<TrackViewport>>,
+    viewer_id: EntityId,
+    metric_sidebar_width: gpui::Pixels,
+    plot_inset: gpui::Pixels,
+}
+
+impl UniformListDecoration for TrackViewportObserver {
+    fn compute(
+        &self,
+        visible: Range<usize>,
+        bounds: Bounds<gpui::Pixels>,
+        _: Point<gpui::Pixels>,
+        _: gpui::Pixels,
+        item_count: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let viewport_items = visible.len().max(1);
+        let overscan = visible.start.saturating_sub(viewport_items)
+            ..visible.end.saturating_add(viewport_items).min(item_count);
+        let plot_width = f32::from(
+            (bounds.size.width - self.metric_sidebar_width - self.plot_inset).max(px(1.)),
+        );
+        let physical_width = (plot_width * window.scale_factor()).round().max(1.) as u32;
+        let next = TrackViewport {
+            visible,
+            overscan,
+            logical_width_bits: plot_width.to_bits(),
+            physical_width,
+        };
+        let mut state = self.state.borrow_mut();
+        if *state != next {
+            *state = next;
+            let viewer_id = self.viewer_id;
+            cx.defer(move |cx| cx.notify(viewer_id));
+            window.request_animation_frame();
+        }
+        div().into_any_element()
+    }
 }
 
 fn update_brush_drag(brush: &mut BrushState, gesture: &mut DragGesture, axis: f64) {
@@ -201,6 +253,8 @@ struct ViewerApp {
     chart_adapter: Rc<RefCell<ChartAdapter>>,
     track_adapters: HashMap<MetricPanelId, Rc<RefCell<ChartAdapter>>>,
     track_hovers: HashMap<MetricPanelId, HoverPoint>,
+    metric_scroll: UniformListScrollHandle,
+    track_viewport: Rc<RefCell<TrackViewport>>,
     overview_revision: u64,
     detail_revision: u64,
     overview_width: u32,
@@ -208,6 +262,8 @@ struct ViewerApp {
     hover: Option<HoverPoint>,
     drag: Option<DragGesture>,
     zoom_task: Option<Task<()>>,
+    detail_refresh_token: u64,
+    detail_refresh_pending: bool,
 }
 
 impl ViewerApp {
@@ -237,6 +293,8 @@ impl ViewerApp {
             chart_adapter: Rc::new(RefCell::new(ChartAdapter::default())),
             track_adapters: HashMap::new(),
             track_hovers: HashMap::new(),
+            metric_scroll: UniformListScrollHandle::new(),
+            track_viewport: Rc::new(RefCell::new(TrackViewport::default())),
             overview_revision: 0,
             detail_revision: 0,
             overview_width: 1_000,
@@ -244,6 +302,8 @@ impl ViewerApp {
             hover: None,
             drag: None,
             zoom_task: None,
+            detail_refresh_token: 0,
+            detail_refresh_pending: false,
         };
         if let Some(path) = project_path {
             app.open_source(path, cx);
@@ -258,9 +318,11 @@ impl ViewerApp {
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
         self.track_hovers.clear();
+        self.metric_scroll = UniformListScrollHandle::new();
+        *self.track_viewport.borrow_mut() = TrackViewport::default();
         self.hover = None;
         self.drag = None;
-        self.zoom_task = None;
+        self.cancel_detail_refresh();
         self.local_error = None;
         self.source_path = Some(path);
         self.refresh_catalog(cx);
@@ -386,8 +448,13 @@ impl ViewerApp {
                     {
                         self.core.set_timeline_home(home);
                     }
-                    if let Some(viewport) = self.core.selected_viewport() {
-                        self.request_panel_detail(&panel_id, viewport, cx);
+                    if let Some(viewport) = self.core.selected_viewport()
+                        && self.panel_is_scheduled(&panel_id)
+                    {
+                        let physical_width = self.track_viewport.borrow().physical_width.max(1);
+                        if self.should_schedule_panel_detail(&panel_id, viewport, physical_width) {
+                            self.request_panel_detail(&panel_id, viewport, physical_width, cx);
+                        }
                     }
                 }
             }
@@ -470,15 +537,21 @@ impl ViewerApp {
         let Some(viewport) = self.core.selected_viewport() else {
             return;
         };
-        let panel_ids = self
-            .views
-            .active()
-            .panels
+        let viewport_state = self.track_viewport.borrow().clone();
+        let panel_count = self.views.active().panels.len();
+        let scheduled = viewport_state.overscan.start.min(panel_count)
+            ..viewport_state.overscan.end.min(panel_count);
+        let panel_ids = self.views.active().panels[scheduled]
             .iter()
             .map(|panel| panel.panel_id.clone())
             .collect::<Vec<_>>();
         for panel_id in panel_ids {
-            self.request_panel_detail(&panel_id, viewport, cx);
+            self.request_panel_detail(
+                &panel_id,
+                viewport,
+                viewport_state.physical_width.max(1),
+                cx,
+            );
         }
     }
 
@@ -486,6 +559,7 @@ impl ViewerApp {
         &mut self,
         panel_id: &MetricPanelId,
         viewport: AlignmentViewport,
+        physical_width: u32,
         cx: &mut Context<Self>,
     ) {
         let runs = self.views.active().runs.clone();
@@ -513,7 +587,7 @@ impl ViewerApp {
                 metric_key,
                 axis: self.core.axis(),
                 viewport,
-                physical_width: self.detail_width,
+                physical_width,
             },
         ) {
             Ok(planned) => planned,
@@ -523,7 +597,7 @@ impl ViewerApp {
             }
         };
         self.views
-            .begin_active_panel_read(panel_id, ReadKind::Detail, generation);
+            .begin_active_panel_detail(panel_id, generation, viewport, physical_width);
         for read in planned {
             self.submit_source_generation(read.source_id, read.generation, read.request, false, cx);
         }
@@ -668,9 +742,11 @@ impl ViewerApp {
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
         self.track_hovers.clear();
+        self.metric_scroll = UniformListScrollHandle::new();
+        *self.track_viewport.borrow_mut() = TrackViewport::default();
         self.hover = None;
         self.drag = None;
-        self.zoom_task = None;
+        self.cancel_detail_refresh();
     }
 
     fn begin_rename_analysis_view(
@@ -786,7 +862,7 @@ impl ViewerApp {
     }
 
     fn on_reset(&mut self, _: &ResetView, _: &mut Window, cx: &mut Context<Self>) {
-        self.zoom_task = None;
+        self.cancel_detail_refresh();
         if self.core.reset_view() {
             self.request_detail(cx);
         }
@@ -1532,8 +1608,9 @@ impl ViewerApp {
     }
 
     fn render_metric_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        self.reconcile_track_schedule(cx);
         let theme = self.theme;
-        let panels = self.views.active().panels.clone();
+        let panels: Rc<[MetricPanel]> = self.views.active().panels.clone().into();
         let selected = panels
             .iter()
             .map(|panel| panel.metric_key.clone())
@@ -1549,10 +1626,15 @@ impl ViewerApp {
             TrackDensity::Spacious => px(320.),
         };
         let timeline = self.render_overview(cx);
-        let rows = panels
-            .into_iter()
-            .map(|panel| self.render_metric_row(panel, row_height, cx))
-            .collect::<Vec<_>>();
+        let list_panels = Rc::clone(&panels);
+        let panel_count = panels.len();
+        let observer = TrackViewportObserver {
+            state: Rc::clone(&self.track_viewport),
+            viewer_id: cx.entity().entity_id(),
+            metric_sidebar_width: theme.spacing.sidebar_width,
+            plot_inset: theme.spacing.content_padding * 2.,
+        };
+        let scroll = self.metric_scroll.clone();
 
         div()
             .flex_1()
@@ -1606,13 +1688,100 @@ impl ViewerApp {
                     ),
             )
             .child(
-                div()
-                    .id("metric-track-scroll")
-                    .debug_selector(|| "metric-track-scroll".to_owned())
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .children(rows),
+                uniform_list(
+                    "metric-track-scroll",
+                    panel_count,
+                    cx.processor(move |this, range: Range<usize>, _, cx| {
+                        range
+                            .filter_map(|index| list_panels.get(index).cloned())
+                            .map(|panel| this.render_metric_row(panel, row_height, cx))
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(scroll)
+                .with_decoration(observer)
+                .debug_selector(|| "metric-track-scroll".to_owned())
+                .flex_1(),
             )
+    }
+
+    fn panel_is_scheduled(&self, panel_id: &MetricPanelId) -> bool {
+        let state = self.track_viewport.borrow();
+        self.views
+            .active()
+            .panels
+            .iter()
+            .enumerate()
+            .any(|(index, panel)| &panel.panel_id == panel_id && state.overscan.contains(&index))
+    }
+
+    fn should_schedule_panel_detail(
+        &self,
+        panel_id: &MetricPanelId,
+        viewport: AlignmentViewport,
+        physical_width: u32,
+    ) -> bool {
+        self.views.active_panel(panel_id).is_some_and(|panel| {
+            panel.needs_detail(viewport, physical_width)
+                && (!self.detail_refresh_pending
+                    || panel.detail.is_none()
+                    || panel.physical_width != physical_width)
+        })
+    }
+
+    fn reconcile_track_schedule(&mut self, cx: &mut Context<Self>) {
+        let state = self.track_viewport.borrow().clone();
+        if state.overscan.is_empty() || state.logical_width_bits == 0 {
+            return;
+        }
+        let Some(detail_viewport) = self.core.selected_viewport() else {
+            return;
+        };
+        let panel_count = self.views.active().panels.len();
+        let scheduled = state.overscan.start.min(panel_count)..state.overscan.end.min(panel_count);
+        let panels = self.views.active().panels[scheduled].to_vec();
+        let scheduled_ids = panels
+            .iter()
+            .map(|panel| panel.panel_id.clone())
+            .collect::<HashSet<_>>();
+        self.track_adapters
+            .retain(|panel_id, _| scheduled_ids.contains(panel_id));
+        self.track_hovers
+            .retain(|panel_id, _| scheduled_ids.contains(panel_id));
+        let logical_width = f32::from_bits(state.logical_width_bits) as f64;
+        let row_height = match self.views.active().track_density {
+            TrackDensity::Compact => 180.,
+            TrackDensity::Comfortable => 240.,
+            TrackDensity::Spacious => 320.,
+        } - f64::from(self.theme.spacing.content_padding * 2.);
+        let canvas = CanvasSize::new(logical_width, row_height.max(1.)).ok();
+        for panel in panels {
+            if let Some(snapshot) = panel.detail.as_deref()
+                && let Some(viewport) = renderer::detail_viewport(
+                    snapshot,
+                    self.core.brush().map(|brush| brush.selected()),
+                )
+                && let Some(canvas) = canvas
+            {
+                self.track_adapters
+                    .entry(panel.panel_id.clone())
+                    .or_insert_with(|| Rc::new(RefCell::new(ChartAdapter::default())))
+                    .borrow_mut()
+                    .warm_projection(snapshot, panel.detail_revision, viewport, canvas);
+            }
+            if self.should_schedule_panel_detail(
+                &panel.panel_id,
+                detail_viewport,
+                state.physical_width.max(1),
+            ) {
+                self.request_panel_detail(
+                    &panel.panel_id,
+                    detail_viewport,
+                    state.physical_width.max(1),
+                    cx,
+                );
+            }
+        }
     }
 
     fn render_metric_row(
@@ -2247,14 +2416,27 @@ impl ViewerApp {
     }
 
     fn schedule_detail_refresh(&mut self, cx: &mut Context<Self>) {
+        self.detail_refresh_token = self.detail_refresh_token.saturating_add(1);
+        self.detail_refresh_pending = true;
+        let token = self.detail_refresh_token;
         let timer = cx.background_executor().timer(Duration::from_millis(100));
         self.zoom_task = Some(cx.spawn(async move |this, cx| {
             timer.await;
             let _ = this.update(cx, |this, cx| {
+                if this.detail_refresh_token != token {
+                    return;
+                }
+                this.detail_refresh_pending = false;
                 this.request_detail(cx);
                 cx.notify();
             });
         }));
+    }
+
+    fn cancel_detail_refresh(&mut self) {
+        self.detail_refresh_token = self.detail_refresh_token.saturating_add(1);
+        self.detail_refresh_pending = false;
+        self.zoom_task = None;
     }
 
     fn reconcile_canvas_widths(&mut self, scale_factor: f32, cx: &mut Context<Self>) {
@@ -2707,8 +2889,8 @@ mod tests {
     #[cfg(feature = "test-support")]
     mod gpui_tests {
         use gpui::{
-            Keystroke, Modifiers, ScrollDelta, TestAppContext, TouchPhase, VisualTestContext,
-            WindowHandle, point,
+            Keystroke, Modifiers, ScrollDelta, ScrollStrategy, TestAppContext, TouchPhase,
+            VisualTestContext, WindowHandle, point,
         };
         use pulseon_core::engine::client::NativeClient;
 
@@ -2825,6 +3007,21 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             panic!("viewer state did not arrive before the test deadline");
+        }
+
+        fn first_panel_detail_is_settled(viewer: &ViewerApp) -> bool {
+            let schedule = viewer.track_viewport.borrow();
+            let Some(viewport) = viewer.core.selected_viewport() else {
+                return false;
+            };
+            !schedule.overscan.is_empty()
+                && schedule.physical_width > 0
+                && viewer.views.active().panels.first().is_some_and(|panel| {
+                    panel.detail.is_some()
+                        && !panel.is_pending(ReadKind::Detail)
+                        && panel.requested_detail_viewport == Some(viewport)
+                        && panel.physical_width == schedule.physical_width
+                })
         }
 
         fn select_fixture_run(
@@ -3350,15 +3547,110 @@ mod tests {
         }
 
         #[gpui::test]
-        fn zoom_debounce_commits_only_the_latest_wheel_event(cx: &mut TestAppContext) {
-            let (root, project_id, run_id) = fixture(1);
+        fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture(10);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 10);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    for index in 0..10 {
+                        viewer.select_metric(MetricKey::from_string(format!("metric-{index}")), cx);
+                    }
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels.len() == 10
+                    && viewer
+                        .views
+                        .active()
+                        .panels
+                        .iter()
+                        .all(|panel| panel.overview.is_some())
+            });
+            wait_for_viewer(window, &cx, |viewer| {
+                let schedule = viewer.track_viewport.borrow();
+                !schedule.overscan.is_empty() && schedule.physical_width > 0
+            });
+            wait_for_viewer(window, &cx, |viewer| {
+                let schedule = viewer.track_viewport.borrow();
+                viewer.views.active().panels[schedule.overscan.clone()]
+                    .iter()
+                    .all(|panel| panel.detail.is_some())
+                    && viewer.track_adapters.len() == schedule.overscan.len()
+            });
+
+            let (visible, overscan, detail_count, adapter_count) = window
+                .read_with(&cx, |viewer, _| {
+                    let schedule = viewer.track_viewport.borrow().clone();
+                    (
+                        schedule.visible,
+                        schedule.overscan,
+                        viewer
+                            .views
+                            .active()
+                            .panels
+                            .iter()
+                            .filter(|panel| panel.detail.is_some())
+                            .count(),
+                        viewer.track_adapters.len(),
+                    )
+                })
+                .expect("viewer should remain open");
+            assert!(overscan.len() > visible.len());
+            assert_eq!(detail_count, overscan.len());
+            assert!(detail_count < 10);
+            assert_eq!(adapter_count, overscan.len());
+            window
+                .read_with(&cx, |viewer, _| {
+                    for panel in viewer
+                        .views
+                        .active()
+                        .panels
+                        .iter()
+                        .filter(|panel| panel.detail.is_some())
+                    {
+                        let detail = panel.detail.as_ref().expect("detail should be present");
+                        assert_eq!(
+                            detail.point_budget,
+                            panel.physical_width.saturating_mul(2).clamp(2_000, 10_000)
+                        );
+                    }
+                })
+                .expect("viewer should remain open");
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer
+                        .metric_scroll
+                        .scroll_to_item_strict(9, ScrollStrategy::Bottom);
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                let schedule = viewer.track_viewport.borrow();
+                schedule.visible.contains(&9)
+                    && viewer
+                        .views
+                        .active()
+                        .panels
+                        .last()
+                        .is_some_and(|panel| panel.detail.is_some())
+            });
+            assert!(cx.debug_bounds("metric-track:metric-9").is_some());
+        }
+
+        #[gpui::test]
+        fn zoom_debounce_commits_only_the_latest_viewport(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
-                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
                 })
                 .expect("viewer should remain open");
             wait_for_viewer(window, &cx, |viewer| {
@@ -3369,41 +3661,89 @@ mod tests {
                     .first()
                     .is_some_and(|panel| panel.detail.is_some())
             });
-            let chart = cx
-                .debug_bounds("metric-canvas:metric-0")
-                .expect("detail chart should be rendered");
             window
                 .update(&mut cx, |_, _, cx| cx.notify())
                 .expect("viewer should remain open");
-            wait_for_viewer(window, &cx, |viewer| {
-                viewer
-                    .views
-                    .active()
-                    .panels
-                    .first()
-                    .is_some_and(|panel| !panel.is_pending(ReadKind::Detail))
-            });
-            let before = window
-                .read_with(&cx, |viewer, _| viewer.next_generation)
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            let (before_generation, before_revision, before_viewport) = window
+                .read_with(&cx, |viewer, _| {
+                    let panel = viewer
+                        .views
+                        .active()
+                        .panels
+                        .first()
+                        .expect("metric panel should exist");
+                    (
+                        viewer.next_generation,
+                        panel.detail_revision,
+                        panel.requested_detail_viewport,
+                    )
+                })
                 .expect("viewer should remain open");
-            let wheel = ScrollWheelEvent {
-                position: chart.center(),
-                delta: ScrollDelta::Pixels(point(px(0.), px(-24.))),
-                modifiers: Modifiers::default(),
-                touch_phase: TouchPhase::Moved,
-            };
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let brush = viewer
+                        .core
+                        .brush_mut()
+                        .expect("timeline brush should exist");
+                    let anchor = brush.selected().start() + brush.selected().span() / 2.;
+                    brush.zoom_at(anchor, 1.25).expect("zoom should succeed");
+                    viewer.schedule_detail_refresh(cx);
+                    let brush = viewer
+                        .core
+                        .brush_mut()
+                        .expect("timeline brush should exist");
+                    let anchor = brush.selected().start() + brush.selected().span() / 2.;
+                    brush.zoom_at(anchor, 1.25).expect("zoom should succeed");
+                    viewer.schedule_detail_refresh(cx);
+                    assert!(
+                        viewer
+                            .views
+                            .active()
+                            .panels
+                            .first()
+                            .is_some_and(|panel| !panel.is_pending(ReadKind::Detail))
+                    );
+                })
+                .expect("viewer should remain open");
+            let final_viewport = window
+                .read_with(&cx, |viewer, _| viewer.core.selected_viewport())
+                .expect("viewer should remain open");
+            let immediate = window
+                .read_with(&cx, |viewer, _| {
+                    let panel = viewer
+                        .views
+                        .active()
+                        .panels
+                        .first()
+                        .expect("metric panel should exist");
+                    (panel.detail_revision, panel.requested_detail_viewport)
+                })
+                .expect("viewer should remain open");
+            assert_eq!(immediate, (before_revision, before_viewport));
+            assert_ne!(final_viewport, before_viewport);
 
-            cx.simulate_event(wheel.clone());
-            cx.simulate_event(wheel);
             cx.executor().advance_clock(Duration::from_millis(101));
             cx.run_until_parked();
-
-            assert_eq!(
-                window
-                    .read_with(&cx, |viewer, _| viewer.next_generation)
-                    .expect("viewer should remain open"),
-                before + 1
-            );
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            let after = window
+                .read_with(&cx, |viewer, _| {
+                    let panel = viewer
+                        .views
+                        .active()
+                        .panels
+                        .first()
+                        .expect("metric panel should exist");
+                    (
+                        viewer.next_generation,
+                        panel.detail_revision,
+                        panel.requested_detail_viewport,
+                    )
+                })
+                .expect("viewer should remain open");
+            assert_eq!(after.0, before_generation + 1);
+            assert!(after.1 > before_revision);
+            assert_eq!(after.2, final_viewport);
         }
 
         #[gpui::test]
@@ -3429,18 +3769,19 @@ mod tests {
             window
                 .update(&mut cx, |_, _, cx| cx.notify())
                 .expect("viewer should remain open");
-            wait_for_viewer(window, &cx, |viewer| {
-                viewer
-                    .views
-                    .active()
-                    .panels
-                    .first()
-                    .is_some_and(|panel| !panel.is_pending(ReadKind::Detail))
-            });
-            let (before_generation, before_span) = window
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            let (before_generation, before_revision, before_viewport, before_span) = window
                 .read_with(&cx, |viewer, _| {
+                    let panel = viewer
+                        .views
+                        .active()
+                        .panels
+                        .first()
+                        .expect("metric panel should exist");
                     (
                         viewer.next_generation,
+                        panel.detail_revision,
+                        panel.requested_detail_viewport,
                         viewer
                             .core
                             .brush()
@@ -3455,8 +3796,16 @@ mod tests {
             cx.dispatch_action(ZoomIn);
             let immediate = window
                 .read_with(&cx, |viewer, _| {
+                    let panel = viewer
+                        .views
+                        .active()
+                        .panels
+                        .first()
+                        .expect("metric panel should exist");
                     (
                         viewer.next_generation,
+                        panel.detail_revision,
+                        panel.requested_detail_viewport,
                         viewer
                             .core
                             .brush()
@@ -3467,16 +3816,34 @@ mod tests {
                 })
                 .expect("viewer should remain open");
             assert_eq!(immediate.0, before_generation);
-            assert!(immediate.1 < before_span);
+            assert_eq!(immediate.1, before_revision);
+            assert_eq!(immediate.2, before_viewport);
+            assert!(immediate.3 < before_span);
+            let final_viewport = window
+                .read_with(&cx, |viewer, _| viewer.core.selected_viewport())
+                .expect("viewer should remain open");
 
             cx.executor().advance_clock(Duration::from_millis(101));
             cx.run_until_parked();
-            assert_eq!(
-                window
-                    .read_with(&cx, |viewer, _| viewer.next_generation)
-                    .expect("viewer should remain open"),
-                before_generation + 1
-            );
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            let after = window
+                .read_with(&cx, |viewer, _| {
+                    let panel = viewer
+                        .views
+                        .active()
+                        .panels
+                        .first()
+                        .expect("metric panel should exist");
+                    (
+                        viewer.next_generation,
+                        panel.detail_revision,
+                        panel.requested_detail_viewport,
+                    )
+                })
+                .expect("viewer should remain open");
+            assert_eq!(after.0, before_generation + 1);
+            assert!(after.1 > before_revision);
+            assert_eq!(after.2, final_viewport);
         }
     }
 }
