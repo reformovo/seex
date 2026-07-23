@@ -82,6 +82,23 @@ viewer-caused presentation spanning two refresh periods. At 280 Hz, two periods
 are approximately 7.14 ms. Record the trace conclusion here; do not commit the
 local trace bundle.
 
+Generate the retained multi-track DuckDB fixture once, then launch it with the
+HUD enabled:
+
+```bash
+PULSEON_VIEWER_TRACE_FIXTURE_ROOT=/tmp/pulseon-viewer-trace \
+  cargo test -p pulseon-viewer --release retained_multi_track_fixture \
+  -- --ignored --nocapture
+
+PULSEON_VIEWER_WORKBENCH_PATH=/tmp/pulseon-viewer-trace/workbench.state \
+MTL_HUD_ENABLED=1 cargo run -p pulseon-viewer --release -- \
+  /tmp/pulseon-viewer-trace/duckdb
+```
+
+Fixture generation refuses to overwrite a non-empty backend directory. Reuse
+the retained directory for repeat traces, or remove it deliberately before
+regenerating it.
+
 ## Automated Workbench Coverage
 
 The multi-project workbench contract is covered by direct behavioral tests:
