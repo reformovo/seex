@@ -7,6 +7,7 @@ use std::task::{Poll, Waker};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use crate::core::DataSourceId;
 use crate::model::{CatalogSnapshot, DiscoveryRequest};
 use crate::query::{CurveSnapshot, DetailRequest, OverviewRequest, QueryError};
 use crate::source::{ReadSession, SourceError};
@@ -79,6 +80,7 @@ impl From<QueryError> for WorkerError {
 /// One generation-tagged result or failure.
 #[derive(Debug)]
 pub struct ReadEvent {
+    pub source_id: DataSourceId,
     pub generation: Generation,
     pub kind: ReadKind,
     pub result: Result<ReadSnapshot, WorkerError>,
@@ -205,6 +207,7 @@ impl Drop for ReadEventReceiver {
 }
 
 struct TaggedRequest {
+    source_id: DataSourceId,
     generation: Generation,
     request: ReadRequest,
 }
@@ -241,11 +244,17 @@ impl ReadWorker {
     /// # Errors
     ///
     /// Returns [`WorkerClosed`] after the worker has stopped.
-    pub fn submit(&self, generation: Generation, request: ReadRequest) -> Result<(), WorkerClosed> {
+    pub fn submit(
+        &self,
+        source_id: DataSourceId,
+        generation: Generation,
+        request: ReadRequest,
+    ) -> Result<(), WorkerClosed> {
         self.requests
             .as_ref()
             .ok_or(WorkerClosed)?
             .send(TaggedRequest {
+                source_id,
                 generation,
                 request,
             })
@@ -353,6 +362,7 @@ fn execute(
         })
     })();
     ReadEvent {
+        source_id: tagged.source_id,
         generation: tagged.generation,
         kind,
         result,
@@ -399,6 +409,7 @@ mod tests {
         let mut pending = PendingRequests::default();
         for generation in [1, 2] {
             pending.push(TaggedRequest {
+                source_id: DataSourceId::from_string("source"),
                 generation: Generation(generation),
                 request: ReadRequest::Discover(DiscoveryRequest::default()),
             });

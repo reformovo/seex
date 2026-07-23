@@ -1,3 +1,4 @@
+use crate::core::{DataSourceId, RunRef};
 use crate::source::ReadSession;
 use pulseon_chart_core::{DataPoint, Series, SeriesId};
 use pulseon_core::engine::EngineError;
@@ -8,13 +9,14 @@ use pulseon_model::alignment::{
 };
 use pulseon_model::comparison::EvidenceCompleteness;
 use pulseon_model::metric::MetricKey;
-use pulseon_model::run::{Run, RunId};
+use pulseon_model::run::Run;
 use pulseon_storage::StorageError;
 
 /// Shared series selection for overview and detail queries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CurveSelection {
-    pub run_ids: Vec<RunId>,
+    pub source_id: DataSourceId,
+    pub runs: Vec<RunRef>,
     pub metric_key: MetricKey,
     pub axis: AlignmentAxis,
 }
@@ -37,6 +39,7 @@ pub struct DetailRequest {
 /// One Run's evidence and optional drawable chart series.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CurveSeriesSnapshot {
+    pub run_ref: RunRef,
     pub run: Run,
     pub evidence: AlignedMetricResult,
     pub chart_series: Option<Series>,
@@ -110,12 +113,24 @@ fn query_curves(
     viewport: AlignmentViewport,
     point_budget: u32,
 ) -> Result<CurveSnapshot, QueryError> {
-    let runs = session.connection().get_runs(&selection.run_ids)?;
+    let run_ids = selection
+        .runs
+        .iter()
+        .map(|run| run.run_id.clone())
+        .collect::<Vec<_>>();
+    let runs = session.connection().get_runs(&run_ids)?;
     let store = NativeQueryStore::new(session.connection());
     let reduction = AlignmentReduction::screen_budget(point_budget, 1)?;
     let mut real_bounds: Option<(i64, i64)> = None;
     let mut series = Vec::with_capacity(runs.len());
     for run in runs {
+        let Some(run_ref) = selection.runs.iter().find(|selected| {
+            selected.source_id == selection.source_id
+                && selected.project_id == run.project_id
+                && selected.run_id == run.run_id
+        }) else {
+            continue;
+        };
         let evidence = store.query_aligned_metric(
             &AlignmentQuery {
                 run_id: run.run_id.clone(),
@@ -133,7 +148,7 @@ fn query_curves(
         let chart_series = drawable
             .then(|| {
                 Series::new(
-                    SeriesId::new(run.run_id.as_str())?,
+                    SeriesId::new(run_ref.cache_key())?,
                     evidence
                         .points
                         .iter()
@@ -156,6 +171,7 @@ fn query_curves(
             }
         }
         series.push(CurveSeriesSnapshot {
+            run_ref: run_ref.clone(),
             run,
             evidence,
             chart_series,

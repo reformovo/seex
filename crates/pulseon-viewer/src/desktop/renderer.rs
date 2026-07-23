@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use gpui::{
@@ -11,12 +13,14 @@ use pulseon_chart_core::{
 };
 use pulseon_model::alignment::AlignmentAxis;
 use pulseon_model::comparison::EvidenceCompleteness;
+use pulseon_viewer::core::RunRef;
 use pulseon_viewer::query::CurveSnapshot;
 
 use super::theme::ViewerTheme;
 
 #[derive(Clone, Debug)]
 pub struct HoverPoint {
+    pub run_ref: RunRef,
     pub run_name: String,
     pub metric_key: String,
     pub axis_value: i64,
@@ -94,7 +98,7 @@ impl ChartAdapter {
             };
         };
         let mut paths = Vec::new();
-        for (index, curve) in snapshot.series.iter().enumerate() {
+        for curve in &snapshot.series {
             let Some(series) = curve.chart_series.as_ref() else {
                 continue;
             };
@@ -159,7 +163,12 @@ impl ChartAdapter {
                 gpui_paths.insert(cache_id.to_owned(), (key, path.clone()));
                 path
             };
-            paths.push((path, theme.colors.series_color(index)));
+            paths.push((
+                path,
+                theme
+                    .colors
+                    .series_color(series_color_index(&curve.run_ref)),
+            ));
         }
         PreparedChart { paths, theme }
     }
@@ -195,6 +204,7 @@ impl ChartAdapter {
             nearest = Some((
                 hit.distance,
                 HoverPoint {
+                    run_ref: curve.run_ref.clone(),
                     run_name: curve.run.name.clone(),
                     metric_key: aligned.point.metric_key.as_str().to_owned(),
                     axis_value: aligned.axis_value,
@@ -440,6 +450,12 @@ pub const fn axis_value_label(axis: AlignmentAxis) -> &'static str {
     }
 }
 
+pub fn series_color_index(run_ref: &RunRef) -> usize {
+    let mut hasher = DefaultHasher::new();
+    run_ref.hash(&mut hasher);
+    hasher.finish() as usize
+}
+
 #[cfg(test)]
 mod tests {
     use std::hint::black_box;
@@ -452,6 +468,7 @@ mod tests {
     use pulseon_model::metric::{MetricKey, MetricPoint, Step};
     use pulseon_model::run::{Run, RunId, RunStatus};
     use pulseon_model::types::ProjectId;
+    use pulseon_viewer::core::DataSourceId;
     use pulseon_viewer::query::{
         CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest,
     };
@@ -461,6 +478,25 @@ mod tests {
 
     fn range(start: f64, end: f64) -> AxisRange {
         AxisRange::new(start, end).expect("test range should be valid")
+    }
+
+    #[test]
+    fn series_colors_derive_from_composite_run_identity() {
+        let first = RunRef::new(
+            DataSourceId::from_string("duckdb-source"),
+            ProjectId::from_string("project"),
+            RunId::from_string("run"),
+        );
+        let second = RunRef::new(
+            DataSourceId::from_string("sqlite-source"),
+            ProjectId::from_string("project"),
+            RunId::from_string("run"),
+        );
+
+        assert_ne!(
+            series_color_index(&first) % 10,
+            series_color_index(&second) % 10
+        );
     }
 
     #[test]
@@ -528,11 +564,19 @@ mod tests {
         client.finish_run(&run.run_id)?;
         client.shutdown(None)?;
         let worker = ReadWorker::spawn(root.path())?;
+        let source_id = DataSourceId::from_path(root.path());
+        let run_ref = RunRef::new(
+            source_id.clone(),
+            run.project_id.clone(),
+            run.run_id.clone(),
+        );
         worker.submit(
+            source_id.clone(),
             Generation(1),
             ReadRequest::Detail(DetailRequest {
                 selection: CurveSelection {
-                    run_ids: vec![run.run_id],
+                    source_id,
+                    runs: vec![run_ref.clone()],
                     metric_key: MetricKey::from_string("loss"),
                     axis: AlignmentAxis::Step,
                 },
@@ -561,8 +605,9 @@ mod tests {
                 hover.axis_value,
                 hover.step,
                 hover.value,
+                hover.run_ref,
             ),
-            ("baseline", "loss", 7, 7, 1.25)
+            ("baseline", "loss", 7, 7, 1.25, run_ref)
         );
         Ok(())
     }
@@ -571,11 +616,13 @@ mod tests {
         let timestamp = "2026-01-01T00:00:00Z"
             .parse()
             .expect("fixed timestamp should parse");
+        let source_id = DataSourceId::from_string("synthetic-source");
         let project_id = ProjectId::from_string("viewer-scale");
         let metric_key = MetricKey::from_string("loss");
         let series = (0..series_count)
             .map(|run_index| {
                 let run_id = RunId::from_string(format!("run-{run_index}"));
+                let run_ref = RunRef::new(source_id.clone(), project_id.clone(), run_id.clone());
                 let points = (0..point_count)
                     .map(|index| AlignedMetricPoint {
                         point: MetricPoint {
@@ -590,7 +637,8 @@ mod tests {
                     })
                     .collect::<Vec<_>>();
                 let chart_series = Series::new(
-                    SeriesId::new(run_id.as_str()).expect("Run id should make a series id"),
+                    SeriesId::new(run_ref.cache_key())
+                        .expect("Run reference should make a series id"),
                     points
                         .iter()
                         .map(|point| DataPoint::new(point.axis_value as f64, point.point.value_f64))
@@ -598,6 +646,7 @@ mod tests {
                 )
                 .expect("generated series should be valid");
                 CurveSeriesSnapshot {
+                    run_ref,
                     run: Run {
                         run_id,
                         project_id: project_id.clone(),

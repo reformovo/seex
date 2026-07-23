@@ -14,9 +14,11 @@ use pulseon_chart_core::BrushState;
 use pulseon_model::alignment::AlignmentAxis;
 use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason};
 use pulseon_model::metric::MetricKey;
-use pulseon_model::run::{Run, RunId, RunStatus};
+use pulseon_model::run::{Run, RunStatus};
 use pulseon_model::types::ProjectId;
-use pulseon_viewer::core::{ApplyOutcome, MAX_SELECTED_RUNS, ViewerCore, run_matches_filter};
+use pulseon_viewer::core::{
+    ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore, run_matches_filter,
+};
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
 use pulseon_viewer::worker::{
@@ -212,7 +214,7 @@ impl ViewerApp {
     fn open_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.event_task = None;
         self.worker = None;
-        self.core.reset_source();
+        self.core.reset_source(DataSourceId::from_path(&path));
         self.run_list = RunListCache::default();
         self.chart_adapter.borrow_mut().clear();
         self.hover = None;
@@ -238,7 +240,11 @@ impl ViewerApp {
         let selection = self.core.selection();
         self.submit(ReadRequest::Discover(DiscoveryRequest {
             project_id: selection.project_id.clone(),
-            selected_run_ids: selection.run_ids.clone(),
+            selected_run_ids: selection
+                .runs
+                .iter()
+                .map(|run| run.run_id.clone())
+                .collect(),
         }));
     }
 
@@ -246,10 +252,13 @@ impl ViewerApp {
         let Some(worker) = self.worker.as_ref() else {
             return;
         };
+        let Some(source_id) = self.core.selection().source_id.clone() else {
+            return;
+        };
         let generation = Generation(self.next_generation);
         self.next_generation = self.next_generation.saturating_add(1);
-        match worker.submit(generation, request.clone()) {
-            Ok(()) => self.core.begin(generation, &request),
+        match worker.submit(source_id.clone(), generation, request.clone()) {
+            Ok(()) => self.core.begin(generation, source_id, &request),
             Err(error) => self.local_error = Some(error.to_string()),
         }
     }
@@ -293,11 +302,12 @@ impl ViewerApp {
 
     fn curve_selection(&self) -> Option<CurveSelection> {
         let selection = self.core.selection();
-        if selection.run_ids.is_empty() {
+        if selection.runs.is_empty() {
             return None;
         }
         Some(CurveSelection {
-            run_ids: selection.run_ids.clone(),
+            source_id: selection.source_id.clone()?,
+            runs: selection.runs.clone(),
             metric_key: selection.metric_key.clone()?,
             axis: self.core.axis(),
         })
@@ -412,8 +422,8 @@ impl ViewerApp {
         cx.notify();
     }
 
-    fn toggle_run(&mut self, run_id: RunId, cx: &mut Context<Self>) {
-        match self.core.toggle_run(run_id) {
+    fn toggle_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
+        match self.core.toggle_run(run) {
             Ok(_) => {
                 self.local_error = None;
                 self.refresh_catalog();
@@ -463,7 +473,11 @@ impl ViewerApp {
         let selected_metric_key = selection.metric_key.clone();
         let has_project = selected_project_id.is_some();
         let filter_focus = self.filter_focus.clone();
-        let selected_count = selection.run_ids.len();
+        let selected_count = selection.runs.len();
+        let source_id = selection
+            .source_id
+            .clone()
+            .expect("catalog workspace requires a source identity");
         let main = self.render_detail(cx);
 
         div()
@@ -559,14 +573,18 @@ impl ViewerApp {
                                                 runs.get(index).map(|run| (index, run))
                                             })
                                             .map(|(index, run)| {
-                                                let run_id = run.run_id.clone();
+                                                let run_ref = RunRef::new(
+                                                    source_id.clone(),
+                                                    run.project_id.clone(),
+                                                    run.run_id.clone(),
+                                                );
                                                 let selected = this
                                                     .core
                                                     .selection()
-                                                    .run_ids
-                                                    .contains(&run.run_id);
+                                                    .runs
+                                                    .contains(&run_ref);
                                                 let can_toggle = selected
-                                                    || this.core.selection().run_ids.len()
+                                                    || this.core.selection().runs.len()
                                                         < MAX_SELECTED_RUNS;
                                                 components::sidebar_tree_row(
                                                     ("run", index),
@@ -579,16 +597,13 @@ impl ViewerApp {
                                                 .border_b_1()
                                                 .border_color(theme.colors.border)
                                                 .when(can_toggle, |row| {
-                                                    let action_run_id = run_id.clone();
+                                                        let action_run = run_ref.clone();
                                                     row.key_context(SELECTABLE_CONTEXT)
                                                             .tab_index(0)
                                                             .cursor_pointer()
                                                             .on_click(cx.listener(
                                                                 move |this, _, _, cx| {
-                                                                    this.toggle_run(
-                                                                        run_id.clone(),
-                                                                        cx,
-                                                                    );
+                                                                    this.toggle_run(run_ref.clone(), cx);
                                                                 },
                                                             ))
                                                             .on_action(cx.listener(
@@ -596,10 +611,7 @@ impl ViewerApp {
                                                                       _: &ActivateSelection,
                                                                       _,
                                                                       cx| {
-                                                                    this.toggle_run(
-                                                                        action_run_id.clone(),
-                                                                        cx,
-                                                                    );
+                                                                    this.toggle_run(action_run.clone(), cx);
                                                                 },
                                                             ))
                                                 })
@@ -843,6 +855,10 @@ impl ViewerApp {
             }))
             .children(self.hover.as_ref().map(|hover| {
                 components::tooltip(theme)
+                    .id(SharedString::from(format!(
+                        "hover-tooltip:{}",
+                        hover.run_ref.cache_key()
+                    )))
                     .absolute()
                     .top(px(84.))
                     .left(px(100.))
@@ -857,13 +873,13 @@ impl ViewerApp {
             .flex()
             .flex_wrap()
             .gap_3()
-            .children(snapshot.series.iter().enumerate().map(|(index, curve)| {
+            .children(snapshot.series.iter().map(|curve| {
                 let drawable = matches!(
                     curve.evidence.completeness,
                     EvidenceCompleteness::Complete | EvidenceCompleteness::Partial
                 );
                 let color = if drawable {
-                    colors.series_color(index)
+                    colors.series_color(renderer::series_color_index(&curve.run_ref))
                 } else {
                     colors.disabled
                 };
@@ -1274,6 +1290,8 @@ fn reasons_label(reasons: &[EvidenceReason]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use pulseon_model::run::RunId;
+
     use super::*;
 
     #[test]
@@ -1306,6 +1324,11 @@ mod tests {
     #[test]
     fn hover_value_line_avoids_duplicate_step_but_retains_step_for_elapsed_axis() {
         let hover = HoverPoint {
+            run_ref: RunRef::new(
+                DataSourceId::from_string("source"),
+                ProjectId::from_string("project"),
+                RunId::from_string("run"),
+            ),
             run_name: "run".to_owned(),
             metric_key: "loss".to_owned(),
             axis_value: 2_904,
@@ -1452,7 +1475,9 @@ mod tests {
             metric_count: usize,
         ) {
             window
-                .update(cx, |viewer, _, cx| viewer.select_project(project_id, cx))
+                .update(cx, |viewer, _, cx| {
+                    viewer.select_project(project_id.clone(), cx)
+                })
                 .expect("viewer should remain open");
             wait_for_viewer(window, cx, |viewer| {
                 viewer
@@ -1461,7 +1486,15 @@ mod tests {
                     .is_some_and(|catalog| !catalog.runs.is_empty())
             });
             window
-                .update(cx, |viewer, _, cx| viewer.toggle_run(run_id, cx))
+                .update(cx, |viewer, _, cx| {
+                    let source_id = viewer
+                        .core
+                        .selection()
+                        .source_id
+                        .clone()
+                        .expect("fixture source should be selected");
+                    viewer.toggle_run(RunRef::new(source_id, project_id, run_id), cx)
+                })
                 .expect("viewer should remain open");
             wait_for_viewer(window, cx, |viewer| {
                 viewer

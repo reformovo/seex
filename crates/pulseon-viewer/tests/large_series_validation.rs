@@ -12,6 +12,7 @@ use pulseon_storage::ProjectConnection;
 use pulseon_storage::bootstrap::{
     CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
 };
+use pulseon_viewer::core::{DataSourceId, RunRef};
 use pulseon_viewer::query::{CurveSelection, CurveSnapshot, DetailRequest, OverviewRequest};
 use pulseon_viewer::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker};
 
@@ -108,6 +109,7 @@ fn build_fixture(backend: CatalogBackend) -> Result<(PathBuf, Vec<RunId>), Box<d
 
 fn measure(
     worker: &ReadWorker,
+    source_id: &DataSourceId,
     generation: &mut u64,
     label: &str,
     request: ReadRequest,
@@ -117,8 +119,9 @@ fn measure(
     for _ in 0..6 {
         *generation += 1;
         let started = Instant::now();
-        worker.submit(Generation(*generation), request.clone())?;
+        worker.submit(source_id.clone(), Generation(*generation), request.clone())?;
         let event = worker.recv_timeout(QUERY_TIMEOUT)?;
+        assert_eq!(&event.source_id, source_id);
         samples.push(started.elapsed());
         let snapshot = event.result?;
         first.get_or_insert(snapshot);
@@ -164,14 +167,21 @@ fn assert_snapshot(snapshot: &CurveSnapshot, budget: u32, max_total: usize, sour
 fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let (root, run_ids) = build_fixture(backend)?;
     let worker = ReadWorker::spawn(&root)?;
+    let source_id = DataSourceId::from_path(&root);
+    let project_id = ProjectId::from_string("viewer-scale");
     let selection = CurveSelection {
-        run_ids,
+        source_id: source_id.clone(),
+        runs: run_ids
+            .into_iter()
+            .map(|run_id| RunRef::new(source_id.clone(), project_id.clone(), run_id))
+            .collect(),
         metric_key: MetricKey::from_string("loss"),
         axis: AlignmentAxis::Step,
     };
     let mut generation = 0;
     let overview = measure(
         &worker,
+        &source_id,
         &mut generation,
         "overview",
         ReadRequest::Overview(OverviewRequest {
@@ -187,6 +197,7 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let full_viewport = AlignmentViewport::new(0, SOURCE_POINTS - 1)?;
     let full = measure(
         &worker,
+        &source_id,
         &mut generation,
         "full detail",
         ReadRequest::Detail(DetailRequest {
@@ -204,6 +215,7 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let narrow_viewport = AlignmentViewport::new(450_000, 550_000)?;
     let narrow = measure(
         &worker,
+        &source_id,
         &mut generation,
         "narrow detail",
         ReadRequest::Detail(DetailRequest {

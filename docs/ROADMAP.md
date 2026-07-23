@@ -261,7 +261,7 @@ roadmap phase identifiers.
 
 ##### Workbench Identity and Multi-Source Reads
 
-- [ ] Add viewer-local `DataSourceId` and composite
+- [x] Add viewer-local `DataSourceId` and composite
   `RunRef = DataSourceId + ProjectId + RunId` identities. Use the full identity
   for selection, series colors, caches, hover, requests, and stale-result
   reconciliation while preserving existing storage/model identities.

@@ -1,3 +1,5 @@
+use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 
 use pulseon_chart_core::{AxisRange, BrushState};
@@ -11,6 +13,60 @@ use crate::query::CurveSnapshot;
 use crate::worker::{Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot};
 
 pub const MAX_SELECTED_RUNS: usize = 10;
+
+/// Stable viewer-local identity for one imported native source.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct DataSourceId(String);
+
+impl DataSourceId {
+    pub fn from_string(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn from_path(path: &Path) -> Self {
+        Self(path.to_string_lossy().into_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DataSourceId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Collision-free identity for one Run selected from an imported source.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct RunRef {
+    pub source_id: DataSourceId,
+    pub project_id: ProjectId,
+    pub run_id: RunId,
+}
+
+impl RunRef {
+    pub const fn new(source_id: DataSourceId, project_id: ProjectId, run_id: RunId) -> Self {
+        Self {
+            source_id,
+            project_id,
+            run_id,
+        }
+    }
+
+    pub fn cache_key(&self) -> String {
+        format!(
+            "{}:{}{}:{}{}:{}",
+            self.source_id.as_str().len(),
+            self.source_id.as_str(),
+            self.project_id.as_str().len(),
+            self.project_id.as_str(),
+            self.run_id.as_str().len(),
+            self.run_id.as_str(),
+        )
+    }
+}
 
 /// Matches a Run by name, identifier, or lifecycle status.
 pub fn run_matches_filter(run: &Run, query: &str) -> bool {
@@ -39,8 +95,9 @@ fn run_fields_match_filter(name: &str, run_id: &str, status: &str, query: &str) 
 /// Stable identities selected by the viewer independently of rendered widgets.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ViewerSelection {
+    pub source_id: Option<DataSourceId>,
     pub project_id: Option<ProjectId>,
-    pub run_ids: Vec<RunId>,
+    pub runs: Vec<RunRef>,
     pub metric_key: Option<MetricKey>,
 }
 
@@ -67,8 +124,14 @@ pub struct ViewerCore {
     catalog: Option<CatalogSnapshot>,
     overview: Option<Arc<CurveSnapshot>>,
     detail: Option<Arc<CurveSnapshot>>,
-    expected: [Option<Generation>; 3],
+    expected: [Option<ExpectedRequest>; 3],
     last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExpectedRequest {
+    generation: Generation,
+    source_id: DataSourceId,
 }
 
 impl Default for ViewerCore {
@@ -80,7 +143,7 @@ impl Default for ViewerCore {
             catalog: None,
             overview: None,
             detail: None,
-            expected: [None; 3],
+            expected: [const { None }; 3],
             last_error: None,
         }
     }
@@ -144,8 +207,9 @@ impl ViewerCore {
     }
 
     /// Clears all state associated with the currently open source.
-    pub fn reset_source(&mut self) {
+    pub fn reset_source(&mut self, source_id: DataSourceId) {
         *self = Self::default();
+        self.selection.source_id = Some(source_id);
     }
 
     pub fn select_project(&mut self, project_id: Option<ProjectId>) {
@@ -153,6 +217,7 @@ impl ViewerCore {
             return;
         }
         self.selection = ViewerSelection {
+            source_id: self.selection.source_id.clone(),
             project_id,
             ..ViewerSelection::default()
         };
@@ -168,21 +233,21 @@ impl ViewerCore {
     /// # Errors
     ///
     /// Returns [`SelectionError::RunLimit`] when adding an eleventh Run.
-    pub fn toggle_run(&mut self, run_id: RunId) -> Result<bool, SelectionError> {
+    pub fn toggle_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
         if let Some(index) = self
             .selection
-            .run_ids
+            .runs
             .iter()
-            .position(|selected| selected == &run_id)
+            .position(|selected| selected == &run)
         {
-            self.selection.run_ids.remove(index);
+            self.selection.runs.remove(index);
             self.clear_curves();
             return Ok(false);
         }
-        if self.selection.run_ids.len() == MAX_SELECTED_RUNS {
+        if self.selection.runs.len() == MAX_SELECTED_RUNS {
             return Err(SelectionError::RunLimit);
         }
-        self.selection.run_ids.push(run_id);
+        self.selection.runs.push(run);
         self.clear_curves();
         Ok(true)
     }
@@ -210,8 +275,16 @@ impl ViewerCore {
     }
 
     /// Marks one request stream pending without clearing its current snapshot.
-    pub fn begin(&mut self, generation: Generation, request: &ReadRequest) {
-        self.expected[kind_index(request.kind())] = Some(generation);
+    pub fn begin(
+        &mut self,
+        generation: Generation,
+        source_id: DataSourceId,
+        request: &ReadRequest,
+    ) {
+        self.expected[kind_index(request.kind())] = Some(ExpectedRequest {
+            generation,
+            source_id,
+        });
         self.last_error = None;
     }
 
@@ -222,7 +295,10 @@ impl ViewerCore {
     /// Applies only the result currently expected for its independent stream.
     pub fn apply(&mut self, event: ReadEvent) -> ApplyOutcome {
         let index = kind_index(event.kind);
-        if self.expected[index] != Some(event.generation) {
+        let Some(expected) = self.expected[index].as_ref() else {
+            return ApplyOutcome::IgnoredStale;
+        };
+        if expected.generation != event.generation || expected.source_id != event.source_id {
             return ApplyOutcome::IgnoredStale;
         }
         if event
@@ -255,14 +331,16 @@ impl ViewerCore {
             });
         let previous = self.selection.clone();
         if !project_exists {
-            self.selection = ViewerSelection::default();
+            self.selection = ViewerSelection {
+                source_id: self.selection.source_id.clone(),
+                ..ViewerSelection::default()
+            };
         } else {
-            self.selection.run_ids = snapshot
-                .runs
-                .iter()
-                .filter(|run| self.selection.run_ids.contains(&run.run_id))
-                .map(|run| run.run_id.clone())
-                .collect();
+            self.selection.runs.retain(|selected| {
+                snapshot.runs.iter().any(|run| {
+                    run.project_id == selected.project_id && run.run_id == selected.run_id
+                })
+            });
             if self
                 .selection
                 .metric_key
@@ -323,6 +401,18 @@ mod tests {
 
     use super::*;
 
+    fn source_id(value: &str) -> DataSourceId {
+        DataSourceId::from_string(value)
+    }
+
+    fn run_ref(source: &str, project: &str, run: &str) -> RunRef {
+        RunRef::new(
+            source_id(source),
+            ProjectId::from_string(project),
+            RunId::from_string(run),
+        )
+    }
+
     fn curves() -> CurveSnapshot {
         CurveSnapshot {
             viewport: AlignmentViewport::new(0, 1).expect("test viewport should be valid"),
@@ -332,8 +422,9 @@ mod tests {
         }
     }
 
-    fn detail_event(generation: u64) -> ReadEvent {
+    fn detail_event(source: &str, generation: u64) -> ReadEvent {
         ReadEvent {
+            source_id: source_id(source),
             generation: Generation(generation),
             kind: ReadKind::Detail,
             result: Ok(ReadSnapshot::Detail(curves())),
@@ -345,19 +436,30 @@ mod tests {
         let mut core = ViewerCore::default();
         let request = ReadRequest::Detail(crate::query::DetailRequest {
             selection: crate::query::CurveSelection {
-                run_ids: Vec::new(),
+                source_id: source_id("source-a"),
+                runs: Vec::new(),
                 metric_key: MetricKey::from_string("loss"),
                 axis: pulseon_model::alignment::AlignmentAxis::Step,
             },
             viewport: AlignmentViewport::new(0, 1).expect("test viewport should be valid"),
             physical_width: 1_000,
         });
-        core.begin(Generation(1), &request);
-        assert_eq!(core.apply(detail_event(1)), ApplyOutcome::Applied);
-        core.begin(Generation(2), &request);
+        core.begin(Generation(1), source_id("source-a"), &request);
+        assert_eq!(
+            core.apply(detail_event("source-a", 1)),
+            ApplyOutcome::Applied
+        );
+        core.begin(Generation(2), source_id("source-a"), &request);
 
         assert!(core.detail().is_some() && core.is_pending(ReadKind::Detail));
-        assert_eq!(core.apply(detail_event(1)), ApplyOutcome::IgnoredStale);
+        assert_eq!(
+            core.apply(detail_event("source-b", 2)),
+            ApplyOutcome::IgnoredStale
+        );
+        assert_eq!(
+            core.apply(detail_event("source-a", 1)),
+            ApplyOutcome::IgnoredStale
+        );
         assert!(core.detail().is_some() && core.is_pending(ReadKind::Detail));
     }
 
@@ -380,15 +482,18 @@ mod tests {
 
     #[test]
     fn refresh_removes_missing_selection_and_curve_snapshots() {
+        let source_id = source_id("source-a");
         let mut core = ViewerCore::new(ViewerSelection {
+            source_id: Some(source_id.clone()),
             project_id: Some(ProjectId::from_string("removed")),
-            run_ids: vec![RunId::from_string("run-1")],
+            runs: vec![run_ref("source-a", "removed", "run-1")],
             metric_key: Some(MetricKey::from_string("loss")),
         });
         core.detail = Some(Arc::new(curves()));
         let request = ReadRequest::Discover(crate::model::DiscoveryRequest::default());
-        core.begin(Generation(1), &request);
+        core.begin(Generation(1), source_id.clone(), &request);
         let event = ReadEvent {
+            source_id: source_id.clone(),
             generation: Generation(1),
             kind: ReadKind::Catalog,
             result: Ok(ReadSnapshot::Catalog(CatalogSnapshot {
@@ -399,7 +504,13 @@ mod tests {
         };
 
         assert_eq!(core.apply(event), ApplyOutcome::Applied);
-        assert_eq!(core.selection(), &ViewerSelection::default());
+        assert_eq!(
+            core.selection(),
+            &ViewerSelection {
+                source_id: Some(source_id),
+                ..ViewerSelection::default()
+            }
+        );
         assert!(core.detail().is_none());
     }
 
@@ -408,7 +519,7 @@ mod tests {
         let mut core = ViewerCore::default();
         core.select_project(Some(ProjectId::from_string("project-1")));
         assert!(
-            core.toggle_run(RunId::from_string("run-1"))
+            core.toggle_run(run_ref("source-a", "project-1", "run-1"))
                 .expect("first Run should be selectable")
         );
         core.select_metric(Some(MetricKey::from_string("loss")));
@@ -416,7 +527,7 @@ mod tests {
         core.select_axis(AlignmentAxis::ElapsedTime);
 
         assert_eq!(core.axis(), AlignmentAxis::ElapsedTime);
-        assert_eq!(core.selection().run_ids.len(), 1);
+        assert_eq!(core.selection().runs.len(), 1);
         assert_eq!(
             core.selection().metric_key.as_ref().map(MetricKey::as_str),
             Some("loss")
@@ -428,15 +539,24 @@ mod tests {
     fn run_selection_enforces_the_ten_run_limit() {
         let mut core = ViewerCore::default();
         for index in 0..MAX_SELECTED_RUNS {
-            core.toggle_run(RunId::from_string(format!("run-{index}")))
+            core.toggle_run(run_ref("source-a", "project-1", &format!("run-{index}")))
                 .expect("first ten Runs should be selectable");
         }
 
         assert_eq!(
-            core.toggle_run(RunId::from_string("run-10")),
+            core.toggle_run(run_ref("source-a", "project-1", "run-10")),
             Err(SelectionError::RunLimit)
         );
-        assert_eq!(core.selection().run_ids.len(), MAX_SELECTED_RUNS);
+        assert_eq!(core.selection().runs.len(), MAX_SELECTED_RUNS);
+    }
+
+    #[test]
+    fn run_identity_distinguishes_identical_native_ids_from_different_sources() {
+        let first = run_ref("source-a", "project-1", "run-1");
+        let second = run_ref("source-b", "project-1", "run-1");
+
+        assert_ne!(first, second);
+        assert_ne!(first.cache_key(), second.cache_key());
     }
 
     #[test]

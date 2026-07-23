@@ -12,7 +12,7 @@ use pulseon_model::types::ProjectId;
 use pulseon_storage::StorageError;
 use pulseon_storage::bootstrap::CatalogBackend;
 use pulseon_viewer::SourceError;
-use pulseon_viewer::core::{ApplyOutcome, ViewerCore, ViewerSelection};
+use pulseon_viewer::core::{ApplyOutcome, DataSourceId, RunRef, ViewerCore, ViewerSelection};
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
 use pulseon_viewer::worker::{
@@ -37,16 +37,29 @@ impl Fixture {
     }
 
     fn selection(&self) -> CurveSelection {
+        let source_id = self.source_id();
         CurveSelection {
-            run_ids: vec![
-                self.complete_run_id.clone(),
-                self.running_run_id.clone(),
-                self.invalid_run_id.clone(),
-                self.unavailable_run_id.clone(),
-            ],
+            source_id: source_id.clone(),
+            runs: [
+                &self.complete_run_id,
+                &self.running_run_id,
+                &self.invalid_run_id,
+                &self.unavailable_run_id,
+            ]
+            .into_iter()
+            .map(|run_id| RunRef::new(source_id.clone(), self.project_id.clone(), run_id.clone()))
+            .collect(),
             metric_key: MetricKey::from_string("loss"),
             axis: AlignmentAxis::Step,
         }
+    }
+
+    fn source_id(&self) -> DataSourceId {
+        DataSourceId::from_path(self.root_path())
+    }
+
+    fn run_ref(&self, run_id: &RunId) -> RunRef {
+        RunRef::new(self.source_id(), self.project_id.clone(), run_id.clone())
     }
 }
 
@@ -141,12 +154,14 @@ fn fixture(backend: CatalogBackend, absolute_paths: bool) -> Result<Fixture, Box
 
 fn read(
     worker: &ReadWorker,
+    source_id: DataSourceId,
     generation: u64,
     request: ReadRequest,
 ) -> Result<ReadSnapshot, Box<dyn Error>> {
     let expected_kind = request.kind();
-    worker.submit(Generation(generation), request)?;
+    worker.submit(source_id.clone(), Generation(generation), request)?;
     let event = worker.recv_timeout(EVENT_TIMEOUT)?;
+    assert_eq!(event.source_id, source_id);
     assert_eq!(event.generation, Generation(generation));
     assert_eq!(event.kind, expected_kind);
     Ok(event.result?)
@@ -154,11 +169,22 @@ fn read(
 
 fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(), Box<dyn Error>> {
     let worker = ReadWorker::spawn(fixture.root_path())?;
+    let source_id = fixture.source_id();
+    let selection = fixture.selection();
     let discovery_request = DiscoveryRequest {
         project_id: Some(fixture.project_id.clone()),
-        selected_run_ids: fixture.selection().run_ids,
+        selected_run_ids: selection
+            .runs
+            .iter()
+            .map(|run| run.run_id.clone())
+            .collect(),
     };
-    let catalog = match read(&worker, 1, ReadRequest::Discover(discovery_request.clone()))? {
+    let catalog = match read(
+        &worker,
+        source_id.clone(),
+        1,
+        ReadRequest::Discover(discovery_request.clone()),
+    )? {
         ReadSnapshot::Catalog(snapshot) => snapshot,
         other => return Err(format!("unexpected discovery snapshot: {other:?}").into()),
     };
@@ -177,7 +203,12 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
         selection: fixture.selection(),
         physical_width: 1,
     };
-    let overview = match read(&worker, 2, ReadRequest::Overview(overview_request))? {
+    let overview = match read(
+        &worker,
+        source_id.clone(),
+        2,
+        ReadRequest::Overview(overview_request),
+    )? {
         ReadSnapshot::Overview(snapshot) => snapshot,
         other => return Err(format!("unexpected overview snapshot: {other:?}").into()),
     };
@@ -217,12 +248,14 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
     );
 
     let detail_selection = CurveSelection {
-        run_ids: vec![fixture.complete_run_id.clone()],
+        source_id: source_id.clone(),
+        runs: vec![fixture.run_ref(&fixture.complete_run_id)],
         metric_key: MetricKey::from_string("loss"),
         axis: AlignmentAxis::Step,
     };
     let full_detail = match read(
         &worker,
+        source_id.clone(),
         3,
         ReadRequest::Detail(DetailRequest {
             selection: detail_selection.clone(),
@@ -242,7 +275,12 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
         viewport: AlignmentViewport::new(500, 1_500)?,
         physical_width: 1,
     };
-    let detail = match read(&worker, 4, ReadRequest::Detail(detail_request.clone()))? {
+    let detail = match read(
+        &worker,
+        source_id,
+        4,
+        ReadRequest::Detail(detail_request.clone()),
+    )? {
         ReadSnapshot::Detail(snapshot) => snapshot,
         other => return Err(format!("unexpected detail snapshot: {other:?}").into()),
     };
@@ -278,19 +316,26 @@ fn assert_core_contract(
     detail_request: DetailRequest,
     detail: pulseon_viewer::query::CurveSnapshot,
 ) -> Result<(), Box<dyn Error>> {
+    let source_id = fixture.source_id();
     let selection = ViewerSelection {
+        source_id: Some(source_id.clone()),
         project_id: Some(fixture.project_id.clone()),
-        run_ids: vec![fixture.complete_run_id.clone()],
+        runs: vec![fixture.run_ref(&fixture.complete_run_id)],
         metric_key: Some(MetricKey::from_string("loss")),
     };
     let mut core = ViewerCore::new(selection.clone());
     let discovery = ReadRequest::Discover(DiscoveryRequest {
         project_id: selection.project_id.clone(),
-        selected_run_ids: selection.run_ids.clone(),
+        selected_run_ids: selection
+            .runs
+            .iter()
+            .map(|run| run.run_id.clone())
+            .collect(),
     });
-    core.begin(Generation(10), &discovery);
+    core.begin(Generation(10), source_id.clone(), &discovery);
     assert_eq!(
         core.apply(ReadEvent {
+            source_id: source_id.clone(),
             generation: Generation(10),
             kind: ReadKind::Catalog,
             result: Ok(ReadSnapshot::Catalog(catalog)),
@@ -300,19 +345,21 @@ fn assert_core_contract(
     assert_eq!(core.selection(), &selection);
 
     let detail_read = ReadRequest::Detail(detail_request);
-    core.begin(Generation(11), &detail_read);
+    core.begin(Generation(11), source_id.clone(), &detail_read);
     assert_eq!(
         core.apply(ReadEvent {
+            source_id: source_id.clone(),
             generation: Generation(11),
             kind: ReadKind::Detail,
             result: Ok(ReadSnapshot::Detail(detail)),
         }),
         ApplyOutcome::Applied
     );
-    core.begin(Generation(12), &detail_read);
+    core.begin(Generation(12), source_id.clone(), &detail_read);
     assert!(core.detail().is_some() && core.is_pending(ReadKind::Detail));
     assert_eq!(
         core.apply(ReadEvent {
+            source_id,
             generation: Generation(12),
             kind: ReadKind::Detail,
             result: Err(WorkerError::Source(SourceError::UnsupportedS3)),
@@ -340,13 +387,16 @@ fn both_catalog_backends_preserve_query_and_refresh_contracts() -> Result<(), Bo
 fn worker_reports_a_missing_catalog_without_creating_it() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     let worker = ReadWorker::spawn(root.path())?;
+    let source_id = DataSourceId::from_path(root.path());
     worker.submit(
+        source_id.clone(),
         Generation(1),
         ReadRequest::Discover(DiscoveryRequest::default()),
     )?;
 
     let event = worker.recv_timeout(EVENT_TIMEOUT)?;
 
+    assert_eq!(event.source_id, source_id);
     assert!(matches!(
         event.result,
         Err(WorkerError::Source(SourceError::Storage(
