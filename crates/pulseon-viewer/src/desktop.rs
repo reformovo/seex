@@ -8,7 +8,7 @@ use gpui::{
     App, Application, Bounds, Context, FocusHandle, KeyBinding, KeyDownEvent,
     ListHorizontalSizingBehavior, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent, SharedString, SystemMenuType, Task,
-    Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, rgb, size, uniform_list,
+    Window, WindowBounds, WindowOptions, actions, div, prelude::*, px, size, uniform_list,
 };
 use pulseon_chart_core::BrushState;
 use pulseon_model::alignment::AlignmentAxis;
@@ -24,8 +24,10 @@ use pulseon_viewer::worker::{
 };
 
 mod renderer;
+mod theme;
 
 use renderer::{ChartAdapter, HoverPoint};
+use theme::ViewerTheme;
 
 #[derive(Clone, Copy, Debug)]
 enum DragGesture {
@@ -149,6 +151,7 @@ fn menus() -> Vec<Menu> {
 }
 
 struct ViewerApp {
+    theme: ViewerTheme,
     focus: FocusHandle,
     filter_focus: FocusHandle,
     run_filter: String,
@@ -174,6 +177,7 @@ impl ViewerApp {
         let focus = cx.focus_handle();
         focus.focus(window);
         let mut app = Self {
+            theme: ViewerTheme::for_appearance(window.appearance()),
             focus,
             filter_focus: cx.focus_handle().tab_stop(true),
             run_filter: String::new(),
@@ -440,6 +444,7 @@ impl ViewerApp {
     }
 
     fn render_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = self.theme;
         let catalog = self
             .core
             .catalog()
@@ -461,15 +466,16 @@ impl ViewerApp {
             .overflow_hidden()
             .child(
                 div()
-                    .w(px(360.))
+                    .w(theme.spacing.sidebar_width)
                     .h_full()
                     .flex()
                     .flex_col()
-                    .gap_3()
-                    .p_4()
+                    .gap(theme.spacing.content_gap)
+                    .p(theme.spacing.panel_padding)
+                    .bg(theme.colors.panel)
                     .border_r_1()
-                    .border_color(rgb(0xd8dadd))
-                    .child(section_label("Project"))
+                    .border_color(theme.colors.border)
+                    .child(section_label("Project", theme))
                     .child(
                         uniform_list(
                             "projects",
@@ -489,14 +495,21 @@ impl ViewerApp {
                                             .debug_selector(move || format!("project-row-{index}"))
                                             .key_context(SELECTABLE_CONTEXT)
                                             .tab_index(0)
-                                            .h(px(40.))
+                                            .h(theme.spacing.tree_row_height)
                                             .cursor_pointer()
                                             .px_3()
-                                            .rounded_md()
+                                            .rounded(theme.spacing.corner_radius)
                                             .flex()
                                             .items_center()
-                                            .when(selected, |row| row.bg(rgb(0xdbeafe)))
-                                            .focus(|style| style.bg(rgb(0xe0e7ff)))
+                                            .when(selected, |row| {
+                                                row.bg(theme.colors.element_active)
+                                            })
+                                            .hover(|style| {
+                                                style.bg(theme.colors.element_hover)
+                                            })
+                                            .focus(|style| {
+                                                style.border_1().border_color(theme.colors.focus)
+                                            })
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.select_project(project_id.clone(), cx);
                                             }))
@@ -518,9 +531,10 @@ impl ViewerApp {
                     )
                     .when(has_project, |sidebar| {
                         sidebar
-                            .child(section_label(&format!(
-                                "Runs ({selected_count}/{MAX_SELECTED_RUNS})"
-                            )))
+                            .child(section_label(
+                                &format!("Runs ({selected_count}/{MAX_SELECTED_RUNS})"),
+                                theme,
+                            ))
                             .child(
                                 div()
                                     .id("run-filter")
@@ -528,11 +542,12 @@ impl ViewerApp {
                                     .cursor_text()
                                     .px_3()
                                     .py_2()
-                                    .rounded_md()
+                                    .h(theme.spacing.control_height)
+                                    .rounded(theme.spacing.corner_radius)
                                     .border_1()
-                                    .border_color(rgb(0xc7cbd1))
+                                    .border_color(theme.colors.border)
                                     .debug_selector(|| "run-filter".to_owned())
-                                    .focus(|style| style.border_color(rgb(0x2563eb)))
+                                    .focus(|style| style.border_color(theme.colors.focus))
                                     .on_key_down(cx.listener(Self::on_filter_key))
                                     .on_click(move |_, window, _| filter_focus.focus(window))
                                     .child(if self.run_filter.is_empty() {
@@ -565,7 +580,7 @@ impl ViewerApp {
                                                     .debug_selector(move || {
                                                         format!("run-row-{index}")
                                                     })
-                                                    .h(px(40.))
+                                                    .h(theme.spacing.tree_row_height)
                                                     .flex()
                                                     .flex_row()
                                                     .items_center()
@@ -573,16 +588,23 @@ impl ViewerApp {
                                                     .px_3()
                                                     .whitespace_nowrap()
                                                     .border_b_1()
-                                                    .border_color(rgb(0xe5e7eb))
-                                                    .when(selected, |row| row.bg(rgb(0xecfdf5)))
+                                                    .border_color(theme.colors.border)
+                                                    .when(selected, |row| {
+                                                        row.bg(theme.colors.element_active)
+                                                    })
                                                     .when(!can_toggle, |row| row.opacity(0.45))
                                                     .when(can_toggle, |row| {
                                                         let action_run_id = run_id.clone();
                                                         row.key_context(SELECTABLE_CONTEXT)
                                                             .tab_index(0)
                                                             .cursor_pointer()
+                                                            .hover(|style| {
+                                                                style.bg(theme.colors.element_hover)
+                                                            })
                                                             .focus(|style| {
-                                                                style.bg(rgb(0xe0e7ff))
+                                                                style
+                                                                    .border_1()
+                                                                    .border_color(theme.colors.focus)
                                                             })
                                                             .on_click(cx.listener(
                                                                 move |this, _, _, cx| {
@@ -616,7 +638,7 @@ impl ViewerApp {
                                                             })
                                                             .flex_shrink_0()
                                                             .text_xs()
-                                                            .text_color(rgb(0x6b7280))
+                                                            .text_color(theme.colors.text_muted)
                                                             .child(format!(
                                                                 "{} · {}",
                                                                 run.run_id.as_str(),
@@ -633,7 +655,7 @@ impl ViewerApp {
                                 .debug_selector(|| "runs-list".to_owned())
                                 .h(px(300.)),
                             )
-                            .child(section_label("Metric"))
+                            .child(section_label("Metric", theme))
                             .child(
                                 uniform_list(
                                     "metrics",
@@ -655,14 +677,23 @@ impl ViewerApp {
                                                     })
                                                     .key_context(SELECTABLE_CONTEXT)
                                                     .tab_index(0)
-                                                    .h(px(40.))
+                                                    .h(theme.spacing.tree_row_height)
                                                     .cursor_pointer()
                                                     .px_3()
-                                                    .rounded_md()
+                                                    .rounded(theme.spacing.corner_radius)
                                                     .flex()
                                                     .items_center()
-                                                    .when(selected, |row| row.bg(rgb(0xdbeafe)))
-                                                    .focus(|style| style.bg(rgb(0xe0e7ff)))
+                                                    .when(selected, |row| {
+                                                        row.bg(theme.colors.element_active)
+                                                    })
+                                                    .hover(|style| {
+                                                        style.bg(theme.colors.element_hover)
+                                                    })
+                                                    .focus(|style| {
+                                                        style
+                                                            .border_1()
+                                                            .border_color(theme.colors.focus)
+                                                    })
                                                     .on_click(cx.listener(move |this, _, _, cx| {
                                                         this.select_metric(
                                                             selected_metric.clone(),
@@ -695,6 +726,7 @@ impl ViewerApp {
     }
 
     fn render_detail(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = self.theme;
         let Some(snapshot) = self.core.detail_shared() else {
             let overview = self.core.overview_shared();
             let message =
@@ -703,8 +735,8 @@ impl ViewerApp {
                 .size_full()
                 .flex()
                 .flex_col()
-                .p_5()
-                .gap_3()
+                .p(theme.spacing.content_padding)
+                .gap(theme.spacing.content_gap)
                 .children(
                     overview
                         .as_ref()
@@ -744,8 +776,8 @@ impl ViewerApp {
             .size_full()
             .flex()
             .flex_col()
-            .p_5()
-            .gap_3()
+            .p(theme.spacing.content_padding)
+            .gap(theme.spacing.content_gap)
             .child(self.render_legend(&snapshot))
             .child(
                 div()
@@ -760,7 +792,7 @@ impl ViewerApp {
                             .flex_col()
                             .justify_between()
                             .text_xs()
-                            .text_color(rgb(0x6b7280))
+                            .text_color(theme.colors.text_muted)
                             .children(y_ticks.iter().rev().map(|value| format_tick(*value))),
                     )
                     .child(
@@ -772,8 +804,8 @@ impl ViewerApp {
                             .flex_1()
                             .h_full()
                             .border_1()
-                            .border_color(rgb(0xd1d5db))
-                            .bg(rgb(0xffffff))
+                            .border_color(theme.colors.border)
+                            .bg(theme.colors.surface)
                             .child(
                                 renderer::detail_canvas(
                                     adapter,
@@ -834,7 +866,7 @@ impl ViewerApp {
                     .flex()
                     .justify_between()
                     .text_xs()
-                    .text_color(rgb(0x6b7280))
+                    .text_color(theme.colors.text_muted)
                     .children(x_ticks.into_iter().map(format_tick)),
             )
             .child(
@@ -852,8 +884,9 @@ impl ViewerApp {
                     .right(px(28.))
                     .px_3()
                     .py_2()
-                    .rounded_md()
-                    .bg(rgb(0xfef3c7))
+                    .rounded(theme.spacing.corner_radius)
+                    .bg(theme.colors.warning_background)
+                    .text_color(theme.colors.warning_text)
                     .text_sm()
                     .child("Updating viewport…")
             }))
@@ -864,9 +897,9 @@ impl ViewerApp {
                     .left(px(100.))
                     .px_3()
                     .py_2()
-                    .rounded_md()
-                    .bg(rgb(0x111827))
-                    .text_color(rgb(0xffffff))
+                    .rounded(theme.spacing.corner_radius)
+                    .bg(theme.colors.tooltip_background)
+                    .text_color(theme.colors.tooltip_text)
                     .text_sm()
                     .child(format!("{} · {}", hover.run_name, hover.metric_key))
                     .child(hover_value_line(axis, hover))
@@ -874,6 +907,7 @@ impl ViewerApp {
     }
 
     fn render_legend(&self, snapshot: &pulseon_viewer::query::CurveSnapshot) -> gpui::Div {
+        let colors = self.theme.colors;
         div()
             .flex()
             .flex_wrap()
@@ -884,9 +918,9 @@ impl ViewerApp {
                     EvidenceCompleteness::Complete | EvidenceCompleteness::Partial
                 );
                 let color = if drawable {
-                    renderer::series_color(index)
+                    colors.series_color(index)
                 } else {
-                    rgb(0x9ca3af)
+                    colors.disabled
                 };
                 let evidence = format!(
                     "{:?}{}",
@@ -899,11 +933,17 @@ impl ViewerApp {
                     .gap_2()
                     .child(div().size(px(10.)).rounded_full().bg(color))
                     .child(curve.run.name.clone())
-                    .child(div().text_xs().text_color(rgb(0x6b7280)).child(evidence))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(colors.text_muted)
+                            .child(evidence),
+                    )
             }))
     }
 
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = self.theme;
         let Some(snapshot) = self.core.overview_shared() else {
             return div().h(px(96.));
         };
@@ -928,8 +968,8 @@ impl ViewerApp {
                     .relative()
                     .cursor_pointer()
                     .border_1()
-                    .border_color(rgb(0xd1d5db))
-                    .bg(rgb(0xffffff))
+                    .border_color(theme.colors.border)
+                    .bg(theme.colors.surface)
                     .child(
                         renderer::overview_canvas(
                             adapter,
@@ -965,7 +1005,7 @@ impl ViewerApp {
                     .flex()
                     .justify_between()
                     .text_xs()
-                    .text_color(rgb(0x6b7280))
+                    .text_color(theme.colors.text_muted)
                     .child(format_tick(selected.start()))
                     .child(format_tick(selected.end())),
             )
@@ -1106,6 +1146,8 @@ impl ViewerApp {
 
 impl Render for ViewerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.theme = ViewerTheme::for_appearance(window.appearance());
+        let theme = self.theme;
         self.reconcile_canvas_widths(window.scale_factor());
         let source = self.source_path.as_ref().map_or_else(
             || "No project open".to_owned(),
@@ -1128,8 +1170,8 @@ impl Render for ViewerApp {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(0xf7f7f8))
-            .text_color(rgb(0x202124))
+            .bg(theme.colors.window)
+            .text_color(theme.colors.text)
             .child(
                 div()
                     .flex()
@@ -1137,16 +1179,22 @@ impl Render for ViewerApp {
                     .justify_between()
                     .px_5()
                     .py_3()
+                    .bg(theme.colors.panel)
                     .border_b_1()
-                    .border_color(rgb(0xd8dadd))
+                    .border_color(theme.colors.border)
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child("PulseOn Viewer"),
                     )
-                    .child(div().text_sm().text_color(rgb(0x6b7280)).child(source)),
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(theme.colors.text_muted)
+                            .child(source),
+                    ),
             )
-            .children(error.clone().map(error_banner))
+            .children(error.clone().map(|message| error_banner(message, theme)))
             .child(if has_catalog {
                 self.render_workspace(cx)
             } else {
@@ -1167,10 +1215,11 @@ impl Render for ViewerApp {
                             .cursor_pointer()
                             .px_4()
                             .py_2()
-                            .rounded_md()
-                            .bg(rgb(0x2563eb))
-                            .focus(|style| style.bg(rgb(0x1d4ed8)))
-                            .text_color(rgb(0xffffff))
+                            .rounded(theme.spacing.corner_radius)
+                            .bg(theme.colors.accent)
+                            .hover(|style| style.bg(theme.colors.accent_hover))
+                            .focus(|style| style.border_1().border_color(theme.colors.focus))
+                            .text_color(theme.colors.accent_text)
                             .on_click(cx.listener(|this, _, _, cx| this.open_picker(cx)))
                             .on_action(cx.listener(|this, _: &ActivateSelection, _, cx| {
                                 this.open_picker(cx)
@@ -1181,23 +1230,23 @@ impl Render for ViewerApp {
     }
 }
 
-fn section_label(label: &str) -> gpui::Div {
+fn section_label(label: &str, theme: ViewerTheme) -> gpui::Div {
     div()
         .text_xs()
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(rgb(0x6b7280))
+        .text_color(theme.colors.text_muted)
         .child(label.to_owned())
 }
 
-fn error_banner(message: String) -> gpui::Div {
+fn error_banner(message: String, theme: ViewerTheme) -> gpui::Div {
     div()
         .mx_5()
         .mt_3()
         .px_4()
         .py_3()
-        .rounded_md()
-        .bg(rgb(0xfee2e2))
-        .text_color(rgb(0x991b1b))
+        .rounded(theme.spacing.corner_radius)
+        .bg(theme.colors.error_background)
+        .text_color(theme.colors.error_text)
         .child(message)
 }
 
@@ -1517,7 +1566,10 @@ mod tests {
             let second_row_before = cx
                 .debug_bounds("run-row-1")
                 .expect("second Run row should be rendered");
-            assert_eq!(first_row_before.size.height, px(40.));
+            let expected_row_height = window
+                .read_with(&cx, |viewer, _| viewer.theme.spacing.tree_row_height)
+                .expect("viewer should remain open");
+            assert_eq!(first_row_before.size.height, expected_row_height);
             assert!(first_row_before.size.width > list.size.width);
             assert!(cx.debug_bounds("run-row-11").is_none());
 

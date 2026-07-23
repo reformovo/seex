@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use gpui::{
     Bounds, ContentMask, Path, PathBuilder, Pixels, Point, Rgba, WindowAppearance, canvas, fill,
-    point, px, rgb, rgba, size,
+    point, px, size,
 };
 use pulseon_chart_core::{
     AxisRange, BrushState, CanvasSize, LinearScale, PathCache, ScreenPoint, Viewport,
@@ -12,6 +12,8 @@ use pulseon_chart_core::{
 use pulseon_model::alignment::AlignmentAxis;
 use pulseon_model::comparison::EvidenceCompleteness;
 use pulseon_viewer::query::CurveSnapshot;
+
+use super::theme::ViewerTheme;
 
 #[derive(Clone, Debug)]
 pub struct HoverPoint {
@@ -56,6 +58,7 @@ pub struct ChartAdapter {
 
 struct PreparedChart {
     paths: Vec<(Path<Pixels>, Rgba)>,
+    theme: ViewerTheme,
 }
 
 impl ChartAdapter {
@@ -77,6 +80,7 @@ impl ChartAdapter {
         bounds: Bounds<Pixels>,
         appearance: WindowAppearance,
     ) -> PreparedChart {
+        let theme = ViewerTheme::for_appearance(appearance);
         match kind {
             ChartKind::Detail => self.detail_bounds = Some(bounds),
             ChartKind::Overview => self.overview_bounds = Some(bounds),
@@ -84,12 +88,11 @@ impl ChartAdapter {
         let Ok(canvas) =
             CanvasSize::new(f64::from(bounds.size.width), f64::from(bounds.size.height))
         else {
-            return PreparedChart { paths: Vec::new() };
+            return PreparedChart {
+                paths: Vec::new(),
+                theme,
+            };
         };
-        let dark = matches!(
-            appearance,
-            WindowAppearance::Dark | WindowAppearance::VibrantDark
-        );
         let mut paths = Vec::new();
         for (index, curve) in snapshot.series.iter().enumerate() {
             let Some(series) = curve.chart_series.as_ref() else {
@@ -110,7 +113,7 @@ impl ChartAdapter {
                     f32::from(bounds.size.width).to_bits(),
                     f32::from(bounds.size.height).to_bits(),
                 ],
-                dark,
+                dark: theme.dark,
                 partial,
             };
             let (projection_cache, gpui_paths) = match kind {
@@ -156,9 +159,9 @@ impl ChartAdapter {
                 gpui_paths.insert(cache_id.to_owned(), (key, path.clone()));
                 path
             };
-            paths.push((path, series_color(index)));
+            paths.push((path, theme.colors.series_color(index)));
         }
-        PreparedChart { paths }
+        PreparedChart { paths, theme }
     }
 
     pub fn hit_test(
@@ -353,7 +356,7 @@ pub fn detail_canvas(
         },
         move |bounds, prepared, window, _| {
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
-                let grid = rgb(0xe5e7eb);
+                let grid = prepared.theme.colors.chart_grid;
                 for index in 0..=5 {
                     let ratio = index as f32 / 5.;
                     let x = bounds.origin.x + bounds.size.width * ratio;
@@ -414,7 +417,7 @@ pub fn overview_canvas(
                         point(start, bounds.origin.y),
                         size(end - start, bounds.size.height),
                     ),
-                    rgba(0x2563eb24),
+                    prepared.theme.colors.brush_selection,
                 ));
                 for x in [start, end] {
                     window.paint_quad(fill(
@@ -422,20 +425,12 @@ pub fn overview_canvas(
                             point(x - px(4.), bounds.origin.y),
                             size(px(8.), bounds.size.height),
                         ),
-                        rgb(0x2563eb),
+                        prepared.theme.colors.accent,
                     ));
                 }
             });
         },
     )
-}
-
-pub fn series_color(index: usize) -> Rgba {
-    const COLORS: [u32; 10] = [
-        0x2563eb, 0xdc2626, 0x059669, 0x7c3aed, 0xea580c, 0x0891b2, 0xdb2777, 0x65a30d, 0x4f46e5,
-        0x9333ea,
-    ];
-    rgb(COLORS[index % COLORS.len()])
 }
 
 pub const fn axis_value_label(axis: AlignmentAxis) -> &'static str {
@@ -514,15 +509,6 @@ mod tests {
         let bounds = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(40.)));
 
         assert_eq!(physical_width(Some(bounds), 2.), Some(800));
-    }
-
-    #[test]
-    fn first_ten_series_colors_are_distinct() {
-        for left in 0..10 {
-            for right in left + 1..10 {
-                assert_ne!(series_color(left), series_color(right));
-            }
-        }
     }
 
     #[test]

@@ -245,7 +245,7 @@ roadmap phase identifiers.
   Record any deliberate reference update. Do not follow a moving `main` during
   implementation. The durable source map and update procedure live in
   [`viewer-zed-ui-reference.md`](viewer-zed-ui-reference.md).
-- [ ] Add viewer-owned semantic theme and spacing tokens modeled on Zed's UI
+- [x] Add viewer-owned semantic theme and spacing tokens modeled on Zed's UI
   roles: window, panel, elevated surface, border, text, muted text, hover,
   active, focus, disabled, accent, and status. Remove feature-level hard-coded
   RGB values and preserve the same hierarchy in light and dark appearance.
