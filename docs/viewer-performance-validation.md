@@ -105,6 +105,31 @@ The multi-project workbench contract is covered by direct behavioral tests:
   duplicate-identity, unsupported-version, and missing-source recovery tests
   cover persistence and unavailable-source reconciliation without native writes.
 
+## Zed Reference Audit
+
+The workbench was compared against Zed commit
+`40dc154a7cc28270d2319873b0881ef053dc22b9` using the durable source map in
+`viewer-zed-ui-reference.md`. The review covered the same semantic roles and
+component boundaries at compact (600 x 520), default (800 x 600), and expanded
+(1440 x 900) logical window sizes.
+
+| Concern | Pinned-reference expectation | Viewer evidence | Result |
+| --- | --- | --- | --- |
+| Application shell | Full-height Project panel independent of the workspace; tabs remain inside the workspace | GPUI bounds keep the Project sidebar left of the Analysis workspace and keep the tab bar exactly within the Analysis bounds at all three sizes | Pass |
+| Tabs and toolbars | 32 px tab container, compact 28 px controls, one-pixel separators | The tab bar is 32 px, its selected interior is 31 px below the separator, and toolbar controls are 28 px | Pass |
+| Project tree and overlays | 28 px hierarchical rows, rounded selection, disclosure icons, searchable tree, restrained popover surface | Viewer-owned tree-row and popover primitives use the pinned tokens; the source action opens its in-panel popover in the GPUI interaction test | Pass |
+| Typography and spacing | Compact type hierarchy, muted secondary labels, 4 px radius, semantic panel spacing | Section labels, metadata, status, tooltip, and control text use shared theme roles; default-density tests pin 28/28/32 px geometry and the 4 px radius | Pass |
+| Interaction states | Hover, active, selected, focus, disabled, pending, and error use consistent semantic roles | Shared tab, tree-row, toolbar, icon, status, tooltip, and focus-ring primitives own these states; existing keyboard, unavailable-source, loading, selection-limit, and source-error tests exercise them | Pass |
+| Light and dark hierarchy | Identical structure with appearance-specific semantic palettes | Theme tests prove identical spacing and distinct window/panel/surface, text, focus, status, and series roles in light and dark appearances | Pass |
+| Display scale | Logical layout remains stable while storage/render budgets use physical pixels | The renderer scale test maps a 400 logical-pixel plot to 800 physical pixels at 2x without changing layout tokens | Pass |
+
+`application_shell_preserves_pinned_geometry_at_representative_sizes` is the
+repeatable shell audit. The GPUI test host does not emulate switching the
+macOS window appearance or display scale, so appearance hierarchy is verified
+directly from theme roles and physical scaling is verified at the renderer
+boundary. No visual-token or layout correction was required; stable element
+identifiers were added only so the shell regions can be measured.
+
 ## Verification
 
 Passed:

@@ -1337,7 +1337,7 @@ impl ViewerApp {
         cx.notify();
     }
 
-    fn render_project_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_project_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
         let sources = self.sources.sources().cloned().collect::<Vec<_>>();
         let selected_runs = self.views.active().runs.clone();
@@ -1353,6 +1353,8 @@ impl ViewerApp {
         }
 
         div()
+            .id("project-sidebar")
+            .debug_selector(|| "project-sidebar".to_owned())
             .w(self.project_sidebar_width)
             .h_full()
             .flex_shrink_0()
@@ -1470,6 +1472,9 @@ impl ViewerApp {
                                         menu_open,
                                         false,
                                     )
+                                    .debug_selector(move || {
+                                        format!("source-menu-{source_index}")
+                                    })
                                     .cursor_pointer()
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if this.source_menu.as_ref() == Some(&menu_source_id) {
@@ -1485,6 +1490,12 @@ impl ViewerApp {
                             )
                             .children(menu_open.then(|| {
                                 components::popover(theme)
+                                    .id(SharedString::from(format!(
+                                        "source-popover:{source_index}"
+                                    )))
+                                    .debug_selector(move || {
+                                        format!("source-popover-{source_index}")
+                                    })
                                     .ml_2()
                                     .mb_2()
                                     .flex()
@@ -3208,6 +3219,8 @@ impl Render for ViewerApp {
             .text_color(theme.colors.text)
             .child(
                 div()
+                    .id("application-header")
+                    .debug_selector(|| "application-header".to_owned())
                     .flex()
                     .items_center()
                     .justify_between()
@@ -3239,6 +3252,8 @@ impl Render for ViewerApp {
                     )
                     .child(
                         div()
+                            .id("analysis-workspace")
+                            .debug_selector(|| "analysis-workspace".to_owned())
                             .flex()
                             .flex_col()
                             .flex_1()
@@ -3246,6 +3261,8 @@ impl Render for ViewerApp {
                             .overflow_hidden()
                             .child(
                                 components::tab_bar(theme)
+                                    .id("analysis-tab-bar")
+                                    .debug_selector(|| "analysis-tab-bar".to_owned())
                                     .children(views.into_iter().enumerate().map(|(index, view)| {
                                         let selected = view.view_id == active_view_id;
                                         let activate_id = view.view_id.clone();
@@ -4080,6 +4097,62 @@ mod tests {
                 .debug_bounds("analysis-tab")
                 .expect("Analysis workspace should remain rendered");
             assert!(analysis_after.origin.x < analysis_before.origin.x);
+        }
+
+        #[gpui::test]
+        fn application_shell_preserves_pinned_geometry_at_representative_sizes(
+            cx: &mut TestAppContext,
+        ) {
+            let (root, _, _) = fixture_with_extent(100);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+
+            for window_size in [(600., 520.), (800., 600.), (1_440., 900.)] {
+                cx.simulate_resize(size(px(window_size.0), px(window_size.1)));
+                cx.run_until_parked();
+
+                let header = cx
+                    .debug_bounds("application-header")
+                    .expect("application header should render");
+                let sidebar = cx
+                    .debug_bounds("project-sidebar")
+                    .expect("Project sidebar should render");
+                let analysis = cx
+                    .debug_bounds("analysis-workspace")
+                    .expect("Analysis workspace should render");
+                let tab_bar = cx
+                    .debug_bounds("analysis-tab-bar")
+                    .expect("Analysis tab bar should render");
+                let tab = cx
+                    .debug_bounds("analysis-tab")
+                    .expect("active Analysis tab should render");
+                let control = cx
+                    .debug_bounds("duplicate-view")
+                    .expect("View toolbar control should render");
+
+                assert_eq!(header.size.width, px(window_size.0));
+                assert_eq!(sidebar.origin.y, header.origin.y + header.size.height);
+                assert_eq!(analysis.origin.x, sidebar.origin.x + sidebar.size.width);
+                assert_eq!(tab_bar.origin.x, analysis.origin.x);
+                assert_eq!(tab_bar.size.width, analysis.size.width);
+                assert_eq!(tab_bar.size.height, px(32.));
+                assert_eq!(tab.size.height, px(31.));
+                assert_eq!(control.size.height, px(28.));
+            }
+
+            let source_menu = cx
+                .debug_bounds("source-menu-0")
+                .expect("source menu control should render");
+            cx.simulate_click(source_menu.center(), Modifiers::default());
+            assert!(cx.debug_bounds("source-popover-0").is_some());
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.source_menu = None;
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
         }
 
         #[gpui::test]

@@ -352,7 +352,7 @@ roadmap phase identifiers.
   synchronized Metric tracks, click-versus-drag inspector behavior, exact
   Summary/Ranking evidence, independent dock visibility, stale results,
   persistence round trips, and unavailable-source recovery.
-- [ ] Compare the application shell, tabs, Project tree, toolbars, popovers,
+- [x] Compare the application shell, tabs, Project tree, toolbars, popovers,
   interaction states, typography, spacing, and light/dark hierarchy against the
   pinned Zed reference at representative window sizes and display scales.
 - [ ] Validate a representative View with 10 Runs and at least six visible
