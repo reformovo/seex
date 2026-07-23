@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod coordination;
 pub mod core;
 pub mod model;
 pub mod query;

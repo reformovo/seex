@@ -13,11 +13,11 @@ use crate::query::{CurveSnapshot, DetailRequest, OverviewRequest, QueryError};
 use crate::source::{ReadSession, SourceError};
 
 /// Monotonically increasing identity for one read request.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Generation(pub u64);
 
 /// Independent result streams maintained by the viewer Core.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ReadKind {
     Catalog,
     Overview,

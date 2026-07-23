@@ -269,7 +269,7 @@ roadmap phase identifiers.
   local native stores. Support DuckDB and SQLite together, keep each native
   connection worker-owned, lazily activate source sessions, and preserve
   source-specific loading and error state.
-- [ ] Fan panel reads out by source and merge immutable evidence at the viewer
+- [x] Fan panel reads out by source and merge immutable evidence at the viewer
   boundary. One source failure must not erase another source's drawable
   results, and inactive or superseded View/panel generations must be ignored.
 
