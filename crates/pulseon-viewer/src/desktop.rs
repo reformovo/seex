@@ -95,6 +95,8 @@ actions!(
         Refresh,
         ResetView,
         ToggleProjectSidebar,
+        ZoomIn,
+        ZoomOut,
         UseStep,
         UseElapsed,
         ActivateSelection,
@@ -113,6 +115,9 @@ pub fn run(project_path: Option<PathBuf>) {
                 KeyBinding::new("cmd-r", Refresh, None),
                 KeyBinding::new("cmd-shift-b", ToggleProjectSidebar, None),
                 KeyBinding::new("cmd-0", ResetView, None),
+                KeyBinding::new("cmd-=", ZoomIn, None),
+                KeyBinding::new("cmd-+", ZoomIn, None),
+                KeyBinding::new("cmd--", ZoomOut, None),
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("enter", ActivateSelection, Some(SELECTABLE_CONTEXT)),
                 KeyBinding::new("space", ActivateSelection, Some(SELECTABLE_CONTEXT)),
@@ -157,6 +162,8 @@ fn menus() -> Vec<Menu> {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Reset View", ResetView),
+                MenuItem::action("Zoom In", ZoomIn),
+                MenuItem::action("Zoom Out", ZoomOut),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Project Sidebar", ToggleProjectSidebar),
                 MenuItem::separator(),
@@ -697,9 +704,34 @@ impl ViewerApp {
     }
 
     fn on_reset(&mut self, _: &ResetView, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_task = None;
         if self.core.reset_view() {
             self.request_detail(cx);
         }
+        cx.notify();
+    }
+
+    fn on_zoom_in(&mut self, _: &ZoomIn, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_from_keyboard(1.25, cx);
+    }
+
+    fn on_zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
+        self.zoom_from_keyboard(0.8, cx);
+    }
+
+    fn zoom_from_keyboard(&mut self, factor: f64, cx: &mut Context<Self>) {
+        let Some(selected) = self.core.brush().map(|brush| brush.selected()) else {
+            return;
+        };
+        let anchor = selected.start() + selected.span() / 2.;
+        if self
+            .core
+            .brush_mut()
+            .is_none_or(|brush| brush.zoom_at(anchor, factor).is_err())
+        {
+            return;
+        }
+        self.schedule_detail_refresh(cx);
         cx.notify();
     }
 
@@ -1745,6 +1777,12 @@ impl ViewerApp {
         {
             return;
         }
+        self.schedule_detail_refresh(cx);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn schedule_detail_refresh(&mut self, cx: &mut Context<Self>) {
         let timer = cx.background_executor().timer(Duration::from_millis(100));
         self.zoom_task = Some(cx.spawn(async move |this, cx| {
             timer.await;
@@ -1753,8 +1791,6 @@ impl ViewerApp {
                 cx.notify();
             });
         }));
-        cx.stop_propagation();
-        cx.notify();
     }
 
     fn reconcile_canvas_widths(&mut self, scale_factor: f32, cx: &mut Context<Self>) {
@@ -1804,6 +1840,8 @@ impl Render for ViewerApp {
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
+            .on_action(cx.listener(Self::on_zoom_in))
+            .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_step))
             .on_action(cx.listener(Self::on_elapsed))
             .flex()
@@ -2768,6 +2806,67 @@ mod tests {
                     .read_with(&cx, |viewer, _| viewer.next_generation)
                     .expect("viewer should remain open"),
                 before + 1
+            );
+        }
+
+        #[gpui::test]
+        fn keyboard_zoom_reprojects_immediately_and_debounces_detail(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| viewer.core.detail().is_some());
+            window
+                .update(&mut cx, |_, _, cx| cx.notify())
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                !viewer.core.is_pending(ReadKind::Detail)
+            });
+            let (before_generation, before_span) = window
+                .read_with(&cx, |viewer, _| {
+                    (
+                        viewer.next_generation,
+                        viewer
+                            .core
+                            .brush()
+                            .expect("timeline brush should exist")
+                            .selected()
+                            .span(),
+                    )
+                })
+                .expect("viewer should remain open");
+
+            cx.dispatch_action(ZoomIn);
+            cx.dispatch_action(ZoomIn);
+            let immediate = window
+                .read_with(&cx, |viewer, _| {
+                    (
+                        viewer.next_generation,
+                        viewer
+                            .core
+                            .brush()
+                            .expect("timeline brush should exist")
+                            .selected()
+                            .span(),
+                    )
+                })
+                .expect("viewer should remain open");
+            assert_eq!(immediate.0, before_generation);
+            assert!(immediate.1 < before_span);
+
+            cx.executor().advance_clock(Duration::from_millis(101));
+            cx.run_until_parked();
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.next_generation)
+                    .expect("viewer should remain open"),
+                before_generation + 1
             );
         }
     }

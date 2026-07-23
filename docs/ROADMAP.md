@@ -303,7 +303,7 @@ roadmap phase identifiers.
   union of valid selected Run/metric extents; it renders navigation ticks and
   selection rather than a synthetic metric aggregation and spans only the
   chart-track column.
-- [ ] Support handle resize, selected-window pan, wheel/pinch zoom,
+- [x] Support handle resize, selected-window pan, wheel/pinch zoom,
   `Command-+`, `Command--`, and `Command-0`. Reproject cached evidence
   immediately, then use one View-level 100 ms trailing debounce before
   requesting visible-track detail.
