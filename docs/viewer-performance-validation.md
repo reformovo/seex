@@ -60,9 +60,9 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Brush resize | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush pan | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush zoom | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
-| Cached path preparation | 200 | 0.324 ms | 0.405 ms | 1.180 ms |
-| Uncached path preparation | 200 | 7.621 ms | 7.892 ms | 8.075 ms |
-| Hit testing | 200 | 0.196 ms | 0.208 ms | 0.255 ms |
+| Cached path preparation | 200 | 0.339 ms | 0.410 ms | 0.539 ms |
+| Uncached path preparation | 200 | 7.456 ms | 7.817 ms | 8.412 ms |
+| Hit testing | 200 | 0.190 ms | 0.207 ms | 0.223 ms |
 
 ## High-Refresh Product Check
 
@@ -129,6 +129,37 @@ macOS window appearance or display scale, so appearance hierarchy is verified
 directly from theme roles and physical scaling is verified at the renderer
 boundary. No visual-token or layout correction was required; stable element
 identifiers were added only so the shell regions can be measured.
+
+## Multi-Track Workbench Gate
+
+`representative_workbench_stays_responsive_while_a_source_is_pending` opens a
+2560 x 1800 logical-pixel workbench with 10 selected Runs, six simultaneously
+visible compact Metric tracks, and the Bottom inspector. Every track receives
+all 10 series. For each track, the test checks the storage-owned detail budget
+`clamp(physical_width * 2, 2,000, 10,000)` and allows only the two documented
+neighbor points per series. The million-point dual-backend validation above
+continues to prove the same budget boundary at production scale.
+
+The test then imports a second healthy native source. While its registry state
+is still `Loading`, keyboard zoom changes the shared viewport immediately, all
+10 Run selections and six panels remain intact, and the first track remains
+rendered. This uncovered and corrected a pre-existing import path that reset
+the active Core before background discovery; additional imports now discover
+their catalog without changing the active View.
+
+Cross-source reads remain bounded to four concurrent worker sessions by the
+shared registry gate, while each source worker serializes its own native
+connection. `concurrency_gate_blocks_reads_beyond_its_limit` verifies that an
+extra read waits for a permit, and pending-request tests verify latest-only
+coalescing per Metric panel.
+
+The release CPU command was rerun after the multi-track workbench test was
+added. Every p95 remained below 8.33 ms and every maximum remained below
+16.7 ms; the current measurements are recorded in the CPU table above.
+The representative gate is opt-in and was run with
+`cargo test -p pulseon-viewer --release --features test-support
+representative_workbench -- --ignored --nocapture` so hardware-sensitive GPUI
+window teardown is not part of ordinary debug test runs.
 
 ## Verification
 

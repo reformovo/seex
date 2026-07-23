@@ -437,6 +437,19 @@ impl ViewerApp {
 
     fn open_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let source_id = self.sources.import(path.clone());
+        self.local_error = None;
+        if self.core.selection().source_id.is_some() {
+            self.submit_to_source(
+                source_id,
+                ReadRequest::Discover(DiscoveryRequest {
+                    project_id: None,
+                    selected_run_ids: Vec::new(),
+                }),
+                false,
+                cx,
+            );
+            return;
+        }
         self.core.reset_source(source_id);
         self.run_list = RunListCache::default();
         self.chart_adapter.borrow_mut().clear();
@@ -447,7 +460,6 @@ impl ViewerApp {
         self.hover = None;
         self.drag = None;
         self.cancel_detail_refresh();
-        self.local_error = None;
         self.source_path = Some(path);
         self.refresh_catalog(cx);
     }
@@ -3755,6 +3767,21 @@ mod tests {
             metric_count: usize,
             run_count: usize,
         ) -> (tempfile::TempDir, ProjectId, RunId) {
+            fixture_with_run_coverage(metric_count, run_count, false)
+        }
+
+        fn fixture_with_complete_runs(
+            metric_count: usize,
+            run_count: usize,
+        ) -> (tempfile::TempDir, ProjectId, RunId) {
+            fixture_with_run_coverage(metric_count, run_count, true)
+        }
+
+        fn fixture_with_run_coverage(
+            metric_count: usize,
+            run_count: usize,
+            populate_all_runs: bool,
+        ) -> (tempfile::TempDir, ProjectId, RunId) {
             let root = tempfile::tempdir().expect("test directory should be created");
             let client = NativeClient::open(root.path()).expect("test client should open");
             let project = client
@@ -3772,13 +3799,22 @@ mod tests {
                         ))),
                     )
                     .expect("test Run should be created");
-                if run_index == 0 {
+                if run_index == 0 || populate_all_runs {
                     let handle = client.run_handle(run.clone());
                     for index in 0..metric_count {
                         let metric_key = format!("metric-{index}");
                         handle
-                            .log_metric_at_step(&metric_key, 0, index as f64)
+                            .log_metric_at_step(&metric_key, 0, (run_index + index) as f64)
                             .expect("test metric should be logged");
+                        if populate_all_runs {
+                            handle
+                                .log_metric_at_step(
+                                    &metric_key,
+                                    100,
+                                    (run_index + index + 1) as f64,
+                                )
+                                .expect("test metric extent should be logged");
+                        }
                     }
                 }
                 client
@@ -4399,7 +4435,12 @@ mod tests {
                     viewer.open_source(second.path().to_path_buf(), cx);
                 })
                 .expect("viewer should remain open");
-            wait_for_viewer(window, &cx, |viewer| viewer.sources.sources().len() == 2);
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.sources.sources().len() == 2
+                    && viewer.sources.sources().all(|source| {
+                        source.status == SourceStatus::Ready && !source.catalog.projects.is_empty()
+                    })
+            });
 
             for (root, project_id, run_id) in [
                 (first.path(), first_project, first_run),
@@ -4887,6 +4928,117 @@ mod tests {
                         .is_some_and(|panel| panel.detail.is_some())
             });
             assert!(cx.debug_bounds("metric-track:metric-9").is_some());
+        }
+
+        #[gpui::test]
+        #[ignore = "hardware-sensitive representative release workbench validation"]
+        fn representative_workbench_stays_responsive_while_a_source_is_pending(
+            cx: &mut TestAppContext,
+        ) {
+            assert!(
+                std::hint::black_box(!cfg!(debug_assertions)),
+                "workbench validation requires --release"
+            );
+            let (root, project_id, first_run_id) = fixture_with_complete_runs(6, 10);
+            let (pending_root, _, _) = fixture_with_extent(10);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            cx.simulate_resize(size(px(2_560.), px(1_800.)));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 6);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let source_id = viewer
+                        .core
+                        .selection()
+                        .source_id
+                        .clone()
+                        .expect("fixture source should be selected");
+                    for run_index in 1..10 {
+                        viewer.toggle_run(
+                            RunRef::new(
+                                source_id.clone(),
+                                project_id.clone(),
+                                RunId::from_string(format!(
+                                    "run-{run_index}-with-a-very-long-identifier-that-requires-horizontal-scrolling"
+                                )),
+                            ),
+                            cx,
+                        );
+                    }
+                    viewer.views.active_mut().track_density = TrackDensity::Compact;
+                    for metric_index in 0..6 {
+                        viewer.select_metric(
+                            MetricKey::from_string(format!("metric-{metric_index}")),
+                            cx,
+                        );
+                    }
+                    viewer.show_metric_inspector(
+                        &MetricPanelId::from_string("metric-0"),
+                        cx,
+                    );
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                let schedule = viewer.track_viewport.borrow();
+                viewer.views.active().runs.len() == 10
+                    && viewer.views.active().panels.len() == 6
+                    && schedule.visible.len() >= 6
+                    && viewer.views.active().panels.iter().all(|panel| {
+                        panel.detail.as_ref().is_some_and(|detail| {
+                            detail.series.len() == 10
+                                && detail.point_budget
+                                    == panel.physical_width.saturating_mul(2).clamp(2_000, 10_000)
+                                && detail.series.iter().all(|series| {
+                                    series.evidence.points.len() <= detail.point_budget as usize + 2
+                                })
+                        })
+                    })
+            });
+
+            assert!(cx.debug_bounds("bottom-inspector").is_some());
+            assert!(cx.debug_bounds("metric-track:metric-0").is_some());
+            assert!(cx.debug_bounds("metric-track:metric-5").is_some());
+
+            let before = window
+                .read_with(&cx, |viewer, _| {
+                    viewer.core.brush().map(|brush| brush.selected())
+                })
+                .expect("viewer should remain open")
+                .expect("representative View should have a shared viewport");
+            let pending_source_id = DataSourceId::from_path(pending_root.path());
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.open_source(pending_root.path().to_path_buf(), cx);
+                    assert!(matches!(
+                        viewer
+                            .sources
+                            .source(&pending_source_id)
+                            .map(|source| &source.status),
+                        Some(SourceStatus::Loading)
+                    ));
+                    viewer.zoom_from_keyboard(1.25, cx);
+                })
+                .expect("viewer should remain open");
+            let (after, run_count, panel_count) = window
+                .read_with(&cx, |viewer, _| {
+                    (
+                        viewer.core.brush().map(|brush| brush.selected()),
+                        viewer.views.active().runs.len(),
+                        viewer.views.active().panels.len(),
+                    )
+                })
+                .expect("viewer should remain open");
+            let after = after.expect("shared viewport should remain available");
+            assert_ne!(after, before);
+            assert_eq!((run_count, panel_count), (10, 6));
+            assert!(cx.debug_bounds("metric-track:metric-0").is_some());
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .sources
+                    .source(&pending_source_id)
+                    .is_some_and(|source| source.status == SourceStatus::Ready)
+            });
         }
 
         #[gpui::test]

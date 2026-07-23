@@ -355,7 +355,7 @@ roadmap phase identifiers.
 - [x] Compare the application shell, tabs, Project tree, toolbars, popovers,
   interaction states, typography, spacing, and light/dark hierarchy against the
   pinned Zed reference at representative window sizes and display scales.
-- [ ] Validate a representative View with 10 Runs and at least six visible
+- [x] Validate a representative View with 10 Runs and at least six visible
   Metric tracks plus the Bottom inspector. Preserve storage point budgets, the
   Phase 3D CPU thresholds,
   bounded query concurrency, and responsive interaction while sources are
