@@ -365,7 +365,7 @@ roadmap phase identifiers.
   and keyboard zoom, hover, scrolling, and View switching. Sustain the
   configured rate after warm-up with no viewer-caused presentation spanning
   two refresh periods; at 280 Hz that boundary is approximately 7.14 ms.
-- [ ] Pass formatting, workspace Clippy, Rust tests, viewer release build,
+- [x] Pass formatting, workspace Clippy, Rust tests, viewer release build,
   maturin develop/build, Pyright, and pytest, and update the persistent
   performance record with exact commands, machine, display, and conclusions.
 

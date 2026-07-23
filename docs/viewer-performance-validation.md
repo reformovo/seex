@@ -2,10 +2,11 @@
 
 ## Measurement Record
 
-- Date: 2026-07-22
-- Base commit: `ec89fab`, plus the validation changes in the working tree
+- Date: 2026-07-23
+- Base commit: `a7226dc`, plus this validation record update
 - Platform: macOS 26.3 (25D125), arm64, Apple M4 Pro
 - Rust: 1.97.1
+- uv: 0.8.12
 - Xcode: 26.6 (17F113)
 - Metal compiler: Xcode Metal Toolchain 17.6.109.0
 - Display target: external display configured at 280 Hz; model and resolution
@@ -180,7 +181,7 @@ window teardown is not part of ordinary debug test runs.
 
 ## Verification
 
-Passed:
+Passed against base commit `a7226dc` on 2026-07-23:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -188,10 +189,23 @@ Passed:
 - `cargo test`
 - `cargo test -p pulseon-viewer --features test-support`
 - `cargo build -p pulseon-viewer --release`
+- `cargo test -p pulseon-viewer --release interactive_chart_cpu_budget --
+  --ignored --nocapture`
+- `cargo test -p pulseon-viewer --release --features test-support
+  representative_workbench -- --ignored --nocapture`
+- `PULSEON_VIEWER_TRACE_FIXTURE_ROOT=/tmp/pulseon-viewer-trace cargo test -p
+  pulseon-viewer --release retained_multi_track_fixture -- --ignored
+  --nocapture`
 - `uv run maturin develop --uv`
 - `uv run pyright` (zero errors)
 - `uv run pytest` (106 passed, 2 opt-in MinIO tests skipped)
 - `uv run maturin build --out dist`
+
+The retained six-metric trace fixture is 89 MiB. At the time of the automated
+gate, `system_profiler` reported two connected Mi Monitor displays at
+3840 x 2160 and 2160 x 3840, each using a 60 Hz logical mode. These are not the
+280 Hz target display; the separate high-refresh checkbox remains open until
+the user reconnects that display and records the required Metal System Trace.
 
 The Rust build emitted existing future-incompatibility warnings for `block`
 0.1.6 and `proc-macro-error2` 2.0.1; warnings were not produced by PulseOn code
