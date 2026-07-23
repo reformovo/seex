@@ -324,7 +324,7 @@ roadmap phase identifiers.
   sidebar. A click without a drag on a Metric row or chart track selects it and
   opens `Summary`, `Ranking`, and `Evidence`; pan/zoom/brush gestures never
   toggle the inspector.
-- [ ] Query exact viewport-scoped Summary statistics in the background rather
+- [x] Query exact viewport-scoped Summary statistics in the background rather
   than aggregating reduced renderer points. Ranking requires explicit
   minimize/maximize direction and remains grouped by Project for cross-Project
   Views. Tag inspector results for stale-result rejection.

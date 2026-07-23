@@ -9,7 +9,9 @@ use std::time::Duration;
 
 use crate::core::DataSourceId;
 use crate::model::{CatalogSnapshot, DiscoveryRequest};
-use crate::query::{CurveSnapshot, DetailRequest, OverviewRequest, QueryError};
+use crate::query::{
+    CurveSnapshot, DetailRequest, InspectorRequest, InspectorSnapshot, OverviewRequest, QueryError,
+};
 use crate::source::{ReadSession, SourceError};
 
 /// Monotonically increasing identity for one read request.
@@ -22,6 +24,7 @@ pub enum ReadKind {
     Catalog,
     Overview,
     Detail,
+    Inspector,
 }
 
 /// Storage work accepted by the native read worker.
@@ -30,6 +33,7 @@ pub enum ReadRequest {
     Discover(DiscoveryRequest),
     Overview(OverviewRequest),
     Detail(DetailRequest),
+    Inspector(InspectorRequest),
 }
 
 impl ReadRequest {
@@ -38,6 +42,7 @@ impl ReadRequest {
             Self::Discover(_) => ReadKind::Catalog,
             Self::Overview(_) => ReadKind::Overview,
             Self::Detail(_) => ReadKind::Detail,
+            Self::Inspector(_) => ReadKind::Inspector,
         }
     }
 }
@@ -48,6 +53,7 @@ pub enum ReadSnapshot {
     Catalog(CatalogSnapshot),
     Overview(CurveSnapshot),
     Detail(CurveSnapshot),
+    Inspector(InspectorSnapshot),
 }
 
 impl ReadSnapshot {
@@ -56,6 +62,7 @@ impl ReadSnapshot {
             Self::Catalog(_) => ReadKind::Catalog,
             Self::Overview(_) => ReadKind::Overview,
             Self::Detail(_) => ReadKind::Detail,
+            Self::Inspector(_) => ReadKind::Inspector,
         }
     }
 }
@@ -352,6 +359,7 @@ struct PendingRequests {
     discover: Option<TaggedRequest>,
     overview: Vec<TaggedRequest>,
     detail: Vec<TaggedRequest>,
+    inspector: Vec<TaggedRequest>,
 }
 
 impl PendingRequests {
@@ -368,6 +376,7 @@ impl PendingRequests {
             }
             ReadRequest::Overview(_) => push_curve_request(&mut self.overview, tagged),
             ReadRequest::Detail(_) => push_curve_request(&mut self.detail, tagged),
+            ReadRequest::Inspector(_) => push_curve_request(&mut self.inspector, tagged),
         }
     }
 
@@ -376,6 +385,7 @@ impl PendingRequests {
             .take()
             .or_else(|| (!self.overview.is_empty()).then(|| self.overview.remove(0)))
             .or_else(|| (!self.detail.is_empty()).then(|| self.detail.remove(0)))
+            .or_else(|| (!self.inspector.is_empty()).then(|| self.inspector.remove(0)))
     }
 }
 
@@ -383,6 +393,7 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) {
     let metric_key = match &tagged.request {
         ReadRequest::Overview(request) => &request.selection.metric_key,
         ReadRequest::Detail(request) => &request.selection.metric_key,
+        ReadRequest::Inspector(request) => &request.selection.metric_key,
         ReadRequest::Discover(_) => return,
     };
     if let Some(index) = pending.iter().position(|candidate| {
@@ -390,6 +401,7 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) {
             && match &candidate.request {
                 ReadRequest::Overview(request) => &request.selection.metric_key == metric_key,
                 ReadRequest::Detail(request) => &request.selection.metric_key == metric_key,
+                ReadRequest::Inspector(request) => &request.selection.metric_key == metric_key,
                 ReadRequest::Discover(_) => false,
             }
     }) {
@@ -444,6 +456,9 @@ fn execute(
                 ReadSnapshot::Overview(session.query_overview(&request)?)
             }
             ReadRequest::Detail(request) => ReadSnapshot::Detail(session.query_detail(&request)?),
+            ReadRequest::Inspector(request) => {
+                ReadSnapshot::Inspector(session.query_inspector(&request)?)
+            }
         })
     })();
     ReadEvent {

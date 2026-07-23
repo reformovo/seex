@@ -6,7 +6,8 @@ use pulseon_model::metric::MetricKey;
 
 use crate::core::{DataSourceId, RunRef};
 use crate::query::{
-    CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest, OverviewRequest,
+    CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest, InspectorRequest,
+    InspectorRunSnapshot, InspectorSnapshot, OverviewRequest,
 };
 use crate::worker::{Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot};
 
@@ -70,6 +71,12 @@ pub enum PanelReadRequest {
         viewport: AlignmentViewport,
         physical_width: u32,
     },
+    Inspector {
+        runs: Vec<RunRef>,
+        metric_key: MetricKey,
+        axis: AlignmentAxis,
+        viewport: AlignmentViewport,
+    },
 }
 
 impl PanelReadRequest {
@@ -77,12 +84,15 @@ impl PanelReadRequest {
         match self {
             Self::Overview { .. } => ReadKind::Overview,
             Self::Detail { .. } => ReadKind::Detail,
+            Self::Inspector { .. } => ReadKind::Inspector,
         }
     }
 
     fn runs(&self) -> &[RunRef] {
         match self {
-            Self::Overview { runs, .. } | Self::Detail { runs, .. } => runs,
+            Self::Overview { runs, .. }
+            | Self::Detail { runs, .. }
+            | Self::Inspector { runs, .. } => runs,
         }
     }
 
@@ -118,6 +128,20 @@ impl PanelReadRequest {
                 viewport: *viewport,
                 physical_width: *physical_width,
             }),
+            Self::Inspector {
+                metric_key,
+                axis,
+                viewport,
+                ..
+            } => ReadRequest::Inspector(InspectorRequest {
+                selection: CurveSelection {
+                    source_id,
+                    runs,
+                    metric_key: metric_key.clone(),
+                    axis: *axis,
+                },
+                viewport: *viewport,
+            }),
         }
     }
 }
@@ -140,6 +164,7 @@ pub struct SourceReadFailure {
 pub struct PanelReadSnapshot {
     pub tag: PanelReadTag,
     pub curves: Option<CurveSnapshot>,
+    pub inspector: Option<InspectorSnapshot>,
     pub source_errors: Vec<SourceReadFailure>,
 }
 
@@ -162,7 +187,12 @@ struct PendingPanelRead {
     run_order: Vec<RunRef>,
     source_order: Vec<DataSourceId>,
     expected: HashSet<DataSourceId>,
-    responses: HashMap<DataSourceId, Result<CurveSnapshot, String>>,
+    responses: HashMap<DataSourceId, Result<SourcePanelSnapshot, String>>,
+}
+
+enum SourcePanelSnapshot {
+    Curves(CurveSnapshot),
+    Inspector(InspectorSnapshot),
 }
 
 #[derive(Default)]
@@ -250,7 +280,10 @@ impl PanelReadCoordinator {
             return PanelReadOutcome::IgnoredStale;
         }
         let response = match event.result {
-            Ok(ReadSnapshot::Overview(snapshot) | ReadSnapshot::Detail(snapshot)) => Ok(snapshot),
+            Ok(ReadSnapshot::Overview(snapshot) | ReadSnapshot::Detail(snapshot)) => {
+                Ok(SourcePanelSnapshot::Curves(snapshot))
+            }
+            Ok(ReadSnapshot::Inspector(snapshot)) => Ok(SourcePanelSnapshot::Inspector(snapshot)),
             Ok(ReadSnapshot::Catalog(_)) => {
                 Err("panel read returned a catalog snapshot".to_owned())
             }
@@ -286,12 +319,14 @@ impl PanelReadCoordinator {
 
 fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
     let mut series = HashMap::<RunRef, CurveSeriesSnapshot>::new();
+    let mut inspector_runs = HashMap::<RunRef, InspectorRunSnapshot>::new();
     let mut shape = None;
+    let mut inspector_viewport = None;
     let mut real_range: Option<AlignmentViewport> = None;
     let mut source_errors = Vec::new();
     for source_id in &pending.source_order {
         match pending.responses.remove(source_id) {
-            Some(Ok(snapshot)) => {
+            Some(Ok(SourcePanelSnapshot::Curves(snapshot))) => {
                 shape.get_or_insert((snapshot.viewport, snapshot.point_budget));
                 real_range = union_range(real_range, snapshot.real_range);
                 series.extend(
@@ -299,6 +334,15 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
                         .series
                         .into_iter()
                         .map(|curve| (curve.run_ref.clone(), curve)),
+                );
+            }
+            Some(Ok(SourcePanelSnapshot::Inspector(snapshot))) => {
+                inspector_viewport.get_or_insert(snapshot.viewport);
+                inspector_runs.extend(
+                    snapshot
+                        .runs
+                        .into_iter()
+                        .map(|run| (run.run_ref.clone(), run)),
                 );
             }
             Some(Err(message)) => source_errors.push(SourceReadFailure {
@@ -318,9 +362,18 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
             .filter_map(|run_ref| series.remove(run_ref))
             .collect(),
     });
+    let inspector = inspector_viewport.map(|viewport| InspectorSnapshot {
+        viewport,
+        runs: pending
+            .run_order
+            .iter()
+            .filter_map(|run_ref| inspector_runs.remove(run_ref))
+            .collect(),
+    });
     PanelReadSnapshot {
         tag: pending.tag,
         curves,
+        inspector,
         source_errors,
     }
 }

@@ -36,6 +36,36 @@ pub struct DetailRequest {
     pub physical_width: u32,
 }
 
+/// Exact closed-viewport inspector query.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectorRequest {
+    pub selection: CurveSelection,
+    pub viewport: AlignmentViewport,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewportStatistics {
+    pub count: u64,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub mean: f64,
+    pub last: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InspectorRunSnapshot {
+    pub run_ref: RunRef,
+    pub run: Run,
+    pub evidence: AlignedMetricResult,
+    pub statistics: Option<ViewportStatistics>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InspectorSnapshot {
+    pub viewport: AlignmentViewport,
+    pub runs: Vec<InspectorRunSnapshot>,
+}
+
 /// One Run's evidence and optional drawable chart series.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CurveSeriesSnapshot {
@@ -97,6 +127,86 @@ impl ReadSession {
             detail_budget(request.physical_width),
         )
     }
+
+    /// Queries exact aligned evidence and viewport statistics for the inspector.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QueryError`] when native storage cannot execute the query.
+    pub fn query_inspector(
+        &self,
+        request: &InspectorRequest,
+    ) -> Result<InspectorSnapshot, QueryError> {
+        let run_ids = request
+            .selection
+            .runs
+            .iter()
+            .map(|run| run.run_id.clone())
+            .collect::<Vec<_>>();
+        let runs = self.connection().get_runs(&run_ids)?;
+        let store = NativeQueryStore::new(self.connection());
+        let mut snapshots = Vec::with_capacity(runs.len());
+        for run in runs {
+            let Some(run_ref) = request.selection.runs.iter().find(|selected| {
+                selected.source_id == request.selection.source_id
+                    && selected.project_id == run.project_id
+                    && selected.run_id == run.run_id
+            }) else {
+                continue;
+            };
+            let evidence = store.query_aligned_metric(
+                &AlignmentQuery {
+                    run_id: run.run_id.clone(),
+                    metric_key: request.selection.metric_key.clone(),
+                    axis: request.selection.axis,
+                    viewport: request.viewport,
+                    reduction: AlignmentReduction::Full,
+                },
+                run.status,
+            )?;
+            let statistics = viewport_statistics(&evidence, request.viewport);
+            snapshots.push(InspectorRunSnapshot {
+                run_ref: run_ref.clone(),
+                run,
+                evidence,
+                statistics,
+            });
+        }
+        Ok(InspectorSnapshot {
+            viewport: request.viewport,
+            runs: snapshots,
+        })
+    }
+}
+
+fn viewport_statistics(
+    evidence: &AlignedMetricResult,
+    viewport: AlignmentViewport,
+) -> Option<ViewportStatistics> {
+    let values = evidence
+        .points
+        .iter()
+        .filter(|point| point.axis_value >= viewport.start() && point.axis_value <= viewport.end())
+        .map(|point| point.point.value_f64);
+    let mut count = 0_u64;
+    let mut minimum = f64::INFINITY;
+    let mut maximum = f64::NEG_INFINITY;
+    let mut sum = 0.;
+    let mut last = 0.;
+    for value in values {
+        count = count.saturating_add(1);
+        minimum = minimum.min(value);
+        maximum = maximum.max(value);
+        sum += value;
+        last = value;
+    }
+    (count > 0).then_some(ViewportStatistics {
+        count,
+        minimum,
+        maximum,
+        mean: sum / count as f64,
+        last,
+    })
 }
 
 fn overview_budget(physical_width: u32) -> u32 {

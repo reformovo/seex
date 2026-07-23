@@ -125,7 +125,7 @@ pub struct ViewerCore {
     catalog: Option<CatalogSnapshot>,
     overview: Option<Arc<CurveSnapshot>>,
     detail: Option<Arc<CurveSnapshot>>,
-    expected: [Option<ExpectedRequest>; 3],
+    expected: [Option<ExpectedRequest>; 4],
     last_error: Option<String>,
 }
 
@@ -144,7 +144,7 @@ impl Default for ViewerCore {
             catalog: None,
             overview: None,
             detail: None,
-            expected: [const { None }; 3],
+            expected: [const { None }; 4],
             last_error: None,
         }
     }
@@ -333,6 +333,7 @@ impl ViewerCore {
             Ok(ReadSnapshot::Catalog(snapshot)) => self.apply_catalog(snapshot),
             Ok(ReadSnapshot::Overview(snapshot)) => self.apply_overview(snapshot),
             Ok(ReadSnapshot::Detail(snapshot)) => self.detail = Some(Arc::new(snapshot)),
+            Ok(ReadSnapshot::Inspector(_)) => {}
             Err(error) => self.last_error = Some(error.to_string()),
         }
         ApplyOutcome::Applied
@@ -429,6 +430,7 @@ const fn kind_index(kind: ReadKind) -> usize {
         ReadKind::Catalog => 0,
         ReadKind::Overview => 1,
         ReadKind::Detail => 2,
+        ReadKind::Inspector => 3,
     }
 }
 

@@ -2,11 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use pulseon_model::alignment::AlignmentViewport;
+use pulseon_model::comparison::ObjectiveDirection;
 use pulseon_model::metric::MetricKey;
 
 use crate::coordination::{AnalysisViewId, MetricPanelId, SourceReadFailure};
 use crate::core::{DataSourceId, RunRef, SelectionError, ViewerCore, toggle_run_selection};
-use crate::query::CurveSnapshot;
+use crate::query::{CurveSnapshot, InspectorSnapshot};
 use crate::worker::{Generation, ReadKind};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -38,6 +39,9 @@ pub struct MetricPanel {
     pub detail_revision: u64,
     pub physical_width: u32,
     pub requested_detail_viewport: Option<AlignmentViewport>,
+    pub inspector: Option<Arc<InspectorSnapshot>>,
+    pub inspector_generation: Option<Generation>,
+    pub inspector_errors: Vec<SourceReadFailure>,
 }
 
 impl MetricPanel {
@@ -54,6 +58,9 @@ impl MetricPanel {
             detail_revision: 0,
             physical_width: 1_000,
             requested_detail_viewport: None,
+            inspector: None,
+            inspector_generation: None,
+            inspector_errors: Vec::new(),
         }
     }
 
@@ -61,6 +68,7 @@ impl MetricPanel {
         match kind {
             ReadKind::Overview => self.overview_generation.is_some(),
             ReadKind::Detail => self.detail_generation.is_some(),
+            ReadKind::Inspector => self.inspector_generation.is_some(),
             ReadKind::Catalog => false,
         }
     }
@@ -81,6 +89,7 @@ pub struct AnalysisView {
     pub panels: Vec<MetricPanel>,
     pub selected_panel_id: Option<MetricPanelId>,
     pub inspector_tab: InspectorTab,
+    pub ranking_direction: Option<ObjectiveDirection>,
     pub track_density: TrackDensity,
     pub core: ViewerCore,
     pub local_error: Option<String>,
@@ -104,6 +113,7 @@ impl Default for AnalysisViews {
             panels: Vec::new(),
             selected_panel_id: None,
             inspector_tab: InspectorTab::default(),
+            ranking_direction: None,
             track_density: TrackDensity::default(),
             core: ViewerCore::default(),
             local_error: None,
@@ -147,6 +157,7 @@ impl AnalysisViews {
             panels: Vec::new(),
             selected_panel_id: None,
             inspector_tab: InspectorTab::default(),
+            ranking_direction: None,
             track_density: TrackDensity::default(),
             core: ViewerCore::default(),
             local_error: None,
@@ -168,6 +179,7 @@ impl AnalysisViews {
             panels: active.panels,
             selected_panel_id: active.selected_panel_id,
             inspector_tab: active.inspector_tab,
+            ranking_direction: active.ranking_direction,
             track_density: active.track_density,
             core: active.core,
             local_error: active.local_error,
@@ -285,6 +297,10 @@ impl AnalysisViews {
         self.active_mut().inspector_tab = tab;
     }
 
+    pub fn set_active_ranking_direction(&mut self, direction: ObjectiveDirection) {
+        self.active_mut().ranking_direction = Some(direction);
+    }
+
     pub fn begin_active_panel_read(
         &mut self,
         panel_id: &MetricPanelId,
@@ -297,6 +313,7 @@ impl AnalysisViews {
         match kind {
             ReadKind::Overview => panel.overview_generation = Some(generation),
             ReadKind::Detail => panel.detail_generation = Some(generation),
+            ReadKind::Inspector => panel.inspector_generation = Some(generation),
             ReadKind::Catalog => {}
         }
     }
@@ -330,6 +347,7 @@ impl AnalysisViews {
         let expected = match kind {
             ReadKind::Overview => &mut panel.overview_generation,
             ReadKind::Detail => &mut panel.detail_generation,
+            ReadKind::Inspector => return false,
             ReadKind::Catalog => return false,
         };
         if *expected != Some(generation) {
@@ -347,8 +365,30 @@ impl AnalysisViews {
                     panel.detail_revision = generation.0;
                     panel.detail = Some(Arc::new(snapshot));
                 }
+                ReadKind::Inspector => {}
                 ReadKind::Catalog => {}
             }
+        }
+        true
+    }
+
+    pub fn complete_active_inspector_read(
+        &mut self,
+        panel_id: &MetricPanelId,
+        generation: Generation,
+        snapshot: Option<InspectorSnapshot>,
+        source_errors: Vec<SourceReadFailure>,
+    ) -> bool {
+        let Some(panel) = self.active_panel_mut(panel_id) else {
+            return false;
+        };
+        if panel.inspector_generation != Some(generation) {
+            return false;
+        }
+        panel.inspector_generation = None;
+        panel.inspector_errors = source_errors;
+        if let Some(snapshot) = snapshot {
+            panel.inspector = Some(Arc::new(snapshot));
         }
         true
     }
@@ -392,6 +432,9 @@ impl AnalysisViews {
                     panel.overview_generation = None;
                     panel.detail_generation = None;
                     panel.requested_detail_viewport = None;
+                    panel.inspector = None;
+                    panel.inspector_generation = None;
+                    panel.inspector_errors.clear();
                 }
             }
         }
@@ -407,6 +450,9 @@ impl AnalysisViews {
             panel.overview_generation = None;
             panel.detail_generation = None;
             panel.requested_detail_viewport = None;
+            panel.inspector = None;
+            panel.inspector_generation = None;
+            panel.inspector_errors.clear();
         }
     }
 
@@ -559,5 +605,8 @@ mod tests {
                 .len(),
             1
         );
+        views.begin_active_panel_read(&first, ReadKind::Inspector, Generation(3));
+        assert!(!views.complete_active_inspector_read(&first, Generation(2), None, Vec::new(),));
+        assert!(views.complete_active_inspector_read(&first, Generation(3), None, Vec::new(),));
     }
 }

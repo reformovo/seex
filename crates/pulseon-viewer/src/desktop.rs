@@ -14,7 +14,7 @@ use gpui::{
 };
 use pulseon_chart_core::{BrushState, CanvasSize};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
-use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason};
+use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason, ObjectiveDirection};
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunStatus};
 use pulseon_model::types::ProjectId;
@@ -26,6 +26,7 @@ use pulseon_viewer::core::{
     ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore, run_matches_filter,
 };
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
+use pulseon_viewer::query::InspectorSnapshot;
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
 use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, TrackDensity};
 use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest};
@@ -424,7 +425,10 @@ impl ViewerApp {
     fn apply_event(&mut self, event: ReadEvent, cx: &mut Context<Self>) {
         self.sources.apply_event(&event);
         let kind = event.kind;
-        if matches!(kind, ReadKind::Overview | ReadKind::Detail) {
+        if matches!(
+            kind,
+            ReadKind::Overview | ReadKind::Detail | ReadKind::Inspector
+        ) {
             if let PanelReadOutcome::Completed(completed) = self.panel_reads.apply(event) {
                 if completed.tag.view_id != self.views.active().view_id {
                     return;
@@ -448,13 +452,22 @@ impl ViewerApp {
                             .join("; "),
                     );
                 }
-                let accepted = self.views.complete_active_panel_read(
-                    &panel_id,
-                    kind,
-                    completed.tag.generation,
-                    completed.curves,
-                    completed.source_errors,
-                );
+                let accepted = if kind == ReadKind::Inspector {
+                    self.views.complete_active_inspector_read(
+                        &panel_id,
+                        completed.tag.generation,
+                        completed.inspector,
+                        completed.source_errors,
+                    )
+                } else {
+                    self.views.complete_active_panel_read(
+                        &panel_id,
+                        kind,
+                        completed.tag.generation,
+                        completed.curves,
+                        completed.source_errors,
+                    )
+                };
                 if accepted && kind == ReadKind::Overview {
                     if let Some(metric_key) = metric_key
                         && let Some(home) =
@@ -488,7 +501,7 @@ impl ViewerApp {
             {
                 self.request_overview(cx)
             }
-            ReadKind::Overview | ReadKind::Detail => {}
+            ReadKind::Overview | ReadKind::Detail | ReadKind::Inspector => {}
             ReadKind::Catalog => {}
         }
     }
@@ -566,6 +579,56 @@ impl ViewerApp {
                 viewport_state.physical_width.max(1),
                 cx,
             );
+        }
+        if self.bottom_inspector_visible {
+            self.request_inspector(cx);
+        }
+    }
+
+    fn request_inspector(&mut self, cx: &mut Context<Self>) {
+        let Some(panel_id) = self.views.active().selected_panel_id.clone() else {
+            return;
+        };
+        let Some(viewport) = self.core.selected_viewport() else {
+            return;
+        };
+        let runs = self.views.active().runs.clone();
+        let Some(metric_key) = self
+            .views
+            .active_panel(&panel_id)
+            .map(|panel| panel.metric_key.clone())
+        else {
+            return;
+        };
+        if runs.is_empty() {
+            return;
+        }
+        let generation = Generation(self.next_generation);
+        self.next_generation = self.next_generation.saturating_add(1);
+        let tag = PanelReadTag {
+            view_id: self.views.active().view_id.clone(),
+            panel_id: panel_id.clone(),
+            generation,
+        };
+        let planned = match self.panel_reads.begin(
+            tag,
+            PanelReadRequest::Inspector {
+                runs,
+                metric_key,
+                axis: self.core.axis(),
+                viewport,
+            },
+        ) {
+            Ok(planned) => planned,
+            Err(error) => {
+                self.local_error = Some(error.to_string());
+                return;
+            }
+        };
+        self.views
+            .begin_active_panel_read(&panel_id, ReadKind::Inspector, generation);
+        for read in planned {
+            self.submit_source_generation(read.source_id, read.generation, read.request, false, cx);
         }
     }
 
@@ -997,11 +1060,21 @@ impl ViewerApp {
             .map(|panel| panel.metric_key.clone());
         self.core.select_metric(metric_key);
         self.bottom_inspector_visible = true;
+        self.request_inspector(cx);
         cx.notify();
     }
 
     fn select_inspector_tab(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
         self.views.set_active_inspector_tab(tab);
+        if tab != InspectorTab::Ranking || self.views.active().ranking_direction.is_some() {
+            self.request_inspector(cx);
+        }
+        cx.notify();
+    }
+
+    fn select_ranking_direction(&mut self, direction: ObjectiveDirection, cx: &mut Context<Self>) {
+        self.views.set_active_ranking_direction(direction);
+        self.request_inspector(cx);
         cx.notify();
     }
 
@@ -1768,25 +1841,115 @@ impl ViewerApp {
     fn render_bottom_inspector(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
         let active_tab = self.views.active().inspector_tab;
-        let metric_name = self
+        let panel = self
             .views
             .active()
             .selected_panel_id
             .as_ref()
             .and_then(|panel_id| self.views.active_panel(panel_id))
-            .map_or_else(
-                || "No Metric selected".to_owned(),
-                |panel| panel.metric_key.as_str().to_owned(),
-            );
-        let body = match active_tab {
-            InspectorTab::Summary => {
-                div().child("Exact viewport Summary statistics will appear here.")
-            }
-            InspectorTab::Ranking => {
-                div().child("Choose minimize or maximize to calculate Project rankings.")
-            }
-            InspectorTab::Evidence => {
-                div().child("Evidence completeness and storage provenance will appear here.")
+            .cloned();
+        let metric_name = panel.as_ref().map_or_else(
+            || "No Metric selected".to_owned(),
+            |panel| panel.metric_key.as_str().to_owned(),
+        );
+        let snapshot = panel.as_ref().and_then(|panel| panel.inspector.as_deref());
+        let body = if panel
+            .as_ref()
+            .is_some_and(|panel| panel.is_pending(ReadKind::Inspector))
+        {
+            div().child("Loading exact viewport evidence…")
+        } else {
+            match active_tab {
+                InspectorTab::Summary => {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(snapshot.into_iter().flat_map(|snapshot| {
+                            snapshot.runs.iter().map(|run| match run.statistics {
+                            Some(stats) => format!(
+                                "{} · count {} · min {:.6} · max {:.6} · mean {:.6} · last {:.6}",
+                                run.run.name,
+                                stats.count,
+                                stats.minimum,
+                                stats.maximum,
+                                stats.mean,
+                                stats.last
+                            ),
+                            None => format!("{} · no values in viewport", run.run.name),
+                        })
+                        }))
+                }
+                InspectorTab::Ranking => {
+                    let direction = self.views.active().ranking_direction;
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .gap_1()
+                                .child(
+                                    components::toolbar_button(
+                                        "ranking-minimize",
+                                        theme,
+                                        direction == Some(ObjectiveDirection::Minimize),
+                                        false,
+                                    )
+                                    .debug_selector(|| "ranking-minimize".to_owned())
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.select_ranking_direction(
+                                            ObjectiveDirection::Minimize,
+                                            cx,
+                                        );
+                                    }))
+                                    .child("Minimize"),
+                                )
+                                .child(
+                                    components::toolbar_button(
+                                        "ranking-maximize",
+                                        theme,
+                                        direction == Some(ObjectiveDirection::Maximize),
+                                        false,
+                                    )
+                                    .debug_selector(|| "ranking-maximize".to_owned())
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.select_ranking_direction(
+                                            ObjectiveDirection::Maximize,
+                                            cx,
+                                        );
+                                    }))
+                                    .child("Maximize"),
+                                ),
+                        )
+                        .children(direction.into_iter().flat_map(|direction| {
+                            snapshot
+                                .into_iter()
+                                .flat_map(move |snapshot| ranking_lines(snapshot, direction))
+                        }))
+                }
+                InspectorTab::Evidence => {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(snapshot.into_iter().flat_map(|snapshot| {
+                            snapshot.runs.iter().map(|run| {
+                                format!(
+                                    "{} · {:?} · rows {} · full · {:?} · Project {} · Source {}",
+                                    run.run.name,
+                                    run.evidence.completeness,
+                                    run.evidence.source_row_count,
+                                    run.evidence.reasons,
+                                    run.run_ref.project_id.as_str(),
+                                    run.run_ref.source_id
+                                )
+                            })
+                        }))
+                }
             }
         };
 
@@ -2985,6 +3148,68 @@ fn section_label(label: &str, theme: ViewerTheme) -> gpui::Div {
         .child(label.to_owned())
 }
 
+fn ranking_lines(snapshot: &InspectorSnapshot, direction: ObjectiveDirection) -> Vec<String> {
+    let eligible_value = |run: &pulseon_viewer::query::InspectorRunSnapshot| {
+        (run.evidence.completeness == EvidenceCompleteness::Complete)
+            .then(|| run.statistics.map(|stats| stats.last))
+            .flatten()
+            .filter(|value| value.is_finite())
+    };
+    let mut projects = Vec::<((DataSourceId, ProjectId), Vec<_>)>::new();
+    for run in &snapshot.runs {
+        let key = (
+            run.run_ref.source_id.clone(),
+            run.run_ref.project_id.clone(),
+        );
+        if let Some((_, runs)) = projects.iter_mut().find(|(candidate, _)| candidate == &key) {
+            runs.push(run);
+        } else {
+            projects.push((key, vec![run]));
+        }
+    }
+    let mut lines = Vec::new();
+    for ((source_id, project_id), mut runs) in projects {
+        lines.push(format!(
+            "Project {} · Source {}",
+            project_id.as_str(),
+            source_id
+        ));
+        runs.sort_by(|left, right| {
+            let left_value = eligible_value(left);
+            let right_value = eligible_value(right);
+            match (left_value, right_value) {
+                (Some(left), Some(right)) => match direction {
+                    ObjectiveDirection::Minimize => left.total_cmp(&right),
+                    ObjectiveDirection::Maximize => right.total_cmp(&left),
+                },
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then_with(|| left.run.run_id.as_str().cmp(right.run.run_id.as_str()))
+        });
+        let mut previous_value = None;
+        let mut previous_rank = 0;
+        for (index, run) in runs.into_iter().enumerate() {
+            let value = eligible_value(run);
+            let rank = value.map(|value| {
+                if previous_value != Some(value) {
+                    previous_value = Some(value);
+                    previous_rank = index as u64 + 1;
+                }
+                previous_rank
+            });
+            lines.push(match (rank, value) {
+                (Some(rank), Some(value)) => {
+                    format!("#{rank} · {} · {:.6}", run.run.name, value)
+                }
+                _ => format!("— · {} · unavailable", run.run.name),
+            });
+        }
+    }
+    lines
+}
+
 fn error_banner(message: String, theme: ViewerTheme) -> gpui::Div {
     components::status_badge(theme, StatusTone::Error)
         .mx_5()
@@ -3161,6 +3386,67 @@ mod tests {
         let second = cache.shared();
 
         assert!(Rc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn rankings_restart_within_each_project() {
+        let timestamp = "2026-01-01T00:00:00Z"
+            .parse()
+            .expect("fixed timestamp should parse");
+        let make_run = |project: &str, run_id: &str, value: f64| {
+            let project_id = ProjectId::from_string(project);
+            let run_id = RunId::from_string(run_id);
+            pulseon_viewer::query::InspectorRunSnapshot {
+                run_ref: RunRef::new(
+                    DataSourceId::from_string("source"),
+                    project_id.clone(),
+                    run_id.clone(),
+                ),
+                run: Run {
+                    run_id,
+                    project_id,
+                    name: format!("Run {value}"),
+                    status: RunStatus::Finished,
+                    created_at: timestamp,
+                    started_at: timestamp,
+                    finished_at: Some(timestamp),
+                },
+                evidence: pulseon_model::alignment::AlignedMetricResult {
+                    points: Vec::new(),
+                    source_row_count: 1,
+                    completeness: EvidenceCompleteness::Complete,
+                    reasons: Vec::new(),
+                },
+                statistics: Some(pulseon_viewer::query::ViewportStatistics {
+                    count: 1,
+                    minimum: value,
+                    maximum: value,
+                    mean: value,
+                    last: value,
+                }),
+            }
+        };
+        let snapshot = InspectorSnapshot {
+            viewport: AlignmentViewport::new(0, 10).expect("test viewport should be valid"),
+            runs: vec![
+                make_run("alpha", "a-slow", 2.),
+                make_run("alpha", "a-fast", 1.),
+                make_run("beta", "b-only", 3.),
+            ],
+        };
+
+        let lines = ranking_lines(&snapshot, ObjectiveDirection::Minimize);
+
+        assert_eq!(
+            lines,
+            [
+                "Project alpha · Source source",
+                "#1 · Run 1 · 1.000000",
+                "#2 · Run 2 · 2.000000",
+                "Project beta · Source source",
+                "#1 · Run 3 · 3.000000",
+            ]
+        );
     }
 
     #[cfg(feature = "test-support")]
@@ -3845,6 +4131,31 @@ mod tests {
                 .expect("Metric sidebar row should render");
             cx.simulate_click(metric_row.center(), Modifiers::default());
             assert!(cx.debug_bounds("bottom-inspector").is_some());
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels.first().is_some_and(|panel| {
+                    panel.inspector.is_some() && !panel.is_pending(ReadKind::Inspector)
+                })
+            });
+            window
+                .read_with(&cx, |viewer, _| {
+                    let run = viewer.views.active().panels[0]
+                        .inspector
+                        .as_ref()
+                        .expect("exact inspector evidence should load")
+                        .runs
+                        .first()
+                        .expect("fixture Run should be present");
+                    let stats = run
+                        .statistics
+                        .expect("fixture should have exact statistics");
+                    assert_eq!(stats.count, 2);
+                    assert_eq!(
+                        (stats.minimum, stats.maximum, stats.mean, stats.last),
+                        (0.5, 1., 0.75, 0.5)
+                    );
+                    assert!(!run.evidence.downsampled());
+                })
+                .expect("viewer should remain open");
 
             let ranking = cx
                 .debug_bounds("inspector-ranking")
@@ -3856,6 +4167,16 @@ mod tests {
                     .expect("viewer should remain open"),
                 InspectorTab::Ranking
             );
+            let maximize = cx
+                .debug_bounds("ranking-maximize")
+                .expect("Ranking direction should require an explicit choice");
+            cx.simulate_click(maximize.center(), Modifiers::default());
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().ranking_direction == Some(ObjectiveDirection::Maximize)
+                    && viewer.views.active().panels[0]
+                        .inspector_generation
+                        .is_none()
+            });
 
             let previous_height = window
                 .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
