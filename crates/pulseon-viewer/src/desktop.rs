@@ -644,7 +644,10 @@ impl ViewerApp {
                 if !self.views.active().runs.is_empty()
                     && !self.views.active().panels.is_empty() =>
             {
-                self.request_overview(cx)
+                self.request_overview(cx);
+                if self.bottom_inspector_visible {
+                    self.request_inspector(cx);
+                }
             }
             ReadKind::Overview | ReadKind::Detail | ReadKind::Inspector => {}
             ReadKind::Catalog => {}
@@ -725,16 +728,10 @@ impl ViewerApp {
                 cx,
             );
         }
-        if self.bottom_inspector_visible {
-            self.request_inspector(cx);
-        }
     }
 
     fn request_inspector(&mut self, cx: &mut Context<Self>) {
         let Some(panel_id) = self.views.active().selected_panel_id.clone() else {
-            return;
-        };
-        let Some(viewport) = self.core.selected_viewport() else {
             return;
         };
         let runs = self.views.active().runs.clone();
@@ -760,8 +757,7 @@ impl ViewerApp {
             PanelReadRequest::Inspector {
                 runs,
                 metric_key,
-                axis: self.core.axis(),
-                viewport,
+                ranking_direction: self.views.active().ranking_direction,
             },
         ) {
             Ok(planned) => planned,
@@ -1240,6 +1236,9 @@ impl ViewerApp {
         let panel_id = self.views.select_active_metric(metric_key.clone());
         self.core.select_metric(Some(metric_key));
         self.request_panel_overview(&panel_id, cx);
+        if self.bottom_inspector_visible {
+            self.request_inspector(cx);
+        }
         cx.notify();
     }
 
@@ -1259,7 +1258,16 @@ impl ViewerApp {
 
     fn select_inspector_tab(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
         self.views.set_active_inspector_tab(tab);
-        if tab != InspectorTab::Ranking || self.views.active().ranking_direction.is_some() {
+        let inspector_missing = self
+            .views
+            .active()
+            .selected_panel_id
+            .as_ref()
+            .and_then(|panel_id| self.views.active_panel(panel_id))
+            .is_none_or(|panel| panel.inspector.is_none());
+        if inspector_missing
+            || (tab == InspectorTab::Ranking && self.views.active().ranking_direction.is_some())
+        {
             self.request_inspector(cx);
         }
         cx.notify();
@@ -2062,7 +2070,7 @@ impl ViewerApp {
             .as_ref()
             .is_some_and(|panel| panel.is_pending(ReadKind::Inspector))
         {
-            div().child("Loading exact viewport evidence…")
+            div().child("Loading metric summaries and objective evidence…")
         } else {
             match active_tab {
                 InspectorTab::Summary => {
@@ -2071,17 +2079,17 @@ impl ViewerApp {
                         .flex_col()
                         .gap_1()
                         .children(snapshot.into_iter().flat_map(|snapshot| {
-                            snapshot.runs.iter().map(|run| match run.statistics {
+                            snapshot.runs.iter().map(|run| match &run.summary {
                             Some(stats) => format!(
-                                "{} · count {} · min {:.6} · max {:.6} · mean {:.6} · last {:.6}",
+                                "{} · count {} · last step {} · last {:.6} · min {:.6} · max {:.6}",
                                 run.run.name,
-                                stats.count,
-                                stats.minimum,
-                                stats.maximum,
-                                stats.mean,
-                                stats.last
+                                stats.effective_count,
+                                stats.last_step.value(),
+                                stats.last_value_f64,
+                                stats.min_value_f64,
+                                stats.max_value_f64,
                             ),
-                            None => format!("{} · no values in viewport", run.run.name),
+                            None => format!("{} · no metric summary", run.run.name),
                         })
                         }))
                 }
@@ -2130,10 +2138,10 @@ impl ViewerApp {
                                     .child("Maximize"),
                                 ),
                         )
-                        .children(direction.into_iter().flat_map(|direction| {
+                        .children(direction.into_iter().flat_map(|_| {
                             snapshot
                                 .into_iter()
-                                .flat_map(move |snapshot| ranking_lines(snapshot, direction))
+                                .flat_map(ranking_lines)
                         }))
                 }
                 InspectorTab::Evidence => {
@@ -2144,11 +2152,19 @@ impl ViewerApp {
                         .children(snapshot.into_iter().flat_map(|snapshot| {
                             snapshot.runs.iter().map(|run| {
                                 format!(
-                                    "{} · {:?} · rows {} · full · {:?} · Project {} · Source {}",
+                                    "{} · status {} · last step {} · last value {} · {:?}{} · Project {} · Source {}",
                                     run.run.name,
+                                    run_status(run.evidence.run_status),
+                                    run.evidence.last_step.map_or_else(
+                                        || "—".to_owned(),
+                                        |step| step.value().to_string(),
+                                    ),
+                                    run.evidence.last_value_f64.map_or_else(
+                                        || "—".to_owned(),
+                                        |value| format!("{value:.6}"),
+                                    ),
                                     run.evidence.completeness,
-                                    run.evidence.source_row_count,
-                                    run.evidence.reasons,
+                                    reasons_label(&run.evidence.reasons),
                                     run.run_ref.project_id.as_str(),
                                     run.run_ref.source_id
                                 )
@@ -3449,13 +3465,7 @@ fn section_label(label: &str, theme: ViewerTheme) -> gpui::Div {
         .child(label.to_owned())
 }
 
-fn ranking_lines(snapshot: &InspectorSnapshot, direction: ObjectiveDirection) -> Vec<String> {
-    let eligible_value = |run: &pulseon_viewer::query::InspectorRunSnapshot| {
-        (run.evidence.completeness == EvidenceCompleteness::Complete)
-            .then(|| run.statistics.map(|stats| stats.last))
-            .flatten()
-            .filter(|value| value.is_finite())
-    };
+fn ranking_lines(snapshot: &InspectorSnapshot) -> Vec<String> {
     let mut projects = Vec::<((DataSourceId, ProjectId), Vec<_>)>::new();
     for run in &snapshot.runs {
         let key = (
@@ -3475,37 +3485,31 @@ fn ranking_lines(snapshot: &InspectorSnapshot, direction: ObjectiveDirection) ->
             project_id.as_str(),
             source_id
         ));
-        runs.sort_by(|left, right| {
-            let left_value = eligible_value(left);
-            let right_value = eligible_value(right);
-            match (left_value, right_value) {
-                (Some(left), Some(right)) => match direction {
-                    ObjectiveDirection::Minimize => left.total_cmp(&right),
-                    ObjectiveDirection::Maximize => right.total_cmp(&left),
-                },
-                (Some(_), None) => std::cmp::Ordering::Less,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-            .then_with(|| left.run.run_id.as_str().cmp(right.run.run_id.as_str()))
+        runs.sort_by_key(|run| {
+            run.ranking
+                .map(|ranking| ranking.order)
+                .unwrap_or(usize::MAX)
         });
-        let mut previous_value = None;
-        let mut previous_rank = 0;
-        for (index, run) in runs.into_iter().enumerate() {
-            let value = eligible_value(run);
-            let rank = value.map(|value| {
-                if previous_value != Some(value) {
-                    previous_value = Some(value);
-                    previous_rank = index as u64 + 1;
-                }
-                previous_rank
-            });
-            lines.push(match (rank, value) {
-                (Some(rank), Some(value)) => {
-                    format!("#{rank} · {} · {:.6}", run.run.name, value)
-                }
-                _ => format!("— · {} · unavailable", run.run.name),
-            });
+        for run in runs {
+            let rank = run
+                .ranking
+                .and_then(|ranking| ranking.rank)
+                .map_or_else(|| "—".to_owned(), |rank| format!("#{rank}"));
+            let step = run
+                .evidence
+                .last_step
+                .map_or_else(|| "—".to_owned(), |step| step.value().to_string());
+            let value = run
+                .evidence
+                .last_value_f64
+                .map_or_else(|| "—".to_owned(), |value| format!("{value:.6}"));
+            lines.push(format!(
+                "{rank} · {} · status {} · step {step} · value {value} · {:?}{}",
+                run.run.name,
+                run_status(run.evidence.run_status),
+                run.evidence.completeness,
+                reasons_label(&run.evidence.reasons),
+            ));
         }
     }
     lines
@@ -3704,7 +3708,7 @@ mod tests {
                     run_id.clone(),
                 ),
                 run: Run {
-                    run_id,
+                    run_id: run_id.clone(),
                     project_id,
                     name: format!("Run {value}"),
                     status: RunStatus::Finished,
@@ -3712,23 +3716,35 @@ mod tests {
                     started_at: timestamp,
                     finished_at: Some(timestamp),
                 },
-                evidence: pulseon_model::alignment::AlignedMetricResult {
-                    points: Vec::new(),
-                    source_row_count: 1,
+                summary: Some(pulseon_model::metric::MetricAggregate {
+                    run_id: run_id.clone(),
+                    metric_key: MetricKey::from_string("loss"),
+                    effective_count: 1,
+                    last_step: pulseon_model::metric::Step::new(1),
+                    last_value_f64: value,
+                    min_value_f64: value,
+                    max_value_f64: value,
+                }),
+                evidence: pulseon_model::comparison::ObjectiveEvidence {
+                    run_id,
+                    run_status: RunStatus::Finished,
+                    last_step: Some(pulseon_model::metric::Step::new(1)),
+                    last_value_f64: Some(value),
                     completeness: EvidenceCompleteness::Complete,
                     reasons: Vec::new(),
                 },
-                statistics: Some(pulseon_viewer::query::ViewportStatistics {
-                    count: 1,
-                    minimum: value,
-                    maximum: value,
-                    mean: value,
-                    last: value,
+                ranking: Some(pulseon_viewer::query::InspectorRanking {
+                    rank: Some(if project == "alpha" && value == 2. {
+                        2
+                    } else {
+                        1
+                    }),
+                    order: usize::from(project == "alpha" && value == 2.),
                 }),
             }
         };
         let snapshot = InspectorSnapshot {
-            viewport: AlignmentViewport::new(0, 10).expect("test viewport should be valid"),
+            ranking_direction: Some(ObjectiveDirection::Minimize),
             runs: vec![
                 make_run("alpha", "a-slow", 2.),
                 make_run("alpha", "a-fast", 1.),
@@ -3736,16 +3752,16 @@ mod tests {
             ],
         };
 
-        let lines = ranking_lines(&snapshot, ObjectiveDirection::Minimize);
+        let lines = ranking_lines(&snapshot);
 
         assert_eq!(
             lines,
             [
                 "Project alpha · Source source",
-                "#1 · Run 1 · 1.000000",
-                "#2 · Run 2 · 2.000000",
+                "#1 · Run 1 · status finished · step 1 · value 1.000000 · Complete",
+                "#2 · Run 2 · status finished · step 1 · value 2.000000 · Complete",
                 "Project beta · Source source",
-                "#1 · Run 3 · 3.000000",
+                "#1 · Run 3 · status finished · step 1 · value 3.000000 · Complete",
             ]
         );
     }
@@ -4704,15 +4720,52 @@ mod tests {
                         .runs
                         .first()
                         .expect("fixture Run should be present");
-                    let stats = run
-                        .statistics
-                        .expect("fixture should have exact statistics");
-                    assert_eq!(stats.count, 2);
+                    let summary = run
+                        .summary
+                        .as_ref()
+                        .expect("fixture should have a metric summary");
+                    assert_eq!(summary.effective_count, 2);
                     assert_eq!(
-                        (stats.minimum, stats.maximum, stats.mean, stats.last),
-                        (0.5, 1., 0.75, 0.5)
+                        (
+                            summary.last_step.value(),
+                            summary.last_value_f64,
+                            summary.min_value_f64,
+                            summary.max_value_f64,
+                        ),
+                        (100, 0.5, 0.5, 1.)
                     );
-                    assert!(!run.evidence.downsampled());
+                    assert_eq!(run.evidence.last_step.map(|step| step.value()), Some(100));
+                    assert_eq!(run.evidence.last_value_f64, Some(0.5));
+                    assert_eq!(run.evidence.completeness, EvidenceCompleteness::Complete);
+                })
+                .expect("viewer should remain open");
+
+            let inspector_before = window
+                .read_with(&cx, |viewer, _| {
+                    Arc::clone(
+                        viewer.views.active().panels[0]
+                            .inspector
+                            .as_ref()
+                            .expect("inspector snapshot should remain available"),
+                    )
+                })
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.zoom_from_keyboard(1.25, cx);
+                })
+                .expect("viewer should remain open");
+            window
+                .read_with(&cx, |viewer, _| {
+                    let panel = &viewer.views.active().panels[0];
+                    assert!(panel.inspector_generation.is_none());
+                    assert!(Arc::ptr_eq(
+                        &inspector_before,
+                        panel
+                            .inspector
+                            .as_ref()
+                            .expect("zoom should retain the whole-series inspector"),
+                    ));
                 })
                 .expect("viewer should remain open");
 

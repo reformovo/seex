@@ -123,9 +123,11 @@ The multi-project workbench contract is covered by direct behavioral tests:
 - worker coalescing, visible-overscan scheduling, aligned Metric row/track, and
   dock action tests cover query pressure, panel visibility, synchronized tracks,
   and independent dock visibility;
-- `metric_click_opens_a_resizable_inspector_without_gesture_toggles`, exact
-  inspector assertions, and Project-scoped ranking tests cover click-versus-drag,
-  Summary/Ranking/Evidence, and explicit objective direction; and
+- `metric_click_opens_a_resizable_inspector_without_gesture_toggles`,
+  whole-series Metric summary and Objective evidence assertions, retained
+  inspector snapshots across zoom, and Project-scoped ranking tests cover
+  click-versus-drag, Summary/Ranking/Evidence, and explicit objective direction;
+  and
 - workbench document round trips plus healthy, removed-Run, unknown-Metric,
   duplicate-identity, unsupported-version, and missing-source recovery tests
   cover persistence and unavailable-source reconciliation without native writes.

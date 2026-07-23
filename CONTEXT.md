@@ -79,6 +79,20 @@ The explicit transition of a run from running to a terminal lifecycle state.
 **Metric aggregate**:
 Derived index state over an effective metric series.
 
+**Metric summary**:
+The effective count, last point, minimum, and maximum for one complete effective
+metric series.
+_Avoid_: Viewport statistics
+
+**Objective evidence**:
+The last effective value of an objective metric for one Run, qualified by Run
+status, completeness, and structured reasons.
+
+**Ranking**:
+A direction-aware competition ordering of an explicit pool of Runs using
+eligible Objective evidence within one Project.
+_Avoid_: Cross-Project leaderboard
+
 **Catalog backend**:
 The database engine used for native storage metadata.
 

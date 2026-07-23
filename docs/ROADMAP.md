@@ -324,10 +324,12 @@ roadmap phase identifiers.
   sidebar. A click without a drag on a Metric row or chart track selects it and
   opens `Summary`, `Ranking`, and `Evidence`; pan/zoom/brush gestures never
   toggle the inspector.
-- [x] Query exact viewport-scoped Summary statistics in the background rather
-  than aggregating reduced renderer points. Ranking requires explicit
-  minimize/maximize direction and remains grouped by Project for cross-Project
-  Views. Tag inspector results for stale-result rejection.
+- [x] Query whole-effective-series Metric summaries and Objective evidence in
+  the background through the same Core semantics exposed by the Python and CLI
+  read surfaces. Summary reports count, last step/value, minimum, and maximum;
+  Ranking requires an explicit direction, uses canonical competition ranking,
+  and remains grouped by Project for cross-Project Views. Tag inspector results
+  for stale-result rejection, and do not refresh them for viewport navigation.
 - [x] Hide and restore Project sidebar and Bottom inspector independently,
   retain their previous width/height, and let the Metric sidebar resize or
   collapse compactly without clearing selections. Expose durable toggle/show
@@ -349,8 +351,9 @@ roadmap phase identifiers.
 - [x] Cover mixed DuckDB/SQLite sources, duplicate Project/Run identifiers,
   partial source failure, cross-Project selection, View isolation, shared
   viewport synchronization, keyboard zoom, query coalescing, panel visibility,
-  synchronized Metric tracks, click-versus-drag inspector behavior, exact
-  Summary/Ranking evidence, independent dock visibility, stale results,
+  synchronized Metric tracks, click-versus-drag inspector behavior,
+  whole-series Summary and Objective evidence, canonical Project-scoped
+  Ranking, independent dock visibility, stale results,
   persistence round trips, and unavailable-source recovery.
 - [x] Compare the application shell, tabs, Project tree, toolbars, popovers,
   interaction states, typography, spacing, and light/dark hierarchy against the

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
+use pulseon_model::comparison::ObjectiveDirection;
 use pulseon_model::metric::MetricKey;
 
 use crate::core::{DataSourceId, RunRef};
@@ -74,8 +75,7 @@ pub enum PanelReadRequest {
     Inspector {
         runs: Vec<RunRef>,
         metric_key: MetricKey,
-        axis: AlignmentAxis,
-        viewport: AlignmentViewport,
+        ranking_direction: Option<ObjectiveDirection>,
     },
 }
 
@@ -130,17 +130,13 @@ impl PanelReadRequest {
             }),
             Self::Inspector {
                 metric_key,
-                axis,
-                viewport,
+                ranking_direction,
                 ..
             } => ReadRequest::Inspector(InspectorRequest {
-                selection: CurveSelection {
-                    source_id,
-                    runs,
-                    metric_key: metric_key.clone(),
-                    axis: *axis,
-                },
-                viewport: *viewport,
+                source_id,
+                runs,
+                metric_key: metric_key.clone(),
+                ranking_direction: *ranking_direction,
             }),
         }
     }
@@ -321,7 +317,7 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
     let mut series = HashMap::<RunRef, CurveSeriesSnapshot>::new();
     let mut inspector_runs = HashMap::<RunRef, InspectorRunSnapshot>::new();
     let mut shape = None;
-    let mut inspector_viewport = None;
+    let mut inspector_direction = None;
     let mut real_range: Option<AlignmentViewport> = None;
     let mut source_errors = Vec::new();
     for source_id in &pending.source_order {
@@ -337,7 +333,7 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
                 );
             }
             Some(Ok(SourcePanelSnapshot::Inspector(snapshot))) => {
-                inspector_viewport.get_or_insert(snapshot.viewport);
+                inspector_direction.get_or_insert(snapshot.ranking_direction);
                 inspector_runs.extend(
                     snapshot
                         .runs
@@ -362,8 +358,8 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
             .filter_map(|run_ref| series.remove(run_ref))
             .collect(),
     });
-    let inspector = inspector_viewport.map(|viewport| InspectorSnapshot {
-        viewport,
+    let inspector = inspector_direction.map(|ranking_direction| InspectorSnapshot {
+        ranking_direction,
         runs: pending
             .run_order
             .iter()

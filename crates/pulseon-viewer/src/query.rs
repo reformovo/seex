@@ -1,14 +1,19 @@
+use std::collections::HashMap;
+
 use crate::core::{DataSourceId, RunRef};
 use crate::source::ReadSession;
 use pulseon_chart_core::{DataPoint, Series, SeriesId};
 use pulseon_core::engine::EngineError;
 use pulseon_core::engine::query::NativeQueryStore;
+use pulseon_core::engine::ranking::rank_run_evidence;
 use pulseon_model::alignment::{
     AlignedMetricResult, AlignmentAxis, AlignmentQuery, AlignmentQueryError, AlignmentReduction,
     AlignmentViewport,
 };
-use pulseon_model::comparison::EvidenceCompleteness;
-use pulseon_model::metric::MetricKey;
+use pulseon_model::comparison::{
+    EvidenceCompleteness, ObjectiveDirection, ObjectiveEvidence, ObjectiveMetric,
+};
+use pulseon_model::metric::{MetricAggregate, MetricKey};
 use pulseon_model::run::Run;
 use pulseon_storage::StorageError;
 
@@ -36,33 +41,33 @@ pub struct DetailRequest {
     pub physical_width: u32,
 }
 
-/// Exact closed-viewport inspector query.
+/// Whole-series product summaries and objective evidence for the inspector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InspectorRequest {
-    pub selection: CurveSelection,
-    pub viewport: AlignmentViewport,
+    pub source_id: DataSourceId,
+    pub runs: Vec<RunRef>,
+    pub metric_key: MetricKey,
+    pub ranking_direction: Option<ObjectiveDirection>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ViewportStatistics {
-    pub count: u64,
-    pub minimum: f64,
-    pub maximum: f64,
-    pub mean: f64,
-    pub last: f64,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InspectorRanking {
+    pub rank: Option<u64>,
+    pub order: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectorRunSnapshot {
     pub run_ref: RunRef,
     pub run: Run,
-    pub evidence: AlignedMetricResult,
-    pub statistics: Option<ViewportStatistics>,
+    pub summary: Option<MetricAggregate>,
+    pub evidence: ObjectiveEvidence,
+    pub ranking: Option<InspectorRanking>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectorSnapshot {
-    pub viewport: AlignmentViewport,
+    pub ranking_direction: Option<ObjectiveDirection>,
     pub runs: Vec<InspectorRunSnapshot>,
 }
 
@@ -128,7 +133,7 @@ impl ReadSession {
         )
     }
 
-    /// Queries exact aligned evidence and viewport statistics for the inspector.
+    /// Queries whole-series summaries and objective evidence for the inspector.
     ///
     /// # Errors
     ///
@@ -138,75 +143,90 @@ impl ReadSession {
         request: &InspectorRequest,
     ) -> Result<InspectorSnapshot, QueryError> {
         let run_ids = request
-            .selection
             .runs
             .iter()
             .map(|run| run.run_id.clone())
             .collect::<Vec<_>>();
         let runs = self.connection().get_runs(&run_ids)?;
         let store = NativeQueryStore::new(self.connection());
-        let mut snapshots = Vec::with_capacity(runs.len());
-        for run in runs {
-            let Some(run_ref) = request.selection.runs.iter().find(|selected| {
-                selected.source_id == request.selection.source_id
-                    && selected.project_id == run.project_id
-                    && selected.run_id == run.run_id
-            }) else {
-                continue;
-            };
-            let evidence = store.query_aligned_metric(
-                &AlignmentQuery {
-                    run_id: run.run_id.clone(),
-                    metric_key: request.selection.metric_key.clone(),
-                    axis: request.selection.axis,
-                    viewport: request.viewport,
-                    reduction: AlignmentReduction::Full,
-                },
-                run.status,
-            )?;
-            let statistics = viewport_statistics(&evidence, request.viewport);
-            snapshots.push(InspectorRunSnapshot {
-                run_ref: run_ref.clone(),
-                run,
-                evidence,
-                statistics,
-            });
+        let mut summaries = store
+            .query_metric_summaries(&run_ids, &request.metric_key)?
+            .into_iter()
+            .map(|summary| (summary.run_id.clone(), summary))
+            .collect::<HashMap<_, _>>();
+        let objective = ObjectiveMetric {
+            metric_key: request.metric_key.clone(),
+            direction: request
+                .ranking_direction
+                .unwrap_or(ObjectiveDirection::Minimize),
+        };
+        let evidence = store.objective_evidence_for_runs(&runs, &objective)?;
+        let mut snapshots = runs
+            .into_iter()
+            .zip(evidence)
+            .filter_map(|(run, evidence)| {
+                let run_ref = request.runs.iter().find(|selected| {
+                    selected.source_id == request.source_id
+                        && selected.project_id == run.project_id
+                        && selected.run_id == run.run_id
+                })?;
+                let summary = summaries.remove(&run.run_id);
+                Some(InspectorRunSnapshot {
+                    run_ref: run_ref.clone(),
+                    run,
+                    summary,
+                    evidence,
+                    ranking: None,
+                })
+            })
+            .collect::<Vec<_>>();
+        if request.ranking_direction.is_some() {
+            apply_project_rankings(&mut snapshots, &objective);
         }
         Ok(InspectorSnapshot {
-            viewport: request.viewport,
+            ranking_direction: request.ranking_direction,
             runs: snapshots,
         })
     }
 }
 
-fn viewport_statistics(
-    evidence: &AlignedMetricResult,
-    viewport: AlignmentViewport,
-) -> Option<ViewportStatistics> {
-    let values = evidence
-        .points
-        .iter()
-        .filter(|point| point.axis_value >= viewport.start() && point.axis_value <= viewport.end())
-        .map(|point| point.point.value_f64);
-    let mut count = 0_u64;
-    let mut minimum = f64::INFINITY;
-    let mut maximum = f64::NEG_INFINITY;
-    let mut sum = 0.;
-    let mut last = 0.;
-    for value in values {
-        count = count.saturating_add(1);
-        minimum = minimum.min(value);
-        maximum = maximum.max(value);
-        sum += value;
-        last = value;
+fn apply_project_rankings(snapshots: &mut [InspectorRunSnapshot], objective: &ObjectiveMetric) {
+    let mut projects = Vec::<Vec<usize>>::new();
+    for (index, snapshot) in snapshots.iter().enumerate() {
+        if let Some(indices) = projects.iter_mut().find(|indices| {
+            indices
+                .first()
+                .is_some_and(|first| snapshots[*first].run.project_id == snapshot.run.project_id)
+        }) {
+            indices.push(index);
+        } else {
+            projects.push(vec![index]);
+        }
     }
-    (count > 0).then_some(ViewportStatistics {
-        count,
-        minimum,
-        maximum,
-        mean: sum / count as f64,
-        last,
-    })
+    for indices in projects {
+        let project_id = snapshots[indices[0]].run.project_id.clone();
+        let ranked = rank_run_evidence(
+            objective,
+            indices
+                .iter()
+                .map(|index| {
+                    let snapshot = &snapshots[*index];
+                    (snapshot.run.clone(), snapshot.evidence.clone())
+                })
+                .collect(),
+        );
+        for (order, entry) in ranked.entries.into_iter().enumerate() {
+            if let Some(snapshot) = snapshots.iter_mut().find(|snapshot| {
+                snapshot.run.project_id == project_id
+                    && snapshot.run.run_id == entry.evidence.run_id
+            }) {
+                snapshot.ranking = Some(InspectorRanking {
+                    rank: entry.rank,
+                    order,
+                });
+            }
+        }
+    }
 }
 
 fn overview_budget(physical_width: u32) -> u32 {

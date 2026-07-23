@@ -393,7 +393,7 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) {
     let metric_key = match &tagged.request {
         ReadRequest::Overview(request) => &request.selection.metric_key,
         ReadRequest::Detail(request) => &request.selection.metric_key,
-        ReadRequest::Inspector(request) => &request.selection.metric_key,
+        ReadRequest::Inspector(request) => &request.metric_key,
         ReadRequest::Discover(_) => return,
     };
     if let Some(index) = pending.iter().position(|candidate| {
@@ -401,7 +401,7 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) {
             && match &candidate.request {
                 ReadRequest::Overview(request) => &request.selection.metric_key == metric_key,
                 ReadRequest::Detail(request) => &request.selection.metric_key == metric_key,
-                ReadRequest::Inspector(request) => &request.selection.metric_key == metric_key,
+                ReadRequest::Inspector(request) => &request.metric_key == metric_key,
                 ReadRequest::Discover(_) => false,
             }
     }) {

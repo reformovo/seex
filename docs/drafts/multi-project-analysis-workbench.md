@@ -170,14 +170,24 @@ the pinned reference at representative window sizes and display scale factors.
   not reveal or toggle it accidentally.
 - Provide `Summary`, `Ranking`, and `Evidence` tabs. Preserve the selected
   Metric and inspector tab when the inspector is hidden or a View is inactive.
-- `Summary` reports exact viewport-scoped count, minimum, maximum, mean, and
-  last value per Run. It must not derive statistics from reduced renderer
-  points.
+- `Summary` uses the same whole-effective-series Metric summary as Python
+  `query_metric_summaries` and CLI `metrics list`: effective count, last step,
+  last value, minimum, and maximum per Run. It has no viewer-only mean and does
+  not derive values from viewport or reduced renderer points.
 - `Ranking` requires an explicit minimize/maximize direction. It uses existing
-  ranking semantics within each Project; a cross-Project View shows grouped
-  Project rankings rather than inventing one global rank.
-- `Evidence` reports completeness, reasons, source row count, reduction state,
-  Run status, Project, and Data source identity.
+  Core `rank_runs` semantics within each Project: only complete finite Objective
+  evidence is eligible, ties receive competition ranks, and stable ordering
+  uses Run creation time then Run ID. A cross-Project View shows grouped Project
+  rankings rather than inventing one global rank.
+- `Evidence` reports the same Objective evidence used by ranking and comparison:
+  Run status, last step/value, completeness, and structured reasons, plus
+  Project and Data source identity. It does not present chart reduction metadata
+  as Objective evidence.
+- Chart tracks remain the viewport-scoped surface corresponding to metric point
+  queries. Comparison is a separate interaction that must collect explicit
+  candidate, baseline/reference, direction, and secondary metric inputs; the
+  Evidence tab must not imply that it performed `metrics compare` or
+  `autoresearch compare`.
 - Expose persistent actions such as `ToggleProjectSidebar`,
   `ToggleMetricSidebar`, `ToggleBottomInspector`, and `ShowMetricInspector`.
   Project sidebar and Bottom inspector visibility are independent.
@@ -238,9 +248,11 @@ foreground before changing workbench or panel state.
 - Inactive Views issue no viewport queries. Off-screen panels may contribute
   their overview extent to the shared home range, but suspend geometry
   preparation and detail refresh work.
-- Summary and Ranking use exact background storage queries, never reduced chart
-  points. Tag results with source, View, Metric panel, viewport, direction, and
-  generation so stale inspector results cannot replace current selection.
+- Summary, Ranking, and Evidence use whole-series background Core queries, never
+  reduced chart points. Tag results with source, View, Metric panel, direction,
+  and generation so stale inspector results cannot replace current selection.
+  Pan, brush, and zoom refresh chart detail only; they do not re-query the
+  whole-series inspector.
 
 Cross-source aggregation belongs to viewer coordination. Native connections
 must not cross worker threads or weaken the storage ownership boundary.
@@ -298,8 +310,9 @@ enter source paths, modules, functions, tests, environment variables, or comment
   visible tracks respond immediately while queries stay debounced and coalesced.
 - Scroll many tracks; Metric rows remain aligned while off-screen tracks stop
   preparing geometry and do not initiate viewport refreshes.
-- Select a chart without dragging; the Bottom inspector opens with exact
-  Summary evidence. Pan the same chart; the inspector does not toggle.
+- Select a chart without dragging; the Bottom inspector opens with the same
+  whole-series Metric summary and Objective evidence as the public read
+  surfaces. Pan the same chart; the inspector neither toggles nor re-queries.
 - Hide Project sidebar and Bottom inspector independently; the Analysis
   workspace reflows and both regions restore their previous dimensions.
 - Rank a cross-Project selection; results remain grouped by Project and retain
