@@ -36,6 +36,20 @@ Relevant component structure, tokens, icons, and interaction logic may be
 adapted directly into viewer-owned code compatible with the repository's pinned
 GPUI release.
 
+## Local Adoption
+
+- `desktop/theme.rs` adapts semantic appearance roles, series palettes, and the
+  pinned default-density geometry.
+- `desktop/components.rs` adapts tab, tree-row, button, overlay, status, focus,
+  and icon primitives into viewer-owned GPUI elements.
+- `desktop/assets.rs` embeds the pinned Zed refresh, plus, close, chevron, and
+  ellipsis SVG paths behind the viewer's `AssetSource`.
+- `desktop/renderer.rs` consumes theme-owned chart, brush, and series colors
+  without introducing a second visual system.
+
+The local modules keep stable PulseOn names and compile against GPUI 0.2.2;
+they do not import Zed's application dependency graph.
+
 ## Initial Geometry
 
 The pinned Zed implementation establishes the starting density:

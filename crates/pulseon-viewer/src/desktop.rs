@@ -23,11 +23,13 @@ use pulseon_viewer::worker::{
     Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest, ReadWorker,
 };
 
+mod assets;
 mod components;
 mod renderer;
 mod theme;
 
-use components::StatusTone;
+use assets::ViewerAssets;
+use components::{IconName, StatusTone};
 use renderer::{ChartAdapter, HoverPoint};
 use theme::ViewerTheme;
 
@@ -95,32 +97,34 @@ actions!(
 const SELECTABLE_CONTEXT: &str = "ViewerSelectable";
 
 pub fn run(project_path: Option<PathBuf>) {
-    Application::new().run(move |cx: &mut App| {
-        cx.bind_keys([
-            KeyBinding::new("cmd-o", OpenProject, None),
-            KeyBinding::new("cmd-r", Refresh, None),
-            KeyBinding::new("cmd-0", ResetView, None),
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("enter", ActivateSelection, Some(SELECTABLE_CONTEXT)),
-            KeyBinding::new("space", ActivateSelection, Some(SELECTABLE_CONTEXT)),
-        ]);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.set_menus(menus());
-        let bounds = Bounds::centered(None, size(px(1_200.), px(800.)), cx);
-        let result = cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..WindowOptions::default()
-            },
-            move |window, cx| cx.new(|cx| ViewerApp::new(project_path, window, cx)),
-        );
-        if let Err(error) = result {
-            eprintln!("failed to open pulseon-viewer window: {error}");
-            cx.quit();
-        } else {
-            cx.activate(true);
-        }
-    });
+    Application::new()
+        .with_assets(ViewerAssets)
+        .run(move |cx: &mut App| {
+            cx.bind_keys([
+                KeyBinding::new("cmd-o", OpenProject, None),
+                KeyBinding::new("cmd-r", Refresh, None),
+                KeyBinding::new("cmd-0", ResetView, None),
+                KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("enter", ActivateSelection, Some(SELECTABLE_CONTEXT)),
+                KeyBinding::new("space", ActivateSelection, Some(SELECTABLE_CONTEXT)),
+            ]);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.set_menus(menus());
+            let bounds = Bounds::centered(None, size(px(1_200.), px(800.)), cx);
+            let result = cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    ..WindowOptions::default()
+                },
+                move |window, cx| cx.new(|cx| ViewerApp::new(project_path, window, cx)),
+            );
+            if let Err(error) = result {
+                eprintln!("failed to open pulseon-viewer window: {error}");
+                cx.quit();
+            } else {
+                cx.activate(true);
+            }
+        });
 }
 
 fn menus() -> Vec<Menu> {
@@ -1157,7 +1161,7 @@ impl Render for ViewerApp {
                                         cx.notify();
                                     }))
                             })
-                            .child("↻"),
+                            .child(components::icon(IconName::Refresh, theme)),
                     ),
             )
             .children(error.clone().map(|message| error_banner(message, theme)))

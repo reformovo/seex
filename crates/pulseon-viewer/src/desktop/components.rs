@@ -1,4 +1,4 @@
-use gpui::{Div, ElementId, Rgba, Stateful, div, prelude::*};
+use gpui::{Div, ElementId, Rgba, Stateful, Svg, div, prelude::*, px, svg};
 
 use super::theme::ViewerTheme;
 
@@ -7,6 +7,26 @@ pub enum StatusTone {
     Info,
     Warning,
     Error,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IconName {
+    Refresh,
+}
+
+impl IconName {
+    const fn path(self) -> &'static str {
+        match self {
+            Self::Refresh => "icons/refresh.svg",
+        }
+    }
+}
+
+pub fn icon(name: IconName, theme: ViewerTheme) -> Svg {
+    svg()
+        .path(name.path())
+        .size(px(16.))
+        .text_color(theme.colors.text_muted)
 }
 
 pub fn focus_ring(id: impl Into<ElementId>, theme: ViewerTheme) -> Stateful<Div> {
@@ -171,5 +191,10 @@ mod tests {
             assert_ne!(warning, error);
             assert_ne!(info, error);
         }
+    }
+
+    #[test]
+    fn icon_name_has_a_stable_asset_path() {
+        assert_eq!(IconName::Refresh.path(), "icons/refresh.svg");
     }
 }

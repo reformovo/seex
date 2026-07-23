@@ -253,7 +253,7 @@ roadmap phase identifiers.
   popover, tooltip, status badge, empty state, and focus-ring primitives with
   Zed-consistent compact geometry, typography, one-pixel separators, selected
   surfaces, and complete hover/active/focused/disabled states.
-- [ ] Use Zed's `theme`, `ui`, `title_bar`, `project_panel`, and `workspace`
+- [x] Use Zed's `theme`, `ui`, `title_bar`, `project_panel`, and `workspace`
   crates as direct implementation references. Adapt relevant component
   structure, tokens, icons, and interaction logic into viewer-owned code. Do
   not depend on whole Zed application crates because their GPUI revision and
