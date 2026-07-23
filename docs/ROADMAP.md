@@ -328,7 +328,7 @@ roadmap phase identifiers.
   than aggregating reduced renderer points. Ranking requires explicit
   minimize/maximize direction and remains grouped by Project for cross-Project
   Views. Tag inspector results for stale-result rejection.
-- [ ] Hide and restore Project sidebar and Bottom inspector independently,
+- [x] Hide and restore Project sidebar and Bottom inspector independently,
   retain their previous width/height, and let the Metric sidebar resize or
   collapse compactly without clearing selections. Expose durable toggle/show
   actions and keep focus restoration keyboard-accessible.

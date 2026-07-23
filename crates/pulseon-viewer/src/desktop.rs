@@ -160,6 +160,9 @@ actions!(
         Refresh,
         ResetView,
         ToggleProjectSidebar,
+        ToggleMetricSidebar,
+        ToggleBottomInspector,
+        ShowMetricInspector,
         ZoomIn,
         ZoomOut,
         UseStep,
@@ -179,6 +182,8 @@ pub fn run(project_path: Option<PathBuf>) {
                 KeyBinding::new("cmd-o", OpenProject, None),
                 KeyBinding::new("cmd-r", Refresh, None),
                 KeyBinding::new("cmd-shift-b", ToggleProjectSidebar, None),
+                KeyBinding::new("cmd-shift-m", ToggleMetricSidebar, None),
+                KeyBinding::new("cmd-j", ToggleBottomInspector, None),
                 KeyBinding::new("cmd-0", ResetView, None),
                 KeyBinding::new("cmd-=", ZoomIn, None),
                 KeyBinding::new("cmd-+", ZoomIn, None),
@@ -231,6 +236,9 @@ fn menus() -> Vec<Menu> {
                 MenuItem::action("Zoom Out", ZoomOut),
                 MenuItem::separator(),
                 MenuItem::action("Toggle Project Sidebar", ToggleProjectSidebar),
+                MenuItem::action("Toggle Metric Sidebar", ToggleMetricSidebar),
+                MenuItem::action("Toggle Bottom Inspector", ToggleBottomInspector),
+                MenuItem::action("Show Metric Inspector", ShowMetricInspector),
                 MenuItem::separator(),
                 MenuItem::action("Step", UseStep),
                 MenuItem::action("Elapsed", UseElapsed),
@@ -252,6 +260,8 @@ struct ViewerApp {
     renaming_view: Option<AnalysisViewId>,
     view_name_draft: String,
     project_sidebar_visible: bool,
+    project_sidebar_width: gpui::Pixels,
+    metric_sidebar_compact: bool,
     bottom_inspector_visible: bool,
     bottom_inspector_height: gpui::Pixels,
     inspector_resize: Option<InspectorResize>,
@@ -295,6 +305,8 @@ impl ViewerApp {
             renaming_view: None,
             view_name_draft: String::new(),
             project_sidebar_visible: true,
+            project_sidebar_width: px(320.),
+            metric_sidebar_compact: false,
             bottom_inspector_visible: false,
             bottom_inspector_height: px(220.),
             inspector_resize: None,
@@ -741,12 +753,60 @@ impl ViewerApp {
     fn on_toggle_project_sidebar(
         &mut self,
         _: &ToggleProjectSidebar,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.project_sidebar_visible = !self.project_sidebar_visible;
         self.source_menu = None;
+        self.focus.focus(window);
         cx.notify();
+    }
+
+    fn on_toggle_metric_sidebar(
+        &mut self,
+        _: &ToggleMetricSidebar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.metric_sidebar_compact = !self.metric_sidebar_compact;
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    fn on_toggle_bottom_inspector(
+        &mut self,
+        _: &ToggleBottomInspector,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.views.active().selected_panel_id.is_some() {
+            self.bottom_inspector_visible = !self.bottom_inspector_visible;
+            if self.bottom_inspector_visible {
+                self.request_inspector(cx);
+            }
+        }
+        self.focus.focus(window);
+        cx.notify();
+    }
+
+    fn on_show_metric_inspector(
+        &mut self,
+        _: &ShowMetricInspector,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(panel_id) = self.views.active().selected_panel_id.clone() {
+            self.show_metric_inspector(&panel_id, cx);
+        }
+        self.focus.focus(window);
+    }
+
+    fn metric_sidebar_width(&self) -> gpui::Pixels {
+        if self.metric_sidebar_compact {
+            px(48.)
+        } else {
+            self.theme.spacing.sidebar_width
+        }
     }
 
     fn create_analysis_view(&mut self, cx: &mut Context<Self>) {
@@ -1172,7 +1232,7 @@ impl ViewerApp {
         }
 
         div()
-            .w(theme.spacing.sidebar_width)
+            .w(self.project_sidebar_width)
             .h_full()
             .flex_shrink_0()
             .flex()
@@ -1525,7 +1585,7 @@ impl ViewerApp {
             .overflow_hidden()
             .child(
                 div()
-                    .w(theme.spacing.sidebar_width)
+                    .w(self.metric_sidebar_width())
                     .h_full()
                     .flex()
                     .flex_col()
@@ -1754,13 +1814,14 @@ impl ViewerApp {
             TrackDensity::Comfortable => px(240.),
             TrackDensity::Spacious => px(320.),
         };
+        let metric_sidebar_width = self.metric_sidebar_width();
         let timeline = self.render_overview(cx);
         let list_panels = Rc::clone(&panels);
         let panel_count = panels.len();
         let observer = TrackViewportObserver {
             state: Rc::clone(&self.track_viewport),
             viewer_id: cx.entity().entity_id(),
-            metric_sidebar_width: theme.spacing.sidebar_width,
+            metric_sidebar_width,
             plot_inset: theme.spacing.content_padding * 2.,
         };
         let scroll = self.metric_scroll.clone();
@@ -1782,7 +1843,7 @@ impl ViewerApp {
                     .border_color(theme.colors.border)
                     .child(
                         div()
-                            .w(theme.spacing.sidebar_width)
+                            .w(metric_sidebar_width)
                             .flex_shrink_0()
                             .p(theme.spacing.panel_padding)
                             .bg(theme.colors.panel)
@@ -2172,7 +2233,7 @@ impl ViewerApp {
                         let panel_id = panel_id.clone();
                         move || format!("metric-sidebar-row:{}", panel_id.as_str())
                     })
-                    .w(theme.spacing.sidebar_width)
+                    .w(self.metric_sidebar_width())
                     .h_full()
                     .flex_shrink_0()
                     .flex()
@@ -2926,6 +2987,9 @@ impl Render for ViewerApp {
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
+            .on_action(cx.listener(Self::on_toggle_metric_sidebar))
+            .on_action(cx.listener(Self::on_toggle_bottom_inspector))
+            .on_action(cx.listener(Self::on_show_metric_inspector))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_step))
@@ -4209,6 +4273,43 @@ mod tests {
                     .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
                     .expect("viewer should remain open")
                     < previous_height
+            );
+            let retained_height = window
+                .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, window, _| viewer.focus.focus(window))
+                .expect("viewer should remain open");
+            cx.dispatch_action(ToggleBottomInspector);
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.bottom_inspector_visible)
+                    .expect("viewer should remain open")
+            );
+            cx.dispatch_action(ShowMetricInspector);
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
+                    .expect("viewer should remain open"),
+                retained_height
+            );
+            let expanded_metric_width = cx
+                .debug_bounds("metric-sidebar-row:loss")
+                .expect("Metric sidebar should render")
+                .size
+                .width;
+            cx.dispatch_action(ToggleMetricSidebar);
+            let compact_metric_width = cx
+                .debug_bounds("metric-sidebar-row:loss")
+                .expect("compact Metric sidebar should render")
+                .size
+                .width;
+            assert!(compact_metric_width < expanded_metric_width);
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.views.active().panels.len())
+                    .expect("viewer should remain open"),
+                1
             );
 
             let panel_id = MetricPanelId::from_string("loss");
