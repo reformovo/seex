@@ -117,6 +117,7 @@ pub enum SelectionError {
 }
 
 /// GPUI-independent state reconciler for native read snapshots.
+#[derive(Clone)]
 pub struct ViewerCore {
     selection: ViewerSelection,
     axis: AlignmentAxis,
@@ -277,6 +278,11 @@ impl ViewerCore {
 
     pub fn is_pending(&self, kind: ReadKind) -> bool {
         self.expected[kind_index(kind)].is_some()
+    }
+
+    /// Cancels ownership of in-flight results without clearing snapshots.
+    pub fn cancel_pending(&mut self) {
+        self.expected.fill(None);
     }
 
     /// Applies only the result currently expected for its independent stream.

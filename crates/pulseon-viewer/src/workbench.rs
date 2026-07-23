@@ -1,14 +1,28 @@
 use crate::coordination::AnalysisViewId;
-use crate::core::{DataSourceId, RunRef, SelectionError, toggle_run_selection};
+use crate::core::{DataSourceId, RunRef, SelectionError, ViewerCore, toggle_run_selection};
+use pulseon_model::metric::MetricKey;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TrackDensity {
+    Compact,
+    #[default]
+    Comfortable,
+    Spacious,
+}
+
+#[derive(Clone)]
 pub struct AnalysisView {
     pub view_id: AnalysisViewId,
     pub name: String,
     pub runs: Vec<RunRef>,
+    pub metrics: Vec<MetricKey>,
+    pub track_density: TrackDensity,
+    pub core: ViewerCore,
+    pub local_error: Option<String>,
+    pub overview_revision: u64,
+    pub detail_revision: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnalysisViews {
     views: Vec<AnalysisView>,
     active_view_id: AnalysisViewId,
@@ -21,6 +35,12 @@ impl Default for AnalysisViews {
             view_id: AnalysisViewId::from_string("view-1"),
             name: "View 1".to_owned(),
             runs: Vec::new(),
+            metrics: Vec::new(),
+            track_density: TrackDensity::default(),
+            core: ViewerCore::default(),
+            local_error: None,
+            overview_revision: 0,
+            detail_revision: 0,
         };
         Self {
             active_view_id: view.view_id.clone(),
@@ -55,6 +75,12 @@ impl AnalysisViews {
             view_id: view_id.clone(),
             name: format!("View {}", self.views.len() + 1),
             runs: Vec::new(),
+            metrics: Vec::new(),
+            track_density: TrackDensity::default(),
+            core: ViewerCore::default(),
+            local_error: None,
+            overview_revision: 0,
+            detail_revision: 0,
         });
         self.active_view_id = view_id.clone();
         view_id
@@ -67,6 +93,12 @@ impl AnalysisViews {
             view_id: view_id.clone(),
             name: format!("{} Copy", active.name),
             runs: active.runs,
+            metrics: active.metrics,
+            track_density: active.track_density,
+            core: active.core,
+            local_error: active.local_error,
+            overview_revision: active.overview_revision,
+            detail_revision: active.detail_revision,
         });
         self.active_view_id = view_id.clone();
         view_id
@@ -112,6 +144,12 @@ impl AnalysisViews {
         toggle_run_selection(&mut self.active_mut().runs, run)
     }
 
+    pub fn select_active_metric(&mut self, metric_key: MetricKey) {
+        if !self.active().metrics.contains(&metric_key) {
+            self.active_mut().metrics.push(metric_key);
+        }
+    }
+
     pub fn remove_source(&mut self, source_id: &DataSourceId) {
         for view in &mut self.views {
             view.runs.retain(|run| &run.source_id != source_id);
@@ -151,13 +189,33 @@ mod tests {
         views
             .toggle_active_run(run)
             .expect("first Run should be selected");
+        views.select_active_metric(MetricKey::from_string("loss"));
+        views
+            .active_mut()
+            .core
+            .select_axis(pulseon_model::alignment::AlignmentAxis::ElapsedTime);
 
         let duplicate = views.duplicate_active();
         views.active_mut().runs.clear();
+        views.active_mut().metrics.clear();
+        views
+            .active_mut()
+            .core
+            .select_axis(pulseon_model::alignment::AlignmentAxis::Step);
         assert!(views.activate(&AnalysisViewId::from_string("view-1")));
 
         assert_eq!(views.active().runs.len(), 1);
+        assert_eq!(views.active().metrics, [MetricKey::from_string("loss")]);
+        assert_eq!(
+            views.active().core.axis(),
+            pulseon_model::alignment::AlignmentAxis::ElapsedTime
+        );
         assert!(views.activate(&duplicate));
         assert!(views.active().runs.is_empty());
+        assert!(views.active().metrics.is_empty());
+        assert_eq!(
+            views.active().core.axis(),
+            pulseon_model::alignment::AlignmentAxis::Step
+        );
     }
 }

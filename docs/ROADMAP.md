@@ -293,7 +293,7 @@ roadmap phase identifiers.
   activating, renaming, and closing Views. Place this bar inside the Analysis
   workspace so it never spans the independent Project/Run sidebar. Closing the
   last View creates a new empty View.
-- [ ] Give each View independent ordered Runs and metrics, alignment axis, track
+- [x] Give each View independent ordered Runs and metrics, alignment axis, track
   density, shared viewport, snapshots, pending generations, and errors. View
   switching must not share mutable selection or brush state implicitly.
 

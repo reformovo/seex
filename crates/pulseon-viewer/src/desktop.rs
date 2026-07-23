@@ -447,29 +447,74 @@ impl ViewerApp {
     }
 
     fn create_analysis_view(&mut self, cx: &mut Context<Self>) {
+        self.store_active_view_state();
         self.views.create_empty();
+        self.restore_active_view_state();
         self.renaming_view = None;
         cx.notify();
     }
 
     fn duplicate_analysis_view(&mut self, cx: &mut Context<Self>) {
+        self.store_active_view_state();
         self.views.duplicate_active();
+        self.restore_active_view_state();
         self.renaming_view = None;
         cx.notify();
     }
 
     fn activate_analysis_view(&mut self, view_id: &AnalysisViewId, cx: &mut Context<Self>) {
+        if self.views.active().view_id == *view_id {
+            return;
+        }
+        self.store_active_view_state();
         if self.views.activate(view_id) {
+            self.restore_active_view_state();
             self.renaming_view = None;
             cx.notify();
         }
     }
 
     fn close_analysis_view(&mut self, view_id: &AnalysisViewId, cx: &mut Context<Self>) {
+        let active = self.views.active().view_id == *view_id;
+        if active {
+            self.store_active_view_state();
+        }
         if self.views.close(view_id) {
+            if active {
+                self.restore_active_view_state();
+            }
             self.renaming_view = None;
             cx.notify();
         }
+    }
+
+    fn store_active_view_state(&mut self) {
+        self.core.cancel_pending();
+        let view = self.views.active_mut();
+        view.core = std::mem::take(&mut self.core);
+        view.local_error = self.local_error.take();
+        view.overview_revision = self.overview_revision;
+        view.detail_revision = self.detail_revision;
+    }
+
+    fn restore_active_view_state(&mut self) {
+        let view = self.views.active_mut();
+        self.core = std::mem::take(&mut view.core);
+        self.local_error = view.local_error.take();
+        self.overview_revision = view.overview_revision;
+        self.detail_revision = view.detail_revision;
+        self.source_path = self
+            .core
+            .selection()
+            .source_id
+            .as_ref()
+            .and_then(|source_id| self.sources.source(source_id))
+            .map(|source| source.root_path.clone());
+        self.run_list.rebuild(self.core.catalog(), &self.run_filter);
+        self.chart_adapter.borrow_mut().clear();
+        self.hover = None;
+        self.drag = None;
+        self.zoom_task = None;
     }
 
     fn begin_rename_analysis_view(
@@ -663,6 +708,7 @@ impl ViewerApp {
     }
 
     fn select_metric(&mut self, metric_key: MetricKey, cx: &mut Context<Self>) {
+        self.views.select_active_metric(metric_key.clone());
         self.core.select_metric(Some(metric_key));
         self.request_overview(cx);
         cx.notify();
@@ -2274,11 +2320,23 @@ mod tests {
         #[gpui::test]
         fn analysis_view_tabs_manage_the_active_view_lifecycle(cx: &mut TestAppContext) {
             let (window, mut cx) = open_viewer(cx, None);
+            let original_view = window
+                .update(&mut cx, |viewer, _, _| {
+                    viewer.core.select_axis(AlignmentAxis::ElapsedTime);
+                    viewer.views.active().view_id.clone()
+                })
+                .expect("viewer should remain open");
 
             let new_view = cx
                 .debug_bounds("new-view")
                 .expect("new View control should render");
             cx.simulate_click(new_view.center(), Modifiers::default());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.core.axis())
+                    .expect("viewer should remain open"),
+                AlignmentAxis::Step
+            );
             let duplicate = cx
                 .debug_bounds("duplicate-view")
                 .expect("duplicate View control should render");
@@ -2338,6 +2396,17 @@ mod tests {
                     .read_with(&cx, |viewer, _| viewer.views.views().len())
                     .expect("viewer should remain open"),
                 2
+            );
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.activate_analysis_view(&original_view, cx);
+                })
+                .expect("viewer should remain open");
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.core.axis())
+                    .expect("viewer should remain open"),
+                AlignmentAxis::ElapsedTime
             );
         }
 
