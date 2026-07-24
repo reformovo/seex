@@ -2790,6 +2790,7 @@ impl ViewerApp {
             .child(
                 div()
                     .id("overview-chart")
+                    .debug_selector(|| "overview-chart".to_owned())
                     .focusable()
                     .h(px(96.))
                     .w_full()
@@ -4518,6 +4519,77 @@ mod tests {
                     .expect("viewer should remain open"),
                 Some(20.)
             );
+        }
+
+        #[gpui::test]
+        fn switching_metric_tracks_preserves_the_shared_brush(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture(2);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            cx.simulate_resize(size(px(1_000.), px(1_000.)));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 2);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                    viewer.select_metric(MetricKey::from_string("metric-1"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels.len() == 2
+                    && viewer
+                        .views
+                        .active()
+                        .panels
+                        .iter()
+                        .all(|panel| panel.detail.is_some())
+            });
+            let brush = window
+                .read_with(&cx, |viewer, _| viewer.core.brush())
+                .expect("viewer should remain open")
+                .expect("loaded metrics should create a shared brush");
+
+            for metric in ["metric-0", "metric-1"] {
+                let track = cx
+                    .debug_bounds(if metric == "metric-0" {
+                        "metric-track:metric-0"
+                    } else {
+                        "metric-track:metric-1"
+                    })
+                    .expect("Metric track should render");
+                cx.simulate_click(track.center(), Modifiers::default());
+                cx.run_until_parked();
+                wait_for_viewer(window, &cx, |viewer| {
+                    viewer
+                        .views
+                        .active()
+                        .selected_panel_id
+                        .as_ref()
+                        .is_some_and(|panel_id| {
+                            panel_id.as_str() == metric
+                                && viewer
+                                    .views
+                                    .active_panel(panel_id)
+                                    .is_some_and(|panel| !panel.is_pending(ReadKind::Inspector))
+                        })
+                });
+
+                window
+                    .read_with(&cx, |viewer, _| {
+                        assert_eq!(viewer.core.brush(), Some(brush));
+                        assert_eq!(
+                            viewer
+                                .views
+                                .active()
+                                .selected_panel_id
+                                .as_ref()
+                                .map(MetricPanelId::as_str),
+                            Some(metric),
+                        );
+                    })
+                    .expect("viewer should remain open");
+                assert!(cx.debug_bounds("overview-chart").is_some());
+            }
         }
 
         #[gpui::test]

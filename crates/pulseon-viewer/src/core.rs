@@ -243,7 +243,7 @@ impl ViewerCore {
     pub fn select_metric(&mut self, metric_key: Option<MetricKey>) {
         if self.selection.metric_key != metric_key {
             self.selection.metric_key = metric_key;
-            self.clear_curves();
+            self.clear_curve_snapshots();
         }
     }
 
@@ -381,16 +381,11 @@ impl ViewerCore {
     }
 
     fn apply_overview(&mut self, snapshot: CurveSnapshot) {
-        self.brush = snapshot.real_range.and_then(|range| {
-            let home = AxisRange::new(range.start() as f64, range.end() as f64).ok()?;
-            let previous = self.brush.map(BrushState::selected);
-            let mut brush = BrushState::new(home).ok()?;
-            if let Some(selected) = previous {
-                brush.resize_start(selected.start()).ok()?;
-                brush.resize_end(selected.end()).ok()?;
-            }
-            Some(brush)
-        });
+        if let Some(range) = snapshot.real_range {
+            self.set_timeline_home(range);
+        } else {
+            self.brush = None;
+        }
         if self.brush.is_none() {
             self.detail = None;
             self.expected[kind_index(ReadKind::Detail)] = None;
@@ -400,6 +395,10 @@ impl ViewerCore {
 
     fn clear_curves(&mut self) {
         self.brush = None;
+        self.clear_curve_snapshots();
+    }
+
+    fn clear_curve_snapshots(&mut self) {
         self.overview = None;
         self.detail = None;
         self.expected[kind_index(ReadKind::Overview)] = None;
@@ -639,6 +638,35 @@ mod tests {
 
         assert!(core.brush().is_none());
         assert!(core.detail().is_none());
+    }
+
+    #[test]
+    fn metric_selection_preserves_the_shared_timeline() {
+        let mut core = ViewerCore::default();
+        let mut overview = curves();
+        overview.real_range =
+            Some(AlignmentViewport::new(0, 10).expect("test overview range should be valid"));
+        core.apply_overview(overview);
+        core.detail = Some(Arc::new(curves()));
+        let brush = core
+            .brush()
+            .expect("overview should initialize the timeline");
+
+        core.select_metric(Some(MetricKey::from_string("accuracy")));
+
+        assert_eq!(core.brush(), Some(brush));
+        assert!(core.overview().is_none());
+        assert!(core.detail().is_none());
+
+        let mut replacement = curves();
+        replacement.real_range =
+            Some(AlignmentViewport::new(20, 30).expect("test overview range should be valid"));
+        core.apply_overview(replacement);
+
+        let brush = core
+            .brush()
+            .expect("replacement overview should retain a brush");
+        assert_eq!((brush.home().start(), brush.home().end()), (20., 30.));
     }
 
     #[test]
