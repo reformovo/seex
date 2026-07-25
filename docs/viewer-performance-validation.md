@@ -2,8 +2,8 @@
 
 ## Measurement Record
 
-- Date: 2026-07-25
-- Implementation commit: `7228115`, plus this validation record update
+- Date: 2026-07-26
+- Implementation commit: `9cc2725`, plus this validation record update
 - Platform: macOS 26.3 (25D125), arm64, Apple M4 Pro
 - Rust: 1.97.1
 - uv: 0.8.12
@@ -60,10 +60,10 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Brush resize | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush pan | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush zoom | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
-| Cached path preparation | 200 | 0.685 ms | 0.873 ms | 1.028 ms |
-| Uncached path preparation | 200 | 7.072 ms | 7.287 ms | 8.497 ms |
-| Hit testing | 200 | 0.200 ms | 0.342 ms | 1.266 ms |
-| Ruler hover evidence | 1,000 | 0.002 ms | 0.002 ms | 0.003 ms |
+| Cached path preparation | 200 | 0.661 ms | 0.736 ms | 0.780 ms |
+| Uncached path preparation | 200 | 6.826 ms | 7.110 ms | 7.216 ms |
+| Hit testing | 200 | 0.200 ms | 0.219 ms | 1.517 ms |
+| Ruler hover evidence | 1,000 | 0.002 ms | 0.002 ms | 0.002 ms |
 
 After the converged renderer was integrated, an initial run failed the
 unchanged uncached-path gate at p95 9.018 ms and maximum 23.815 ms. A local
@@ -140,13 +140,18 @@ The multi-project workbench contract is covered by direct behavioral tests:
 - workbench document round trips plus healthy, removed-Run, unknown-Metric,
   duplicate-identity, unsupported-version, and missing-source recovery tests
   cover persistence and unavailable-source reconciliation without native
-  writes; and
+  writes;
 - converged GPUI tests cover Project menu anchoring and real placement,
   five-item pagination, Metric candidate removal and independent resizing,
   compact single-line Run rows with fixed controls, shared-ruler pan/zoom
   boundaries, simultaneous hover/locked cursors, dense evidence-callout
   separation and full point context, baseline deltas, icon-control tooltips,
-  and narrow-window horizontal overflow of the tabular Bottom inspector.
+  and narrow-window horizontal overflow of the tabular Bottom inspector; and
+- final convergence regressions additionally cover full-catalog Run filtering
+  beyond the revealed five-item page, all-Source refresh from an empty View,
+  the converged shell in a newly created empty View, Baseline/Pinned immunity
+  from Project batch visibility, exact brush/ruler/track horizontal geometry,
+  compact-row plot height, and distinct logical versus physical plot widths.
 
 ## Zed Reference Audit
 
@@ -212,7 +217,7 @@ teardown is not part of ordinary debug test runs.
 
 ## Verification
 
-Passed against implementation commit `7228115` on 2026-07-25:
+Passed against implementation commit `9cc2725` on 2026-07-26:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -229,6 +234,14 @@ Passed against implementation commit `7228115` on 2026-07-25:
 - `uv run pyright` (zero errors)
 - `uv run pytest` (106 passed, 2 opt-in MinIO tests skipped)
 - `uv run maturin build --out dist`
+
+The first chained invocation of `cargo test -p pulseon-viewer --features
+test-support` reported every test as passed, then the GPUI test process received
+SIGSEGV during process teardown. An immediate standalone rerun of the exact
+command passed, including 43 library tests, 53 binary tests with two ignored
+hardware gates, three native-pipeline tests, and doc tests. The serialized GPUI
+suite also passed throughout implementation. No assertion, storage worker, or
+viewer runtime failure was observed; the one teardown fault was not reproduced.
 
 The retained six-metric trace fixture is 89 MiB. At the time of the automated
 gate, `system_profiler` reported two connected Mi Monitor displays at
