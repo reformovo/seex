@@ -33,6 +33,7 @@ pub struct SavedAnalysisView {
     pub baseline: Option<SavedRunRef>,
     pub pinned_runs: Vec<SavedRunRef>,
     pub metrics: Vec<String>,
+    pub metric_heights: Vec<(String, f32)>,
     pub selected_metric: Option<String>,
     pub inspector_tab: InspectorTab,
     pub ranking_direction: Option<ObjectiveDirection>,
@@ -161,6 +162,13 @@ impl WorkbenchDocument {
             for metric in &view.metrics {
                 output.push_str(&format!("metric {}\n", encode(metric)));
             }
+            for (metric, height) in &view.metric_heights {
+                output.push_str(&format!(
+                    "metric-height {} {}\n",
+                    encode(metric),
+                    height.to_bits()
+                ));
+            }
             output.push_str("end\n");
         }
         output
@@ -236,6 +244,7 @@ impl WorkbenchDocument {
                         baseline: None,
                         pinned_runs: Vec::new(),
                         metrics: Vec::new(),
+                        metric_heights: Vec::new(),
                         selected_metric: (*selected != "-")
                             .then(|| decode(selected, line_number))
                             .transpose()?,
@@ -291,6 +300,14 @@ impl WorkbenchDocument {
                     .ok_or_else(|| invalid("metric appears outside a view"))?
                     .metrics
                     .push(decode(metric, line_number)?),
+                ["metric-height", metric, height] => current
+                    .as_mut()
+                    .ok_or_else(|| invalid("metric-height appears outside a view"))?
+                    .metric_heights
+                    .push((
+                        decode(metric, line_number)?,
+                        f32::from_bits(parse(height, line_number)?),
+                    )),
                 ["end"] => {
                     let view = current
                         .take()
@@ -453,6 +470,7 @@ mod tests {
                 baseline: Some(run("baseline")),
                 pinned_runs: vec![run("pinned")],
                 metrics: vec!["loss".to_owned()],
+                metric_heights: vec![("loss".to_owned(), 128.)],
                 selected_metric: Some("loss".to_owned()),
                 inspector_tab: InspectorTab::Evidence,
                 ranking_direction: Some(ObjectiveDirection::Minimize),

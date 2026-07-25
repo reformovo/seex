@@ -6,11 +6,11 @@ use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, Corner, EntityId, FocusHandle, KeyBinding,
-    KeyDownEvent, ListHorizontalSizingBehavior, Menu, MenuItem, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Point, Render, ScrollWheelEvent, SharedString,
-    SystemMenuType, Task, UniformListDecoration, UniformListScrollHandle, Window, WindowBounds,
-    WindowOptions, actions, anchored, deferred, div, point, prelude::*, px, size, uniform_list,
+    App, Application, Bounds, Context, Corner, FocusHandle, KeyBinding, KeyDownEvent,
+    ListAlignment, ListHorizontalSizingBehavior, ListState, Menu, MenuItem, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent,
+    SharedString, SystemMenuType, Task, Window, WindowBounds, WindowOptions, actions, anchored,
+    deferred, div, list, point, prelude::*, px, size, uniform_list,
 };
 use pulseon_chart_core::{BrushState, CanvasSize};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
@@ -28,9 +28,7 @@ use pulseon_viewer::core::{
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::InspectorSnapshot;
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
-use pulseon_viewer::workbench::{
-    AnalysisViews, InspectorTab, MetricPanel, ProjectRef, TrackDensity,
-};
+use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, ProjectRef};
 use pulseon_viewer::workbench_document::{
     SavedAnalysisView, SavedProjectRef, SavedRunRef, WorkbenchDocument,
 };
@@ -69,20 +67,19 @@ struct InspectorResize {
     start_height: gpui::Pixels,
 }
 
+#[derive(Clone, Debug)]
+struct MetricResize {
+    panel_id: MetricPanelId,
+    start_y: gpui::Pixels,
+    start_height: f32,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct TrackViewport {
     visible: Range<usize>,
     overscan: Range<usize>,
     logical_width_bits: u32,
     physical_width: u32,
-}
-
-#[derive(Clone)]
-struct TrackViewportObserver {
-    state: Rc<RefCell<TrackViewport>>,
-    viewer_id: EntityId,
-    metric_sidebar_width: gpui::Pixels,
-    plot_inset: gpui::Pixels,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,41 +107,6 @@ struct SidebarProject {
     source_path: PathBuf,
     source_label: String,
     placement: ProjectPlacement,
-}
-
-impl UniformListDecoration for TrackViewportObserver {
-    fn compute(
-        &self,
-        visible: Range<usize>,
-        bounds: Bounds<gpui::Pixels>,
-        _: Point<gpui::Pixels>,
-        _: gpui::Pixels,
-        item_count: usize,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> AnyElement {
-        let viewport_items = visible.len().max(1);
-        let overscan = visible.start.saturating_sub(viewport_items)
-            ..visible.end.saturating_add(viewport_items).min(item_count);
-        let plot_width = f32::from(
-            (bounds.size.width - self.metric_sidebar_width - self.plot_inset).max(px(1.)),
-        );
-        let physical_width = (plot_width * window.scale_factor()).round().max(1.) as u32;
-        let next = TrackViewport {
-            visible,
-            overscan,
-            logical_width_bits: plot_width.to_bits(),
-            physical_width,
-        };
-        let mut state = self.state.borrow_mut();
-        if *state != next {
-            *state = next;
-            let viewer_id = self.viewer_id;
-            cx.defer(move |cx| cx.notify(viewer_id));
-            window.request_animation_frame();
-        }
-        div().into_any_element()
-    }
 }
 
 fn update_brush_drag(brush: &mut BrushState, gesture: &mut DragGesture, axis: f64) {
@@ -333,7 +295,8 @@ struct ViewerApp {
     chart_adapter: Rc<RefCell<ChartAdapter>>,
     track_adapters: HashMap<MetricPanelId, Rc<RefCell<ChartAdapter>>>,
     track_hovers: HashMap<MetricPanelId, HoverPoint>,
-    metric_scroll: UniformListScrollHandle,
+    metric_scroll: ListState,
+    metric_resize: Option<MetricResize>,
     track_viewport: Rc<RefCell<TrackViewport>>,
     overview_revision: u64,
     detail_revision: u64,
@@ -389,7 +352,8 @@ impl ViewerApp {
             chart_adapter: Rc::new(RefCell::new(ChartAdapter::default())),
             track_adapters: HashMap::new(),
             track_hovers: HashMap::new(),
-            metric_scroll: UniformListScrollHandle::new(),
+            metric_scroll: ListState::new(0, ListAlignment::Top, px(480.)),
+            metric_resize: None,
             track_viewport: Rc::new(RefCell::new(TrackViewport::default())),
             overview_revision: 0,
             detail_revision: 0,
@@ -515,7 +479,7 @@ impl ViewerApp {
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
         self.track_hovers.clear();
-        self.metric_scroll = UniformListScrollHandle::new();
+        self.metric_scroll = ListState::new(0, ListAlignment::Top, px(480.));
         *self.track_viewport.borrow_mut() = TrackViewport::default();
         self.hover = None;
         self.drag = None;
@@ -1071,7 +1035,11 @@ impl ViewerApp {
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
         self.track_hovers.clear();
-        self.metric_scroll = UniformListScrollHandle::new();
+        self.metric_scroll = ListState::new(
+            self.views.active().panels.len(),
+            ListAlignment::Top,
+            px(480.),
+        );
         *self.track_viewport.borrow_mut() = TrackViewport::default();
         self.hover = None;
         self.drag = None;
@@ -1415,6 +1383,7 @@ impl ViewerApp {
     fn select_metric(&mut self, metric_key: MetricKey, cx: &mut Context<Self>) {
         self.metric_picker_open = false;
         let panel_id = self.views.select_active_metric(metric_key.clone());
+        self.metric_scroll.reset(self.views.active().panels.len());
         self.core.select_metric(Some(metric_key));
         self.request_panel_overview(&panel_id, cx);
         if self.bottom_inspector_visible {
@@ -1484,8 +1453,51 @@ impl ViewerApp {
         }
     }
 
+    fn begin_metric_resize(
+        &mut self,
+        panel_id: MetricPanelId,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = self.views.active_panel(&panel_id) else {
+            return;
+        };
+        self.metric_resize = Some(MetricResize {
+            panel_id,
+            start_y: event.position.y,
+            start_height: panel.row_height,
+        });
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn move_metric_resize(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(resize) = self.metric_resize.clone() else {
+            return;
+        };
+        let height = resize.start_height + f32::from(event.position.y - resize.start_y);
+        if self.views.set_active_panel_height(&resize.panel_id, height)
+            && let Some(index) = self
+                .views
+                .active()
+                .panels
+                .iter()
+                .position(|panel| panel.panel_id == resize.panel_id)
+        {
+            self.metric_scroll.splice(index..index + 1, 1);
+        }
+        cx.notify();
+    }
+
+    fn finish_metric_resize(&mut self, cx: &mut Context<Self>) {
+        if self.metric_resize.take().is_some() {
+            cx.notify();
+        }
+    }
+
     fn remove_metric_panel(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
         if self.views.remove_active_panel(panel_id) {
+            self.metric_scroll.reset(self.views.active().panels.len());
             self.track_adapters.remove(panel_id);
             self.track_hovers.remove(panel_id);
             let selected_metric = self
@@ -1797,22 +1809,50 @@ impl ViewerApp {
             .map(|catalog| catalog.metric_keys.clone())
             .unwrap_or_default();
         let metric_picker = self.render_metric_picker(available, &selected, cx);
-        let row_height = match self.views.active().track_density {
-            TrackDensity::Compact => px(180.),
-            TrackDensity::Comfortable => px(240.),
-            TrackDensity::Spacious => px(320.),
-        };
         let metric_sidebar_width = self.metric_sidebar_width();
         let timeline = self.render_overview(cx);
         let list_panels = Rc::clone(&panels);
         let panel_count = panels.len();
-        let observer = TrackViewportObserver {
-            state: Rc::clone(&self.track_viewport),
-            viewer_id: cx.entity().entity_id(),
-            metric_sidebar_width,
-            plot_inset: theme.spacing.content_padding * 2.,
-        };
         let scroll = self.metric_scroll.clone();
+        if scroll.item_count() != panel_count {
+            scroll.reset(panel_count);
+        }
+        let physical_width = self.overview_width.max(1);
+        let logical_width = physical_width as f32;
+        if self.track_viewport.borrow().overscan.is_empty() && panel_count > 0 {
+            let visible = 0..panel_count.min(4);
+            *self.track_viewport.borrow_mut() = TrackViewport {
+                overscan: 0..panel_count.min(8),
+                visible,
+                logical_width_bits: logical_width.to_bits(),
+                physical_width,
+            };
+        }
+        let viewport_state = Rc::clone(&self.track_viewport);
+        let viewer_id = cx.entity().entity_id();
+        let handler_scroll = scroll.clone();
+        scroll.set_scroll_handler(move |event, _, cx| {
+            let visible_len = event.visible_range.len().max(1);
+            let scroll = handler_scroll.clone();
+            let viewport_state = Rc::clone(&viewport_state);
+            cx.defer(move |cx| {
+                let start = scroll.logical_scroll_top().item_ix.min(panel_count);
+                let visible = start..start.saturating_add(visible_len).min(panel_count);
+                let next = TrackViewport {
+                    overscan: visible.start.saturating_sub(visible_len)
+                        ..visible.end.saturating_add(visible_len).min(panel_count),
+                    visible,
+                    logical_width_bits: logical_width.to_bits(),
+                    physical_width,
+                };
+                if *viewport_state.borrow() != next {
+                    *viewport_state.borrow_mut() = next;
+                    cx.notify(viewer_id);
+                }
+            });
+        });
+        let viewer = cx.entity().downgrade();
+        let render_panels = Rc::clone(&list_panels);
         let inspector = self
             .bottom_inspector_visible
             .then(|| self.render_bottom_inspector(cx));
@@ -1848,20 +1888,29 @@ impl ViewerApp {
                     ),
             )
             .child(
-                uniform_list(
-                    "metric-track-scroll",
-                    panel_count,
-                    cx.processor(move |this, range: Range<usize>, _, cx| {
-                        range
-                            .filter_map(|index| list_panels.get(index).cloned())
-                            .map(|panel| this.render_metric_row(panel, row_height, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .track_scroll(scroll)
-                .with_decoration(observer)
-                .debug_selector(|| "metric-track-scroll".to_owned())
-                .flex_1(),
+                div()
+                    .id("metric-track-scroll")
+                    .debug_selector(|| "metric-track-scroll".to_owned())
+                    .flex_1()
+                    .overflow_hidden()
+                    .child(
+                        list(scroll, move |index, _, cx| {
+                            let panel = render_panels.get(index).cloned();
+                            viewer
+                                .update(cx, |this, cx| {
+                                    panel.map_or_else(
+                                        || div().into_any_element(),
+                                        |panel| {
+                                            let height = px(panel.row_height);
+                                            this.render_metric_row(panel, height, cx)
+                                                .into_any_element()
+                                        },
+                                    )
+                                })
+                                .unwrap_or_else(|_| div().into_any_element())
+                        })
+                        .size_full(),
+                    ),
             )
             .children(inspector)
     }
@@ -2217,13 +2266,10 @@ impl ViewerApp {
         self.track_hovers
             .retain(|panel_id, _| scheduled_ids.contains(panel_id));
         let logical_width = f32::from_bits(state.logical_width_bits) as f64;
-        let row_height = match self.views.active().track_density {
-            TrackDensity::Compact => 180.,
-            TrackDensity::Comfortable => 240.,
-            TrackDensity::Spacious => 320.,
-        } - f64::from(self.theme.spacing.content_padding * 2.);
-        let canvas = CanvasSize::new(logical_width, row_height.max(1.)).ok();
         for panel in panels {
+            let canvas_height =
+                f64::from(panel.row_height) - f64::from(self.theme.spacing.content_padding * 2.);
+            let canvas = CanvasSize::new(logical_width, canvas_height.max(1.)).ok();
             if let Some(snapshot) = panel.detail.as_deref()
                 && let Some(viewport) = renderer::detail_viewport(
                     snapshot,
@@ -2264,16 +2310,35 @@ impl ViewerApp {
         let select_id = panel_id.clone();
         let drag_id = panel_id.clone();
         let finish_id = panel_id.clone();
+        let resize_id = panel_id.clone();
         let selected = self.views.active().selected_panel_id.as_ref() == Some(&panel_id);
         let error_count = panel.source_errors.len();
         let track = self.render_metric_track(&panel, cx);
         div()
+            .relative()
             .flex()
             .w_full()
             .h(row_height)
             .min_h(row_height)
             .border_b_1()
             .border_color(theme.colors.border)
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.dragging() && this.metric_resize.is_some() {
+                    this.move_metric_resize(event, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.finish_metric_resize(cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.finish_metric_resize(cx);
+                }),
+            )
             .child(
                 div()
                     .id(SharedString::from(format!(
@@ -2367,6 +2432,30 @@ impl ViewerApp {
                         }),
                     )
                     .child(track),
+            )
+            .child(
+                div()
+                    .id(SharedString::from(format!(
+                        "metric-resize:{}",
+                        resize_id.as_str()
+                    )))
+                    .debug_selector({
+                        let resize_id = resize_id.clone();
+                        move || format!("metric-resize:{}", resize_id.as_str())
+                    })
+                    .absolute()
+                    .bottom(px(-2.))
+                    .left_0()
+                    .w_full()
+                    .h(px(5.))
+                    .cursor(gpui::CursorStyle::ResizeUpDown)
+                    .hover(|style| style.bg(theme.colors.focus))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.begin_metric_resize(resize_id.clone(), event, cx);
+                        }),
+                    ),
             )
     }
 
@@ -3030,6 +3119,11 @@ impl ViewerApp {
                         .iter()
                         .map(|panel| panel.metric_key.as_str().to_owned())
                         .collect(),
+                    metric_heights: view
+                        .panels
+                        .iter()
+                        .map(|panel| (panel.metric_key.as_str().to_owned(), panel.row_height))
+                        .collect(),
                     selected_metric: view
                         .selected_panel_id
                         .as_ref()
@@ -3516,10 +3610,11 @@ mod tests {
     #[cfg(feature = "test-support")]
     mod gpui_tests {
         use gpui::{
-            Keystroke, Modifiers, ScrollDelta, ScrollStrategy, TestAppContext, TouchPhase,
-            VisualTestContext, WindowHandle, point,
+            Keystroke, Modifiers, ScrollDelta, TestAppContext, TouchPhase, VisualTestContext,
+            WindowHandle, point,
         };
         use pulseon_core::engine::client::NativeClient;
+        use pulseon_viewer::workbench::TrackDensity;
 
         use super::*;
 
@@ -3645,6 +3740,7 @@ mod tests {
                     baseline: None,
                     pinned_runs: Vec::new(),
                     metrics: vec![metric.to_owned()],
+                    metric_heights: Vec::new(),
                     selected_metric: Some(metric.to_owned()),
                     inspector_tab: InspectorTab::Evidence,
                     ranking_direction: Some(ObjectiveDirection::Minimize),
@@ -4629,6 +4725,33 @@ mod tests {
             assert_ne!(ranges[0], ranges[1]);
             assert!(unavailable);
 
+            let resize = cx
+                .debug_bounds("metric-resize:metric-0")
+                .expect("Metric row resize handle should render");
+            cx.simulate_mouse_down(resize.center(), MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_move(
+                point(resize.center().x, resize.center().y + px(40.)),
+                Some(MouseButton::Left),
+                Modifiers::default(),
+            );
+            cx.simulate_mouse_up(
+                point(resize.center().x, resize.center().y + px(40.)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            let heights = window
+                .read_with(&cx, |viewer, _| {
+                    viewer
+                        .views
+                        .active()
+                        .panels
+                        .iter()
+                        .map(|panel| panel.row_height)
+                        .collect::<Vec<_>>()
+                })
+                .expect("viewer should remain open");
+            assert_eq!(heights, [144., 104.]);
+
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.remove_metric_panel(&MetricPanelId::from_string("metric-0"), cx);
@@ -4951,14 +5074,15 @@ mod tests {
                 })
                 .expect("viewer should remain open");
 
-            window
-                .update(&mut cx, |viewer, _, cx| {
-                    viewer
-                        .metric_scroll
-                        .scroll_to_item_strict(9, ScrollStrategy::Bottom);
-                    cx.notify();
-                })
-                .expect("viewer should remain open");
+            let tracks = cx
+                .debug_bounds("metric-track-scroll")
+                .expect("Metric track list should render");
+            cx.simulate_event(ScrollWheelEvent {
+                position: tracks.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
             wait_for_viewer(window, &cx, |viewer| {
                 let schedule = viewer.track_viewport.borrow();
                 schedule.visible.contains(&9)

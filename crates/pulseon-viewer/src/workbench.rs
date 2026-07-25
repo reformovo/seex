@@ -13,6 +13,8 @@ use crate::query::{CurveSnapshot, InspectorSnapshot};
 use crate::workbench_document::WorkbenchDocument;
 use crate::worker::{Generation, ReadKind};
 
+pub const DEFAULT_METRIC_ROW_HEIGHT: f32 = 104.;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TrackDensity {
     Compact,
@@ -49,6 +51,7 @@ impl ProjectRef {
 pub struct MetricPanel {
     pub panel_id: MetricPanelId,
     pub metric_key: MetricKey,
+    pub row_height: f32,
     pub overview: Option<Arc<CurveSnapshot>>,
     pub detail: Option<Arc<CurveSnapshot>>,
     pub source_errors: Vec<SourceReadFailure>,
@@ -68,6 +71,7 @@ impl MetricPanel {
         Self {
             panel_id: MetricPanelId::from_string(metric_key.as_str()),
             metric_key,
+            row_height: DEFAULT_METRIC_ROW_HEIGHT,
             overview: None,
             detail: None,
             source_errors: Vec::new(),
@@ -212,7 +216,13 @@ impl AnalysisViews {
                         saved.name
                     ));
                 } else {
-                    panels.push(MetricPanel::new(metric_key));
+                    let mut panel = MetricPanel::new(metric_key);
+                    if let Some((_, height)) =
+                        saved.metric_heights.iter().find(|(key, _)| key == metric)
+                    {
+                        panel.row_height = height.clamp(72., 480.);
+                    }
+                    panels.push(panel);
                 }
             }
             let selected_panel_id = saved.selected_metric.as_ref().and_then(|selected| {
@@ -597,6 +607,14 @@ impl AnalysisViews {
         true
     }
 
+    pub fn set_active_panel_height(&mut self, panel_id: &MetricPanelId, height: f32) -> bool {
+        let Some(panel) = self.active_panel_mut(panel_id) else {
+            return false;
+        };
+        panel.row_height = height.clamp(72., 480.);
+        true
+    }
+
     pub fn set_active_inspector_tab(&mut self, tab: InspectorTab) {
         self.active_mut().inspector_tab = tab;
     }
@@ -955,6 +973,7 @@ mod tests {
                 baseline: None,
                 pinned_runs: Vec::new(),
                 metrics: vec!["loss".to_owned(), "loss".to_owned()],
+                metric_heights: Vec::new(),
                 selected_metric: Some("unknown".to_owned()),
                 inspector_tab: InspectorTab::Summary,
                 ranking_direction: None,
