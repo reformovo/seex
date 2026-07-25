@@ -119,8 +119,6 @@ pub struct AnalysisView {
     pub track_density: TrackDensity,
     pub core: ViewerCore,
     pub local_error: Option<String>,
-    pub overview_revision: u64,
-    pub detail_revision: u64,
     pub timeline_extents: HashMap<MetricKey, AlignmentViewport>,
 }
 
@@ -148,8 +146,6 @@ impl Default for AnalysisViews {
             track_density: TrackDensity::default(),
             core: ViewerCore::default(),
             local_error: None,
-            overview_revision: 0,
-            detail_revision: 0,
             timeline_extents: HashMap::new(),
         };
         Self {
@@ -280,8 +276,6 @@ impl AnalysisViews {
                 track_density: saved.track_density,
                 core,
                 local_error: None,
-                overview_revision: 0,
-                detail_revision: 0,
                 timeline_extents: HashMap::new(),
             });
         }
@@ -377,8 +371,6 @@ impl AnalysisViews {
             track_density: TrackDensity::default(),
             core: ViewerCore::default(),
             local_error: None,
-            overview_revision: 0,
-            detail_revision: 0,
             timeline_extents: HashMap::new(),
         });
         self.active_view_id = view_id.clone();
@@ -401,8 +393,6 @@ impl AnalysisViews {
             track_density: active.track_density,
             core: active.core,
             local_error: active.local_error,
-            overview_revision: active.overview_revision,
-            detail_revision: active.detail_revision,
             timeline_extents: active.timeline_extents,
         });
         self.active_view_id = view_id.clone();

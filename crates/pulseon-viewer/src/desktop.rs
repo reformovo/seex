@@ -308,8 +308,6 @@ struct ViewerApp {
     metric_scroll: ListState,
     metric_resize: Option<MetricResize>,
     track_viewport: Rc<RefCell<TrackViewport>>,
-    overview_revision: u64,
-    detail_revision: u64,
     overview_width: u32,
     detail_width: u32,
     ruler_hover: Option<f64>,
@@ -370,8 +368,6 @@ impl ViewerApp {
             metric_scroll: ListState::new(0, ListAlignment::Top, px(480.)),
             metric_resize: None,
             track_viewport: Rc::new(RefCell::new(TrackViewport::default())),
-            overview_revision: 0,
-            detail_revision: 0,
             overview_width: 1_000,
             detail_width: 1_000,
             ruler_hover: None,
@@ -1038,16 +1034,12 @@ impl ViewerApp {
         let view = self.views.active_mut();
         view.core = std::mem::take(&mut self.core);
         view.local_error = self.local_error.take();
-        view.overview_revision = self.overview_revision;
-        view.detail_revision = self.detail_revision;
     }
 
     fn restore_active_view_state(&mut self) {
         let view = self.views.active_mut();
         self.core = std::mem::take(&mut view.core);
         self.local_error = view.local_error.take();
-        self.overview_revision = view.overview_revision;
-        self.detail_revision = view.detail_revision;
         self.source_path = self
             .core
             .selection()
@@ -3780,8 +3772,6 @@ fn reasons_label(reasons: &[EvidenceReason]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use pulseon_model::comparison::EvidenceCompleteness;
     use pulseon_model::run::RunId;
 
@@ -3945,6 +3935,8 @@ mod tests {
 
     #[cfg(feature = "test-support")]
     mod gpui_tests {
+        use std::sync::Arc;
+
         use gpui::{
             Keystroke, Modifiers, ScrollDelta, TestAppContext, TouchPhase, VisualTestContext,
             WindowHandle, point,
