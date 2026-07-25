@@ -119,6 +119,7 @@ impl ViewerApp {
                             tab = tab.child(deferred(
                                 anchored()
                                     .anchor(Corner::TopLeft)
+                                    .snap_to_window_with_margin(px(8.))
                                     .offset(point(px(0.), theme.spacing.tab_height))
                                     .child(self.render_view_menu(view.view_id, cx)),
                             ));

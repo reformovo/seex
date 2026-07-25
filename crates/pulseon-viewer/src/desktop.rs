@@ -1903,6 +1903,7 @@ impl ViewerApp {
             picker = picker.child(deferred(
                 anchored()
                     .anchor(Corner::TopLeft)
+                    .snap_to_window_with_margin(px(8.))
                     .offset(point(px(0.), theme.spacing.control_height + px(4.)))
                     .child(
                         components::popover(theme)
@@ -4460,15 +4461,23 @@ mod tests {
                     cx.notify();
                 })
                 .expect("viewer should remain open");
+            cx.simulate_resize(size(px(420.), px(520.)));
             cx.run_until_parked();
             let project_menu = cx
                 .debug_bounds("project-menu-project")
                 .expect("Project menu control should render while hovered");
+            let information = cx
+                .debug_bounds("project-information-project")
+                .expect("Project information should render while hovered");
+            assert!(information.right() <= px(412.));
+            assert!(information.bottom() <= px(512.));
             cx.simulate_click(project_menu.center(), Modifiers::default());
             let popover = cx
                 .debug_bounds("project-popover-project")
                 .expect("Project menu should open");
             assert!(popover.origin.x >= project_menu.origin.x);
+            assert!(popover.right() <= px(412.));
+            assert!(popover.bottom() <= px(512.));
             let pin = cx
                 .debug_bounds("pin-project")
                 .expect("normal Project menu should offer Pin project");

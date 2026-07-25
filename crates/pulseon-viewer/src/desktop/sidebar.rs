@@ -434,6 +434,7 @@ impl ViewerApp {
             tree = tree.child(deferred(
                 anchored()
                     .anchor(Corner::TopLeft)
+                    .snap_to_window_with_margin(px(8.))
                     .offset(point(self.project_sidebar_width - px(12.), px(24.)))
                     .child(self.render_project_menu(project.clone(), cx)),
             ));
@@ -441,6 +442,7 @@ impl ViewerApp {
             tree = tree.child(deferred(
                 anchored()
                     .anchor(Corner::TopLeft)
+                    .snap_to_window_with_margin(px(8.))
                     .offset(point(self.project_sidebar_width - px(12.), px(0.)))
                     .child(project_information_card(&project, theme)),
             ));
