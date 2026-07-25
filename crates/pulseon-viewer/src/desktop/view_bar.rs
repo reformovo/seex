@@ -43,11 +43,13 @@ impl ViewerApp {
                         let editing = renaming_view.as_ref() == Some(&view.view_id);
                         let focus = view_name_focus.clone();
                         let menu_open = self.view_menu.as_ref() == Some(&view.view_id);
+                        let hover_group = SharedString::from(format!("view-tab-{index}"));
                         let mut tab = components::analysis_tab(
                             SharedString::from(format!("analysis-tab:{}", view.view_id)),
                             theme,
                             selected,
                         )
+                        .group(hover_group.clone())
                         .relative()
                         .flex_none()
                         .debug_selector(move || {
@@ -83,23 +85,33 @@ impl ViewerApp {
                                 .child(view.name)
                         })
                         .child(
-                            components::sidebar_icon_button(
-                                SharedString::from(format!("close-view:{}", close_id)),
-                                theme,
-                                false,
-                            )
-                            .debug_selector(move || {
-                                if selected {
-                                    "close-active-view".to_owned()
-                                } else {
-                                    format!("close-view-{index}")
-                                }
-                            })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.close_analysis_view(&close_id, cx);
-                                cx.stop_propagation();
-                            }))
-                            .child(components::icon(IconName::Close, theme)),
+                            div()
+                                .id(SharedString::from(format!("close-view:{}", close_id)))
+                                .debug_selector(move || {
+                                    if selected {
+                                        "close-active-view".to_owned()
+                                    } else {
+                                        format!("close-view-{index}")
+                                    }
+                                })
+                                .size(theme.spacing.control_height)
+                                .flex_none()
+                                .border_1()
+                                .border_color(theme.colors.transparent)
+                                .rounded(theme.spacing.corner_radius)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .opacity(if selected { 0.62 } else { 0. })
+                                .group_hover(hover_group, |style| style.opacity(1.))
+                                .tab_index(0)
+                                .focus(|style| style.opacity(1.).border_color(theme.colors.focus))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.close_analysis_view(&close_id, cx);
+                                    cx.stop_propagation();
+                                }))
+                                .child(components::icon(IconName::Close, theme)),
                         );
                         if menu_open {
                             tab = tab.child(deferred(
