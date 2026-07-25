@@ -1,4 +1,7 @@
-use gpui::{Div, ElementId, Rgba, Stateful, Svg, div, prelude::*, px, svg};
+use gpui::{
+    AnyView, App, Context, Div, ElementId, Render, Rgba, SharedString, Stateful, Svg, Window, div,
+    prelude::*, px, svg,
+};
 
 use super::theme::ViewerTheme;
 
@@ -191,6 +194,34 @@ pub fn tooltip(theme: ViewerTheme) -> Div {
         .bg(theme.colors.tooltip_background)
         .text_color(theme.colors.tooltip_text)
         .text_sm()
+}
+
+pub fn label_tooltip(
+    label: impl Into<SharedString>,
+    theme: ViewerTheme,
+) -> impl Fn(&mut Window, &mut App) -> AnyView {
+    let label = label.into();
+    move |_, cx| {
+        let label = label.clone();
+        cx.new(|_| LabelTooltip { label, theme }).into()
+    }
+}
+
+struct LabelTooltip {
+    label: SharedString,
+    theme: ViewerTheme,
+}
+
+impl Render for LabelTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        tooltip(self.theme)
+            .id("label-tooltip")
+            .debug_selector(|| "label-tooltip".to_owned())
+            .px_2()
+            .py_1()
+            .whitespace_nowrap()
+            .child(self.label.clone())
+    }
 }
 
 pub fn status_badge(theme: ViewerTheme, tone: StatusTone) -> Div {

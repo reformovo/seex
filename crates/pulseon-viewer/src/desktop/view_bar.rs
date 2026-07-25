@@ -20,6 +20,7 @@ impl ViewerApp {
             .children((!self.project_sidebar_visible).then(|| {
                 components::icon_button("show-project-sidebar", theme, false, false)
                     .debug_selector(|| "show-project-sidebar".to_owned())
+                    .tooltip(components::label_tooltip("Show Projects", theme))
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.project_sidebar_visible = true;
@@ -107,6 +108,7 @@ impl ViewerApp {
                                 .group_hover(hover_group, |style| style.opacity(1.))
                                 .tab_index(0)
                                 .focus(|style| style.opacity(1.).border_color(theme.colors.focus))
+                                .tooltip(components::label_tooltip("Close View", theme))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.close_analysis_view(&close_id, cx);
                                     cx.stop_propagation();
@@ -127,6 +129,7 @@ impl ViewerApp {
             .child(
                 components::icon_button("new-view", theme, false, false)
                     .debug_selector(|| "new-view".to_owned())
+                    .tooltip(components::label_tooltip("New View", theme))
                     .flex_none()
                     .cursor_pointer()
                     .on_click(cx.listener(|this, _, _, cx| this.create_analysis_view(cx)))
@@ -140,6 +143,7 @@ impl ViewerApp {
                     self.views.active().selected_panel_id.is_none(),
                 )
                 .debug_selector(|| "toggle-bottom-inspector".to_owned())
+                .tooltip(components::label_tooltip("Toggle inspector", theme))
                 .when(self.views.active().selected_panel_id.is_some(), |button| {
                     button
                         .cursor_pointer()
@@ -152,6 +156,7 @@ impl ViewerApp {
             .child(
                 components::icon_button("refresh-view", theme, false, !can_refresh)
                     .debug_selector(|| "refresh-view".to_owned())
+                    .tooltip(components::label_tooltip("Refresh", theme))
                     .when(can_refresh, |button| {
                         button
                             .cursor_pointer()

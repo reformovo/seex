@@ -198,12 +198,14 @@ impl ViewerApp {
                     .child(
                         components::icon_button("import-source", theme, false, false)
                             .debug_selector(|| "import-source".to_owned())
+                            .tooltip(components::label_tooltip("Import Source", theme))
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| this.open_picker(cx)))
                             .child(components::icon(IconName::Plus, theme)),
                     )
                     .child(
                         components::icon_button("hide-project-sidebar", theme, false, false)
+                            .tooltip(components::label_tooltip("Hide Projects", theme))
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.project_sidebar_visible = false;
@@ -368,6 +370,14 @@ impl ViewerApp {
                         theme,
                         expanded,
                     )
+                    .tooltip(components::label_tooltip(
+                        if expanded {
+                            "Collapse project"
+                        } else {
+                            "Expand project"
+                        },
+                        theme,
+                    ))
                     .debug_selector({
                         let source_index = project.source_index;
                         let project_index = project.project_index;
@@ -407,6 +417,7 @@ impl ViewerApp {
                         theme,
                         menu_open,
                     )
+                    .tooltip(components::label_tooltip("Project actions", theme))
                     .debug_selector({
                         let project_ref = project_ref.clone();
                         move || format!("project-menu-{}", project_ref.project_id.as_str())
@@ -565,6 +576,10 @@ impl ViewerApp {
                 selected,
             )
             .debug_selector(move || format!("run-eye-{index}"))
+            .tooltip(components::label_tooltip(
+                if selected { "Hide Run" } else { "Show Run" },
+                theme,
+            ))
             .when(selected || visible_count < MAX_SELECTED_RUNS, |button| {
                 button.on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle_tree_run(eye_run.clone(), source_path.clone(), cx);
@@ -607,6 +622,14 @@ impl ViewerApp {
                         theme,
                         is_baseline,
                     )
+                    .tooltip(components::label_tooltip(
+                        if is_baseline {
+                            "Clear Baseline"
+                        } else {
+                            "Set Baseline"
+                        },
+                        theme,
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.set_run_baseline(baseline_run.clone(), cx);
                         cx.stop_propagation();
@@ -619,6 +642,10 @@ impl ViewerApp {
                         theme,
                         is_pinned,
                     )
+                    .tooltip(components::label_tooltip(
+                        if is_pinned { "Unpin Run" } else { "Pin Run" },
+                        theme,
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.toggle_pinned_run(pin_run.clone(), cx);
                         cx.stop_propagation();
@@ -631,6 +658,14 @@ impl ViewerApp {
                         theme,
                         is_archived,
                     )
+                    .tooltip(components::label_tooltip(
+                        if is_archived {
+                            "Restore Run"
+                        } else {
+                            "Archive Run"
+                        },
+                        theme,
+                    ))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.archive_run(archive_run.clone(), cx);
                         cx.stop_propagation();

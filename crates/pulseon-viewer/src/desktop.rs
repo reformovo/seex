@@ -2050,6 +2050,7 @@ impl ViewerApp {
                 available.is_empty(),
             )
             .debug_selector(|| "add-metric".to_owned())
+            .tooltip(components::label_tooltip("Add Metric", theme))
             .when(!available.is_empty(), |button| {
                 button
                     .cursor_pointer()
@@ -2168,6 +2169,10 @@ impl ViewerApp {
         let mut picker = div().relative().child(
             components::icon_button("axis-picker", theme, self.axis_picker_open, false)
                 .debug_selector(|| "axis-picker".to_owned())
+                .tooltip(components::label_tooltip(
+                    if absolute { "Absolute time" } else { "Step" },
+                    theme,
+                ))
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.axis_picker_open = !this.axis_picker_open;
@@ -2764,6 +2769,7 @@ impl ViewerApp {
                     .child(
                         components::icon_button("close-inspector", theme, false, false)
                             .debug_selector(|| "close-inspector".to_owned())
+                            .tooltip(components::label_tooltip("Hide inspector", theme))
                             .flex_none()
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -2984,6 +2990,7 @@ impl ViewerApp {
                             false,
                             false,
                         )
+                        .tooltip(components::label_tooltip("Remove Metric", theme))
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.remove_metric_panel(&remove_id, cx);
@@ -5045,6 +5052,10 @@ mod tests {
             let new_view = cx
                 .debug_bounds("new-view")
                 .expect("new View control should render");
+            cx.simulate_mouse_move(new_view.center(), None, Modifiers::default());
+            cx.executor().advance_clock(Duration::from_millis(500));
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("label-tooltip").is_some());
             cx.simulate_click(new_view.center(), Modifiers::default());
             assert_eq!(
                 window
