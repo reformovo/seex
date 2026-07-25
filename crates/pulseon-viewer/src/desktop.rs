@@ -3128,6 +3128,7 @@ impl ViewerApp {
             })
             .collect::<Vec<_>>();
         let callout_panel = panel_id.clone();
+        let callout_axis = self.curve_axis();
         div()
             .relative()
             .size_full()
@@ -3182,6 +3183,7 @@ impl ViewerApp {
                 } else {
                     x + px(8.)
                 };
+                let description = hover_value_description(callout_axis, &hover, delta);
                 components::tooltip(theme)
                     .id(SharedString::from(format!(
                         "track-hover-callout:{}:{}",
@@ -3189,6 +3191,7 @@ impl ViewerApp {
                         hover.run_ref.cache_key()
                     )))
                     .debug_selector(|| "track-hover-callout".to_owned())
+                    .tooltip(components::label_tooltip(description, theme))
                     .absolute()
                     .left(left)
                     .top((y - px(12.)).max(px(0.)))
@@ -4258,6 +4261,26 @@ fn hover_value_label(hover: &HoverPoint, delta: Option<f64>) -> String {
     )
 }
 
+fn hover_value_description(axis: CurveAxis, hover: &HoverPoint, delta: Option<f64>) -> String {
+    let coordinate = match axis {
+        CurveAxis::Step => format!("Step {}", hover.axis_value),
+        CurveAxis::AbsoluteTime => format!(
+            "Time {} UTC",
+            format_axis_tick(CurveAxis::AbsoluteTime, hover.axis_value as f64)
+        ),
+    };
+    let delta = delta.map_or_else(String::new, |delta| {
+        format!("; {} from baseline", format_signed_delta(delta, 2))
+    });
+    format!(
+        "{} ({}) · {} · {coordinate} · {:.2}{delta}",
+        hover.run_name,
+        hover.run_ref.run_id.as_str(),
+        hover.metric_key,
+        hover.value,
+    )
+}
+
 fn format_signed_delta(delta: f64, precision: usize) -> String {
     let sign = if delta.is_sign_negative() { '−' } else { '+' };
     format!("{sign}{:.precision$}", delta.abs())
@@ -4379,6 +4402,10 @@ mod tests {
             "2904 · 0.51(+0.55)"
         );
         assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51(−0.55)");
+        assert_eq!(
+            hover_value_description(CurveAxis::Step, &hover, Some(-0.55)),
+            "run (run) · loss · Step 2904 · 0.51; −0.55 from baseline"
+        );
         assert_eq!(format_cursor_coordinate(CurveAxis::Step, 496_000.), "496k");
         assert_eq!(
             format_cursor_coordinate(CurveAxis::AbsoluteTime, 34_920_000.),
