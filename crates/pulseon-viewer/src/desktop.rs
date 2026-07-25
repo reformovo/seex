@@ -5339,7 +5339,7 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
                 .expect("viewer should remain open");
-            assert_eq!(heights, [144., 104.]);
+            assert_eq!(heights, [92., 52.]);
 
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -5603,6 +5603,7 @@ mod tests {
             let (root, project_id, run_id) = fixture(10);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            cx.simulate_resize(size(px(600.), px(420.)));
             wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
             select_fixture_run(window, &mut cx, project_id, run_id, 10);
             window

@@ -13,7 +13,8 @@ use crate::query::{CurveSnapshot, InspectorSnapshot};
 use crate::workbench_document::WorkbenchDocument;
 use crate::worker::{Generation, ReadKind};
 
-pub const DEFAULT_METRIC_ROW_HEIGHT: f32 = 104.;
+pub const DEFAULT_METRIC_ROW_HEIGHT: f32 = 52.;
+const MAX_METRIC_ROW_HEIGHT: f32 = 180.;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum TrackDensity {
@@ -220,7 +221,7 @@ impl AnalysisViews {
                     if let Some((_, height)) =
                         saved.metric_heights.iter().find(|(key, _)| key == metric)
                     {
-                        panel.row_height = height.clamp(72., 480.);
+                        panel.row_height = metric_row_height(*height);
                     }
                     panels.push(panel);
                 }
@@ -611,7 +612,7 @@ impl AnalysisViews {
         let Some(panel) = self.active_panel_mut(panel_id) else {
             return false;
         };
-        panel.row_height = height.clamp(72., 480.);
+        panel.row_height = metric_row_height(height);
         true
     }
 
@@ -831,6 +832,10 @@ impl AnalysisViews {
     }
 }
 
+fn metric_row_height(height: f32) -> f32 {
+    height.clamp(DEFAULT_METRIC_ROW_HEIGHT, MAX_METRIC_ROW_HEIGHT)
+}
+
 fn saved_run_ref(saved: &crate::workbench_document::SavedRunRef) -> RunRef {
     RunRef::new(
         DataSourceId::from_path(&saved.source_path),
@@ -950,6 +955,18 @@ mod tests {
         assert!(views.activate(&second_view));
         assert_eq!(views.active().selected_panel_id.as_ref(), Some(&accuracy));
         assert_eq!(views.active().inspector_tab, InspectorTab::Ranking);
+    }
+
+    #[test]
+    fn metric_panel_heights_use_the_compact_bounded_range() {
+        let mut views = AnalysisViews::default();
+        let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
+
+        assert_eq!(views.active().panels[0].row_height, 52.);
+        assert!(views.set_active_panel_height(&panel_id, 1.));
+        assert_eq!(views.active().panels[0].row_height, 52.);
+        assert!(views.set_active_panel_height(&panel_id, 1_000.));
+        assert_eq!(views.active().panels[0].row_height, 180.);
     }
 
     #[test]
