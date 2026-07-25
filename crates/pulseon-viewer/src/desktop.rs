@@ -26,7 +26,7 @@ use pulseon_viewer::core::{
     ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore, run_matches_filter,
 };
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
-use pulseon_viewer::query::InspectorSnapshot;
+use pulseon_viewer::query::{CurveAxis, InspectorSnapshot};
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
 use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, ProjectRef};
 use pulseon_viewer::workbench_document::{
@@ -252,7 +252,7 @@ fn menus() -> Vec<Menu> {
                 MenuItem::action("Show Metric Inspector", ShowMetricInspector),
                 MenuItem::separator(),
                 MenuItem::action("Step", UseStep),
-                MenuItem::action("Elapsed", UseElapsed),
+                MenuItem::action("Absolute Time", UseElapsed),
             ],
         },
     ]
@@ -279,6 +279,7 @@ struct ViewerApp {
     view_menu: Option<AnalysisViewId>,
     view_name_draft: String,
     metric_picker_open: bool,
+    axis_picker_open: bool,
     project_sidebar_visible: bool,
     project_sidebar_width: gpui::Pixels,
     metric_sidebar_compact: bool,
@@ -336,6 +337,7 @@ impl ViewerApp {
             view_menu: None,
             view_name_draft: String::new(),
             metric_picker_open: false,
+            axis_picker_open: false,
             project_sidebar_visible: true,
             project_sidebar_width: px(320.),
             metric_sidebar_compact: false,
@@ -691,6 +693,13 @@ impl ViewerApp {
         }
     }
 
+    fn curve_axis(&self) -> CurveAxis {
+        match self.core.axis() {
+            AlignmentAxis::Step => CurveAxis::Step,
+            AlignmentAxis::ElapsedTime => CurveAxis::AbsoluteTime,
+        }
+    }
+
     fn request_panel_overview(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
         let runs = self.active_visible_runs();
         let Some(metric_key) = self
@@ -715,7 +724,7 @@ impl ViewerApp {
             PanelReadRequest::Overview {
                 runs,
                 metric_key,
-                axis: self.core.axis(),
+                axis: self.curve_axis(),
                 physical_width: self.overview_width,
             },
         ) {
@@ -827,7 +836,7 @@ impl ViewerApp {
             PanelReadRequest::Detail {
                 runs,
                 metric_key,
-                axis: self.core.axis(),
+                axis: self.curve_axis(),
                 viewport,
                 physical_width,
             },
@@ -1191,6 +1200,7 @@ impl ViewerApp {
     }
 
     fn on_step(&mut self, _: &UseStep, _: &mut Window, cx: &mut Context<Self>) {
+        self.axis_picker_open = false;
         self.views.clear_active_timeline_extents();
         self.core.select_axis(AlignmentAxis::Step);
         self.request_overview(cx);
@@ -1198,6 +1208,7 @@ impl ViewerApp {
     }
 
     fn on_elapsed(&mut self, _: &UseElapsed, _: &mut Window, cx: &mut Context<Self>) {
+        self.axis_picker_open = false;
         self.views.clear_active_timeline_extents();
         self.core.select_axis(AlignmentAxis::ElapsedTime);
         self.request_overview(cx);
@@ -1809,8 +1820,10 @@ impl ViewerApp {
             .map(|catalog| catalog.metric_keys.clone())
             .unwrap_or_default();
         let metric_picker = self.render_metric_picker(available, &selected, cx);
+        let axis_picker = self.render_axis_picker(cx);
         let metric_sidebar_width = self.metric_sidebar_width();
         let timeline = self.render_overview(cx);
+        let ruler = self.render_ruler(cx);
         let list_panels = Rc::clone(&panels);
         let panel_count = panels.len();
         let scroll = self.metric_scroll.clone();
@@ -1878,6 +1891,10 @@ impl ViewerApp {
                             .border_r_1()
                             .border_color(theme.colors.border)
                             .relative()
+                            .flex()
+                            .items_start()
+                            .gap_1()
+                            .child(axis_picker)
                             .child(metric_picker),
                     )
                     .child(
@@ -1886,6 +1903,23 @@ impl ViewerApp {
                             .px(theme.spacing.content_padding)
                             .child(timeline),
                     ),
+            )
+            .child(
+                div()
+                    .h(px(28.))
+                    .flex_shrink_0()
+                    .flex()
+                    .border_b_1()
+                    .border_color(theme.colors.border)
+                    .child(
+                        div()
+                            .w(metric_sidebar_width)
+                            .flex_shrink_0()
+                            .bg(theme.colors.panel)
+                            .border_r_1()
+                            .border_color(theme.colors.border),
+                    )
+                    .child(ruler),
             )
             .child(
                 div()
@@ -1990,6 +2024,101 @@ impl ViewerApp {
         picker
     }
 
+    fn render_axis_picker(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+        let theme = self.theme;
+        let absolute = self.curve_axis() == CurveAxis::AbsoluteTime;
+        let mut picker = div().relative().child(
+            components::icon_button("axis-picker", theme, self.axis_picker_open, false)
+                .debug_selector(|| "axis-picker".to_owned())
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.axis_picker_open = !this.axis_picker_open;
+                    cx.notify();
+                }))
+                .child(if absolute { "◷" } else { "↗" }),
+        );
+        if self.axis_picker_open {
+            picker = picker.child(deferred(
+                anchored()
+                    .anchor(Corner::TopLeft)
+                    .offset(point(px(0.), theme.spacing.control_height + px(4.)))
+                    .child(
+                        components::popover(theme)
+                            .id("axis-menu")
+                            .debug_selector(|| "axis-menu".to_owned())
+                            .w(px(180.))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                axis_menu_item("axis-step", "↗", "Step", !absolute, theme)
+                                    .debug_selector(|| "axis-step".to_owned())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.axis_picker_open = false;
+                                        this.views.clear_active_timeline_extents();
+                                        this.core.select_axis(AlignmentAxis::Step);
+                                        this.request_overview(cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                axis_menu_item("axis-time", "◷", "Absolute time", absolute, theme)
+                                    .debug_selector(|| "axis-time".to_owned())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.axis_picker_open = false;
+                                        this.views.clear_active_timeline_extents();
+                                        this.core.select_axis(AlignmentAxis::ElapsedTime);
+                                        this.request_overview(cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            ));
+        }
+        picker
+    }
+
+    fn render_ruler(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        let theme = self.theme;
+        let selected = self.core.brush().map(|brush| brush.selected());
+        let ticks = selected
+            .map(|range| pulseon_chart_core::linear_ticks(range, 6))
+            .unwrap_or_default();
+        let axis = self.curve_axis();
+        div()
+            .id("viewport-ruler")
+            .debug_selector(|| "viewport-ruler".to_owned())
+            .flex_1()
+            .h_full()
+            .px(theme.spacing.content_padding)
+            .flex()
+            .items_center()
+            .justify_between()
+            .text_xs()
+            .text_color(theme.colors.text_muted)
+            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
+                let Some(range) = this.core.brush().map(|brush| brush.selected()) else {
+                    return;
+                };
+                let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
+                let factor = f64::from((-delta / 240.).exp().clamp(0.5, 2.));
+                let anchor = range.start() + range.span() / 2.;
+                if this
+                    .core
+                    .brush_mut()
+                    .is_some_and(|brush| brush.zoom_at(anchor, factor).is_ok())
+                {
+                    this.schedule_detail_refresh(cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            }))
+            .children(
+                ticks
+                    .into_iter()
+                    .map(move |tick| format_axis_tick(axis, tick)),
+            )
+    }
+
     fn render_bottom_inspector(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
         let active_tab = self.views.active().inspector_tab;
@@ -2059,6 +2188,7 @@ impl ViewerApp {
                                     }))
                                     .child("Minimize"),
                                 )
+                                .debug_selector(|| "axis-time".to_owned())
                                 .child(
                                     components::toolbar_button(
                                         "ranking-maximize",
@@ -2758,7 +2888,7 @@ impl ViewerApp {
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some(brush) = self.core.brush() else {
-            return div().h(px(96.));
+            return div().h(px(48.));
         };
         let adapter = Rc::clone(&self.chart_adapter);
         let selected = brush.selected();
@@ -2771,7 +2901,7 @@ impl ViewerApp {
                     .id("overview-chart")
                     .debug_selector(|| "overview-chart".to_owned())
                     .focusable()
-                    .h(px(96.))
+                    .h(px(48.))
                     .w_full()
                     .relative()
                     .cursor_pointer()
@@ -3306,6 +3436,30 @@ fn section_label(label: &str, theme: ViewerTheme) -> gpui::Div {
         .child(label.to_owned())
 }
 
+fn axis_menu_item(
+    id: impl Into<gpui::ElementId>,
+    icon: &str,
+    label: &str,
+    selected: bool,
+    theme: ViewerTheme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(theme.spacing.control_height)
+        .px_2()
+        .gap_2()
+        .rounded(theme.spacing.corner_radius)
+        .flex()
+        .items_center()
+        .cursor_pointer()
+        .when(selected, |item| item.bg(theme.colors.element_active))
+        .when(!selected, |item| {
+            item.hover(|style| style.bg(theme.colors.element_hover))
+        })
+        .child(div().w(px(20.)).text_center().child(icon.to_owned()))
+        .child(label.to_owned())
+}
+
 fn ranking_lines(snapshot: &InspectorSnapshot) -> Vec<String> {
     let mut projects = Vec::<((DataSourceId, ProjectId), Vec<_>)>::new();
     for run in &snapshot.runs {
@@ -3388,7 +3542,7 @@ const fn run_status(status: RunStatus) -> &'static str {
 const fn axis_label(axis: AlignmentAxis) -> &'static str {
     match axis {
         AlignmentAxis::Step => "Step",
-        AlignmentAxis::ElapsedTime => "Elapsed (ms)",
+        AlignmentAxis::ElapsedTime => "Absolute time (UTC)",
     }
 }
 
@@ -3402,13 +3556,19 @@ fn format_tick(value: f64) -> String {
     }
 }
 
+fn format_axis_tick(axis: CurveAxis, value: f64) -> String {
+    match axis {
+        CurveAxis::Step => format_tick(value),
+        CurveAxis::AbsoluteTime => format!("{:.3}s UTC", value / 1_000.),
+    }
+}
+
 fn hover_value_line(axis: AlignmentAxis, hover: &HoverPoint) -> String {
     match axis {
         AlignmentAxis::Step => format!("step={} · value={}", hover.axis_value, hover.value),
         AlignmentAxis::ElapsedTime => format!(
-            "{}={} · step={} · value={}",
-            renderer::axis_value_label(axis),
-            hover.axis_value,
+            "time={} · step={} · value={}",
+            format_axis_tick(CurveAxis::AbsoluteTime, hover.axis_value as f64),
             hover.step,
             hover.value
         ),
@@ -3505,7 +3665,7 @@ mod tests {
         );
         assert_eq!(
             hover_value_line(AlignmentAxis::ElapsedTime, &hover),
-            "elapsed_ms=2904 · step=497 · value=0.506"
+            "time=2.904s UTC · step=497 · value=0.506"
         );
     }
 
@@ -4604,6 +4764,40 @@ mod tests {
                     })
                     .expect("viewer should remain open")
             );
+        }
+
+        #[gpui::test]
+        fn axis_picker_switches_the_view_to_observation_time(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture(1);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                })
+                .expect("viewer should remain open");
+            let picker = cx
+                .debug_bounds("axis-picker")
+                .expect("axis picker should render beside Add Metric");
+            cx.simulate_click(picker.center(), Modifiers::default());
+            let time = cx
+                .debug_bounds("axis-time")
+                .expect("axis menu should offer Absolute time");
+            cx.simulate_click(time.center(), Modifiers::default());
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.core.axis() == AlignmentAxis::ElapsedTime
+                    && viewer
+                        .views
+                        .active()
+                        .panels
+                        .first()
+                        .and_then(|panel| panel.overview.as_ref())
+                        .and_then(|snapshot| snapshot.real_range)
+                        .is_some_and(|range| range.start() > 1_000_000_000_000)
+            });
+            assert!(cx.debug_bounds("viewport-ruler").is_some());
         }
 
         #[gpui::test]

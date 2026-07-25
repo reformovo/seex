@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use pulseon_core::engine::client::NativeClient;
-use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
+use pulseon_model::alignment::AlignmentViewport;
 use pulseon_model::comparison::EvidenceCompleteness;
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::RunId;
@@ -14,7 +14,7 @@ use pulseon_storage::bootstrap::CatalogBackend;
 use pulseon_viewer::SourceError;
 use pulseon_viewer::core::{ApplyOutcome, DataSourceId, RunRef, ViewerCore, ViewerSelection};
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
-use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
+use pulseon_viewer::query::{CurveAxis, CurveSelection, DetailRequest, OverviewRequest};
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
 use pulseon_viewer::worker::{
     Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
@@ -51,7 +51,7 @@ impl Fixture {
             .map(|run_id| RunRef::new(source_id.clone(), self.project_id.clone(), run_id.clone()))
             .collect(),
             metric_key: MetricKey::from_string("loss"),
-            axis: AlignmentAxis::Step,
+            axis: CurveAxis::Step,
         }
     }
 
@@ -252,7 +252,7 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
         source_id: source_id.clone(),
         runs: vec![fixture.run_ref(&fixture.complete_run_id)],
         metric_key: MetricKey::from_string("loss"),
-        axis: AlignmentAxis::Step,
+        axis: CurveAxis::Step,
     };
     let full_detail = match read(
         &worker,

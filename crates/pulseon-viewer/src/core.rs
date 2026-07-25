@@ -477,7 +477,7 @@ mod tests {
                 source_id: source_id("source-a"),
                 runs: Vec::new(),
                 metric_key: MetricKey::from_string("loss"),
-                axis: pulseon_model::alignment::AlignmentAxis::Step,
+                axis: crate::query::CurveAxis::Step,
             },
             viewport: AlignmentViewport::new(0, 1).expect("test viewport should be valid"),
             physical_width: 1_000,

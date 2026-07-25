@@ -11,7 +11,6 @@ use pulseon_chart_core::{
     AxisRange, BrushState, CanvasSize, LinearScale, PathCache, ScreenPoint, Viewport,
     hit_test_point, visible_y_range_for,
 };
-use pulseon_model::alignment::AlignmentAxis;
 use pulseon_model::comparison::EvidenceCompleteness;
 use pulseon_viewer::core::RunRef;
 use pulseon_viewer::query::CurveSnapshot;
@@ -420,13 +419,6 @@ pub fn timeline_canvas(
     )
 }
 
-pub const fn axis_value_label(axis: AlignmentAxis) -> &'static str {
-    match axis {
-        AlignmentAxis::Step => "step",
-        AlignmentAxis::ElapsedTime => "elapsed_ms",
-    }
-}
-
 pub fn series_color_index(run_ref: &RunRef) -> usize {
     let mut hasher = DefaultHasher::new();
     run_ref.hash(&mut hasher);
@@ -447,7 +439,7 @@ mod tests {
     use pulseon_model::types::ProjectId;
     use pulseon_viewer::core::DataSourceId;
     use pulseon_viewer::query::{
-        CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest,
+        CurveAxis, CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest,
     };
     use pulseon_viewer::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker};
 
@@ -555,7 +547,7 @@ mod tests {
                     source_id,
                     runs: vec![run_ref.clone()],
                     metric_key: MetricKey::from_string("loss"),
-                    axis: AlignmentAxis::Step,
+                    axis: CurveAxis::Step,
                 },
                 viewport: AlignmentViewport::new(7, 8)?,
                 physical_width: 100,

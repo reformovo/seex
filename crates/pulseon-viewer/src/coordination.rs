@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
+use pulseon_model::alignment::AlignmentViewport;
 use pulseon_model::comparison::ObjectiveDirection;
 use pulseon_model::metric::MetricKey;
 
 use crate::core::{DataSourceId, RunRef};
 use crate::query::{
-    CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest, InspectorRequest,
+    CurveAxis, CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest, InspectorRequest,
     InspectorRunSnapshot, InspectorSnapshot, OverviewRequest,
 };
 use crate::worker::{Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot};
@@ -62,13 +62,13 @@ pub enum PanelReadRequest {
     Overview {
         runs: Vec<RunRef>,
         metric_key: MetricKey,
-        axis: AlignmentAxis,
+        axis: CurveAxis,
         physical_width: u32,
     },
     Detail {
         runs: Vec<RunRef>,
         metric_key: MetricKey,
-        axis: AlignmentAxis,
+        axis: CurveAxis,
         viewport: AlignmentViewport,
         physical_width: u32,
     },
@@ -431,7 +431,7 @@ mod tests {
         PanelReadRequest::Detail {
             runs,
             metric_key: MetricKey::from_string("loss"),
-            axis: AlignmentAxis::Step,
+            axis: CurveAxis::Step,
             viewport: AlignmentViewport::new(0, 10).expect("test viewport should be valid"),
             physical_width: 1_000,
         }

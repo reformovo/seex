@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use pulseon_core::engine::client::NativeClient;
-use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
+use pulseon_model::alignment::AlignmentViewport;
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::RunId;
 use pulseon_model::types::ProjectId;
@@ -13,7 +13,9 @@ use pulseon_storage::bootstrap::{
     CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
 };
 use pulseon_viewer::core::{DataSourceId, RunRef};
-use pulseon_viewer::query::{CurveSelection, CurveSnapshot, DetailRequest, OverviewRequest};
+use pulseon_viewer::query::{
+    CurveAxis, CurveSelection, CurveSnapshot, DetailRequest, OverviewRequest,
+};
 use pulseon_viewer::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker};
 
 const RUNS: usize = 10;
@@ -203,7 +205,7 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
             .map(|run_id| RunRef::new(source_id.clone(), project_id.clone(), run_id))
             .collect(),
         metric_key: MetricKey::from_string("loss"),
-        axis: AlignmentAxis::Step,
+        axis: CurveAxis::Step,
     };
     let mut generation = 0;
     let overview = measure(
@@ -296,7 +298,7 @@ fn retained_multi_track_fixture_supports_product_tracing() -> Result<(), Box<dyn
                 .map(|run_id| RunRef::new(source_id.clone(), project_id.clone(), run_id))
                 .collect(),
             metric_key: MetricKey::from_string(metric_key),
-            axis: AlignmentAxis::Step,
+            axis: CurveAxis::Step,
         };
         worker.submit(
             source_id.clone(),

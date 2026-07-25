@@ -471,10 +471,9 @@ fn execute(
 
 #[cfg(test)]
 mod tests {
-    use pulseon_model::alignment::AlignmentAxis;
     use pulseon_model::metric::MetricKey;
 
-    use crate::query::CurveSelection;
+    use crate::query::{CurveAxis, CurveSelection};
 
     use super::*;
 
@@ -484,7 +483,7 @@ mod tests {
                 source_id: DataSourceId::from_string("source"),
                 runs: Vec::new(),
                 metric_key: MetricKey::from_string(metric),
-                axis: AlignmentAxis::Step,
+                axis: CurveAxis::Step,
             },
             physical_width: 1_000,
         })

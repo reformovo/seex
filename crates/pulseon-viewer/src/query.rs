@@ -17,13 +17,19 @@ use pulseon_model::metric::{MetricAggregate, MetricKey};
 use pulseon_model::run::Run;
 use pulseon_storage::StorageError;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CurveAxis {
+    Step,
+    AbsoluteTime,
+}
+
 /// Shared series selection for overview and detail queries.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CurveSelection {
     pub source_id: DataSourceId,
     pub runs: Vec<RunRef>,
     pub metric_key: MetricKey,
-    pub axis: AlignmentAxis,
+    pub axis: CurveAxis,
 }
 
 /// Full non-negative-axis overview query.
@@ -110,7 +116,10 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_overview(&self, request: &OverviewRequest) -> Result<CurveSnapshot, QueryError> {
-        let viewport = AlignmentViewport::new(0, i64::MAX)?;
+        let viewport = match request.selection.axis {
+            CurveAxis::Step => AlignmentViewport::new(0, i64::MAX)?,
+            CurveAxis::AbsoluteTime => AlignmentViewport::new(i64::MIN, i64::MAX)?,
+        };
         query_curves(
             self,
             &request.selection,
@@ -261,16 +270,35 @@ fn query_curves(
         }) else {
             continue;
         };
-        let evidence = store.query_aligned_metric(
+        let storage_axis = match selection.axis {
+            CurveAxis::Step => AlignmentAxis::Step,
+            CurveAxis::AbsoluteTime => AlignmentAxis::ElapsedTime,
+        };
+        let storage_viewport = match selection.axis {
+            CurveAxis::Step => viewport,
+            CurveAxis::AbsoluteTime => {
+                let started_at = run.started_at.timestamp_millis();
+                AlignmentViewport::new(
+                    viewport.start().saturating_sub(started_at).max(0),
+                    viewport.end().saturating_sub(started_at).max(0),
+                )?
+            }
+        };
+        let mut evidence = store.query_aligned_metric(
             &AlignmentQuery {
                 run_id: run.run_id.clone(),
                 metric_key: selection.metric_key.clone(),
-                axis: selection.axis,
-                viewport,
+                axis: storage_axis,
+                viewport: storage_viewport,
                 reduction,
             },
             run.status,
         )?;
+        if selection.axis == CurveAxis::AbsoluteTime {
+            for point in &mut evidence.points {
+                point.axis_value = point.point.timestamp.timestamp_millis();
+            }
+        }
         let drawable = matches!(
             evidence.completeness,
             EvidenceCompleteness::Complete | EvidenceCompleteness::Partial
@@ -341,6 +369,9 @@ fn brushable_range(
 #[cfg(test)]
 mod tests {
     use pulseon_chart_core::{AxisRange, BrushState};
+    use pulseon_core::engine::client::NativeClient;
+    use pulseon_model::run::{RunId, RunStatus};
+    use pulseon_model::types::ProjectId;
 
     use super::*;
 
@@ -373,5 +404,66 @@ mod tests {
                 .expect("real range should initialize a chart range");
             BrushState::new(axis).expect("real range should initialize a brush");
         }
+    }
+
+    #[test]
+    fn absolute_time_uses_observation_timestamps_without_extending_alignment_axis()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = NativeClient::open(root.path())?;
+        let project = client.create_project("viewer", Some(ProjectId::from_string("project")))?;
+        let run = client.create_run(
+            &project.project_id,
+            "candidate",
+            Some(RunId::from_string("run")),
+        )?;
+        let handle = client.run_handle(run.clone());
+        handle.log_metric_at_step("loss", 0, 1.)?;
+        handle.log_metric_at_step("loss", 1, 0.5)?;
+        client.finish_run(&run.run_id)?;
+        client.shutdown(None)?;
+        let session = ReadSession::open_existing(root.path())?;
+        let source_id = DataSourceId::from_path(root.path());
+        let selection = CurveSelection {
+            source_id: source_id.clone(),
+            runs: vec![RunRef::new(source_id, project.project_id, run.run_id)],
+            metric_key: MetricKey::from_string("loss"),
+            axis: CurveAxis::AbsoluteTime,
+        };
+
+        let overview = session.query_overview(&OverviewRequest {
+            selection: selection.clone(),
+            physical_width: 500,
+        })?;
+        let evidence = &overview.series[0].evidence;
+
+        assert_eq!(overview.series[0].run.status, RunStatus::Finished);
+        assert!(evidence.points.iter().all(|point| {
+            point.axis_value == point.point.timestamp.timestamp_millis()
+                && point.axis_value > 1_000_000_000_000
+        }));
+        let first = evidence
+            .points
+            .first()
+            .expect("fixture should have points")
+            .axis_value;
+        let last = evidence
+            .points
+            .last()
+            .expect("fixture should have points")
+            .axis_value;
+        let detail = session.query_detail(&DetailRequest {
+            selection,
+            viewport: AlignmentViewport::new(first, last)?,
+            physical_width: 500,
+        })?;
+        assert!(
+            detail.series[0]
+                .evidence
+                .points
+                .iter()
+                .all(|point| point.axis_value >= first && point.axis_value <= last)
+        );
+        Ok(())
     }
 }
