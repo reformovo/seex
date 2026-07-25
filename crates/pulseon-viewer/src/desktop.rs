@@ -53,6 +53,11 @@ enum DragGesture {
     BrushWindow {
         last_axis: f64,
     },
+    Ruler {
+        origin_x: f64,
+        last_x: f64,
+        moved: bool,
+    },
     Detail {
         panel_id: MetricPanelId,
         origin_x: f64,
@@ -122,7 +127,10 @@ fn update_brush_drag(brush: &mut BrushState, gesture: &mut DragGesture, axis: f6
             let _ = brush.pan_by(axis - *last_axis);
             *last_axis = axis;
         }
-        DragGesture::BrushStart | DragGesture::BrushEnd | DragGesture::Detail { .. } => {}
+        DragGesture::BrushStart
+        | DragGesture::BrushEnd
+        | DragGesture::Ruler { .. }
+        | DragGesture::Detail { .. } => {}
     }
 }
 
@@ -2153,14 +2161,29 @@ impl ViewerApp {
                             .on_mouse_move(cx.listener(
                                 move |this, event: &MouseMoveEvent, window, cx| {
                                     this.ruler_hover = this.ruler_axis_at(event.position, window);
-                                    cx.notify();
+                                    if event.dragging() {
+                                        this.move_ruler_drag(event, window, cx);
+                                    } else {
+                                        cx.notify();
+                                    }
                                 },
                             ))
                             .on_mouse_down(
                                 MouseButton::Left,
-                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                    this.locked_cursor = this.ruler_axis_at(event.position, window);
-                                    cx.notify();
+                                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                                    this.begin_ruler_drag(event, cx);
+                                }),
+                            )
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                                    this.finish_ruler_drag(Some(event.position), window, cx);
+                                }),
+                            )
+                            .on_mouse_up_out(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &MouseUpEvent, window, cx| {
+                                    this.finish_ruler_drag(Some(event.position), window, cx);
                                 }),
                             )
                             .on_click(cx.listener(move |this, event, window, cx| {
@@ -2168,6 +2191,7 @@ impl ViewerApp {
                                     gpui::ClickEvent::Mouse(event) => event.up.position,
                                     gpui::ClickEvent::Keyboard(_) => return,
                                 };
+                                this.drag.take();
                                 this.locked_cursor = this.ruler_axis_at(position, window);
                                 cx.notify();
                             }))
@@ -2201,6 +2225,65 @@ impl ViewerApp {
         let width = (window.viewport_size().width - left).max(px(1.));
         let ratio = (f64::from(position.x - left) / f64::from(width)).clamp(0., 1.);
         Some(range.start() + range.span() * ratio)
+    }
+
+    fn begin_ruler_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        let x = f64::from(event.position.x);
+        self.drag = Some(DragGesture::Ruler {
+            origin_x: x,
+            last_x: x,
+            moved: false,
+        });
+        cx.notify();
+    }
+
+    fn move_ruler_drag(&mut self, event: &MouseMoveEvent, window: &Window, cx: &mut Context<Self>) {
+        let Some(DragGesture::Ruler {
+            origin_x,
+            last_x,
+            mut moved,
+        }) = self.drag.clone()
+        else {
+            return;
+        };
+        let current_x = f64::from(event.position.x);
+        if !moved && (current_x - origin_x).abs() < 3. {
+            return;
+        }
+        moved = true;
+        let previous = point(px(last_x as f32), event.position.y);
+        let delta = self
+            .ruler_axis_at(previous, window)
+            .zip(self.ruler_axis_at(event.position, window))
+            .map(|(previous, current)| previous - current);
+        if let Some(delta) = delta
+            && let Some(brush) = self.core.brush_mut()
+        {
+            let _ = brush.pan_by(delta);
+        }
+        self.drag = Some(DragGesture::Ruler {
+            origin_x,
+            last_x: current_x,
+            moved,
+        });
+        cx.notify();
+    }
+
+    fn finish_ruler_drag(
+        &mut self,
+        position: Option<gpui::Point<gpui::Pixels>>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(DragGesture::Ruler { moved, .. }) = self.drag.take() else {
+            return;
+        };
+        if moved {
+            self.request_detail(cx);
+        } else if let Some(position) = position {
+            self.locked_cursor = self.ruler_axis_at(position, window);
+        }
+        cx.notify();
     }
 
     fn render_bottom_inspector(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -5052,6 +5135,55 @@ mod tests {
                 .read_with(&cx, |viewer, _| {
                     assert_eq!(viewer.locked_cursor, Some(locked));
                     assert!(viewer.ruler_hover.is_some_and(|hover| hover != locked));
+                })
+                .expect("viewer should remain open");
+        }
+
+        #[gpui::test]
+        fn ruler_drag_pans_the_shared_viewport_within_home(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| viewer.core.brush().is_some());
+            window
+                .update(&mut cx, |viewer, _, _| {
+                    let brush = viewer.core.brush_mut().expect("brush should exist");
+                    let center = brush.home().start() + brush.home().span() / 2.;
+                    brush.zoom_at(center, 2.).expect("zoom should succeed");
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            let before = window
+                .read_with(&cx, |viewer, _| {
+                    viewer.core.brush().map(|brush| brush.selected())
+                })
+                .expect("viewer should remain open")
+                .expect("selected viewport should exist");
+            let ruler = cx
+                .debug_bounds("ruler-hit-area")
+                .expect("shared ruler hit area should render");
+            let start = ruler.center();
+            let end = point(ruler.origin.x + ruler.size.width * 0.75, ruler.center().y);
+
+            cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+
+            window
+                .read_with(&cx, |viewer, _| {
+                    let brush = viewer.core.brush().expect("brush should remain available");
+                    assert_ne!(brush.selected(), before);
+                    assert_eq!(brush.selected().span(), before.span());
+                    assert!(brush.selected().start() >= brush.home().start());
+                    assert!(brush.selected().end() <= brush.home().end());
+                    assert!(viewer.drag.is_none());
                 })
                 .expect("viewer should remain open");
         }
