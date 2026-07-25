@@ -346,6 +346,57 @@ roadmap phase identifiers.
   missing sources, removed Projects/Runs, duplicate identifiers, unknown
   metrics, and unsupported document versions explicitly.
 
+##### Design Convergence and Viewer-Only Organization
+
+The completed items above record the first multi-project workbench delivery.
+The following unchecked work converges that implementation on the durable
+interaction design in
+[`multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md)
+before release work begins.
+
+- [ ] Replace the transitional application layout with the compact Analysis
+  workspace: no global viewer title bar, an independently hidden Project
+  sidebar, scrollable View tabs, a selected-Metric global brush, a separate
+  Step/Time ruler, compact resizable Metric tracks, and a fixed Bottom
+  inspector. Keep resource regions independently scrollable as they grow.
+- [ ] Converge the Project/Run sidebar on folder/folder-open disclosure,
+  five-item `Show more` pagination, explicit `No runs`, anchored Project
+  information and action popovers, binary Run visibility eyes, and three
+  non-shrinking Run actions. Use one opaque Zed-aligned popover treatment
+  throughout.
+- [ ] Add viewer-only sidebar organization. Each View owns its baseline,
+  Pinned Runs, and Project Run visibility; Archived Runs are workbench-wide.
+  Identify Pinned and Archived Projects by `DataSourceId + ProjectId` and move
+  their complete tree entries between `Projects`, `Pinned`, and `Archived`
+  without mutating native stores or child Run state.
+- [ ] Converge View and Metric behavior: keep all View state isolated, show only
+  unselected metrics in Add Metric, use a fixed Metric label column, support
+  compact per-track height adjustment, give every plot the same background,
+  and express selection through the label cell and accessibility state.
+- [ ] Implement the final navigation model. The brush always renders the
+  selected Metric's complete overview; brush, ruler, and tracks share one
+  viewport; ruler pan and zoom clamp exactly to the first and final coordinate;
+  cached evidence reprojects immediately and detail reads retain the 100 ms
+  View-level trailing debounce.
+- [ ] Add a viewer-owned Absolute Time presentation mode alongside Step. Query
+  by metric observation timestamp through the existing worker, storage
+  reduction, and immutable-snapshot boundaries without extending Phase 2
+  comparison axes or the public Python API.
+- [ ] Add independent hover and locked cursors. The dashed hover cursor carries
+  the Step/Time capsule and pointed value callouts; clicking a chart or ruler
+  places a separate solid cursor with a ruler-edge triangle and no tooltip.
+  Candidate callouts show the signed raw `candidate - baseline` delta, for
+  example `1.00(+0.55)`.
+- [ ] Integrate the View baseline with curve emphasis, hover deltas,
+  Project-scoped Ranking, and the Bottom inspector. Keep Summary, Ranking, and
+  Evidence on the existing Core/CLI/Python whole-series semantics; never derive
+  them from viewport or renderer-owned points.
+- [ ] Extend optional `pulseon-workbench 1` viewer-state records for Project
+  placement, Archived Runs, each View's baseline/Pinned/visible Runs, axis
+  mode, Metric order, track sizes, and dock dimensions. Missing records in an
+  older v1 document use safe defaults; loading and saving never mutate native
+  data.
+
 ##### Validation Gates
 
 - [x] Cover mixed DuckDB/SQLite sources, duplicate Project/Run identifiers,
@@ -363,16 +414,32 @@ roadmap phase identifiers.
   Phase 3D CPU thresholds,
   bounded query concurrency, and responsive interaction while sources are
   pending.
+- [ ] Cover the converged state model with View isolation, Project/Run
+  placement, v1 missing-record defaults, persistence round trips, source
+  reconciliation, and proof that viewer-only organization never writes native
+  data.
+- [ ] Cover the converged GPUI interaction with menu anchors and opaque
+  popovers, pagination and empty states, fixed Run icon widths, Metric
+  add/resize behavior, ruler boundaries, independent cursors, baseline deltas,
+  and a single-line horizontally scrollable inspector.
+- [ ] Re-run the representative 10-Run, six-track workload against the final
+  layout. Preserve fixed storage budgets, visible-track scheduling, bounded
+  query merging, the 100 ms debounce, and every Phase 3D CPU threshold.
 - [ ] On the active high-refresh display, record its configured refresh rate
-  and a Metal System Trace for shared-brush resize/pan, chart pan, wheel/pinch
-  and keyboard zoom, hover, scrolling, and View switching. Sustain the
-  configured rate after warm-up with no viewer-caused presentation spanning
-  two refresh periods; at 280 Hz that boundary is approximately 7.14 ms.
+  and a Metal System Trace for the converged shared-brush resize/pan, ruler and
+  chart pan, wheel/pinch and keyboard zoom, dual-cursor hover/locking, track
+  scrolling, View switching, and Bottom inspector path. Sustain the configured
+  rate after warm-up with no viewer-caused presentation spanning two refresh
+  periods; at 280 Hz that boundary is approximately 7.14 ms. This is the final
+  Phase 3E gate.
 - [x] Pass formatting, workspace Clippy, Rust tests, viewer release build,
   maturin develop/build, Pyright, and pytest, and update the persistent
   performance record with exact commands, machine, display, and conclusions.
 
 #### Phase 3F: macOS ARM64 Release
+
+Phase 3F starts only after every Phase 3E design-convergence and validation
+item, including the active-display Metal trace, is complete.
 
 - [ ] Add a macOS ARM64 viewer CI job that installs or verifies the Xcode Metal
   Toolchain, runs viewer tests, and builds the unsigned release binary without
