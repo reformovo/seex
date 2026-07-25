@@ -1,20 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
     App, Application, Bounds, Context, Corner, FocusHandle, KeyBinding, KeyDownEvent,
-    ListAlignment, ListHorizontalSizingBehavior, ListState, Menu, MenuItem, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent,
-    SharedString, SystemMenuType, Task, Window, WindowBounds, WindowOptions, actions, anchored,
-    deferred, div, list, point, prelude::*, px, relative, size, uniform_list,
+    ListAlignment, ListState, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent, SharedString, SystemMenuType, Task,
+    Window, WindowBounds, WindowOptions, actions, anchored, deferred, div, list, point, prelude::*,
+    px, relative, size,
 };
 use pulseon_chart_core::{BrushState, CanvasSize};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
-use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason, ObjectiveDirection};
+use pulseon_model::comparison::{EvidenceReason, ObjectiveDirection};
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunStatus};
 use pulseon_model::types::{Project, ProjectId};
@@ -150,10 +149,6 @@ impl RunListCache {
                 .collect::<Vec<_>>()
                 .into()
         });
-    }
-
-    fn shared(&self) -> Rc<[Run]> {
-        Rc::clone(&self.runs)
     }
 }
 
@@ -317,7 +312,6 @@ struct ViewerApp {
     detail_revision: u64,
     overview_width: u32,
     detail_width: u32,
-    hover: Option<HoverPoint>,
     ruler_hover: Option<f64>,
     locked_cursor: Option<f64>,
     drag: Option<DragGesture>,
@@ -380,7 +374,6 @@ impl ViewerApp {
             detail_revision: 0,
             overview_width: 1_000,
             detail_width: 1_000,
-            hover: None,
             ruler_hover: None,
             locked_cursor: None,
             drag: None,
@@ -504,7 +497,6 @@ impl ViewerApp {
         self.track_hovers.clear();
         self.metric_scroll = ListState::new(0, ListAlignment::Top, px(480.));
         *self.track_viewport.borrow_mut() = TrackViewport::default();
-        self.hover = None;
         self.ruler_hover = None;
         self.locked_cursor = None;
         self.drag = None;
@@ -1073,7 +1065,6 @@ impl ViewerApp {
             px(480.),
         );
         *self.track_viewport.borrow_mut() = TrackViewport::default();
-        self.hover = None;
         self.ruler_hover = None;
         self.locked_cursor = None;
         self.drag = None;
@@ -1189,7 +1180,6 @@ impl ViewerApp {
             self.source_path = None;
             self.run_list = RunListCache::default();
             self.chart_adapter.borrow_mut().clear();
-            self.hover = None;
         }
         cx.notify();
     }
@@ -1277,7 +1267,6 @@ impl ViewerApp {
             self.source_path = Some(source_path);
             self.run_list = RunListCache::default();
             self.chart_adapter.borrow_mut().clear();
-            self.hover = None;
         }
         self.select_project(project_id, cx);
     }
@@ -1638,246 +1627,8 @@ impl ViewerApp {
     }
 
     fn render_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
-        if !self.views.active().panels.is_empty() {
-            return self.render_metric_workspace(cx);
-        }
-        let theme = self.theme;
-        let catalog = self
-            .core
-            .catalog()
-            .expect("catalog checked before rendering");
-        let projects = catalog.projects.clone();
-        let runs = self.run_list.shared();
-        let metrics = catalog.metric_keys.clone();
-        let selection = self.core.selection().clone();
-        let selected_project_id = selection.project_id.clone();
-        let selected_metric_key = selection.metric_key.clone();
-        let has_project = selected_project_id.is_some();
-        let filter_focus = self.filter_focus.clone();
-        let selected_count = self.views.active().runs.len();
-        let source_id = selection
-            .source_id
-            .clone()
-            .expect("catalog workspace requires a source identity");
-        let main = self.render_detail(cx);
-
-        div()
-            .flex()
-            .flex_1()
-            .overflow_hidden()
-            .child(
-                div()
-                    .w(self.metric_sidebar_width())
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .gap(theme.spacing.content_gap)
-                    .p(theme.spacing.panel_padding)
-                    .bg(theme.colors.panel)
-                    .border_r_1()
-                    .border_color(theme.colors.border)
-                    .child(section_label("Project", theme).hidden())
-                    .child(
-                        uniform_list(
-                            "projects",
-                            projects.len(),
-                            cx.processor(move |_this, range: Range<usize>, _, cx| {
-                                range
-                                    .filter_map(|index| {
-                                        projects.get(index).map(|project| (index, project))
-                                    })
-                                    .map(|(index, project)| {
-                                        let project_id = project.project_id.clone();
-                                        let action_project_id = project_id.clone();
-                                        let selected = selected_project_id.as_ref()
-                                            == Some(&project.project_id);
-                                        components::sidebar_tree_row(
-                                            ("project", index),
-                                            theme,
-                                            selected,
-                                            false,
-                                        )
-                                        .debug_selector(move || format!("project-row-{index}"))
-                                        .key_context(SELECTABLE_CONTEXT)
-                                        .tab_index(0)
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.select_project(project_id.clone(), cx);
-                                        }))
-                                        .on_action(cx.listener(
-                                            move |this, _: &ActivateSelection, _, cx| {
-                                                this.select_project(action_project_id.clone(), cx);
-                                            },
-                                        ))
-                                        .child(project.name.clone())
-                                    })
-                                    .collect::<Vec<_>>()
-                            }),
-                        )
-                        .debug_selector(|| "projects-list".to_owned())
-                        .h(px(120.))
-                        .hidden(),
-                    )
-                    .when(has_project, |sidebar| {
-                        sidebar
-                            .child(section_label(
-                                &format!("Runs ({selected_count}/{MAX_SELECTED_RUNS})"),
-                                theme,
-                            ).hidden())
-                            .child(
-                                div()
-                                    .id("run-filter")
-                                    .track_focus(&filter_focus)
-                                    .cursor_text()
-                                    .px_3()
-                                    .py_2()
-                                    .h(theme.spacing.control_height)
-                                    .rounded(theme.spacing.corner_radius)
-                                    .border_1()
-                                    .border_color(theme.colors.border)
-                                    .debug_selector(|| "run-filter".to_owned())
-                                    .focus(|style| style.border_color(theme.colors.focus))
-                                    .on_key_down(cx.listener(Self::on_filter_key))
-                                    .on_click(move |_, window, _| filter_focus.focus(window))
-                                    .child(if self.run_filter.is_empty() {
-                                        "Filter by name, id, or status".to_owned()
-                                    } else {
-                                        self.run_filter.clone()
-                                    })
-                                    .hidden(),
-                            )
-                            .child(
-                                uniform_list(
-                                    "runs",
-                                    runs.len(),
-                                    cx.processor(move |this, range: Range<usize>, _, cx| {
-                                        range
-                                            .filter_map(|index| {
-                                                runs.get(index).map(|run| (index, run))
-                                            })
-                                            .map(|(index, run)| {
-                                                let run_ref = RunRef::new(
-                                                    source_id.clone(),
-                                                    run.project_id.clone(),
-                                                    run.run_id.clone(),
-                                                );
-                                                let selected = this
-                                                    .core
-                                                    .selection()
-                                                    .runs
-                                                    .contains(&run_ref);
-                                                let can_toggle = selected
-                                                    || this.core.selection().runs.len()
-                                                        < MAX_SELECTED_RUNS;
-                                                components::sidebar_tree_row(
-                                                    ("run", index),
-                                                    theme,
-                                                    selected,
-                                                    !can_toggle,
-                                                )
-                                                .debug_selector(move || format!("run-row-{index}"))
-                                                .whitespace_nowrap()
-                                                .border_b_1()
-                                                .border_color(theme.colors.border)
-                                                .when(can_toggle, |row| {
-                                                        let action_run = run_ref.clone();
-                                                    row.key_context(SELECTABLE_CONTEXT)
-                                                            .tab_index(0)
-                                                            .cursor_pointer()
-                                                            .on_click(cx.listener(
-                                                                move |this, _, _, cx| {
-                                                                    this.toggle_run(run_ref.clone(), cx);
-                                                                },
-                                                            ))
-                                                            .on_action(cx.listener(
-                                                                move |this,
-                                                                      _: &ActivateSelection,
-                                                                      _,
-                                                                      cx| {
-                                                                    this.toggle_run(action_run.clone(), cx);
-                                                                },
-                                                            ))
-                                                })
-                                                .child(
-                                                    div().flex_shrink_0().child(run.name.clone()),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .debug_selector(move || {
-                                                            format!("run-meta-{index}")
-                                                        })
-                                                        .flex_shrink_0()
-                                                        .text_xs()
-                                                        .text_color(theme.colors.text_muted)
-                                                        .child(format!(
-                                                            "{} · {}",
-                                                            run.run_id.as_str(),
-                                                            run_status(run.status)
-                                                        )),
-                                                )
-                                            })
-                                            .collect::<Vec<_>>()
-                                    }),
-                                )
-                                .with_horizontal_sizing_behavior(
-                                    ListHorizontalSizingBehavior::Unconstrained,
-                                )
-                                .debug_selector(|| "runs-list".to_owned())
-                                .h(px(300.))
-                                .hidden(),
-                            )
-                            .child(section_label("Metric", theme))
-                            .child(
-                                uniform_list(
-                                    "metrics",
-                                    metrics.len(),
-                                    cx.processor(move |_this, range: Range<usize>, _, cx| {
-                                        range
-                                            .filter_map(|index| {
-                                                metrics.get(index).map(|metric| (index, metric))
-                                            })
-                                            .map(|(index, metric)| {
-                                                let selected =
-                                                    selected_metric_key.as_ref() == Some(metric);
-                                                let selected_metric = metric.clone();
-                                                let action_metric = selected_metric.clone();
-                                                components::sidebar_tree_row(
-                                                    ("metric", index),
-                                                    theme,
-                                                    selected,
-                                                    false,
-                                                )
-                                                .debug_selector(move || {
-                                                    format!("metric-row-{index}")
-                                                })
-                                                .key_context(SELECTABLE_CONTEXT)
-                                                .tab_index(0)
-                                                .cursor_pointer()
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.select_metric(selected_metric.clone(), cx);
-                                                }))
-                                                .on_action(cx.listener(
-                                                    move |this, _: &ActivateSelection, _, cx| {
-                                                        this.select_metric(
-                                                            action_metric.clone(),
-                                                            cx,
-                                                        );
-                                                    },
-                                                ))
-                                                .child(metric.as_str().to_owned())
-                                            })
-                                            .collect::<Vec<_>>()
-                                    }),
-                                )
-                                .debug_selector(|| "metrics-list".to_owned())
-                                .flex_1()
-                                .min_h(px(80.)),
-                            )
-                    }),
-            )
-            .child(div().flex_1().h_full().overflow_hidden().child(main))
+        self.render_metric_workspace(cx)
     }
-
     fn render_metric_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         self.reconcile_track_schedule(cx);
         let theme = self.theme;
@@ -2043,34 +1794,27 @@ impl ViewerApp {
             .collect::<Vec<_>>();
         let filter_focus = self.metric_filter_focus.clone();
         let mut picker = div().relative().child(
-            components::icon_button(
-                "add-metric",
-                theme,
-                self.metric_picker_open,
-                available.is_empty(),
-            )
-            .debug_selector(|| "add-metric".to_owned())
-            .tooltip(components::label_tooltip("Add Metric", theme))
-            .when(!available.is_empty(), |button| {
-                button
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let opening = !this.metric_picker_open;
-                        this.metric_picker_open = opening;
-                        this.axis_picker_open = false;
-                        if opening {
-                            this.metric_filter.clear();
-                            this.metric_filter_focus.focus(window);
-                        }
-                        cx.notify();
-                    }))
-            })
-            .child(components::icon(IconName::Plus, theme)),
+            components::icon_button("add-metric", theme, self.metric_picker_open, false)
+                .debug_selector(|| "add-metric".to_owned())
+                .tooltip(components::label_tooltip("Add Metric", theme))
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let opening = !this.metric_picker_open;
+                    this.metric_picker_open = opening;
+                    this.axis_picker_open = false;
+                    if opening {
+                        this.metric_filter.clear();
+                        this.metric_filter_focus.focus(window);
+                    }
+                    cx.notify();
+                }))
+                .child(components::icon(IconName::Plus, theme)),
         );
         if self.metric_picker_open {
             picker = picker.child(deferred(
                 anchored()
                     .anchor(Corner::TopLeft)
+                    .snap_to_window_with_margin(px(8.))
                     .offset(point(px(0.), theme.spacing.control_height + px(4.)))
                     .child(
                         components::popover(theme)
@@ -2117,6 +1861,7 @@ impl ViewerApp {
                             .child(
                                 div()
                                     .id("metric-candidates")
+                                    .debug_selector(|| "metric-candidates".to_owned())
                                     .max_h(px(240.))
                                     .overflow_y_scroll()
                                     .flex()
@@ -3210,216 +2955,6 @@ impl ViewerApp {
             }))
     }
 
-    fn render_detail(&mut self, cx: &mut Context<Self>) -> gpui::Div {
-        let theme = self.theme;
-        let Some(snapshot) = self.core.detail_shared() else {
-            let overview = self.core.overview_shared();
-            let message =
-                empty_detail_message(overview.is_some(), self.core.is_pending(ReadKind::Detail));
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .p(theme.spacing.content_padding)
-                .gap(theme.spacing.content_gap)
-                .children(
-                    overview
-                        .as_ref()
-                        .map(|snapshot| self.render_legend(snapshot)),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(message),
-                );
-        };
-        let selected = self.core.brush().map(|brush| brush.selected());
-        let Some(viewport) = renderer::detail_viewport(&snapshot, selected) else {
-            return div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child("No drawable evidence is available in this viewport.");
-        };
-        let x_ticks = pulseon_chart_core::linear_ticks(viewport.x, 6);
-        let y_ticks = pulseon_chart_core::linear_ticks(viewport.y, 6);
-        let adapter = Rc::clone(&self.chart_adapter);
-        let hit_snapshot = Arc::clone(&snapshot);
-        let hit_adapter = Rc::clone(&self.chart_adapter);
-        let axis = self.core.axis();
-        let interaction_range = self.core.brush().map(|brush| brush.selected());
-        let pending = self.core.is_pending(ReadKind::Detail)
-            || interaction_range
-                .is_some_and(|selected| !renderer::selection_covered(&snapshot, selected));
-
-        div()
-            .relative()
-            .size_full()
-            .flex()
-            .flex_col()
-            .p(theme.spacing.content_padding)
-            .gap(theme.spacing.content_gap)
-            .child(self.render_legend(&snapshot))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(240.))
-                    .flex()
-                    .child(
-                        div()
-                            .w(px(72.))
-                            .h_full()
-                            .flex()
-                            .flex_col()
-                            .justify_between()
-                            .text_xs()
-                            .text_color(theme.colors.text_muted)
-                            .children(y_ticks.iter().rev().map(|value| format_tick(*value))),
-                    )
-                    .child(
-                        div()
-                            .id("detail-chart")
-                            .debug_selector(|| "detail-chart".to_owned())
-                            .focusable()
-                            .relative()
-                            .flex_1()
-                            .h_full()
-                            .border_1()
-                            .border_color(theme.colors.border)
-                            .bg(theme.colors.surface)
-                            .child(
-                                renderer::detail_canvas(
-                                    adapter,
-                                    Arc::clone(&snapshot),
-                                    self.detail_revision,
-                                    viewport,
-                                    self.views.active().baseline.clone(),
-                                )
-                                .size_full(),
-                            )
-                            .on_mouse_move(cx.listener(
-                                move |this, event: &MouseMoveEvent, _, cx| {
-                                    if event.dragging() {
-                                        this.move_detail_drag(event, cx);
-                                    } else {
-                                        this.hover = hit_adapter.borrow().hit_test(
-                                            &hit_snapshot,
-                                            viewport,
-                                            event.position,
-                                        );
-                                    }
-                                    cx.notify();
-                                },
-                            ))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                                    this.begin_detail_drag(event, cx);
-                                }),
-                            )
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.finish_drag(cx);
-                                }),
-                            )
-                            .on_mouse_up_out(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.finish_drag(cx);
-                                }),
-                            )
-                            .on_scroll_wheel(cx.listener(
-                                |this, event: &ScrollWheelEvent, _, cx| {
-                                    this.zoom_detail(event, cx);
-                                },
-                            ))
-                            .on_hover(cx.listener(|this, hovered, _, cx| {
-                                if !hovered {
-                                    this.hover = None;
-                                    cx.notify();
-                                }
-                            })),
-                    ),
-            )
-            .child(
-                div()
-                    .ml(px(72.))
-                    .flex()
-                    .justify_between()
-                    .text_xs()
-                    .text_color(theme.colors.text_muted)
-                    .children(x_ticks.into_iter().map(format_tick)),
-            )
-            .child(
-                div()
-                    .ml(px(72.))
-                    .text_center()
-                    .text_sm()
-                    .child(axis_label(axis)),
-            )
-            .child(self.render_overview(cx))
-            .children(pending.then(|| {
-                components::status_badge(theme, StatusTone::Warning)
-                    .absolute()
-                    .top(px(84.))
-                    .right(px(28.))
-                    .child("Updating viewport…")
-            }))
-            .children(self.hover.as_ref().map(|hover| {
-                components::tooltip(theme)
-                    .id(SharedString::from(format!(
-                        "hover-tooltip:{}",
-                        hover.run_ref.cache_key()
-                    )))
-                    .absolute()
-                    .top(px(84.))
-                    .left(px(100.))
-                    .child(format!("{} · {}", hover.run_name, hover.metric_key))
-                    .child(hover_value_line(axis, hover, None))
-            }))
-    }
-
-    fn render_legend(&self, snapshot: &pulseon_viewer::query::CurveSnapshot) -> gpui::Div {
-        let colors = self.theme.colors;
-        div()
-            .flex()
-            .flex_wrap()
-            .gap_3()
-            .children(snapshot.series.iter().map(|curve| {
-                let drawable = matches!(
-                    curve.evidence.completeness,
-                    EvidenceCompleteness::Complete | EvidenceCompleteness::Partial
-                );
-                let color = if drawable {
-                    colors.series_color(renderer::series_color_index(&curve.run_ref))
-                } else {
-                    colors.disabled
-                };
-                let evidence = format!(
-                    "{:?}{}",
-                    curve.evidence.completeness,
-                    reasons_label(&curve.evidence.reasons)
-                );
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().size(px(10.)).rounded_full().bg(color))
-                    .child(curve.run.name.clone())
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(colors.text_muted)
-                            .child(evidence),
-                    )
-            }))
-    }
-
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some(brush) = self.core.brush() else {
@@ -3483,7 +3018,6 @@ impl ViewerApp {
                 .map(|last_axis| DragGesture::BrushWindow { last_axis }),
             None => None,
         };
-        self.hover = None;
         cx.notify();
     }
 
@@ -3505,24 +3039,6 @@ impl ViewerApp {
             update_brush_drag(brush, &mut gesture, axis);
         }
         self.drag = Some(gesture);
-        cx.notify();
-    }
-
-    fn begin_detail_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
-        let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
-            return;
-        };
-        self.drag = self
-            .chart_adapter
-            .borrow()
-            .detail_axis_at(range, event.position)
-            .map(|_| DragGesture::Detail {
-                panel_id: MetricPanelId::from_string("legacy-detail"),
-                origin_x: f64::from(event.position.x),
-                last_x: f64::from(event.position.x),
-                moved: false,
-            });
-        self.hover = None;
         cx.notify();
     }
 
@@ -3565,12 +3081,7 @@ impl ViewerApp {
             });
             return;
         };
-        let adapter = if panel_id.as_str() == "legacy-detail" {
-            Some(Rc::clone(&self.chart_adapter))
-        } else {
-            self.track_adapters.get(&panel_id).cloned()
-        };
-        let delta = adapter.and_then(|adapter| {
+        let delta = self.track_adapters.get(&panel_id).and_then(|adapter| {
             adapter
                 .borrow()
                 .detail_pan_delta(range, last_x, event.position)
@@ -3639,31 +3150,6 @@ impl ViewerApp {
             self.request_detail(cx);
             cx.notify();
         }
-    }
-
-    fn zoom_detail(&mut self, event: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
-            return;
-        };
-        let Some(anchor) = self
-            .chart_adapter
-            .borrow()
-            .detail_axis_at(range, event.position)
-        else {
-            return;
-        };
-        let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
-        let factor = f64::from((-delta / 240.).exp().clamp(0.5, 2.));
-        if self
-            .core
-            .brush_mut()
-            .is_none_or(|brush| brush.zoom_at(anchor, factor).is_err())
-        {
-            return;
-        }
-        self.schedule_detail_refresh(cx);
-        cx.stop_propagation();
-        cx.notify();
     }
 
     fn zoom_track(
@@ -3968,14 +3454,6 @@ impl Render for ViewerApp {
     }
 }
 
-fn section_label(label: &str, theme: ViewerTheme) -> gpui::Div {
-    div()
-        .text_xs()
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(theme.colors.text_muted)
-        .child(label.to_owned())
-}
-
 fn axis_menu_item(
     id: impl Into<gpui::ElementId>,
     icon: IconName,
@@ -4191,13 +3669,6 @@ const fn run_status(status: RunStatus) -> &'static str {
     }
 }
 
-const fn axis_label(axis: AlignmentAxis) -> &'static str {
-    match axis {
-        AlignmentAxis::Step => "Step",
-        AlignmentAxis::ElapsedTime => "Absolute time (UTC)",
-    }
-}
-
 fn format_tick(value: f64) -> String {
     if value.abs() >= 1_000_000. || (value != 0. && value.abs() < 0.001) {
         format!("{value:.2e}")
@@ -4240,17 +3711,6 @@ fn format_utc_clock(value: f64) -> String {
         format!("{hour:02}:{minute:02}:{second:02}")
     } else {
         format!("{hour:02}:{minute:02}:{second:02}.{millisecond:03}")
-    }
-}
-
-fn hover_value_line(axis: AlignmentAxis, hover: &HoverPoint, delta: Option<f64>) -> String {
-    let value = hover_value_label(hover, delta);
-    match axis {
-        AlignmentAxis::Step => format!("{} · {value}", hover.axis_value),
-        AlignmentAxis::ElapsedTime => format!(
-            "{} · {value}",
-            format_axis_tick(CurveAxis::AbsoluteTime, hover.axis_value as f64),
-        ),
     }
 }
 
@@ -4304,16 +3764,6 @@ fn baseline_delta(panel: &MetricPanel, baseline: &RunRef, hover: &HoverPoint) ->
     Some(hover.value - point.point.value_f64)
 }
 
-const fn empty_detail_message(has_overview: bool, pending: bool) -> &'static str {
-    if pending {
-        "Loading curves…"
-    } else if has_overview {
-        "No drawable evidence is available for the selected Runs."
-    } else {
-        "Select Runs and one metric to draw curves."
-    }
-}
-
 fn reasons_label(reasons: &[EvidenceReason]) -> String {
     if reasons.is_empty() {
         return String::new();
@@ -4330,6 +3780,9 @@ fn reasons_label(reasons: &[EvidenceReason]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use pulseon_model::comparison::EvidenceCompleteness;
     use pulseon_model::run::RunId;
 
     use super::*;
@@ -4361,20 +3814,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_detail_message_distinguishes_evidence_from_missing_selection() {
-        assert_eq!(
-            empty_detail_message(true, false),
-            "No drawable evidence is available for the selected Runs."
-        );
-        assert_eq!(
-            empty_detail_message(false, false),
-            "Select Runs and one metric to draw curves."
-        );
-        assert_eq!(empty_detail_message(true, true), "Loading curves…");
-    }
-
-    #[test]
-    fn hover_value_line_formats_axis_value_and_optional_baseline_delta() {
+    fn hover_values_format_visible_and_contextual_evidence() {
         let hover = HoverPoint {
             run_ref: RunRef::new(
                 DataSourceId::from_string("source"),
@@ -4389,18 +3829,7 @@ mod tests {
             align_left: false,
         };
 
-        assert_eq!(
-            hover_value_line(AlignmentAxis::Step, &hover, None),
-            "2904 · 0.51"
-        );
-        assert_eq!(
-            hover_value_line(AlignmentAxis::ElapsedTime, &hover, None),
-            "00:00:02.904 · 0.51"
-        );
-        assert_eq!(
-            hover_value_line(AlignmentAxis::Step, &hover, Some(0.55)),
-            "2904 · 0.51(+0.55)"
-        );
+        assert_eq!(hover_value_label(&hover, Some(0.55)), "0.51(+0.55)");
         assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51(−0.55)");
         assert_eq!(
             hover_value_description(CurveAxis::Step, &hover, Some(-0.55)),
@@ -4426,16 +3855,6 @@ mod tests {
         assert_eq!(brush.selected(), selected);
         update_brush_drag(&mut brush, &mut DragGesture::BrushEnd, 10.);
         assert_eq!(brush.selected(), selected);
-    }
-
-    #[test]
-    fn run_list_cache_shares_filtered_runs_between_renders() {
-        let cache = RunListCache::default();
-
-        let first = cache.shared();
-        let second = cache.shared();
-
-        assert!(Rc::ptr_eq(&first, &second));
     }
 
     #[test]
@@ -5496,7 +4915,7 @@ mod tests {
         }
 
         #[gpui::test]
-        fn metric_list_scrolls_to_late_rows_in_a_small_window(cx: &mut TestAppContext) {
+        fn empty_view_keeps_the_converged_shell_and_opens_metric_picker(cx: &mut TestAppContext) {
             let (root, project_id, run_id) = fixture(20);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
@@ -5504,28 +4923,34 @@ mod tests {
             select_fixture_run(window, &mut cx, project_id, run_id, 20);
             cx.simulate_resize(size(px(600.), px(520.)));
             cx.run_until_parked();
-            let metrics = cx
-                .debug_bounds("metrics-list")
-                .expect("Metric list should be rendered");
-            assert!(cx.debug_bounds("metric-row-19").is_none());
-
-            cx.simulate_event(ScrollWheelEvent {
-                position: metrics.center(),
-                delta: ScrollDelta::Pixels(point(px(0.), px(-1_000.))),
-                modifiers: Modifiers::default(),
-                touch_phase: TouchPhase::Moved,
-            });
-
-            assert!(cx.debug_bounds("metric-row-19").is_some());
+            assert!(cx.debug_bounds("brush-controls").is_some());
+            assert!(cx.debug_bounds("viewport-ruler").is_some());
+            assert!(cx.debug_bounds("metric-track-scroll").is_some());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.views.active().panels.len())
+                    .expect("viewer should remain open"),
+                0
+            );
+            let add = cx
+                .debug_bounds("add-metric")
+                .expect("empty View should retain Add Metric");
+            cx.simulate_click(add.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.metric_picker_open)
+                    .expect("viewer should remain open")
+            );
         }
 
         #[gpui::test]
         fn metric_picker_lists_only_metrics_not_already_in_the_view(cx: &mut TestAppContext) {
-            let (root, project_id, run_id) = fixture(3);
+            let (root, project_id, run_id) = fixture(20);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
-            select_fixture_run(window, &mut cx, project_id, run_id, 3);
+            select_fixture_run(window, &mut cx, project_id, run_id, 20);
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.select_metric(MetricKey::from_string("metric-0"), cx);
@@ -5535,6 +4960,23 @@ mod tests {
                 .debug_bounds("add-metric")
                 .expect("Add Metric control should render beside the brush");
             cx.simulate_click(add.center(), Modifiers::default());
+            let candidates = cx
+                .debug_bounds("metric-candidates")
+                .expect("Metric candidates should use their own scroll region");
+            let late_before = cx
+                .debug_bounds("metric-candidate:metric-19")
+                .expect("late Metric candidate should be laid out");
+            assert!(late_before.origin.y >= candidates.bottom());
+            cx.simulate_event(ScrollWheelEvent {
+                position: candidates.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-1_000.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            let late_after = cx
+                .debug_bounds("metric-candidate:metric-19")
+                .expect("late Metric candidate should remain laid out");
+            assert!(late_after.origin.y < candidates.bottom());
             let axis = cx
                 .debug_bounds("axis-picker")
                 .expect("Axis picker should render beside Add Metric");

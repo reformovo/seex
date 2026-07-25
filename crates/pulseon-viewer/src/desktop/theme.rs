@@ -156,7 +156,7 @@ impl ViewerSpacing {
             tab_height: px(32.),
             tree_row_height: px(28.),
             control_height: px(28.),
-            sidebar_width: px(320.),
+            sidebar_width: px(190.),
             panel_padding: px(12.),
             content_padding: px(20.),
             content_gap: px(12.),
@@ -200,5 +200,6 @@ mod tests {
         assert_eq!(spacing.tab_height, px(32.));
         assert_eq!(spacing.tree_row_height, px(28.));
         assert_eq!(spacing.control_height, px(28.));
+        assert_eq!(spacing.sidebar_width, px(190.));
     }
 }

@@ -460,11 +460,6 @@ pub fn detail_viewport(snapshot: &CurveSnapshot, selected: Option<AxisRange>) ->
         .map(|y| Viewport::new(x, y))
 }
 
-pub fn selection_covered(snapshot: &CurveSnapshot, selected: AxisRange) -> bool {
-    snapshot.viewport.start() as f64 <= selected.start()
-        && snapshot.viewport.end() as f64 >= selected.end()
-}
-
 pub fn detail_canvas(
     adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
     snapshot: Arc<CurveSnapshot>,
@@ -717,19 +712,6 @@ mod tests {
             series_color_index(&first) % 10,
             series_color_index(&second) % 10
         );
-    }
-
-    #[test]
-    fn detail_snapshot_coverage_distinguishes_transient_ranges() {
-        let snapshot = CurveSnapshot {
-            viewport: AlignmentViewport::new(10, 20).expect("test viewport should be valid"),
-            point_budget: 2_000,
-            real_range: None,
-            series: Vec::new(),
-        };
-
-        assert!(selection_covered(&snapshot, range(12., 18.)));
-        assert!(!selection_covered(&snapshot, range(5., 15.)));
     }
 
     #[test]

@@ -8,7 +8,6 @@ use super::theme::ViewerTheme;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatusTone {
     Info,
-    Warning,
     Error,
 }
 
@@ -249,7 +248,6 @@ pub fn empty_state(theme: ViewerTheme) -> Div {
 fn status_colors(theme: ViewerTheme, tone: StatusTone) -> (Rgba, Rgba) {
     match tone {
         StatusTone::Info => (theme.colors.element_active, theme.colors.text),
-        StatusTone::Warning => (theme.colors.warning_background, theme.colors.warning_text),
         StatusTone::Error => (theme.colors.error_background, theme.colors.error_text),
     }
 }
@@ -265,11 +263,8 @@ mod tests {
         for appearance in [WindowAppearance::Light, WindowAppearance::Dark] {
             let theme = ViewerTheme::for_appearance(appearance);
             let info = status_colors(theme, StatusTone::Info);
-            let warning = status_colors(theme, StatusTone::Warning);
             let error = status_colors(theme, StatusTone::Error);
 
-            assert_ne!(info, warning);
-            assert_ne!(warning, error);
             assert_ne!(info, error);
         }
     }
