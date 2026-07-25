@@ -304,6 +304,8 @@ struct ViewerApp {
     overview_width: u32,
     detail_width: u32,
     hover: Option<HoverPoint>,
+    ruler_hover: Option<f64>,
+    locked_cursor: Option<f64>,
     drag: Option<DragGesture>,
     zoom_task: Option<Task<()>>,
     detail_refresh_token: u64,
@@ -362,6 +364,8 @@ impl ViewerApp {
             overview_width: 1_000,
             detail_width: 1_000,
             hover: None,
+            ruler_hover: None,
+            locked_cursor: None,
             drag: None,
             zoom_task: None,
             detail_refresh_token: 0,
@@ -484,6 +488,8 @@ impl ViewerApp {
         self.metric_scroll = ListState::new(0, ListAlignment::Top, px(480.));
         *self.track_viewport.borrow_mut() = TrackViewport::default();
         self.hover = None;
+        self.ruler_hover = None;
+        self.locked_cursor = None;
         self.drag = None;
         self.cancel_detail_refresh();
         self.source_path = Some(path);
@@ -1051,6 +1057,8 @@ impl ViewerApp {
         );
         *self.track_viewport.borrow_mut() = TrackViewport::default();
         self.hover = None;
+        self.ruler_hover = None;
+        self.locked_cursor = None;
         self.drag = None;
         self.cancel_detail_refresh();
     }
@@ -2084,17 +2092,16 @@ impl ViewerApp {
             .map(|range| pulseon_chart_core::linear_ticks(range, 6))
             .unwrap_or_default();
         let axis = self.curve_axis();
+        let hover_axis = self.ruler_hover;
+        let locked_cursor = self.locked_cursor;
         div()
             .id("viewport-ruler")
             .debug_selector(|| "viewport-ruler".to_owned())
             .flex_1()
             .h_full()
-            .px(theme.spacing.content_padding)
+            .relative()
             .flex()
-            .items_center()
-            .justify_between()
-            .text_xs()
-            .text_color(theme.colors.text_muted)
+            .cursor_crosshair()
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
                 let Some(range) = this.core.brush().map(|brush| brush.selected()) else {
                     return;
@@ -2112,11 +2119,88 @@ impl ViewerApp {
                     cx.notify();
                 }
             }))
-            .children(
-                ticks
-                    .into_iter()
-                    .map(move |tick| format_axis_tick(axis, tick)),
+            .child(
+                div()
+                    .size_full()
+                    .px(theme.spacing.content_padding)
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(theme.colors.text_muted)
+                    .children(
+                        ticks
+                            .into_iter()
+                            .map(move |tick| format_axis_tick(axis, tick)),
+                    ),
             )
+            .children(selected.map(|range| {
+                div()
+                    .absolute()
+                    .size_full()
+                    .child(
+                        renderer::cursor_canvas(None, range, hover_axis, locked_cursor)
+                            .absolute()
+                            .size_full(),
+                    )
+                    .child(
+                        div()
+                            .id("ruler-hit-area")
+                            .occlude()
+                            .debug_selector(|| "ruler-hit-area".to_owned())
+                            .absolute()
+                            .size_full()
+                            .on_mouse_move(cx.listener(
+                                move |this, event: &MouseMoveEvent, window, cx| {
+                                    this.ruler_hover = this.ruler_axis_at(event.position, window);
+                                    cx.notify();
+                                },
+                            ))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                    this.locked_cursor = this.ruler_axis_at(event.position, window);
+                                    cx.notify();
+                                }),
+                            )
+                            .on_click(cx.listener(move |this, event, window, cx| {
+                                let position = match event {
+                                    gpui::ClickEvent::Mouse(event) => event.up.position,
+                                    gpui::ClickEvent::Keyboard(_) => return,
+                                };
+                                this.locked_cursor = this.ruler_axis_at(position, window);
+                                cx.notify();
+                            }))
+                            .on_hover(cx.listener(|this, hovered, _, cx| {
+                                if !hovered {
+                                    this.ruler_hover = None;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+            }))
+            .children(hover_axis.map(|value| {
+                components::tooltip(theme)
+                    .id("ruler-hover-tooltip")
+                    .debug_selector(|| "ruler-hover-tooltip".to_owned())
+                    .absolute()
+                    .top(px(2.))
+                    .left(px(8.))
+                    .py_0()
+                    .child(format_axis_tick(axis, value))
+            }))
+    }
+
+    fn ruler_axis_at(&self, position: gpui::Point<gpui::Pixels>, window: &Window) -> Option<f64> {
+        let range = self.core.brush()?.selected();
+        let left = if self.project_sidebar_visible {
+            self.project_sidebar_width
+        } else {
+            px(0.)
+        } + self.metric_sidebar_width();
+        let width = (window.viewport_size().width - left).max(px(1.));
+        let ratio = (f64::from(position.x - left) / f64::from(width)).clamp(0., 1.);
+        Some(range.start() + range.span() * ratio)
     }
 
     fn render_bottom_inspector(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -2626,6 +2710,12 @@ impl ViewerApp {
         let hit_panel = panel_id.clone();
         let zoom_panel = panel_id.clone();
         let leave_panel = panel_id.clone();
+        let hover_axis = self
+            .track_hovers
+            .get(&panel_id)
+            .map(|hover| hover.axis_value as f64)
+            .or(self.ruler_hover);
+        let locked_cursor = self.locked_cursor;
         div()
             .relative()
             .size_full()
@@ -2650,6 +2740,11 @@ impl ViewerApp {
                             viewport,
                         )
                         .size_full(),
+                    )
+                    .child(
+                        renderer::cursor_canvas(None, viewport.x, hover_axis, locked_cursor)
+                            .absolute()
+                            .size_full(),
                     )
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
                         if !event.dragging() {
@@ -3066,15 +3161,24 @@ impl ViewerApp {
         event: &gpui::ClickEvent,
         cx: &mut Context<Self>,
     ) {
-        let is_click = match event {
+        let click_position = match event {
             gpui::ClickEvent::Mouse(event) => {
                 let delta = event.up.position - event.down.position;
-                f32::from(delta.x).abs() < 3. && f32::from(delta.y).abs() < 3.
+                (f32::from(delta.x).abs() < 3. && f32::from(delta.y).abs() < 3.)
+                    .then_some(event.up.position)
             }
-            gpui::ClickEvent::Keyboard(_) => true,
+            gpui::ClickEvent::Keyboard(_) => None,
         };
-        if is_click {
+        if let Some(position) = click_position {
             self.drag = None;
+            let range = self.core.brush().map(|brush| brush.selected());
+            self.locked_cursor = range.and_then(|range| {
+                self.track_adapters
+                    .get(panel_id)
+                    .and_then(|adapter| adapter.borrow().detail_axis_at(range, position))
+            });
+            cx.notify();
+        } else if matches!(event, gpui::ClickEvent::Keyboard(_)) {
             self.show_metric_inspector(panel_id, cx);
         }
     }
@@ -4663,11 +4767,11 @@ mod tests {
             for metric in ["metric-0", "metric-1"] {
                 let track = cx
                     .debug_bounds(if metric == "metric-0" {
-                        "metric-track:metric-0"
+                        "metric-sidebar-row:metric-0"
                     } else {
-                        "metric-track:metric-1"
+                        "metric-sidebar-row:metric-1"
                     })
-                    .expect("Metric track should render");
+                    .expect("Metric label should render");
                 cx.simulate_click(track.center(), Modifiers::default());
                 cx.run_until_parked();
                 wait_for_viewer(window, &cx, |viewer| {
@@ -4798,6 +4902,42 @@ mod tests {
                         .is_some_and(|range| range.start() > 1_000_000_000_000)
             });
             assert!(cx.debug_bounds("viewport-ruler").is_some());
+        }
+
+        #[gpui::test]
+        fn hover_and_locked_cursors_coexist_on_the_shared_ruler(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            let ruler = cx
+                .debug_bounds("ruler-hit-area")
+                .expect("shared ruler hit area should render");
+            let first = point(ruler.origin.x + ruler.size.width * 0.25, ruler.center().y);
+            cx.simulate_mouse_move(first, None, Modifiers::default());
+            cx.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
+            cx.simulate_mouse_up(first, MouseButton::Left, Modifiers::default());
+            let locked = window
+                .read_with(&cx, |viewer, _| viewer.locked_cursor)
+                .expect("viewer should remain open")
+                .expect("ruler click should lock a cursor");
+            let second = point(ruler.origin.x + ruler.size.width * 0.75, ruler.center().y);
+            cx.simulate_mouse_move(second, None, Modifiers::default());
+
+            assert!(cx.debug_bounds("ruler-hover-tooltip").is_some());
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert_eq!(viewer.locked_cursor, Some(locked));
+                    assert!(viewer.ruler_hover.is_some_and(|hover| hover != locked));
+                })
+                .expect("viewer should remain open");
         }
 
         #[gpui::test]
@@ -5166,11 +5306,12 @@ mod tests {
                     .read_with(&cx, |viewer, _| viewer.drag.is_none())
                     .expect("viewer should remain open")
             );
-            assert!(
-                window
-                    .read_with(&cx, |viewer, _| viewer.bottom_inspector_visible)
-                    .expect("viewer should remain open")
-            );
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert!(!viewer.bottom_inspector_visible);
+                    assert!(viewer.locked_cursor.is_some());
+                })
+                .expect("viewer should remain open");
 
             window
                 .update(&mut cx, |viewer, _, cx| {

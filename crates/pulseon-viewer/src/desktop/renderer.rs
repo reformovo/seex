@@ -369,6 +369,57 @@ pub fn detail_canvas(
     )
 }
 
+pub fn cursor_canvas(
+    adapter: Option<std::rc::Rc<std::cell::RefCell<ChartAdapter>>>,
+    range: AxisRange,
+    hover: Option<f64>,
+    locked: Option<f64>,
+) -> impl gpui::Styled + gpui::IntoElement {
+    canvas(
+        move |bounds, window, _| {
+            if let Some(adapter) = &adapter {
+                adapter.borrow_mut().detail_bounds = Some(bounds);
+            }
+            ViewerTheme::for_appearance(window.appearance())
+        },
+        move |bounds, theme, window, _| {
+            let x_for = |axis: f64| {
+                bounds.origin.x
+                    + bounds.size.width
+                        * ((axis - range.start()) / range.span()).clamp(0., 1.) as f32
+            };
+            if let Some(axis) = locked.filter(|axis| *axis >= range.start() && *axis <= range.end())
+            {
+                let x = x_for(axis);
+                window.paint_quad(fill(
+                    Bounds::new(point(x, bounds.origin.y), size(px(1.), bounds.size.height)),
+                    theme.colors.accent,
+                ));
+                let mut triangle = PathBuilder::fill();
+                triangle.move_to(point(x - px(5.), bounds.origin.y));
+                triangle.line_to(point(x + px(5.), bounds.origin.y));
+                triangle.line_to(point(x, bounds.origin.y + px(7.)));
+                triangle.close();
+                if let Ok(path) = triangle.build() {
+                    window.paint_path(path, theme.colors.accent);
+                }
+            }
+            if let Some(axis) = hover.filter(|axis| *axis >= range.start() && *axis <= range.end())
+            {
+                let x = x_for(axis);
+                let mut y = bounds.origin.y;
+                while y < bounds.bottom() {
+                    window.paint_quad(fill(
+                        Bounds::new(point(x, y), size(px(1.), px(5.))),
+                        theme.colors.accent,
+                    ));
+                    y += px(9.);
+                }
+            }
+        },
+    )
+}
+
 pub fn timeline_canvas(
     adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
     brush: BrushState,

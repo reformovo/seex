@@ -179,7 +179,11 @@ pub fn popover(theme: ViewerTheme) -> Div {
 }
 
 pub fn tooltip(theme: ViewerTheme) -> Div {
-    popover(theme)
+    div()
+        .p_3()
+        .rounded(theme.spacing.corner_radius)
+        .border_1()
+        .border_color(theme.colors.border)
         .bg(theme.colors.tooltip_background)
         .text_color(theme.colors.tooltip_text)
         .text_sm()
