@@ -46,6 +46,7 @@ use renderer::{ChartAdapter, HoverPoint};
 use theme::ViewerTheme;
 
 const METRIC_TRACK_VERTICAL_PADDING: f32 = 4.;
+const METRIC_TRACK_SEPARATOR_WIDTH: f32 = 1.;
 
 #[derive(Clone, Debug)]
 enum DragGesture {
@@ -310,8 +311,8 @@ struct ViewerApp {
     metric_scroll: ListState,
     metric_resize: Option<MetricResize>,
     track_viewport: Rc<RefCell<TrackViewport>>,
+    overview_logical_width: f32,
     overview_width: u32,
-    detail_width: u32,
     ruler_hover: Option<f64>,
     track_pointer_hover: Option<(MetricPanelId, f64)>,
     locked_cursor: Option<f64>,
@@ -371,8 +372,8 @@ impl ViewerApp {
             metric_scroll: ListState::new(0, ListAlignment::Top, px(480.)),
             metric_resize: None,
             track_viewport: Rc::new(RefCell::new(TrackViewport::default())),
+            overview_logical_width: 1_000.,
             overview_width: 1_000,
-            detail_width: 1_000,
             ruler_hover: None,
             track_pointer_hover: None,
             locked_cursor: None,
@@ -1669,7 +1670,7 @@ impl ViewerApp {
             scroll.reset(panel_count);
         }
         let physical_width = self.overview_width.max(1);
-        let logical_width = physical_width as f32;
+        let logical_width = self.overview_logical_width.max(1.);
         if self.track_viewport.borrow().overscan.is_empty() && panel_count > 0 {
             let visible = 0..panel_count.min(4);
             *self.track_viewport.borrow_mut() = TrackViewport {
@@ -2596,8 +2597,8 @@ impl ViewerApp {
             .retain(|panel_id, _| scheduled_ids.contains(panel_id));
         let logical_width = f32::from_bits(state.logical_width_bits) as f64;
         for panel in panels {
-            let canvas_height =
-                f64::from(panel.row_height) - f64::from(METRIC_TRACK_VERTICAL_PADDING * 2.);
+            let canvas_height = f64::from(panel.row_height)
+                - f64::from(METRIC_TRACK_VERTICAL_PADDING * 2. + METRIC_TRACK_SEPARATOR_WIDTH);
             let canvas = CanvasSize::new(logical_width, canvas_height.max(1.)).ok();
             if let Some(snapshot) = panel.detail.as_deref()
                 && let Some(viewport) = renderer::detail_viewport(
@@ -3371,20 +3372,15 @@ impl ViewerApp {
     }
 
     fn reconcile_canvas_widths(&mut self, scale_factor: f32, cx: &mut Context<Self>) {
-        let (overview, detail) = self.chart_adapter.borrow().physical_widths(scale_factor);
-        let overview_changed = overview.is_some_and(|width| width != self.overview_width);
-        let detail_changed = detail.is_some_and(|width| width != self.detail_width);
-        if let Some(width) = overview {
-            self.overview_width = width;
-        }
-        if let Some(width) = detail {
-            self.detail_width = width;
-        }
-        if overview_changed {
+        let Some((logical, physical)) = self.chart_adapter.borrow().overview_widths(scale_factor)
+        else {
+            return;
+        };
+        let changed = physical != self.overview_width;
+        self.overview_logical_width = logical;
+        self.overview_width = physical;
+        if changed {
             self.request_overview(cx);
-        }
-        if detail_changed {
-            self.request_detail(cx);
         }
     }
 }
@@ -5491,7 +5487,10 @@ mod tests {
                 assert_eq!(canvas.origin.x, track.origin.x);
                 assert_eq!(canvas.size.width, track.size.width);
                 assert!(canvas.size.width > px(0.));
-                assert!(canvas.size.height >= track.size.height - px(8.));
+                assert_eq!(
+                    canvas.size.height,
+                    track.size.height - px(METRIC_TRACK_VERTICAL_PADDING * 2.)
+                );
                 assert!(metadata.size.height > px(0.));
                 assert!(
                     metadata.origin.y + metadata.size.height

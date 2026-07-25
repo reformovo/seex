@@ -341,11 +341,12 @@ impl ChartAdapter {
         }
     }
 
-    pub fn physical_widths(&self, scale_factor: f32) -> (Option<u32>, Option<u32>) {
-        (
-            physical_width(self.overview_bounds, scale_factor),
-            physical_width(self.detail_bounds, scale_factor),
-        )
+    pub fn overview_widths(&self, scale_factor: f32) -> Option<(f32, u32)> {
+        let bounds = self.overview_bounds?;
+        Some((
+            f32::from(bounds.size.width),
+            physical_width(Some(bounds), scale_factor)?,
+        ))
     }
 }
 
@@ -772,10 +773,14 @@ mod tests {
     }
 
     #[test]
-    fn physical_width_uses_display_scale() {
+    fn overview_widths_separate_logical_layout_from_physical_budget() {
         let bounds = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(40.)));
+        let adapter = ChartAdapter {
+            overview_bounds: Some(bounds),
+            ..ChartAdapter::default()
+        };
 
-        assert_eq!(physical_width(Some(bounds), 2.), Some(800));
+        assert_eq!(adapter.overview_widths(2.), Some((400., 800)));
     }
 
     #[test]
