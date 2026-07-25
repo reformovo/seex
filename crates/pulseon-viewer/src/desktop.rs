@@ -4250,6 +4250,7 @@ mod tests {
             (window, visual)
         }
 
+        #[track_caller]
         fn wait_for_viewer(
             window: WindowHandle<ViewerApp>,
             cx: &VisualTestContext,
@@ -5746,7 +5747,7 @@ mod tests {
                 let schedule = viewer.track_viewport.borrow();
                 viewer.views.active().runs.len() == 10
                     && viewer.views.active().panels.len() == 6
-                    && schedule.visible.len() >= 6
+                    && schedule.overscan.len() >= 6
                     && viewer.views.active().panels.iter().all(|panel| {
                         panel.detail.as_ref().is_some_and(|detail| {
                             detail.series.len() == 10
