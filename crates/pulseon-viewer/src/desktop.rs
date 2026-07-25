@@ -4002,23 +4002,27 @@ fn inspector_table(
     theme: ViewerTheme,
 ) -> gpui::Div {
     let width = columns.iter().map(|(_, width, _)| width).sum::<f32>();
-    div()
-        .min_w(px(width))
-        .flex()
-        .flex_col()
-        .child(inspector_table_row(
-            columns,
-            columns
-                .iter()
-                .map(|(label, _, _)| (*label).to_owned())
-                .collect(),
-            theme,
-            true,
-        ))
-        .children(
-            rows.into_iter()
-                .map(|row| inspector_table_row(columns, row, theme, false)),
-        )
+    div().child(
+        div()
+            .id("inspector-table")
+            .debug_selector(|| "inspector-table".to_owned())
+            .min_w(px(width))
+            .flex()
+            .flex_col()
+            .child(inspector_table_row(
+                columns,
+                columns
+                    .iter()
+                    .map(|(label, _, _)| (*label).to_owned())
+                    .collect(),
+                theme,
+                true,
+            ))
+            .children(
+                rows.into_iter()
+                    .map(|row| inspector_table_row(columns, row, theme, false)),
+            ),
+    )
 }
 
 fn inspector_table_row(
@@ -6003,6 +6007,17 @@ mod tests {
                     panel.inspector.is_some() && !panel.is_pending(ReadKind::Inspector)
                 })
             });
+            cx.simulate_resize(size(px(600.), px(520.)));
+            cx.run_until_parked();
+            let scroll = cx
+                .debug_bounds("bottom-inspector-scroll")
+                .expect("Inspector scroll viewport should remain rendered");
+            let table = cx
+                .debug_bounds("inspector-table")
+                .expect("Inspector table should remain rendered");
+            assert!(table.size.width > scroll.size.width);
+            cx.simulate_resize(size(px(1_000.), px(1_000.)));
+            cx.run_until_parked();
             window
                 .read_with(&cx, |viewer, _| {
                     let run = viewer.views.active().panels[0]
