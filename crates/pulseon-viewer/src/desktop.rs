@@ -3004,6 +3004,15 @@ impl ViewerApp {
         let Some(brush) = self.core.brush() else {
             return div().h(px(48.));
         };
+        let (snapshot, revision) = self
+            .views
+            .active()
+            .selected_panel_id
+            .as_ref()
+            .and_then(|panel_id| self.views.active_panel(panel_id))
+            .map_or((None, 0), |panel| {
+                (panel.overview.clone(), panel.overview_revision)
+            });
         let adapter = Rc::clone(&self.chart_adapter);
         let selected = brush.selected();
         div()
@@ -3022,7 +3031,9 @@ impl ViewerApp {
                     .border_1()
                     .border_color(theme.colors.border)
                     .bg(theme.colors.surface)
-                    .child(renderer::timeline_canvas(adapter, brush).size_full())
+                    .child(
+                        renderer::timeline_canvas(adapter, brush, snapshot, revision).size_full(),
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, _, cx| {

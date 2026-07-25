@@ -427,25 +427,53 @@ pub fn cursor_canvas(
 pub fn timeline_canvas(
     adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
     brush: BrushState,
+    snapshot: Option<Arc<CurveSnapshot>>,
+    revision: u64,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
         move |bounds, window, _| {
-            let resized = adapter.borrow().overview_bounds != Some(bounds);
-            adapter.borrow_mut().overview_bounds = Some(bounds);
+            let mut adapter = adapter.borrow_mut();
+            let resized = adapter.overview_bounds != Some(bounds);
+            adapter.overview_bounds = Some(bounds);
             if resized {
                 window.request_animation_frame();
             }
-            ViewerTheme::for_appearance(window.appearance())
+            let Some(snapshot) = snapshot.as_deref() else {
+                return PreparedChart {
+                    paths: Vec::new(),
+                    theme: ViewerTheme::for_appearance(window.appearance()),
+                };
+            };
+            let Some(viewport) = overview_viewport(snapshot, brush.home()) else {
+                return PreparedChart {
+                    paths: Vec::new(),
+                    theme: ViewerTheme::for_appearance(window.appearance()),
+                };
+            };
+            let detail_bounds = adapter.detail_bounds;
+            let prepared = adapter.prepare(
+                snapshot,
+                revision,
+                viewport,
+                bounds,
+                window.appearance(),
+                None,
+            );
+            adapter.detail_bounds = detail_bounds;
+            prepared
         },
-        move |bounds, theme, window, _| {
+        move |bounds, prepared, window, _| {
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
                 for index in 0..=6 {
                     let ratio = index as f32 / 6.;
                     let x = bounds.origin.x + bounds.size.width * ratio;
                     window.paint_quad(fill(
                         Bounds::new(point(x, bounds.origin.y), size(px(1.), bounds.size.height)),
-                        theme.colors.chart_grid,
+                        prepared.theme.colors.chart_grid,
                     ));
+                }
+                for (path, color) in prepared.paths {
+                    window.paint_path(path, color);
                 }
                 let start_ratio = ((brush.selected().start() - brush.home().start())
                     / brush.home().span()) as f32;
@@ -458,7 +486,7 @@ pub fn timeline_canvas(
                         point(start, bounds.origin.y),
                         size(end - start, bounds.size.height),
                     ),
-                    theme.colors.brush_selection,
+                    prepared.theme.colors.brush_selection,
                 ));
                 for x in [start, end] {
                     window.paint_quad(fill(
@@ -466,12 +494,16 @@ pub fn timeline_canvas(
                             point(x - px(4.), bounds.origin.y),
                             size(px(8.), bounds.size.height),
                         ),
-                        theme.colors.accent,
+                        prepared.theme.colors.accent,
                     ));
                 }
             });
         },
     )
+}
+
+fn overview_viewport(snapshot: &CurveSnapshot, home: AxisRange) -> Option<Viewport> {
+    detail_viewport(snapshot, None).map(|viewport| Viewport::new(home, viewport.y))
 }
 
 pub fn series_color_index(run_ref: &RunRef) -> usize {
@@ -534,6 +566,16 @@ mod tests {
 
         assert!(selection_covered(&snapshot, range(12., 18.)));
         assert!(!selection_covered(&snapshot, range(5., 15.)));
+    }
+
+    #[test]
+    fn overview_curves_project_across_the_global_brush_home() {
+        let snapshot = synthetic_snapshot(2, 10);
+        let home = range(-5., 20.);
+
+        let viewport = overview_viewport(&snapshot, home).expect("overview should be drawable");
+
+        assert_eq!(viewport.x, home);
     }
 
     #[test]
