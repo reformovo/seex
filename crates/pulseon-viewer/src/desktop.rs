@@ -2840,7 +2840,22 @@ impl ViewerApp {
         let finish_id = panel_id.clone();
         let resize_id = panel_id.clone();
         let selected = self.views.active().selected_panel_id.as_ref() == Some(&panel_id);
+        let visible_run_count = self.active_visible_runs().len();
         let error_count = panel.source_errors.len();
+        let drawable_count = panel.detail.as_ref().map_or(0, |snapshot| {
+            snapshot
+                .series
+                .iter()
+                .filter(|series| series.chart_series.is_some())
+                .count()
+        });
+        let metadata = if error_count > 0 {
+            format!("{visible_run_count} Runs · {error_count} source errors")
+        } else if panel.detail.is_none() {
+            format!("{visible_run_count} Runs · loading")
+        } else {
+            format!("{visible_run_count} Runs · {drawable_count} drawable")
+        };
         let track = self.render_metric_track(&panel, cx);
         div()
             .relative()
@@ -2897,16 +2912,32 @@ impl ViewerApp {
                     }))
                     .child(
                         div()
+                            .min_w(px(0.))
+                            .overflow_hidden()
                             .flex()
                             .flex_col()
                             .gap_1()
                             .child(panel.metric_key.as_str().to_owned())
-                            .children((error_count > 0).then(|| {
+                            .child(
                                 div()
+                                    .id(SharedString::from(format!(
+                                        "metric-metadata:{}",
+                                        panel_id.as_str()
+                                    )))
+                                    .debug_selector({
+                                        let panel_id = panel_id.clone();
+                                        move || format!("metric-metadata:{}", panel_id.as_str())
+                                    })
                                     .text_xs()
-                                    .text_color(theme.colors.error_text)
-                                    .child(format!("{error_count} source error(s)"))
-                            })),
+                                    .text_color(if error_count > 0 {
+                                        theme.colors.error_text
+                                    } else {
+                                        theme.colors.text_muted
+                                    })
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(metadata),
+                            ),
                     )
                     .child(
                         components::icon_button(
@@ -2933,6 +2964,7 @@ impl ViewerApp {
                     .flex_1()
                     .h_full()
                     .overflow_hidden()
+                    .bg(theme.colors.brush_selection)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -5792,6 +5824,13 @@ mod tests {
                         "metric-canvas:metric-1"
                     })
                     .expect("Metric canvas should render");
+                let metadata = cx
+                    .debug_bounds(if metric == "metric-0" {
+                        "metric-metadata:metric-0"
+                    } else {
+                        "metric-metadata:metric-1"
+                    })
+                    .expect("Metric metadata should render on the second label line");
                 assert_eq!(sidebar.origin.y, track.origin.y);
                 assert_eq!(sidebar.size.height, track.size.height);
                 assert_eq!(track.origin.x, sidebar.origin.x + sidebar.size.width);
@@ -5800,6 +5839,7 @@ mod tests {
                     workspace.origin.x + workspace.size.width
                 );
                 assert!(canvas.size.width > px(0.));
+                assert!(metadata.size.height > px(0.));
             }
             let (ranges, unavailable) = window
                 .read_with(&cx, |viewer, _| {
