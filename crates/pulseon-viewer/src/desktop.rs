@@ -273,8 +273,10 @@ struct ViewerApp {
     theme: ViewerTheme,
     focus: FocusHandle,
     filter_focus: FocusHandle,
+    metric_filter_focus: FocusHandle,
     view_name_focus: FocusHandle,
     run_filter: String,
+    metric_filter: String,
     run_list: RunListCache,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
     removed_projects: HashSet<ProjectRef>,
@@ -333,8 +335,10 @@ impl ViewerApp {
             theme: ViewerTheme::for_appearance(window.appearance()),
             focus,
             filter_focus: cx.focus_handle().tab_stop(true),
+            metric_filter_focus: cx.focus_handle().tab_stop(true),
             view_name_focus: cx.focus_handle().tab_stop(true),
             run_filter: String::new(),
+            metric_filter: String::new(),
             run_list: RunListCache::default(),
             expanded_projects: HashSet::new(),
             removed_projects: HashSet::new(),
@@ -1423,6 +1427,7 @@ impl ViewerApp {
 
     fn select_metric(&mut self, metric_key: MetricKey, cx: &mut Context<Self>) {
         self.metric_picker_open = false;
+        self.metric_filter.clear();
         let panel_id = self.views.select_active_metric(metric_key.clone());
         self.metric_scroll.reset(self.views.active().panels.len());
         self.core.select_metric(Some(metric_key));
@@ -1587,6 +1592,34 @@ impl ViewerApp {
             _ => return,
         }
         self.run_list.rebuild(self.core.catalog(), &self.run_filter);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn on_metric_filter_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.keystroke.key.as_str() {
+            "backspace" => {
+                self.metric_filter.pop();
+            }
+            "escape" if self.metric_filter.is_empty() => {
+                self.metric_picker_open = false;
+                self.focus.focus(window);
+            }
+            "escape" => self.metric_filter.clear(),
+            _ if !event.keystroke.modifiers.platform && !event.keystroke.modifiers.control => {
+                if let Some(text) = event.keystroke.key_char.as_deref()
+                    && !text.chars().any(char::is_control)
+                {
+                    self.metric_filter.push_str(text);
+                }
+            }
+            _ => return,
+        }
         cx.stop_propagation();
         cx.notify();
     }
@@ -1986,23 +2019,36 @@ impl ViewerApp {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let theme = self.theme;
-        let candidates = available
+        let available = available
             .into_iter()
             .filter(|metric| !selected.contains(metric))
             .collect::<Vec<_>>();
+        let query = self.metric_filter.trim().to_lowercase();
+        let candidates = available
+            .iter()
+            .filter(|metric| query.is_empty() || metric.as_str().to_lowercase().contains(&query))
+            .cloned()
+            .collect::<Vec<_>>();
+        let filter_focus = self.metric_filter_focus.clone();
         let mut picker = div().relative().child(
             components::icon_button(
                 "add-metric",
                 theme,
                 self.metric_picker_open,
-                candidates.is_empty(),
+                available.is_empty(),
             )
             .debug_selector(|| "add-metric".to_owned())
-            .when(!candidates.is_empty(), |button| {
+            .when(!available.is_empty(), |button| {
                 button
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.metric_picker_open = !this.metric_picker_open;
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let opening = !this.metric_picker_open;
+                        this.metric_picker_open = opening;
+                        this.axis_picker_open = false;
+                        if opening {
+                            this.metric_filter.clear();
+                            this.metric_filter_focus.focus(window);
+                        }
                         cx.notify();
                     }))
             })
@@ -2019,33 +2065,85 @@ impl ViewerApp {
                             .debug_selector(|| "metric-picker".to_owned())
                             .w(px(260.))
                             .max_h(px(320.))
-                            .overflow_y_scroll()
                             .flex()
                             .flex_col()
-                            .children(candidates.into_iter().map(|metric| {
-                                let action_metric = metric.clone();
+                            .gap_2()
+                            .child(
                                 div()
-                                    .id(SharedString::from(format!(
-                                        "metric-candidate:{}",
-                                        metric.as_str()
-                                    )))
-                                    .debug_selector({
-                                        let metric = metric.clone();
-                                        move || format!("metric-candidate:{}", metric.as_str())
-                                    })
+                                    .text_xs()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child("Add Metric"),
+                            )
+                            .child(
+                                div()
+                                    .id("metric-filter")
+                                    .debug_selector(|| "metric-filter".to_owned())
+                                    .track_focus(&filter_focus)
                                     .h(theme.spacing.control_height)
-                                    .flex_none()
-                                    .px_2()
+                                    .px_3()
+                                    .border_1()
+                                    .border_color(theme.colors.border)
                                     .rounded(theme.spacing.corner_radius)
                                     .flex()
                                     .items_center()
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(theme.colors.element_hover))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.select_metric(action_metric.clone(), cx);
+                                    .cursor_text()
+                                    .focus(|style| style.border_color(theme.colors.focus))
+                                    .on_key_down(cx.listener(Self::on_metric_filter_key))
+                                    .on_click(move |_, window, _| filter_focus.focus(window))
+                                    .text_color(if self.metric_filter.is_empty() {
+                                        theme.colors.text_muted
+                                    } else {
+                                        theme.colors.text
+                                    })
+                                    .child(if self.metric_filter.is_empty() {
+                                        "Filter available metrics".to_owned()
+                                    } else {
+                                        self.metric_filter.clone()
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .id("metric-candidates")
+                                    .max_h(px(240.))
+                                    .overflow_y_scroll()
+                                    .flex()
+                                    .flex_col()
+                                    .children(candidates.iter().map(|metric| {
+                                        let action_metric = metric.clone();
+                                        div()
+                                            .id(SharedString::from(format!(
+                                                "metric-candidate:{}",
+                                                metric.as_str()
+                                            )))
+                                            .debug_selector({
+                                                let metric = metric.clone();
+                                                move || {
+                                                    format!("metric-candidate:{}", metric.as_str())
+                                                }
+                                            })
+                                            .h(theme.spacing.control_height)
+                                            .flex_none()
+                                            .px_2()
+                                            .rounded(theme.spacing.corner_radius)
+                                            .flex()
+                                            .items_center()
+                                            .cursor_pointer()
+                                            .hover(|style| style.bg(theme.colors.element_hover))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.select_metric(action_metric.clone(), cx);
+                                            }))
+                                            .child(metric.as_str().to_owned())
                                     }))
-                                    .child(metric.as_str().to_owned())
-                            })),
+                                    .children(candidates.is_empty().then(|| {
+                                        div()
+                                            .h(theme.spacing.control_height)
+                                            .px_2()
+                                            .flex()
+                                            .items_center()
+                                            .text_color(theme.colors.text_muted)
+                                            .child("No matching metrics")
+                                    })),
+                            ),
                     ),
             ));
         }
@@ -2061,6 +2159,8 @@ impl ViewerApp {
                 .cursor_pointer()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.axis_picker_open = !this.axis_picker_open;
+                    this.metric_picker_open = false;
+                    this.metric_filter.clear();
                     cx.notify();
                 }))
                 .child(components::icon(
@@ -5322,10 +5422,39 @@ mod tests {
                 .debug_bounds("add-metric")
                 .expect("Add Metric control should render beside the brush");
             cx.simulate_click(add.center(), Modifiers::default());
+            let axis = cx
+                .debug_bounds("axis-picker")
+                .expect("Axis picker should render beside Add Metric");
+            cx.simulate_click(axis.center(), Modifiers::default());
+            assert!(cx.debug_bounds("axis-menu").is_some());
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert!(viewer.axis_picker_open);
+                    assert!(!viewer.metric_picker_open);
+                })
+                .expect("viewer should remain open");
+            cx.simulate_click(add.center(), Modifiers::default());
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert!(!viewer.axis_picker_open);
+                    assert!(viewer.metric_picker_open);
+                })
+                .expect("viewer should remain open");
             assert!(cx.debug_bounds("metric-candidate:metric-0").is_none());
+            let filter = cx
+                .debug_bounds("metric-filter")
+                .expect("Metric picker should expose search");
+            cx.simulate_click(filter.center(), Modifiers::default());
+            cx.simulate_keystrokes("2");
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.metric_filter.clone())
+                    .expect("viewer should remain open"),
+                "2"
+            );
             let candidate = cx
-                .debug_bounds("metric-candidate:metric-1")
-                .expect("unadded Metric should be offered");
+                .debug_bounds("metric-candidate:metric-2")
+                .expect("matching unadded Metric should be offered");
 
             cx.simulate_click(candidate.center(), Modifiers::default());
             cx.run_until_parked();
@@ -5339,7 +5468,7 @@ mod tests {
                                 .active()
                                 .panels
                                 .iter()
-                                .any(|panel| panel.metric_key.as_str() == "metric-1")
+                                .any(|panel| panel.metric_key.as_str() == "metric-2")
                     })
                     .expect("viewer should remain open")
             );
