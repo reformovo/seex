@@ -1956,6 +1956,8 @@ impl ViewerApp {
                     .border_color(theme.colors.border)
                     .child(
                         div()
+                            .id("brush-controls")
+                            .debug_selector(|| "brush-controls".to_owned())
                             .w(metric_sidebar_width)
                             .flex_shrink_0()
                             .p(theme.spacing.panel_padding)
@@ -1965,7 +1967,7 @@ impl ViewerApp {
                             .relative()
                             .flex()
                             .items_start()
-                            .gap_1()
+                            .justify_between()
                             .child(axis_picker)
                             .child(metric_picker),
                     )
@@ -5499,6 +5501,14 @@ mod tests {
             let axis = cx
                 .debug_bounds("axis-picker")
                 .expect("Axis picker should render beside Add Metric");
+            let controls = cx
+                .debug_bounds("brush-controls")
+                .expect("Brush controls should own the fixed Metric label cell");
+            let padding = window
+                .read_with(&cx, |viewer, _| viewer.theme.spacing.panel_padding)
+                .expect("viewer should remain open");
+            assert_eq!(axis.origin.x, controls.origin.x + padding);
+            assert!(f32::from(add.right() - (controls.right() - padding)).abs() <= 1.);
             cx.simulate_click(axis.center(), Modifiers::default());
             assert!(cx.debug_bounds("axis-menu").is_some());
             window
