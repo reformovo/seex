@@ -25,6 +25,8 @@ pub enum IconName {
     EyeOff,
     Folder,
     FolderOpen,
+    PanelBottomClose,
+    PanelBottomOpen,
     Pin,
     Plus,
     Refresh,
@@ -45,6 +47,8 @@ impl IconName {
             Self::EyeOff => "icons/eye-off.svg",
             Self::Folder => "icons/folder.svg",
             Self::FolderOpen => "icons/folder-open.svg",
+            Self::PanelBottomClose => "icons/panel-bottom-close.svg",
+            Self::PanelBottomOpen => "icons/panel-bottom-open.svg",
             Self::Pin => "icons/pin.svg",
             Self::Plus => "icons/plus.svg",
             Self::Refresh => "icons/refresh.svg",
@@ -280,5 +284,9 @@ mod tests {
         assert_eq!(IconName::Plus.path(), "icons/plus.svg");
         assert_eq!(IconName::ArrowUp.path(), "icons/arrow-up.svg");
         assert_eq!(IconName::Clock.path(), "icons/clock.svg");
+        assert_eq!(
+            IconName::PanelBottomOpen.path(),
+            "icons/panel-bottom-open.svg"
+        );
     }
 }

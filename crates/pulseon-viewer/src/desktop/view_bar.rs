@@ -143,7 +143,14 @@ impl ViewerApp {
                     self.views.active().selected_panel_id.is_none(),
                 )
                 .debug_selector(|| "toggle-bottom-inspector".to_owned())
-                .tooltip(components::label_tooltip("Toggle inspector", theme))
+                .tooltip(components::label_tooltip(
+                    if self.bottom_inspector_visible {
+                        "Hide bottom inspector"
+                    } else {
+                        "Show bottom inspector"
+                    },
+                    theme,
+                ))
                 .when(self.views.active().selected_panel_id.is_some(), |button| {
                     button
                         .cursor_pointer()
@@ -151,7 +158,14 @@ impl ViewerApp {
                             this.on_toggle_bottom_inspector(&ToggleBottomInspector, window, cx);
                         }))
                 })
-                .child("▰"),
+                .child(components::icon(
+                    if self.bottom_inspector_visible {
+                        IconName::PanelBottomClose
+                    } else {
+                        IconName::PanelBottomOpen
+                    },
+                    theme,
+                )),
             )
             .child(
                 components::icon_button("refresh-view", theme, false, !can_refresh)

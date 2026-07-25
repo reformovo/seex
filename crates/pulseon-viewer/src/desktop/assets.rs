@@ -17,8 +17,10 @@ const FOLDER_OPEN: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.or
 const PIN: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="m5 2 6 6-2 1.2-.7 3.3-4.8-4.8L6.8 7zM3.5 12.5l2.2-2.2" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const ARROW_UP: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="M8 13V3m0 0L4.5 6.5M8 3l3.5 3.5" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const CLOCK: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="5.5" fill="none" stroke="black" stroke-width="1.2"/><path d="M8 4.8V8l2.3 1.4" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+const PANEL_BOTTOM_OPEN: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2.5" width="12" height="11" rx="1" fill="none" stroke="black" stroke-width="1.2"/><path d="M2 9.5h12M6 12l2-2 2 2" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+const PANEL_BOTTOM_CLOSE: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2.5" width="12" height="11" rx="1" fill="none" stroke="black" stroke-width="1.2"/><path d="M2 9.5h12m-8-1.5 2 2 2-2" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
-const ASSETS: [(&str, &[u8]); 15] = [
+const ASSETS: [(&str, &[u8]); 17] = [
     ("icons/refresh.svg", REFRESH),
     ("icons/plus.svg", PLUS),
     ("icons/close.svg", CLOSE),
@@ -34,6 +36,8 @@ const ASSETS: [(&str, &[u8]); 15] = [
     ("icons/pin.svg", PIN),
     ("icons/arrow-up.svg", ARROW_UP),
     ("icons/clock.svg", CLOCK),
+    ("icons/panel-bottom-open.svg", PANEL_BOTTOM_OPEN),
+    ("icons/panel-bottom-close.svg", PANEL_BOTTOM_CLOSE),
 ];
 
 pub struct ViewerAssets;
