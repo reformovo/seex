@@ -659,6 +659,15 @@ impl AnalysisViews {
         self.active_mut().inspector_tab = tab;
     }
 
+    pub fn cancel_active_panel_reads(&mut self) {
+        for panel in &mut self.active_mut().panels {
+            panel.overview_generation = None;
+            panel.detail_generation = None;
+            panel.inspector_generation = None;
+            panel.requested_detail_viewport = None;
+        }
+    }
+
     pub fn set_active_ranking_direction(&mut self, direction: ObjectiveDirection) {
         self.active_mut().ranking_direction = Some(direction);
     }
@@ -1250,5 +1259,23 @@ mod tests {
         views.begin_active_panel_read(&first, ReadKind::Inspector, Generation(3));
         assert!(!views.complete_active_inspector_read(&first, Generation(2), None, Vec::new(),));
         assert!(views.complete_active_inspector_read(&first, Generation(3), None, Vec::new(),));
+    }
+
+    #[test]
+    fn deactivating_a_view_cancels_every_panel_generation() {
+        let mut views = AnalysisViews::default();
+        let panel = views.select_active_metric(MetricKey::from_string("loss"));
+        let viewport = AlignmentViewport::new(10, 20).expect("viewport should be valid");
+        views.begin_active_panel_read(&panel, ReadKind::Overview, Generation(1));
+        views.begin_active_panel_detail(&panel, Generation(2), viewport, 800);
+        views.begin_active_panel_read(&panel, ReadKind::Inspector, Generation(3));
+
+        views.cancel_active_panel_reads();
+
+        let panel = views.active_panel(&panel).expect("panel should remain");
+        assert!(!panel.is_pending(ReadKind::Overview));
+        assert!(!panel.is_pending(ReadKind::Detail));
+        assert!(!panel.is_pending(ReadKind::Inspector));
+        assert!(panel.requested_detail_viewport.is_none());
     }
 }

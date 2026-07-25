@@ -1020,6 +1020,7 @@ impl ViewerApp {
         let view_id = self.views.active().view_id.clone();
         self.panel_reads.deactivate_view(&view_id);
         self.core.cancel_pending();
+        self.views.cancel_active_panel_reads();
         let view = self.views.active_mut();
         view.core = std::mem::take(&mut self.core);
         view.local_error = self.local_error.take();
