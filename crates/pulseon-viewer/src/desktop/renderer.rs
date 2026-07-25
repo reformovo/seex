@@ -140,23 +140,26 @@ impl ChartAdapter {
                 else {
                     continue;
                 };
-                let mut builder = PathBuilder::stroke(if highlighted { px(3.) } else { px(2.) });
-                if partial {
-                    builder = builder.dash_array(&[px(7.), px(4.)]);
-                }
-                for (point_index, projected) in points.iter().enumerate() {
-                    let position = point(
-                        bounds.origin.x + px(projected.x as f32),
-                        bounds.origin.y + px(projected.y as f32),
-                    );
-                    if point_index == 0 {
-                        builder.move_to(position);
-                    } else {
-                        builder.line_to(position);
+                let width = if highlighted { px(3.) } else { px(2.) };
+                let path = if partial {
+                    let mut builder = PathBuilder::stroke(width).dash_array(&[px(7.), px(4.)]);
+                    for (point_index, projected) in points.iter().enumerate() {
+                        let position = projected_point(bounds, *projected);
+                        if point_index == 0 {
+                            builder.move_to(position);
+                        } else {
+                            builder.line_to(position);
+                        }
                     }
-                }
-                let Ok(path) = builder.build() else {
-                    continue;
+                    let Ok(path) = builder.build() else {
+                        continue;
+                    };
+                    path
+                } else {
+                    let Some(path) = solid_polyline_path(&points, bounds, width) else {
+                        continue;
+                    };
+                    path
                 };
                 gpui_paths.insert(cache_id.to_owned(), (key, path.clone()));
                 path
@@ -274,6 +277,48 @@ impl ChartAdapter {
             physical_width(self.detail_bounds, scale_factor),
         )
     }
+}
+
+fn projected_point(bounds: Bounds<Pixels>, projected: ScreenPoint) -> Point<Pixels> {
+    point(
+        bounds.origin.x + px(projected.x as f32),
+        bounds.origin.y + px(projected.y as f32),
+    )
+}
+
+fn solid_polyline_path(
+    points: &[ScreenPoint],
+    bounds: Bounds<Pixels>,
+    width: Pixels,
+) -> Option<Path<Pixels>> {
+    let half_width = f32::from(width) / 2.;
+    let mut path = None;
+    let mut previous_join = None;
+    let texture = (point(0., 1.), point(0., 1.), point(0., 1.));
+    for segment in points.windows(2) {
+        let start = projected_point(bounds, segment[0]);
+        let end = projected_point(bounds, segment[1]);
+        let dx = f32::from(end.x - start.x);
+        let dy = f32::from(end.y - start.y);
+        let length = dx.hypot(dy);
+        if length <= f32::EPSILON {
+            continue;
+        }
+        let normal = point(px(-dy / length * half_width), px(dx / length * half_width));
+        let start_positive = start + normal;
+        let start_negative = start - normal;
+        let end_positive = end + normal;
+        let end_negative = end - normal;
+        let path = path.get_or_insert_with(|| Path::new(start));
+        if let Some((previous_positive, previous_negative)) = previous_join {
+            path.push_triangle((previous_positive, start, start_positive), texture);
+            path.push_triangle((previous_negative, start_negative, start), texture);
+        }
+        path.push_triangle((start_positive, start_negative, end_positive), texture);
+        path.push_triangle((end_positive, start_negative, end_negative), texture);
+        previous_join = Some((end_positive, end_negative));
+    }
+    path
 }
 
 fn axis_at(bounds: Bounds<Pixels>, range: AxisRange, cursor: Point<Pixels>) -> Option<f64> {
@@ -576,6 +621,16 @@ mod tests {
         let viewport = overview_viewport(&snapshot, home).expect("overview should be drawable");
 
         assert_eq!(viewport.x, home);
+    }
+
+    #[test]
+    fn solid_polyline_requires_one_nonzero_segment() {
+        let bounds = Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.)));
+        let repeated = [ScreenPoint::new(1., 1.), ScreenPoint::new(1., 1.)];
+        let line = [ScreenPoint::new(1., 1.), ScreenPoint::new(2., 2.)];
+
+        assert!(solid_polyline_path(&repeated, bounds, px(2.)).is_none());
+        assert!(solid_polyline_path(&line, bounds, px(2.)).is_some());
     }
 
     #[test]
