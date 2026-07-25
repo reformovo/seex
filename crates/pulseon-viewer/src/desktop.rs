@@ -3102,7 +3102,7 @@ impl ViewerApp {
         let locked_cursor = self.locked_cursor;
         let baseline = self.views.active().baseline.clone();
         let hover = self.track_hovers.get(&panel_id).cloned();
-        let callouts = hover.map_or_else(
+        let mut callouts = hover.map_or_else(
             || {
                 self.ruler_hover.map_or_else(Vec::new, |axis| {
                     adapter.borrow().points_at_axis(&snapshot, viewport, axis)
@@ -3110,6 +3110,7 @@ impl ViewerApp {
             },
             |hover| vec![hover],
         );
+        adapter.borrow().spread_callouts(&mut callouts);
         let callouts = callouts
             .into_iter()
             .map(|hover| {

@@ -270,6 +270,13 @@ impl ChartAdapter {
             .collect()
     }
 
+    pub fn spread_callouts(&self, callouts: &mut [HoverPoint]) {
+        let Some(bounds) = self.detail_bounds else {
+            return;
+        };
+        spread_callouts(callouts, bounds.size.height);
+    }
+
     pub fn detail_axis_at(&self, range: AxisRange, cursor: Point<Pixels>) -> Option<f64> {
         axis_at(self.detail_bounds?, range, cursor)
     }
@@ -330,6 +337,39 @@ impl ChartAdapter {
             physical_width(self.overview_bounds, scale_factor),
             physical_width(self.detail_bounds, scale_factor),
         )
+    }
+}
+
+fn spread_callouts(callouts: &mut [HoverPoint], height: Pixels) {
+    if callouts.len() < 2 {
+        return;
+    }
+    let height = f32::from(height);
+    let half_height = 12_f32.min(height / 2.);
+    let available = (height - half_height * 2.).max(0.);
+    let spacing = 24_f32.min(available / (callouts.len() - 1) as f32);
+    let mut order = (0..callouts.len()).collect::<Vec<_>>();
+    order.sort_by(|left, right| {
+        f32::from(callouts[*left].canvas_position.y)
+            .total_cmp(&f32::from(callouts[*right].canvas_position.y))
+    });
+    let mut positions = order
+        .iter()
+        .map(|index| {
+            f32::from(callouts[*index].canvas_position.y).clamp(half_height, height - half_height)
+        })
+        .collect::<Vec<_>>();
+    for index in 1..positions.len() {
+        positions[index] = positions[index].max(positions[index - 1] + spacing);
+    }
+    if let Some(last) = positions.last_mut() {
+        *last = (*last).min(height - half_height);
+    }
+    for index in (0..positions.len() - 1).rev() {
+        positions[index] = positions[index].min(positions[index + 1] - spacing);
+    }
+    for (index, y) in order.into_iter().zip(positions) {
+        callouts[index].canvas_position.y = px(y);
     }
 }
 
@@ -745,6 +785,40 @@ mod tests {
         let bounds = Bounds::new(point(px(0.), px(0.)), size(px(400.), px(40.)));
 
         assert_eq!(physical_width(Some(bounds), 2.), Some(800));
+    }
+
+    #[test]
+    fn ruler_callouts_separate_close_values_within_the_track() {
+        let source_id = DataSourceId::from_string("source");
+        let project_id = ProjectId::from_string("project");
+        let mut callouts = (0..3)
+            .map(|index| HoverPoint {
+                run_ref: RunRef::new(
+                    source_id.clone(),
+                    project_id.clone(),
+                    RunId::from_string(format!("run-{index}")),
+                ),
+                run_name: format!("Run {index}"),
+                metric_key: "loss".to_owned(),
+                axis_value: 10,
+                value: f64::from(index),
+                canvas_position: point(px(50.), px(40. + index as f32 * 2.)),
+                align_left: false,
+            })
+            .collect::<Vec<_>>();
+
+        spread_callouts(&mut callouts, px(100.));
+
+        let positions = callouts
+            .iter()
+            .map(|callout| f32::from(callout.canvas_position.y))
+            .collect::<Vec<_>>();
+        assert!(positions.windows(2).all(|pair| pair[1] - pair[0] >= 24.));
+        assert!(
+            positions
+                .iter()
+                .all(|position| (12. ..=88.).contains(position))
+        );
     }
 
     #[test]
