@@ -3127,7 +3127,7 @@ impl ViewerApp {
                     .get(panel_id)
                     .and_then(|adapter| adapter.borrow().detail_axis_at(range, position))
             });
-            cx.notify();
+            self.show_metric_inspector(panel_id, cx);
         } else if matches!(event, gpui::ClickEvent::Keyboard(_)) {
             self.show_metric_inspector(panel_id, cx);
         }
@@ -5712,7 +5712,7 @@ mod tests {
             );
             window
                 .read_with(&cx, |viewer, _| {
-                    assert!(!viewer.bottom_inspector_visible);
+                    assert!(viewer.bottom_inspector_visible);
                     assert!(viewer.locked_cursor.is_some());
                 })
                 .expect("viewer should remain open");
