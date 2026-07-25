@@ -11,7 +11,7 @@ impl ViewerApp {
         let renaming_view = self.renaming_view.clone();
         let view_name_focus = self.view_name_focus.clone();
         let view_name_draft = self.view_name_draft.clone();
-        let can_refresh = self.source_path.is_some();
+        let can_refresh = self.sources.sources().next().is_some();
 
         components::tab_bar(theme)
             .id("analysis-tab-bar")
@@ -176,7 +176,7 @@ impl ViewerApp {
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.local_error = None;
-                                this.refresh_catalog(cx);
+                                this.refresh_all_sources(cx);
                                 cx.notify();
                             }))
                     })

@@ -484,6 +484,20 @@ impl ViewerApp {
         }
     }
 
+    fn refresh_all_sources(&mut self, cx: &mut Context<Self>) {
+        let active_source = self.core.selection().source_id.clone();
+        let source_ids = self
+            .sources
+            .sources()
+            .map(|source| source.source_id.clone())
+            .collect::<Vec<_>>();
+        for source_id in source_ids {
+            let track_in_core = active_source.as_ref() == Some(&source_id);
+            let request = self.discovery_request_for_source(&source_id, track_in_core);
+            self.submit_to_source(source_id, ReadRequest::Discover(request), track_in_core, cx);
+        }
+    }
+
     fn discovery_request_for_source(
         &self,
         source_id: &DataSourceId,
@@ -912,7 +926,7 @@ impl ViewerApp {
 
     fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.local_error = None;
-        self.refresh_catalog(cx);
+        self.refresh_all_sources(cx);
         cx.notify();
     }
 
@@ -4767,6 +4781,40 @@ mod tests {
                     })
                     .expect("viewer should remain open"),
                 ["accuracy", "loss"]
+            );
+        }
+
+        #[gpui::test]
+        fn top_refresh_requests_every_source_from_an_empty_view(cx: &mut TestAppContext) {
+            let (first, _, _) = fixture_with_metric("loss");
+            let (second, _, _) = fixture_with_metric("accuracy");
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(first.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.open_source(second.path().to_path_buf(), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| viewer.sources.sources().len() == 2);
+            let before = window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.create_analysis_view(cx);
+                    assert!(viewer.core.selection().source_id.is_none());
+                    viewer.next_generation
+                })
+                .expect("viewer should remain open");
+
+            let refresh = cx
+                .debug_bounds("refresh-view")
+                .expect("Refresh should remain available in an empty View");
+            cx.simulate_click(refresh.center(), Modifiers::default());
+
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.next_generation)
+                    .expect("viewer should remain open")
+                    >= before + 2
             );
         }
 
