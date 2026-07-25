@@ -41,6 +41,7 @@ mod components;
 mod renderer;
 mod sidebar;
 mod theme;
+mod view_bar;
 
 use assets::ViewerAssets;
 use components::{IconName, StatusTone};
@@ -313,7 +314,9 @@ struct ViewerApp {
     views: AnalysisViews,
     panel_reads: PanelReadCoordinator,
     renaming_view: Option<AnalysisViewId>,
+    view_menu: Option<AnalysisViewId>,
     view_name_draft: String,
+    metric_picker_open: bool,
     project_sidebar_visible: bool,
     project_sidebar_width: gpui::Pixels,
     metric_sidebar_compact: bool,
@@ -367,7 +370,9 @@ impl ViewerApp {
             views: AnalysisViews::default(),
             panel_reads: PanelReadCoordinator::default(),
             renaming_view: None,
+            view_menu: None,
             view_name_draft: String::new(),
+            metric_picker_open: false,
             project_sidebar_visible: true,
             project_sidebar_width: px(320.),
             metric_sidebar_compact: false,
@@ -1408,6 +1413,7 @@ impl ViewerApp {
     }
 
     fn select_metric(&mut self, metric_key: MetricKey, cx: &mut Context<Self>) {
+        self.metric_picker_open = false;
         let panel_id = self.views.select_active_metric(metric_key.clone());
         self.core.select_metric(Some(metric_key));
         self.request_panel_overview(&panel_id, cx);
@@ -1790,6 +1796,7 @@ impl ViewerApp {
             .catalog()
             .map(|catalog| catalog.metric_keys.clone())
             .unwrap_or_default();
+        let metric_picker = self.render_metric_picker(available, &selected, cx);
         let row_height = match self.views.active().track_density {
             TrackDensity::Compact => px(180.),
             TrackDensity::Comfortable => px(240.),
@@ -1830,29 +1837,8 @@ impl ViewerApp {
                             .bg(theme.colors.panel)
                             .border_r_1()
                             .border_color(theme.colors.border)
-                            .child(section_label("Metrics", theme))
-                            .children(
-                                available
-                                    .into_iter()
-                                    .filter(|metric| !selected.contains(metric))
-                                    .map(|metric| {
-                                        let action_metric = metric.clone();
-                                        components::toolbar_button(
-                                            SharedString::from(format!(
-                                                "add-metric:{}",
-                                                metric.as_str()
-                                            )),
-                                            theme,
-                                            false,
-                                            false,
-                                        )
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.select_metric(action_metric.clone(), cx);
-                                        }))
-                                        .child(format!("+ {}", metric.as_str()))
-                                    }),
-                            ),
+                            .relative()
+                            .child(metric_picker),
                     )
                     .child(
                         div()
@@ -1878,6 +1864,81 @@ impl ViewerApp {
                 .flex_1(),
             )
             .children(inspector)
+    }
+
+    fn render_metric_picker(
+        &mut self,
+        available: Vec<MetricKey>,
+        selected: &HashSet<MetricKey>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let theme = self.theme;
+        let candidates = available
+            .into_iter()
+            .filter(|metric| !selected.contains(metric))
+            .collect::<Vec<_>>();
+        let mut picker = div().relative().child(
+            components::toolbar_button(
+                "add-metric",
+                theme,
+                self.metric_picker_open,
+                candidates.is_empty(),
+            )
+            .debug_selector(|| "add-metric".to_owned())
+            .when(!candidates.is_empty(), |button| {
+                button
+                    .cursor_pointer()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.metric_picker_open = !this.metric_picker_open;
+                        cx.notify();
+                    }))
+            })
+            .gap_1()
+            .child(components::icon(IconName::Plus, theme))
+            .child("Metric"),
+        );
+        if self.metric_picker_open {
+            picker = picker.child(deferred(
+                anchored()
+                    .anchor(Corner::TopLeft)
+                    .offset(point(px(0.), theme.spacing.control_height + px(4.)))
+                    .child(
+                        components::popover(theme)
+                            .id("metric-picker")
+                            .debug_selector(|| "metric-picker".to_owned())
+                            .w(px(260.))
+                            .max_h(px(320.))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .children(candidates.into_iter().map(|metric| {
+                                let action_metric = metric.clone();
+                                div()
+                                    .id(SharedString::from(format!(
+                                        "metric-candidate:{}",
+                                        metric.as_str()
+                                    )))
+                                    .debug_selector({
+                                        let metric = metric.clone();
+                                        move || format!("metric-candidate:{}", metric.as_str())
+                                    })
+                                    .h(theme.spacing.control_height)
+                                    .flex_none()
+                                    .px_2()
+                                    .rounded(theme.spacing.corner_radius)
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme.colors.element_hover))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.select_metric(action_metric.clone(), cx);
+                                    }))
+                                    .child(metric.as_str().to_owned())
+                            })),
+                    ),
+            ));
+        }
+        picker
     }
 
     fn render_bottom_inspector(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
@@ -3065,12 +3126,6 @@ impl Render for ViewerApp {
             .core
             .catalog()
             .is_some_and(|catalog| !catalog.projects.is_empty());
-        let can_refresh = self.source_path.is_some();
-        let views = self.views.views().to_vec();
-        let active_view_id = self.views.active().view_id.clone();
-        let renaming_view = self.renaming_view.clone();
-        let view_name_focus = self.view_name_focus.clone();
-        let view_name_draft = self.view_name_draft.clone();
 
         div()
             .track_focus(&self.focus)
@@ -3109,152 +3164,7 @@ impl Render for ViewerApp {
                             .flex_1()
                             .h_full()
                             .overflow_hidden()
-                            .child(
-                                components::tab_bar(theme)
-                                    .id("analysis-tab-bar")
-                                    .debug_selector(|| "analysis-tab-bar".to_owned())
-                                    .flex_shrink_0()
-                                    .children((!self.project_sidebar_visible).then(|| {
-                                        components::icon_button(
-                                            "show-project-sidebar",
-                                            theme,
-                                            false,
-                                            false,
-                                        )
-                                        .debug_selector(|| "show-project-sidebar".to_owned())
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.project_sidebar_visible = true;
-                                            cx.notify();
-                                        }))
-                                        .child(components::icon(IconName::FolderOpen, theme))
-                                    }))
-                                    .children(views.into_iter().enumerate().map(|(index, view)| {
-                                        let selected = view.view_id == active_view_id;
-                                        let activate_id = view.view_id.clone();
-                                        let close_id = view.view_id.clone();
-                                        let editing = renaming_view.as_ref() == Some(&view.view_id);
-                                        let focus = view_name_focus.clone();
-                                        components::analysis_tab(
-                                            SharedString::from(format!(
-                                                "analysis-tab:{}",
-                                                view.view_id
-                                            )),
-                                            theme,
-                                            selected,
-                                        )
-                                        .debug_selector(move || {
-                                            if selected {
-                                                "analysis-tab".to_owned()
-                                            } else {
-                                                format!("analysis-tab-{index}")
-                                            }
-                                        })
-                                        .tab_index(0)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.activate_analysis_view(&activate_id, cx);
-                                        }))
-                                        .child(if editing {
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "rename-view:{}",
-                                                    view.view_id
-                                                )))
-                                                .track_focus(&focus)
-                                                .on_key_down(cx.listener(Self::on_view_name_key))
-                                                .child(view_name_draft.clone())
-                                        } else {
-                                            div()
-                                                .id(SharedString::from(format!(
-                                                    "view-name:{}",
-                                                    view.view_id
-                                                )))
-                                                .child(view.name)
-                                        })
-                                        .child(
-                                            components::icon_button(
-                                                SharedString::from(format!(
-                                                    "close-view:{}",
-                                                    close_id
-                                                )),
-                                                theme,
-                                                false,
-                                                false,
-                                            )
-                                            .debug_selector(move || {
-                                                if selected {
-                                                    "close-active-view".to_owned()
-                                                } else {
-                                                    format!("close-view-{index}")
-                                                }
-                                            })
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.close_analysis_view(&close_id, cx);
-                                                cx.stop_propagation();
-                                            }))
-                                            .child(components::icon(IconName::Close, theme)),
-                                        )
-                                    }))
-                                    .child(
-                                        components::toolbar_button(
-                                            "duplicate-view",
-                                            theme,
-                                            false,
-                                            false,
-                                        )
-                                        .debug_selector(|| "duplicate-view".to_owned())
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.duplicate_analysis_view(cx);
-                                        }))
-                                        .child("Duplicate"),
-                                    )
-                                    .child(
-                                        components::toolbar_button(
-                                            "rename-view",
-                                            theme,
-                                            false,
-                                            false,
-                                        )
-                                        .debug_selector(|| "rename-view".to_owned())
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            let view_id = this.views.active().view_id.clone();
-                                            this.begin_rename_analysis_view(view_id, window, cx);
-                                        }))
-                                        .child("Rename"),
-                                    )
-                                    .child(
-                                        components::icon_button("new-view", theme, false, false)
-                                            .debug_selector(|| "new-view".to_owned())
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                this.create_analysis_view(cx);
-                                            }))
-                                            .child(components::icon(IconName::Plus, theme)),
-                                    )
-                                    .child(div().flex_1())
-                                    .child(
-                                        components::icon_button(
-                                            "refresh-view",
-                                            theme,
-                                            false,
-                                            !can_refresh,
-                                        )
-                                        .debug_selector(|| "refresh-view".to_owned())
-                                        .when(can_refresh, |button| {
-                                            button.cursor_pointer().on_click(cx.listener(
-                                                |this, _, _, cx| {
-                                                    this.local_error = None;
-                                                    this.refresh_catalog(cx);
-                                                    cx.notify();
-                                                },
-                                            ))
-                                        })
-                                        .child(components::icon(IconName::Refresh, theme)),
-                                    ),
-                            )
+                            .child(self.render_analysis_bar(cx))
                             .children(error.clone().map(|message| error_banner(message, theme)))
                             .child(if has_catalog {
                                 self.render_workspace(cx)
@@ -4092,7 +4002,7 @@ mod tests {
                     .debug_bounds("analysis-tab")
                     .expect("active Analysis tab should render");
                 let control = cx
-                    .debug_bounds("duplicate-view")
+                    .debug_bounds("new-view")
                     .expect("View toolbar control should render");
 
                 assert_eq!(sidebar.origin.y, px(0.));
@@ -4132,6 +4042,14 @@ mod tests {
                     .read_with(&cx, |viewer, _| !viewer.views.pinned_projects().is_empty())
                     .expect("viewer should remain open")
             );
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.hovered_project = None;
+                    viewer.project_menu = None;
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
         }
 
         #[gpui::test]
@@ -4154,6 +4072,15 @@ mod tests {
                     .expect("viewer should remain open"),
                 AlignmentAxis::Step
             );
+            let active_tab = cx
+                .debug_bounds("analysis-tab")
+                .expect("active View tab should render");
+            cx.simulate_mouse_down(
+                active_tab.center(),
+                MouseButton::Right,
+                Modifiers::default(),
+            );
+            assert!(cx.debug_bounds("view-menu").is_some());
             let duplicate = cx
                 .debug_bounds("duplicate-view")
                 .expect("duplicate View control should render");
@@ -4165,10 +4092,6 @@ mod tests {
                 3
             );
 
-            let rename = cx
-                .debug_bounds("rename-view")
-                .expect("rename View control should render");
-            assert!(rename.size.width > px(0.));
             window
                 .update(&mut cx, |viewer, window, cx| {
                     let view_id = viewer.views.active().view_id.clone();
@@ -4546,6 +4469,45 @@ mod tests {
             });
 
             assert!(cx.debug_bounds("metric-row-19").is_some());
+        }
+
+        #[gpui::test]
+        fn metric_picker_lists_only_metrics_not_already_in_the_view(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture(3);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 3);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                })
+                .expect("viewer should remain open");
+            let add = cx
+                .debug_bounds("add-metric")
+                .expect("Add Metric control should render beside the brush");
+            cx.simulate_click(add.center(), Modifiers::default());
+            assert!(cx.debug_bounds("metric-candidate:metric-0").is_none());
+            let candidate = cx
+                .debug_bounds("metric-candidate:metric-1")
+                .expect("unadded Metric should be offered");
+
+            cx.simulate_click(candidate.center(), Modifiers::default());
+            cx.run_until_parked();
+
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| {
+                        !viewer.metric_picker_open
+                            && viewer
+                                .views
+                                .active()
+                                .panels
+                                .iter()
+                                .any(|panel| panel.metric_key.as_str() == "metric-1")
+                    })
+                    .expect("viewer should remain open")
+            );
         }
 
         #[gpui::test]
