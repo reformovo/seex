@@ -2360,7 +2360,6 @@ impl ViewerApp {
         } else {
             match active_tab {
                 InspectorTab::Summary => {
-                    let baseline_value = baseline_summary_value(snapshot, baseline.as_ref());
                     let rows = snapshot
                         .into_iter()
                         .flat_map(|snapshot| {
@@ -2379,12 +2378,7 @@ impl ViewerApp {
                                     run.run.name.clone(),
                                     stats.effective_count.to_string(),
                                     stats.last_step.value().to_string(),
-                                    inspector_value(
-                                        Some(stats.last_value_f64),
-                                        &run.run_ref,
-                                        baseline.as_ref(),
-                                        baseline_value,
-                                    ),
+                                    format!("{:.6}", stats.last_value_f64),
                                     format!("{:.6}", stats.min_value_f64),
                                     format!("{:.6}", stats.max_value_f64),
                                 ]
@@ -2470,7 +2464,6 @@ impl ViewerApp {
                         ))
                 }
                 InspectorTab::Evidence => {
-                    let baseline_value = baseline_evidence_value(snapshot, baseline.as_ref());
                     let rows = snapshot
                         .into_iter()
                         .flat_map(|snapshot| {
@@ -2482,11 +2475,9 @@ impl ViewerApp {
                                         || "—".to_owned(),
                                         |step| step.value().to_string(),
                                     ),
-                                    inspector_value(
-                                        run.evidence.last_value_f64,
-                                        &run.run_ref,
-                                        baseline.as_ref(),
-                                        baseline_value,
+                                    run.evidence.last_value_f64.map_or_else(
+                                        || "—".to_owned(),
+                                        |value| format!("{value:.6}"),
                                     ),
                                     format!(
                                         "{:?}{}",
@@ -3941,74 +3932,6 @@ fn ranking_table_rows(snapshot: &InspectorSnapshot, baseline: Option<&RunRef>) -
         .collect()
 }
 
-#[cfg(test)]
-fn ranking_lines(snapshot: &InspectorSnapshot, baseline: Option<&RunRef>) -> Vec<String> {
-    let baseline_value = baseline_evidence_value(Some(snapshot), baseline);
-    let mut projects = Vec::<((DataSourceId, ProjectId), Vec<_>)>::new();
-    for run in &snapshot.runs {
-        let key = (
-            run.run_ref.source_id.clone(),
-            run.run_ref.project_id.clone(),
-        );
-        if let Some((_, runs)) = projects.iter_mut().find(|(candidate, _)| candidate == &key) {
-            runs.push(run);
-        } else {
-            projects.push((key, vec![run]));
-        }
-    }
-    let mut lines = Vec::new();
-    for ((source_id, project_id), mut runs) in projects {
-        lines.push(format!(
-            "Project {} · Source {}",
-            project_id.as_str(),
-            source_id
-        ));
-        runs.sort_by_key(|run| {
-            run.ranking
-                .map(|ranking| ranking.order)
-                .unwrap_or(usize::MAX)
-        });
-        for run in runs {
-            let rank = run
-                .ranking
-                .and_then(|ranking| ranking.rank)
-                .map_or_else(|| "—".to_owned(), |rank| format!("#{rank}"));
-            let step = run
-                .evidence
-                .last_step
-                .map_or_else(|| "—".to_owned(), |step| step.value().to_string());
-            let value = inspector_value(
-                run.evidence.last_value_f64,
-                &run.run_ref,
-                baseline,
-                baseline_value,
-            );
-            lines.push(format!(
-                "{rank} · {} · status {} · step {step} · value {value} · {:?}{}",
-                run.run.name,
-                run_status(run.evidence.run_status),
-                run.evidence.completeness,
-                reasons_label(&run.evidence.reasons),
-            ));
-        }
-    }
-    lines
-}
-
-fn baseline_summary_value(
-    snapshot: Option<&InspectorSnapshot>,
-    baseline: Option<&RunRef>,
-) -> Option<f64> {
-    let baseline = baseline?;
-    snapshot?
-        .runs
-        .iter()
-        .find(|run| &run.run_ref == baseline)?
-        .summary
-        .as_ref()
-        .map(|summary| summary.last_value_f64)
-}
-
 fn baseline_evidence_value(
     snapshot: Option<&InspectorSnapshot>,
     baseline: Option<&RunRef>,
@@ -4022,28 +3945,6 @@ fn baseline_evidence_value(
         .last_value_f64
 }
 
-fn inspector_value(
-    value: Option<f64>,
-    run_ref: &RunRef,
-    baseline: Option<&RunRef>,
-    baseline_value: Option<f64>,
-) -> String {
-    let Some(value) = value else {
-        return if baseline == Some(run_ref) {
-            "— · Baseline".to_owned()
-        } else {
-            "—".to_owned()
-        };
-    };
-    if baseline == Some(run_ref) {
-        format!("{value:.6} · Baseline")
-    } else if let Some(baseline_value) = baseline_value {
-        format!("{value:.6}({:+.6})", value - baseline_value)
-    } else {
-        format!("{value:.6}")
-    }
-}
-
 fn inspector_delta(
     value: Option<f64>,
     run_ref: &RunRef,
@@ -4051,6 +3952,12 @@ fn inspector_delta(
     baseline_value: Option<f64>,
 ) -> String {
     if baseline == Some(run_ref) {
+        return "—".to_owned();
+    }
+    let Some(baseline) = baseline else {
+        return "—".to_owned();
+    };
+    if run_ref.source_id != baseline.source_id || run_ref.project_id != baseline.project_id {
         return "—".to_owned();
     }
     value.zip(baseline_value).map_or_else(
@@ -4332,29 +4239,15 @@ mod tests {
             ],
         };
 
-        let lines = ranking_lines(&snapshot, None);
-
+        let rows = ranking_table_rows(&snapshot, None);
         assert_eq!(
-            lines,
-            [
-                "Project alpha · Source source",
-                "#1 · Run 1 · status finished · step 1 · value 1.000000 · Complete",
-                "#2 · Run 2 · status finished · step 1 · value 2.000000 · Complete",
-                "Project beta · Source source",
-                "#1 · Run 3 · status finished · step 1 · value 3.000000 · Complete",
-            ]
+            rows.iter()
+                .map(|row| [row[0].as_str(), row[1].as_str()])
+                .collect::<Vec<_>>(),
+            [["#1", "Run 1"], ["#2", "Run 2"], ["#1", "Run 3"],]
         );
 
         let baseline = snapshot.runs[0].run_ref.clone();
-        let lines = ranking_lines(&snapshot, Some(&baseline));
-        assert_eq!(
-            lines[1],
-            "#1 · Run 1 · status finished · step 1 · value 1.000000(-1.000000) · Complete"
-        );
-        assert_eq!(
-            lines[2],
-            "#2 · Run 2 · status finished · step 1 · value 2.000000 · Baseline · Complete"
-        );
         let rows = ranking_table_rows(&snapshot, Some(&baseline));
         assert_eq!(
             rows.iter()
@@ -4368,7 +4261,7 @@ mod tests {
             [
                 ["#1", "Run 1", "Candidate", "-1.000000"],
                 ["#2", "Run 2", "Baseline", "—"],
-                ["#1", "Run 3", "Candidate", "+1.000000"],
+                ["#1", "Run 3", "Candidate", "—"],
             ]
         );
     }
