@@ -58,6 +58,7 @@ impl ViewerApp {
 
     pub(super) fn render_converged_project_sidebar(
         &mut self,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
@@ -94,7 +95,7 @@ impl ViewerApp {
             .filter(|project| project.placement == ProjectPlacement::Pinned)
             .cloned()
         {
-            resources = resources.child(self.render_sidebar_project(project, &query, cx));
+            resources = resources.child(self.render_sidebar_project(project, &query, window, cx));
         }
         for (index, run) in pinned_runs.iter().take(pinned_limit).cloned().enumerate() {
             resources =
@@ -141,7 +142,7 @@ impl ViewerApp {
             .filter(|project| project.placement == ProjectPlacement::Projects)
             .cloned()
         {
-            resources = resources.child(self.render_sidebar_project(project, &query, cx));
+            resources = resources.child(self.render_sidebar_project(project, &query, window, cx));
         }
 
         resources = resources.child(sidebar_group_label("Archived", theme));
@@ -149,7 +150,7 @@ impl ViewerApp {
             .into_iter()
             .filter(|project| project.placement == ProjectPlacement::Archived)
         {
-            resources = resources.child(self.render_sidebar_project(project, &query, cx));
+            resources = resources.child(self.render_sidebar_project(project, &query, window, cx));
         }
         for (index, run) in archived_runs
             .iter()
@@ -240,6 +241,7 @@ impl ViewerApp {
         &mut self,
         project: SidebarProject,
         query: &str,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         let theme = self.theme;
@@ -251,6 +253,12 @@ impl ViewerApp {
         let expanded = self.expanded_projects.contains(&expanded_key);
         let menu_open = self.project_menu.as_ref() == Some(&project_ref);
         let hovered = self.hovered_project.as_ref() == Some(&project_ref);
+        let project_focus = self
+            .project_focuses
+            .entry(project_ref.clone())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let focused = project_focus.is_focused(window);
         let project_matches = query.is_empty()
             || project.project.name.to_lowercase().contains(query)
             || project
@@ -333,6 +341,7 @@ impl ViewerApp {
                     move || format!("project-tree-row-{source_index}-{project_index}")
                 })
                 .key_context(SELECTABLE_CONTEXT)
+                .track_focus(&project_focus)
                 .tab_index(0)
                 .on_action(cx.listener(move |this, _: &ActivateSelection, _, cx| {
                     this.activate_tree_project(
@@ -389,7 +398,7 @@ impl ViewerApp {
                         .whitespace_nowrap()
                         .child(project_label),
                 )
-                .children((hovered || menu_open).then(|| {
+                .children((hovered || focused || menu_open).then(|| {
                     components::sidebar_icon_button(
                         SharedString::from(format!(
                             "project-menu:{}",
@@ -422,7 +431,7 @@ impl ViewerApp {
                     .offset(point(self.project_sidebar_width - px(12.), px(24.)))
                     .child(self.render_project_menu(project.clone(), cx)),
             ));
-        } else if hovered {
+        } else if hovered || focused {
             tree = tree.child(deferred(
                 anchored()
                     .anchor(Corner::TopLeft)

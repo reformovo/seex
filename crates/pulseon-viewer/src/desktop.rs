@@ -280,6 +280,7 @@ struct ViewerApp {
     run_list: RunListCache,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
     removed_projects: HashSet<ProjectRef>,
+    project_focuses: HashMap<ProjectRef, FocusHandle>,
     project_menu: Option<ProjectRef>,
     hovered_project: Option<ProjectRef>,
     hovered_run: Option<RunRef>,
@@ -342,6 +343,7 @@ impl ViewerApp {
             run_list: RunListCache::default(),
             expanded_projects: HashSet::new(),
             removed_projects: HashSet::new(),
+            project_focuses: HashMap::new(),
             project_menu: None,
             hovered_project: None,
             hovered_run: None,
@@ -1178,6 +1180,8 @@ impl ViewerApp {
         self.event_tasks.remove(source_id);
         self.expanded_projects
             .retain(|(selected_source, _)| selected_source != source_id);
+        self.project_focuses
+            .retain(|project, _| &project.source_id != source_id);
         self.views.remove_source(source_id);
         self.source_menu = None;
         if active {
@@ -1387,6 +1391,7 @@ impl ViewerApp {
 
     fn remove_project(&mut self, project: ProjectRef, cx: &mut Context<Self>) {
         self.removed_projects.insert(project.clone());
+        self.project_focuses.remove(&project);
         self.views.unpin_project(&project);
         self.views.restore_project(&project);
         self.project_menu = None;
@@ -1624,8 +1629,12 @@ impl ViewerApp {
         cx.notify();
     }
 
-    fn render_project_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        self.render_converged_project_sidebar(cx)
+    fn render_project_sidebar(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.render_converged_project_sidebar(window, cx)
     }
 
     fn render_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
@@ -3910,7 +3919,7 @@ impl Render for ViewerApp {
                     .overflow_hidden()
                     .children(
                         self.project_sidebar_visible
-                            .then(|| self.render_project_sidebar(cx)),
+                            .then(|| self.render_project_sidebar(window, cx)),
                     )
                     .child(
                         div()
@@ -5222,6 +5231,8 @@ mod tests {
                 .expect("first Project row should be rendered");
             cx.simulate_click(project.center(), Modifiers::default());
             cx.run_until_parked();
+            assert!(cx.debug_bounds("project-information-project").is_some());
+            assert!(cx.debug_bounds("project-menu-project").is_some());
             let before = window
                 .read_with(&cx, |viewer, _| viewer.next_generation)
                 .expect("viewer should remain open");
