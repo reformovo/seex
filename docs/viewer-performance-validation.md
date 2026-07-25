@@ -3,7 +3,7 @@
 ## Measurement Record
 
 - Date: 2026-07-26
-- Implementation commit: `9cc2725`, plus this validation record update
+- Implementation commit: `3e2be8d`, plus this validation record update
 - Platform: macOS 26.3 (25D125), arm64, Apple M4 Pro
 - Rust: 1.97.1
 - uv: 0.8.12
@@ -60,10 +60,10 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Brush resize | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush pan | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush zoom | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
-| Cached path preparation | 200 | 0.661 ms | 0.736 ms | 0.780 ms |
-| Uncached path preparation | 200 | 6.826 ms | 7.110 ms | 7.216 ms |
-| Hit testing | 200 | 0.200 ms | 0.219 ms | 1.517 ms |
-| Ruler hover evidence | 1,000 | 0.002 ms | 0.002 ms | 0.002 ms |
+| Cached path preparation | 200 | 0.673 ms | 0.778 ms | 2.171 ms |
+| Uncached path preparation | 200 | 7.122 ms | 7.368 ms | 7.966 ms |
+| Hit testing | 200 | 0.200 ms | 0.216 ms | 0.272 ms |
+| Ruler hover evidence | 1,000 | 0.002 ms | 0.002 ms | 0.016 ms |
 
 After the converged renderer was integrated, an initial run failed the
 unchanged uncached-path gate at p95 9.018 ms and maximum 23.815 ms. A local
@@ -152,6 +152,11 @@ The multi-project workbench contract is covered by direct behavioral tests:
   the converged shell in a newly created empty View, Baseline/Pinned immunity
   from Project batch visibility, exact brush/ruler/track horizontal geometry,
   compact-row plot height, and distinct logical versus physical plot widths.
+- completion-audit regressions cover persisted Removed Project placement and
+  cross-View cleanup, 8 px window containment for rich popovers, keyboard-only
+  Run action exposure with stable icon widths, panel-generation cancellation
+  when Views deactivate, and the distinction between Project-name pagination
+  and Run-only search results.
 
 ## Zed Reference Audit
 
@@ -217,7 +222,7 @@ teardown is not part of ordinary debug test runs.
 
 ## Verification
 
-Passed against implementation commit `9cc2725` on 2026-07-26:
+Passed against implementation commit `3e2be8d` on 2026-07-26:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -242,6 +247,7 @@ command passed, including 43 library tests, 53 binary tests with two ignored
 hardware gates, three native-pipeline tests, and doc tests. The serialized GPUI
 suite also passed throughout implementation. No assertion, storage worker, or
 viewer runtime failure was observed; the one teardown fault was not reproduced.
+The latest full test-support run also passed without the teardown fault.
 
 The retained six-metric trace fixture is 89 MiB. At the time of the automated
 gate, `system_profiler` reported two connected Mi Monitor displays at
