@@ -15,7 +15,7 @@ impl ViewerApp {
             for (project_index, project) in source.catalog.projects.iter().enumerate() {
                 let project_ref =
                     ProjectRef::new(source.source_id.clone(), project.project_id.clone());
-                if self.removed_projects.contains(&project_ref) {
+                if self.views.removed_projects().contains(&project_ref) {
                     continue;
                 }
                 let placement = if self.views.archived_projects().contains(&project_ref) {

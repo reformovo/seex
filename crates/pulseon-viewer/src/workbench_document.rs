@@ -16,6 +16,7 @@ pub struct WorkbenchDocument {
     pub sources: Vec<PathBuf>,
     pub pinned_projects: Vec<SavedProjectRef>,
     pub archived_projects: Vec<SavedProjectRef>,
+    pub removed_projects: Vec<SavedProjectRef>,
     pub archived_runs: Vec<SavedRunRef>,
     pub views: Vec<SavedAnalysisView>,
     pub active_view: usize,
@@ -131,6 +132,9 @@ impl WorkbenchDocument {
         for project in &self.archived_projects {
             encode_project_record(&mut output, "archived-project", project);
         }
+        for project in &self.removed_projects {
+            encode_project_record(&mut output, "removed-project", project);
+        }
         for run in &self.archived_runs {
             encode_run_record(&mut output, "archived-run", run);
         }
@@ -186,6 +190,7 @@ impl WorkbenchDocument {
             sources: Vec::new(),
             pinned_projects: Vec::new(),
             archived_projects: Vec::new(),
+            removed_projects: Vec::new(),
             archived_runs: Vec::new(),
             views: Vec::new(),
             active_view: 0,
@@ -294,6 +299,9 @@ impl WorkbenchDocument {
                     .push(decode_project_ref(source, project, line_number)?),
                 ["archived-project", source, project] => document
                     .archived_projects
+                    .push(decode_project_ref(source, project, line_number)?),
+                ["removed-project", source, project] => document
+                    .removed_projects
                     .push(decode_project_ref(source, project, line_number)?),
                 ["metric", metric] => current
                     .as_mut()
@@ -463,6 +471,10 @@ mod tests {
                 source_path: PathBuf::from("/tmp/archive"),
                 project_id: ProjectId::from_string("archived-project"),
             }],
+            removed_projects: vec![SavedProjectRef {
+                source_path: PathBuf::from("/tmp/removed"),
+                project_id: ProjectId::from_string("removed-project"),
+            }],
             archived_runs: vec![run("archived-run")],
             views: vec![SavedAnalysisView {
                 name: "Loss / Accuracy".to_owned(),
@@ -529,6 +541,7 @@ mod tests {
 
         assert!(document.pinned_projects.is_empty());
         assert!(document.archived_projects.is_empty());
+        assert!(document.removed_projects.is_empty());
         assert!(document.archived_runs.is_empty());
         assert!(document.views[0].baseline.is_none());
         assert!(document.views[0].pinned_runs.is_empty());

@@ -254,7 +254,6 @@ struct ViewerApp {
     run_filter: String,
     metric_filter: String,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
-    removed_projects: HashSet<ProjectRef>,
     project_focuses: HashMap<ProjectRef, FocusHandle>,
     project_menu: Option<ProjectRef>,
     hovered_project: Option<ProjectRef>,
@@ -312,7 +311,6 @@ impl ViewerApp {
             run_filter: String::new(),
             metric_filter: String::new(),
             expanded_projects: HashSet::new(),
-            removed_projects: HashSet::new(),
             project_focuses: HashMap::new(),
             project_menu: None,
             hovered_project: None,
@@ -1342,11 +1340,18 @@ impl ViewerApp {
     }
 
     fn remove_project(&mut self, project: ProjectRef, cx: &mut Context<Self>) {
-        self.removed_projects.insert(project.clone());
         self.project_focuses.remove(&project);
-        self.views.unpin_project(&project);
-        self.views.restore_project(&project);
+        self.views.remove_project(project.clone());
+        if self.core.selection().source_id.as_ref() == Some(&project.source_id)
+            && self.core.selection().project_id.as_ref() == Some(&project.project_id)
+        {
+            self.core.select_project(None);
+        }
+        self.sync_core_runs();
         self.project_menu = None;
+        self.refresh_catalog(cx);
+        self.request_overview(cx);
+        self.request_inspector(cx);
         cx.notify();
     }
 
@@ -3287,6 +3292,12 @@ impl ViewerApp {
                 .iter()
                 .map(&save_project)
                 .collect(),
+            removed_projects: self
+                .views
+                .removed_projects()
+                .iter()
+                .map(&save_project)
+                .collect(),
             archived_runs: self.views.archived_runs().iter().map(&save_run).collect(),
             views,
             active_view: active_index,
@@ -4048,6 +4059,7 @@ mod tests {
                 sources: vec![source_path.clone()],
                 pinned_projects: Vec::new(),
                 archived_projects: Vec::new(),
+                removed_projects: Vec::new(),
                 archived_runs: Vec::new(),
                 views: vec![SavedAnalysisView {
                     name: "Restored".to_owned(),
@@ -4211,6 +4223,10 @@ mod tests {
                         source_id.clone(),
                         ProjectId::from_string("archive"),
                     ));
+                    viewer.views.remove_project(ProjectRef::new(
+                        source_id.clone(),
+                        ProjectId::from_string("removed"),
+                    ));
                     viewer
                         .views
                         .set_active_baseline(Some(RunRef::new(
@@ -4255,6 +4271,7 @@ mod tests {
             assert!(loaded.views[0].metrics.is_empty());
             assert_eq!(loaded.pinned_projects.len(), 1);
             assert_eq!(loaded.archived_projects.len(), 1);
+            assert_eq!(loaded.removed_projects.len(), 1);
             assert_eq!(loaded.archived_runs.len(), 1);
             assert!(loaded.views[0].baseline.is_some());
             assert_eq!(loaded.views[0].pinned_runs.len(), 1);

@@ -46,6 +46,10 @@ impl ProjectRef {
             project_id,
         }
     }
+
+    fn contains_run(&self, run: &RunRef) -> bool {
+        self.source_id == run.source_id && self.project_id == run.project_id
+    }
 }
 
 #[derive(Clone)]
@@ -126,6 +130,7 @@ pub struct AnalysisViews {
     views: Vec<AnalysisView>,
     pinned_projects: Vec<ProjectRef>,
     archived_projects: Vec<ProjectRef>,
+    removed_projects: Vec<ProjectRef>,
     archived_runs: Vec<RunRef>,
     active_view_id: AnalysisViewId,
     next_id: u64,
@@ -153,6 +158,7 @@ impl Default for AnalysisViews {
             views: vec![view],
             pinned_projects: Vec::new(),
             archived_projects: Vec::new(),
+            removed_projects: Vec::new(),
             archived_runs: Vec::new(),
             next_id: 2,
         }
@@ -288,35 +294,40 @@ impl AnalysisViews {
         }
         let active_view_id = views[active].view_id.clone();
         let next_id = views.len() as u64 + 1;
-        (
-            Self {
-                views,
-                pinned_projects: document
-                    .pinned_projects
-                    .iter()
-                    .map(|project| {
-                        ProjectRef::new(
-                            DataSourceId::from_path(&project.source_path),
-                            project.project_id.clone(),
-                        )
-                    })
-                    .collect(),
-                archived_projects: document
-                    .archived_projects
-                    .iter()
-                    .map(|project| {
-                        ProjectRef::new(
-                            DataSourceId::from_path(&project.source_path),
-                            project.project_id.clone(),
-                        )
-                    })
-                    .collect(),
-                archived_runs: document.archived_runs.iter().map(saved_run_ref).collect(),
-                active_view_id,
-                next_id,
-            },
-            issues,
-        )
+        let mut restored = Self {
+            views,
+            pinned_projects: document
+                .pinned_projects
+                .iter()
+                .map(|project| {
+                    ProjectRef::new(
+                        DataSourceId::from_path(&project.source_path),
+                        project.project_id.clone(),
+                    )
+                })
+                .collect(),
+            archived_projects: document
+                .archived_projects
+                .iter()
+                .map(|project| {
+                    ProjectRef::new(
+                        DataSourceId::from_path(&project.source_path),
+                        project.project_id.clone(),
+                    )
+                })
+                .collect(),
+            removed_projects: Vec::new(),
+            archived_runs: document.archived_runs.iter().map(saved_run_ref).collect(),
+            active_view_id,
+            next_id,
+        };
+        for project in &document.removed_projects {
+            restored.remove_project(ProjectRef::new(
+                DataSourceId::from_path(&project.source_path),
+                project.project_id.clone(),
+            ));
+        }
+        (restored, issues)
     }
 
     pub fn views(&self) -> &[AnalysisView] {
@@ -329,6 +340,10 @@ impl AnalysisViews {
 
     pub fn archived_projects(&self) -> &[ProjectRef] {
         &self.archived_projects
+    }
+
+    pub fn removed_projects(&self) -> &[ProjectRef] {
+        &self.removed_projects
     }
 
     pub fn archived_runs(&self) -> &[RunRef] {
@@ -512,6 +527,40 @@ impl AnalysisViews {
 
     pub fn restore_project(&mut self, project: &ProjectRef) {
         self.archived_projects.retain(|item| item != project);
+    }
+
+    pub fn remove_project(&mut self, project: ProjectRef) {
+        self.pinned_projects.retain(|item| item != &project);
+        self.archived_projects.retain(|item| item != &project);
+        self.archived_runs.retain(|run| !project.contains_run(run));
+        for view in &mut self.views {
+            let removed = view
+                .runs
+                .iter()
+                .filter(|run| project.contains_run(run))
+                .cloned()
+                .collect::<Vec<_>>();
+            for run in &removed {
+                if view.core.selection().runs.contains(run) {
+                    let _ = view.core.toggle_run(run.clone());
+                }
+            }
+            view.runs.retain(|run| !project.contains_run(run));
+            view.pinned_runs.retain(|run| !project.contains_run(run));
+            if view
+                .baseline
+                .as_ref()
+                .is_some_and(|run| project.contains_run(run))
+            {
+                view.baseline = None;
+            }
+            if !removed.is_empty() {
+                invalidate_view_panels(view);
+            }
+        }
+        if !self.removed_projects.contains(&project) {
+            self.removed_projects.push(project);
+        }
     }
 
     pub fn archive_run(&mut self, run: RunRef) {
@@ -796,6 +845,8 @@ impl AnalysisViews {
             .retain(|project| &project.source_id != source_id);
         self.archived_projects
             .retain(|project| &project.source_id != source_id);
+        self.removed_projects
+            .retain(|project| &project.source_id != source_id);
         self.archived_runs.retain(|run| &run.source_id != source_id);
     }
 
@@ -819,6 +870,21 @@ impl AnalysisViews {
         let view_id = AnalysisViewId::from_string(format!("view-{}", self.next_id));
         self.next_id = self.next_id.saturating_add(1);
         view_id
+    }
+}
+
+fn invalidate_view_panels(view: &mut AnalysisView) {
+    view.timeline_extents.clear();
+    for panel in &mut view.panels {
+        panel.overview = None;
+        panel.detail = None;
+        panel.source_errors.clear();
+        panel.overview_generation = None;
+        panel.detail_generation = None;
+        panel.requested_detail_viewport = None;
+        panel.inspector = None;
+        panel.inspector_generation = None;
+        panel.inspector_errors.clear();
     }
 }
 
@@ -973,6 +1039,7 @@ mod tests {
                 project_id: ProjectId::from_string("project"),
             }],
             archived_projects: Vec::new(),
+            removed_projects: Vec::new(),
             archived_runs: Vec::new(),
             views: vec![SavedAnalysisView {
                 name: "Duplicates".to_owned(),
@@ -1016,6 +1083,7 @@ mod tests {
             sources: vec!["/tmp/source-a".into(), "/tmp/source-b".into()],
             pinned_projects: vec![saved_project("/tmp/source-a")],
             archived_projects: vec![saved_project("/tmp/source-b")],
+            removed_projects: Vec::new(),
             archived_runs: Vec::new(),
             views: Vec::new(),
             active_view: 0,
@@ -1070,6 +1138,55 @@ mod tests {
         assert_eq!(views.archived_runs(), std::slice::from_ref(&archived));
         views.restore_run(&archived);
         assert!(views.active().runs.contains(&archived));
+    }
+
+    #[test]
+    fn removed_projects_clear_every_view_without_touching_other_projects() {
+        let mut views = AnalysisViews::default();
+        let project = ProjectRef::new(
+            DataSourceId::from_string("source"),
+            ProjectId::from_string("removed"),
+        );
+        let run = |name: &str| {
+            RunRef::new(
+                project.source_id.clone(),
+                project.project_id.clone(),
+                RunId::from_string(name),
+            )
+        };
+        views
+            .set_active_baseline(Some(run("baseline")))
+            .expect("baseline should fit the visible Run limit");
+        views
+            .toggle_active_pinned_run(run("pinned"))
+            .expect("pinned Run should fit the visible Run limit");
+        views.archive_run(run("archived"));
+        views.pin_project(project.clone());
+        views.create_empty();
+        views
+            .toggle_active_run(run("second-view"))
+            .expect("second View Run should fit");
+        let retained = RunRef::new(
+            project.source_id.clone(),
+            ProjectId::from_string("retained"),
+            RunId::from_string("retained"),
+        );
+        views
+            .toggle_active_run(retained.clone())
+            .expect("other Project Run should fit");
+
+        views.remove_project(project.clone());
+
+        assert_eq!(views.removed_projects(), std::slice::from_ref(&project));
+        assert!(views.pinned_projects().is_empty());
+        assert!(views.archived_projects().is_empty());
+        assert!(views.archived_runs().is_empty());
+        assert!(views.views().iter().all(|view| {
+            view.baseline.is_none()
+                && view.pinned_runs.is_empty()
+                && view.runs.iter().all(|run| !project.contains_run(run))
+        }));
+        assert!(views.active().runs.contains(&retained));
     }
 
     #[test]
