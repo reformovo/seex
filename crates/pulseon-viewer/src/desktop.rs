@@ -2846,11 +2846,24 @@ impl ViewerApp {
         let locked_cursor = self.locked_cursor;
         let baseline = self.views.active().baseline.clone();
         let hover = self.track_hovers.get(&panel_id).cloned();
-        let delta = hover.as_ref().and_then(|hover| {
-            baseline
-                .as_ref()
-                .and_then(|baseline| baseline_delta(panel, baseline, hover))
-        });
+        let callouts = hover.map_or_else(
+            || {
+                self.ruler_hover.map_or_else(Vec::new, |axis| {
+                    adapter.borrow().points_at_axis(&snapshot, viewport, axis)
+                })
+            },
+            |hover| vec![hover],
+        );
+        let callouts = callouts
+            .into_iter()
+            .map(|hover| {
+                let delta = baseline
+                    .as_ref()
+                    .and_then(|baseline| baseline_delta(panel, baseline, &hover));
+                (hover, delta)
+            })
+            .collect::<Vec<_>>();
+        let callout_panel = panel_id.clone();
         div()
             .relative()
             .size_full()
@@ -2897,13 +2910,36 @@ impl ViewerApp {
                         }
                     })),
             )
-            .children(hover.as_ref().map(|hover| {
+            .children(callouts.into_iter().map(move |(hover, delta)| {
+                let x = theme.spacing.content_padding + hover.canvas_position.x;
+                let y = theme.spacing.content_padding + hover.canvas_position.y;
+                let left = if hover.align_left {
+                    (x - px(112.)).max(px(0.))
+                } else {
+                    x + px(8.)
+                };
                 components::tooltip(theme)
+                    .id(SharedString::from(format!(
+                        "track-hover-callout:{}:{}",
+                        callout_panel.as_str(),
+                        hover.run_ref.cache_key()
+                    )))
+                    .debug_selector(|| "track-hover-callout".to_owned())
                     .absolute()
-                    .top_2()
-                    .left_2()
-                    .child(format!("{} · {}", hover.run_name, hover.metric_key))
-                    .child(hover_value_line(self.core.axis(), hover, delta))
+                    .left(left)
+                    .top((y - px(12.)).max(px(0.)))
+                    .w(px(104.))
+                    .px_2()
+                    .py_1()
+                    .whitespace_nowrap()
+                    .child(
+                        renderer::callout_pointer(hover.align_left)
+                            .absolute()
+                            .top(px(6.))
+                            .when(hover.align_left, |pointer| pointer.right(px(-8.)))
+                            .when(!hover.align_left, |pointer| pointer.left(px(-8.))),
+                    )
+                    .child(hover_value_label(&hover, delta))
             }))
     }
 
@@ -3868,10 +3904,7 @@ fn format_axis_tick(axis: CurveAxis, value: f64) -> String {
 }
 
 fn hover_value_line(axis: AlignmentAxis, hover: &HoverPoint, delta: Option<f64>) -> String {
-    let value = delta.map_or_else(
-        || format!("{:.2}", hover.value),
-        |delta| format!("{:.2}({delta:+.2})", hover.value),
-    );
+    let value = hover_value_label(hover, delta);
     match axis {
         AlignmentAxis::Step => format!("{} · {value}", hover.axis_value),
         AlignmentAxis::ElapsedTime => format!(
@@ -3879,6 +3912,13 @@ fn hover_value_line(axis: AlignmentAxis, hover: &HoverPoint, delta: Option<f64>)
             format_axis_tick(CurveAxis::AbsoluteTime, hover.axis_value as f64),
         ),
     }
+}
+
+fn hover_value_label(hover: &HoverPoint, delta: Option<f64>) -> String {
+    delta.map_or_else(
+        || format!("{:.2}", hover.value),
+        |delta| format!("{:.2}({delta:+.2})", hover.value),
+    )
 }
 
 fn baseline_delta(panel: &MetricPanel, baseline: &RunRef, hover: &HoverPoint) -> Option<f64> {
@@ -3980,6 +4020,8 @@ mod tests {
             metric_key: "loss".to_owned(),
             axis_value: 2_904,
             value: 0.506,
+            canvas_position: point(px(10.), px(20.)),
+            align_left: false,
         };
 
         assert_eq!(
@@ -3994,6 +4036,7 @@ mod tests {
             hover_value_line(AlignmentAxis::Step, &hover, Some(0.55)),
             "2904 · 0.51(+0.55)"
         );
+        assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51(-0.55)");
     }
 
     #[test]
@@ -5167,6 +5210,7 @@ mod tests {
             cx.simulate_mouse_move(second, None, Modifiers::default());
 
             assert!(cx.debug_bounds("ruler-hover-tooltip").is_some());
+            assert!(cx.debug_bounds("track-hover-callout").is_some());
             window
                 .read_with(&cx, |viewer, _| {
                     assert_eq!(viewer.locked_cursor, Some(locked));

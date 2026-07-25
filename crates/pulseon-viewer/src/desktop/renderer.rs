@@ -3,6 +3,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use gpui::Styled;
 use gpui::{
     Bounds, ContentMask, Path, PathBuilder, Pixels, Point, Rgba, WindowAppearance, canvas, fill,
     point, px, size,
@@ -24,6 +25,8 @@ pub struct HoverPoint {
     pub metric_key: String,
     pub axis_value: i64,
     pub value: f64,
+    pub canvas_position: Point<Pixels>,
+    pub align_left: bool,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -210,10 +213,61 @@ impl ChartAdapter {
                     metric_key: aligned.point.metric_key.as_str().to_owned(),
                     axis_value: aligned.axis_value,
                     value: aligned.point.value_f64,
+                    canvas_position: point(px(hit.position.x as f32), px(hit.position.y as f32)),
+                    align_left: hit.position.x > canvas.width() * 0.72,
                 },
             ));
         }
         nearest.map(|(_, point)| point)
+    }
+
+    pub fn points_at_axis(
+        &self,
+        snapshot: &CurveSnapshot,
+        viewport: Viewport,
+        axis: f64,
+    ) -> Vec<HoverPoint> {
+        let Some(bounds) = self.detail_bounds else {
+            return Vec::new();
+        };
+        let Ok(x_scale) = LinearScale::new(viewport.x, 0., f64::from(bounds.size.width)) else {
+            return Vec::new();
+        };
+        let Ok(y_scale) = LinearScale::new(viewport.y, f64::from(bounds.size.height), 0.) else {
+            return Vec::new();
+        };
+        if axis < viewport.x.start() || axis > viewport.x.end() {
+            return Vec::new();
+        }
+        snapshot
+            .series
+            .iter()
+            .filter_map(|curve| {
+                let series = curve.chart_series.as_ref()?;
+                let points = series.points();
+                let after = points.partition_point(|point| point.x < axis);
+                let start = after.saturating_sub(1);
+                let end = after.saturating_add(1).min(points.len());
+                let point_index = (start..end).min_by(|left, right| {
+                    (points[*left].x - axis)
+                        .abs()
+                        .total_cmp(&(points[*right].x - axis).abs())
+                })?;
+                let aligned = curve.evidence.points.get(point_index)?;
+                Some(HoverPoint {
+                    run_ref: curve.run_ref.clone(),
+                    run_name: curve.run.name.clone(),
+                    metric_key: aligned.point.metric_key.as_str().to_owned(),
+                    axis_value: aligned.axis_value,
+                    value: aligned.point.value_f64,
+                    canvas_position: point(
+                        px(x_scale.map(axis) as f32),
+                        px(y_scale.map(aligned.point.value_f64) as f32),
+                    ),
+                    align_left: x_scale.map(axis) > f64::from(bounds.size.width) * 0.72,
+                })
+            })
+            .collect()
     }
 
     pub fn detail_axis_at(&self, range: AxisRange, cursor: Point<Pixels>) -> Option<f64> {
@@ -467,6 +521,31 @@ pub fn cursor_canvas(
             }
         },
     )
+}
+
+pub fn callout_pointer(points_right: bool) -> impl gpui::Styled + gpui::IntoElement {
+    canvas(
+        move |_, window, _| ViewerTheme::for_appearance(window.appearance()),
+        move |bounds, theme, window, _| {
+            let mut triangle = PathBuilder::fill();
+            let middle = bounds.origin.y + bounds.size.height / 2.;
+            if points_right {
+                triangle.move_to(bounds.origin);
+                triangle.line_to(point(bounds.origin.x, bounds.bottom()));
+                triangle.line_to(point(bounds.right(), middle));
+            } else {
+                triangle.move_to(point(bounds.right(), bounds.origin.y));
+                triangle.line_to(point(bounds.right(), bounds.bottom()));
+                triangle.line_to(point(bounds.origin.x, middle));
+            }
+            triangle.close();
+            if let Ok(path) = triangle.build() {
+                window.paint_path(path, theme.colors.tooltip_background);
+            }
+        },
+    )
+    .w(px(8.))
+    .h(px(12.))
 }
 
 pub fn timeline_canvas(
@@ -807,6 +886,27 @@ mod tests {
             .expect("neighbor points should keep transient zoom drawable");
 
         assert_eq!(viewport.x, selected);
+    }
+
+    #[test]
+    fn ruler_hover_maps_each_curve_to_nearest_stored_evidence() {
+        let snapshot = synthetic_snapshot(2, 10);
+        let viewport = detail_viewport(&snapshot, None).expect("snapshot should be drawable");
+        let adapter = ChartAdapter {
+            detail_bounds: Some(Bounds::new(point(px(0.), px(0.)), size(px(90.), px(100.)))),
+            ..ChartAdapter::default()
+        };
+
+        let points = adapter.points_at_axis(&snapshot, viewport, 5.2);
+
+        assert_eq!(points.len(), 2);
+        assert!(points.iter().all(|point| point.axis_value == 5));
+        assert!(
+            points
+                .iter()
+                .all(|point| point.canvas_position.x == px(52.))
+        );
+        assert_ne!(points[0].canvas_position.y, points[1].canvas_position.y);
     }
 
     fn measure_cpu_budget(
