@@ -14,6 +14,9 @@ const HEADER: &str = "pulseon-workbench 1";
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchDocument {
     pub sources: Vec<PathBuf>,
+    pub pinned_projects: Vec<SavedProjectRef>,
+    pub archived_projects: Vec<SavedProjectRef>,
+    pub archived_runs: Vec<SavedRunRef>,
     pub views: Vec<SavedAnalysisView>,
     pub active_view: usize,
     pub project_sidebar_visible: bool,
@@ -27,6 +30,8 @@ pub struct WorkbenchDocument {
 pub struct SavedAnalysisView {
     pub name: String,
     pub runs: Vec<SavedRunRef>,
+    pub baseline: Option<SavedRunRef>,
+    pub pinned_runs: Vec<SavedRunRef>,
     pub metrics: Vec<String>,
     pub selected_metric: Option<String>,
     pub inspector_tab: InspectorTab,
@@ -34,6 +39,12 @@ pub struct SavedAnalysisView {
     pub axis: AlignmentAxis,
     pub track_density: TrackDensity,
     pub viewport: Option<AxisRange>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SavedProjectRef {
+    pub source_path: PathBuf,
+    pub project_id: ProjectId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +124,15 @@ impl WorkbenchDocument {
                 encode(source.to_string_lossy().as_ref())
             ));
         }
+        for project in &self.pinned_projects {
+            encode_project_record(&mut output, "pinned-project", project);
+        }
+        for project in &self.archived_projects {
+            encode_project_record(&mut output, "archived-project", project);
+        }
+        for run in &self.archived_runs {
+            encode_run_record(&mut output, "archived-run", run);
+        }
         for view in &self.views {
             let viewport = view.viewport.map_or_else(
                 || "- -".to_owned(),
@@ -130,12 +150,13 @@ impl WorkbenchDocument {
                     .map_or_else(|| "-".to_owned(), encode),
             ));
             for run in &view.runs {
-                output.push_str(&format!(
-                    "run {} {} {}\n",
-                    encode(run.source_path.to_string_lossy().as_ref()),
-                    encode(run.project_id.as_str()),
-                    encode(run.run_id.as_str())
-                ));
+                encode_run_record(&mut output, "run", run);
+            }
+            if let Some(baseline) = &view.baseline {
+                encode_run_record(&mut output, "baseline-run", baseline);
+            }
+            for run in &view.pinned_runs {
+                encode_run_record(&mut output, "pinned-run", run);
             }
             for metric in &view.metrics {
                 output.push_str(&format!("metric {}\n", encode(metric)));
@@ -155,6 +176,9 @@ impl WorkbenchDocument {
         }
         let mut document = Self {
             sources: Vec::new(),
+            pinned_projects: Vec::new(),
+            archived_projects: Vec::new(),
+            archived_runs: Vec::new(),
             views: Vec::new(),
             active_view: 0,
             project_sidebar_visible: true,
@@ -209,6 +233,8 @@ impl WorkbenchDocument {
                     current = Some(SavedAnalysisView {
                         name: decode(name, line_number)?,
                         runs: Vec::new(),
+                        baseline: None,
+                        pinned_runs: Vec::new(),
                         metrics: Vec::new(),
                         selected_metric: (*selected != "-")
                             .then(|| decode(selected, line_number))
@@ -239,6 +265,27 @@ impl WorkbenchDocument {
                         project_id: ProjectId::from_string(decode(project, line_number)?),
                         run_id: RunId::from_string(decode(run, line_number)?),
                     }),
+                ["baseline-run", source, project, run] => {
+                    let baseline = decode_run_ref(source, project, run, line_number)?;
+                    current
+                        .as_mut()
+                        .ok_or_else(|| invalid("baseline-run appears outside a view"))?
+                        .baseline = Some(baseline);
+                }
+                ["pinned-run", source, project, run] => current
+                    .as_mut()
+                    .ok_or_else(|| invalid("pinned-run appears outside a view"))?
+                    .pinned_runs
+                    .push(decode_run_ref(source, project, run, line_number)?),
+                ["archived-run", source, project, run] => document
+                    .archived_runs
+                    .push(decode_run_ref(source, project, run, line_number)?),
+                ["pinned-project", source, project] => document
+                    .pinned_projects
+                    .push(decode_project_ref(source, project, line_number)?),
+                ["archived-project", source, project] => document
+                    .archived_projects
+                    .push(decode_project_ref(source, project, line_number)?),
                 ["metric", metric] => current
                     .as_mut()
                     .ok_or_else(|| invalid("metric appears outside a view"))?
@@ -259,6 +306,48 @@ impl WorkbenchDocument {
         }
         Ok(document)
     }
+}
+
+fn encode_project_record(output: &mut String, kind: &str, project: &SavedProjectRef) {
+    output.push_str(&format!(
+        "{kind} {} {}\n",
+        encode(project.source_path.to_string_lossy().as_ref()),
+        encode(project.project_id.as_str()),
+    ));
+}
+
+fn encode_run_record(output: &mut String, kind: &str, run: &SavedRunRef) {
+    output.push_str(&format!(
+        "{kind} {} {} {}\n",
+        encode(run.source_path.to_string_lossy().as_ref()),
+        encode(run.project_id.as_str()),
+        encode(run.run_id.as_str()),
+    ));
+}
+
+fn decode_project_ref(
+    source: &str,
+    project: &str,
+    line: usize,
+) -> Result<SavedProjectRef, WorkbenchDocumentError> {
+    Ok(SavedProjectRef {
+        source_path: PathBuf::from(decode(source, line)?),
+        project_id: ProjectId::from_string(decode(project, line)?),
+    })
+}
+
+fn decode_run_ref(
+    source: &str,
+    project: &str,
+    run: &str,
+    line: usize,
+) -> Result<SavedRunRef, WorkbenchDocumentError> {
+    let project = decode_project_ref(source, project, line)?;
+    Ok(SavedRunRef {
+        source_path: project.source_path,
+        project_id: project.project_id,
+        run_id: RunId::from_string(decode(run, line)?),
+    })
 }
 
 fn encode(value: &str) -> String {
@@ -340,15 +429,29 @@ mod tests {
     use super::*;
 
     fn document() -> WorkbenchDocument {
+        let source_path = PathBuf::from("/tmp/project with spaces");
+        let project_id = ProjectId::from_string("project");
+        let run = |run_id: &str| SavedRunRef {
+            source_path: source_path.clone(),
+            project_id: project_id.clone(),
+            run_id: RunId::from_string(run_id),
+        };
         WorkbenchDocument {
-            sources: vec![PathBuf::from("/tmp/project with spaces")],
+            sources: vec![source_path.clone()],
+            pinned_projects: vec![SavedProjectRef {
+                source_path: source_path.clone(),
+                project_id: project_id.clone(),
+            }],
+            archived_projects: vec![SavedProjectRef {
+                source_path: PathBuf::from("/tmp/archive"),
+                project_id: ProjectId::from_string("archived-project"),
+            }],
+            archived_runs: vec![run("archived-run")],
             views: vec![SavedAnalysisView {
                 name: "Loss / Accuracy".to_owned(),
-                runs: vec![SavedRunRef {
-                    source_path: PathBuf::from("/tmp/project with spaces"),
-                    project_id: ProjectId::from_string("project"),
-                    run_id: RunId::from_string("run"),
-                }],
+                runs: vec![run("run")],
+                baseline: Some(run("baseline")),
+                pinned_runs: vec![run("pinned")],
                 metrics: vec!["loss".to_owned()],
                 selected_metric: Some("loss".to_owned()),
                 inspector_tab: InspectorTab::Evidence,
@@ -394,5 +497,22 @@ mod tests {
             error,
             WorkbenchDocumentError::UnsupportedVersion(_)
         ));
+    }
+
+    #[test]
+    fn original_v1_records_default_new_organization_state() {
+        let raw = "pulseon-workbench 1\n\
+                   dock 1 1134559232 0 0 1130102784\n\
+                   active 0\n\
+                   view 566965772031 step comfortable summary none - - -\n\
+                   end\n";
+
+        let document = WorkbenchDocument::decode(raw).expect("original v1 document should load");
+
+        assert!(document.pinned_projects.is_empty());
+        assert!(document.archived_projects.is_empty());
+        assert!(document.archived_runs.is_empty());
+        assert!(document.views[0].baseline.is_none());
+        assert!(document.views[0].pinned_runs.is_empty());
     }
 }

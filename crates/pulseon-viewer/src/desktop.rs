@@ -28,8 +28,12 @@ use pulseon_viewer::core::{
 use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
 use pulseon_viewer::query::InspectorSnapshot;
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
-use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, TrackDensity};
-use pulseon_viewer::workbench_document::{SavedAnalysisView, SavedRunRef, WorkbenchDocument};
+use pulseon_viewer::workbench::{
+    AnalysisViews, InspectorTab, MetricPanel, ProjectRef, TrackDensity,
+};
+use pulseon_viewer::workbench_document::{
+    SavedAnalysisView, SavedProjectRef, SavedRunRef, WorkbenchDocument,
+};
 use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest};
 
 mod assets;
@@ -374,11 +378,20 @@ impl ViewerApp {
         self.metric_sidebar_compact = document.metric_sidebar_compact;
         self.bottom_inspector_height = px(document.bottom_inspector_height.clamp(120., 600.));
         let mut source_paths = document.sources.clone();
-        for path in document
-            .views
+        let referenced_paths = document
+            .pinned_projects
             .iter()
-            .flat_map(|view| view.runs.iter().map(|run| &run.source_path))
-        {
+            .chain(&document.archived_projects)
+            .map(|project| &project.source_path)
+            .chain(document.archived_runs.iter().map(|run| &run.source_path))
+            .chain(document.views.iter().flat_map(|view| {
+                view.runs
+                    .iter()
+                    .chain(&view.pinned_runs)
+                    .chain(view.baseline.iter())
+                    .map(|run| &run.source_path)
+            }));
+        for path in referenced_paths {
             if !source_paths.contains(path) {
                 source_paths.push(path.clone());
             }
@@ -3103,6 +3116,21 @@ impl ViewerApp {
     }
 
     fn workbench_document(&self) -> WorkbenchDocument {
+        let source_path = |source_id: &DataSourceId| {
+            self.sources.source(source_id).map_or_else(
+                || PathBuf::from(source_id.as_str()),
+                |source| source.root_path.clone(),
+            )
+        };
+        let save_project = |project: &ProjectRef| SavedProjectRef {
+            source_path: source_path(&project.source_id),
+            project_id: project.project_id.clone(),
+        };
+        let save_run = |run: &RunRef| SavedRunRef {
+            source_path: source_path(&run.source_id),
+            project_id: run.project_id.clone(),
+            run_id: run.run_id.clone(),
+        };
         let active_index = self.views.active_index();
         let views = self
             .views
@@ -3117,18 +3145,9 @@ impl ViewerApp {
                 };
                 SavedAnalysisView {
                     name: view.name.clone(),
-                    runs: view
-                        .runs
-                        .iter()
-                        .map(|run| SavedRunRef {
-                            source_path: self.sources.source(&run.source_id).map_or_else(
-                                || PathBuf::from(run.source_id.as_str()),
-                                |source| source.root_path.clone(),
-                            ),
-                            project_id: run.project_id.clone(),
-                            run_id: run.run_id.clone(),
-                        })
-                        .collect(),
+                    runs: view.runs.iter().map(&save_run).collect(),
+                    baseline: view.baseline.as_ref().map(&save_run),
+                    pinned_runs: view.pinned_runs.iter().map(&save_run).collect(),
                     metrics: view
                         .panels
                         .iter()
@@ -3155,6 +3174,19 @@ impl ViewerApp {
                 .sources()
                 .map(|source| source.root_path.clone())
                 .collect(),
+            pinned_projects: self
+                .views
+                .pinned_projects()
+                .iter()
+                .map(&save_project)
+                .collect(),
+            archived_projects: self
+                .views
+                .archived_projects()
+                .iter()
+                .map(&save_project)
+                .collect(),
+            archived_runs: self.views.archived_runs().iter().map(&save_run).collect(),
             views,
             active_view: active_index,
             project_sidebar_visible: self.project_sidebar_visible,
@@ -3883,6 +3915,9 @@ mod tests {
         ) -> WorkbenchDocument {
             WorkbenchDocument {
                 sources: vec![source_path.clone()],
+                pinned_projects: Vec::new(),
+                archived_projects: Vec::new(),
+                archived_runs: Vec::new(),
                 views: vec![SavedAnalysisView {
                     name: "Restored".to_owned(),
                     runs: runs
@@ -3893,6 +3928,8 @@ mod tests {
                             run_id,
                         })
                         .collect(),
+                    baseline: None,
+                    pinned_runs: Vec::new(),
                     metrics: vec![metric.to_owned()],
                     selected_metric: Some(metric.to_owned()),
                     inspector_tab: InspectorTab::Evidence,
@@ -4032,6 +4069,30 @@ mod tests {
                     viewer.project_sidebar_width = px(288.);
                     viewer.metric_sidebar_compact = true;
                     viewer.bottom_inspector_height = px(260.);
+                    let source_id = DataSourceId::from_path(root.path());
+                    let project_id = ProjectId::from_string("project");
+                    viewer
+                        .views
+                        .pin_project(ProjectRef::new(source_id.clone(), project_id.clone()));
+                    viewer.views.archive_project(ProjectRef::new(
+                        source_id.clone(),
+                        ProjectId::from_string("archive"),
+                    ));
+                    viewer.views.set_active_baseline(Some(RunRef::new(
+                        source_id.clone(),
+                        project_id.clone(),
+                        RunId::from_string("baseline"),
+                    )));
+                    viewer.views.toggle_active_pinned_run(RunRef::new(
+                        source_id.clone(),
+                        project_id.clone(),
+                        RunId::from_string("pinned"),
+                    ));
+                    viewer.views.archive_run(RunRef::new(
+                        source_id,
+                        project_id,
+                        RunId::from_string("archived"),
+                    ));
                     cx.notify();
                 })
                 .expect("viewer should remain open");
@@ -4053,6 +4114,11 @@ mod tests {
             assert_eq!(loaded.bottom_inspector_height, 260.);
             assert_eq!(loaded.views.len(), 1);
             assert!(loaded.views[0].metrics.is_empty());
+            assert_eq!(loaded.pinned_projects.len(), 1);
+            assert_eq!(loaded.archived_projects.len(), 1);
+            assert_eq!(loaded.archived_runs.len(), 1);
+            assert!(loaded.views[0].baseline.is_some());
+            assert_eq!(loaded.views[0].pinned_runs.len(), 1);
         }
 
         #[gpui::test]
@@ -4128,6 +4194,42 @@ mod tests {
                 .expect("missing source should remain listed");
             assert_eq!(status.0, missing);
             assert!(matches!(status.1, SourceStatus::Failed(_)));
+            assert!(!missing.exists());
+        }
+
+        #[gpui::test]
+        fn restored_organization_records_import_their_referenced_sources(cx: &mut TestAppContext) {
+            let root = tempfile::tempdir().expect("test directory should be created");
+            let missing = root.path().join("archived-source");
+            let mut document = saved_workbench(
+                missing.clone(),
+                ProjectId::from_string("project"),
+                Vec::new(),
+                "loss",
+            );
+            document.sources.clear();
+            document.views.clear();
+            document.archived_projects.push(SavedProjectRef {
+                source_path: missing.clone(),
+                project_id: ProjectId::from_string("project"),
+            });
+            let (window, mut cx) = open_viewer(cx, None);
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.restore_workbench(document, cx);
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer
+                        .sources
+                        .sources()
+                        .any(|source| source.root_path == missing))
+                    .expect("viewer should remain open")
+            );
             assert!(!missing.exists());
         }
 

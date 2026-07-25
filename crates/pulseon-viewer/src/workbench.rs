@@ -31,6 +31,22 @@ pub enum InspectorTab {
     Evidence,
 }
 
+/// Collision-free viewer-local identity for a Project in an imported source.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ProjectRef {
+    pub source_id: DataSourceId,
+    pub project_id: ProjectId,
+}
+
+impl ProjectRef {
+    pub const fn new(source_id: DataSourceId, project_id: ProjectId) -> Self {
+        Self {
+            source_id,
+            project_id,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct MetricPanel {
     pub panel_id: MetricPanelId,
@@ -91,6 +107,8 @@ pub struct AnalysisView {
     pub view_id: AnalysisViewId,
     pub name: String,
     pub runs: Vec<RunRef>,
+    pub baseline: Option<RunRef>,
+    pub pinned_runs: Vec<RunRef>,
     pub panels: Vec<MetricPanel>,
     pub selected_panel_id: Option<MetricPanelId>,
     pub inspector_tab: InspectorTab,
@@ -105,6 +123,9 @@ pub struct AnalysisView {
 
 pub struct AnalysisViews {
     views: Vec<AnalysisView>,
+    pinned_projects: Vec<ProjectRef>,
+    archived_projects: Vec<ProjectRef>,
+    archived_runs: Vec<RunRef>,
     active_view_id: AnalysisViewId,
     next_id: u64,
 }
@@ -115,6 +136,8 @@ impl Default for AnalysisViews {
             view_id: AnalysisViewId::from_string("view-1"),
             name: "View 1".to_owned(),
             runs: Vec::new(),
+            baseline: None,
+            pinned_runs: Vec::new(),
             panels: Vec::new(),
             selected_panel_id: None,
             inspector_tab: InspectorTab::default(),
@@ -129,6 +152,9 @@ impl Default for AnalysisViews {
         Self {
             active_view_id: view.view_id.clone(),
             views: vec![view],
+            pinned_projects: Vec::new(),
+            archived_projects: Vec::new(),
+            archived_runs: Vec::new(),
             next_id: 2,
         }
     }
@@ -161,6 +187,8 @@ impl AnalysisViews {
                     runs.push(run);
                 }
             }
+            let baseline = saved.baseline.as_ref().map(saved_run_ref);
+            let pinned_runs = saved.pinned_runs.iter().map(saved_run_ref).collect();
             let mut panels = Vec::new();
             for metric in &saved.metrics {
                 let metric_key = MetricKey::from_string(metric);
@@ -212,6 +240,8 @@ impl AnalysisViews {
                 view_id: AnalysisViewId::from_string(format!("view-{}", index + 1)),
                 name: saved.name.clone(),
                 runs,
+                baseline,
+                pinned_runs,
                 panels,
                 selected_panel_id,
                 inspector_tab: saved.inspector_tab,
@@ -225,7 +255,7 @@ impl AnalysisViews {
             });
         }
         if views.is_empty() {
-            return (Self::default(), issues);
+            views = Self::default().views;
         }
         let active = document.active_view.min(views.len() - 1);
         if active != document.active_view {
@@ -236,6 +266,27 @@ impl AnalysisViews {
         (
             Self {
                 views,
+                pinned_projects: document
+                    .pinned_projects
+                    .iter()
+                    .map(|project| {
+                        ProjectRef::new(
+                            DataSourceId::from_path(&project.source_path),
+                            project.project_id.clone(),
+                        )
+                    })
+                    .collect(),
+                archived_projects: document
+                    .archived_projects
+                    .iter()
+                    .map(|project| {
+                        ProjectRef::new(
+                            DataSourceId::from_path(&project.source_path),
+                            project.project_id.clone(),
+                        )
+                    })
+                    .collect(),
+                archived_runs: document.archived_runs.iter().map(saved_run_ref).collect(),
                 active_view_id,
                 next_id,
             },
@@ -245,6 +296,18 @@ impl AnalysisViews {
 
     pub fn views(&self) -> &[AnalysisView] {
         &self.views
+    }
+
+    pub fn pinned_projects(&self) -> &[ProjectRef] {
+        &self.pinned_projects
+    }
+
+    pub fn archived_projects(&self) -> &[ProjectRef] {
+        &self.archived_projects
+    }
+
+    pub fn archived_runs(&self) -> &[RunRef] {
+        &self.archived_runs
     }
 
     pub fn active_index(&self) -> usize {
@@ -274,6 +337,8 @@ impl AnalysisViews {
             view_id: view_id.clone(),
             name: format!("View {}", self.views.len() + 1),
             runs: Vec::new(),
+            baseline: None,
+            pinned_runs: Vec::new(),
             panels: Vec::new(),
             selected_panel_id: None,
             inspector_tab: InspectorTab::default(),
@@ -296,6 +361,8 @@ impl AnalysisViews {
             view_id: view_id.clone(),
             name: format!("{} Copy", active.name),
             runs: active.runs,
+            baseline: active.baseline,
+            pinned_runs: active.pinned_runs,
             panels: active.panels,
             selected_panel_id: active.selected_panel_id,
             inspector_tab: active.inspector_tab,
@@ -351,6 +418,66 @@ impl AnalysisViews {
         let selected = toggle_run_selection(&mut self.active_mut().runs, run)?;
         self.invalidate_active_panels();
         Ok(selected)
+    }
+
+    pub fn set_active_baseline(&mut self, baseline: Option<RunRef>) {
+        self.active_mut().baseline = baseline;
+        self.invalidate_active_panels();
+    }
+
+    pub fn toggle_active_pinned_run(&mut self, run: RunRef) -> bool {
+        let pinned = &mut self.active_mut().pinned_runs;
+        let added = if let Some(index) = pinned.iter().position(|candidate| candidate == &run) {
+            pinned.remove(index);
+            false
+        } else {
+            pinned.push(run);
+            true
+        };
+        self.invalidate_active_panels();
+        added
+    }
+
+    pub fn pin_project(&mut self, project: ProjectRef) {
+        self.archived_projects.retain(|item| item != &project);
+        if !self.pinned_projects.contains(&project) {
+            self.pinned_projects.push(project);
+        }
+    }
+
+    pub fn unpin_project(&mut self, project: &ProjectRef) {
+        self.pinned_projects.retain(|item| item != project);
+    }
+
+    pub fn archive_project(&mut self, project: ProjectRef) {
+        self.pinned_projects.retain(|item| item != &project);
+        if !self.archived_projects.contains(&project) {
+            self.archived_projects.push(project);
+        }
+    }
+
+    pub fn restore_project(&mut self, project: &ProjectRef) {
+        self.archived_projects.retain(|item| item != project);
+    }
+
+    pub fn archive_run(&mut self, run: RunRef) {
+        for view in &mut self.views {
+            view.runs.retain(|item| item != &run);
+            view.pinned_runs.retain(|item| item != &run);
+            if view.baseline.as_ref() == Some(&run) {
+                view.baseline = None;
+            }
+            if view.core.selection().runs.contains(&run) {
+                let _ = view.core.toggle_run(run.clone());
+            }
+        }
+        if !self.archived_runs.contains(&run) {
+            self.archived_runs.push(run);
+        }
+    }
+
+    pub fn restore_run(&mut self, run: &RunRef) {
+        self.archived_runs.retain(|item| item != run);
     }
 
     pub fn select_active_metric(&mut self, metric_key: MetricKey) -> MetricPanelId {
@@ -572,7 +699,19 @@ impl AnalysisViews {
         for view in &mut self.views {
             let previous = view.runs.len();
             view.runs.retain(|run| &run.source_id != source_id);
-            if view.runs.len() != previous {
+            let previous_pinned = view.pinned_runs.len();
+            view.pinned_runs.retain(|run| &run.source_id != source_id);
+            let removed_baseline = view
+                .baseline
+                .as_ref()
+                .is_some_and(|run| &run.source_id == source_id);
+            if removed_baseline {
+                view.baseline = None;
+            }
+            if view.runs.len() != previous
+                || view.pinned_runs.len() != previous_pinned
+                || removed_baseline
+            {
                 view.timeline_extents.clear();
                 for panel in &mut view.panels {
                     panel.overview = None;
@@ -587,6 +726,11 @@ impl AnalysisViews {
                 }
             }
         }
+        self.pinned_projects
+            .retain(|project| &project.source_id != source_id);
+        self.archived_projects
+            .retain(|project| &project.source_id != source_id);
+        self.archived_runs.retain(|run| &run.source_id != source_id);
     }
 
     fn invalidate_active_panels(&mut self) {
@@ -612,12 +756,20 @@ impl AnalysisViews {
     }
 }
 
+fn saved_run_ref(saved: &crate::workbench_document::SavedRunRef) -> RunRef {
+    RunRef::new(
+        DataSourceId::from_path(&saved.source_path),
+        saved.project_id.clone(),
+        saved.run_id.clone(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use pulseon_chart_core::AxisRange;
     use pulseon_model::alignment::AlignmentAxis;
 
-    use crate::workbench_document::{SavedAnalysisView, SavedRunRef};
+    use crate::workbench_document::{SavedAnalysisView, SavedProjectRef, SavedRunRef};
 
     use super::*;
 
@@ -643,6 +795,13 @@ mod tests {
         views
             .toggle_active_run(run)
             .expect("first Run should be selected");
+        let baseline = RunRef::new(
+            DataSourceId::from_string("source"),
+            ProjectId::from_string("project"),
+            RunId::from_string("baseline"),
+        );
+        views.set_active_baseline(Some(baseline.clone()));
+        assert!(views.toggle_active_pinned_run(baseline));
         views.select_active_metric(MetricKey::from_string("loss"));
         views
             .active_mut()
@@ -651,6 +810,8 @@ mod tests {
 
         let duplicate = views.duplicate_active();
         views.active_mut().runs.clear();
+        views.active_mut().baseline = None;
+        views.active_mut().pinned_runs.clear();
         views.active_mut().panels.clear();
         views
             .active_mut()
@@ -659,6 +820,8 @@ mod tests {
         assert!(views.activate(&AnalysisViewId::from_string("view-1")));
 
         assert_eq!(views.active().runs.len(), 1);
+        assert!(views.active().baseline.is_some());
+        assert_eq!(views.active().pinned_runs.len(), 1);
         assert_eq!(
             views
                 .active()
@@ -674,6 +837,8 @@ mod tests {
         );
         assert!(views.activate(&duplicate));
         assert!(views.active().runs.is_empty());
+        assert!(views.active().baseline.is_none());
+        assert!(views.active().pinned_runs.is_empty());
         assert!(views.active().panels.is_empty());
         assert_eq!(
             views.active().core.axis(),
@@ -710,9 +875,17 @@ mod tests {
         };
         let document = WorkbenchDocument {
             sources: vec![saved_run.source_path.clone()],
+            pinned_projects: vec![SavedProjectRef {
+                source_path: saved_run.source_path.clone(),
+                project_id: ProjectId::from_string("project"),
+            }],
+            archived_projects: Vec::new(),
+            archived_runs: Vec::new(),
             views: vec![SavedAnalysisView {
                 name: "Duplicates".to_owned(),
                 runs: vec![saved_run.clone(), saved_run],
+                baseline: None,
+                pinned_runs: Vec::new(),
                 metrics: vec!["loss".to_owned(), "loss".to_owned()],
                 selected_metric: Some("unknown".to_owned()),
                 inspector_tab: InspectorTab::Summary,
@@ -733,8 +906,63 @@ mod tests {
 
         assert_eq!(views.active().runs.len(), 1);
         assert_eq!(views.active().panels.len(), 1);
+        assert_eq!(views.pinned_projects().len(), 1);
         assert!(views.active().selected_panel_id.is_none());
         assert_eq!(issues.len(), 3);
+    }
+
+    #[test]
+    fn restored_organization_uses_composite_source_identities() {
+        let project_id = ProjectId::from_string("shared-project");
+        let saved_project = |source: &str| SavedProjectRef {
+            source_path: source.into(),
+            project_id: project_id.clone(),
+        };
+        let document = WorkbenchDocument {
+            sources: vec!["/tmp/source-a".into(), "/tmp/source-b".into()],
+            pinned_projects: vec![saved_project("/tmp/source-a")],
+            archived_projects: vec![saved_project("/tmp/source-b")],
+            archived_runs: Vec::new(),
+            views: Vec::new(),
+            active_view: 0,
+            project_sidebar_visible: true,
+            project_sidebar_width: 320.,
+            metric_sidebar_compact: false,
+            bottom_inspector_visible: false,
+            bottom_inspector_height: 220.,
+        };
+
+        let (views, issues) = AnalysisViews::restore(&document);
+
+        assert!(issues.is_empty());
+        assert_ne!(views.pinned_projects()[0], views.archived_projects()[0]);
+        assert_eq!(views.pinned_projects()[0].project_id, project_id);
+    }
+
+    #[test]
+    fn view_organization_is_local_while_archived_runs_are_shared() {
+        let mut views = AnalysisViews::default();
+        let run = |name: &str| {
+            RunRef::new(
+                DataSourceId::from_string("source"),
+                ProjectId::from_string("project"),
+                RunId::from_string(name),
+            )
+        };
+        views.set_active_baseline(Some(run("baseline")));
+        assert!(views.toggle_active_pinned_run(run("pinned")));
+        let first = views.active().view_id.clone();
+        let second = views.create_empty();
+
+        assert!(views.active().baseline.is_none());
+        assert!(views.active().pinned_runs.is_empty());
+        views.archive_run(run("archived"));
+        assert!(views.activate(&first));
+        assert_eq!(views.active().baseline.as_ref(), Some(&run("baseline")));
+        assert_eq!(views.active().pinned_runs, [run("pinned")]);
+        assert_eq!(views.archived_runs(), [run("archived")]);
+        assert!(views.activate(&second));
+        assert_eq!(views.archived_runs(), [run("archived")]);
     }
 
     #[test]
