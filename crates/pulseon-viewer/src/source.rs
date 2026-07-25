@@ -65,11 +65,16 @@ impl ReadSession {
                 .iter()
                 .any(|project| &project.project_id == *project_id)
         });
-        let mut runs = project_id.map_or_else(
-            || Ok(Vec::new()),
-            |project_id| self.connection.list_runs(project_id, None, None, 0),
-        )?;
-        runs.reverse();
+        let projects_to_load = project_id.map_or_else(
+            || projects.iter().map(|project| &project.project_id).collect(),
+            |project_id| vec![project_id],
+        );
+        let mut runs = Vec::new();
+        for project_id in projects_to_load {
+            let mut project_runs = self.connection.list_runs(project_id, None, None, 0)?;
+            project_runs.reverse();
+            runs.extend(project_runs);
+        }
         let mut requested = request.metric_runs.iter().cloned().collect::<HashSet<_>>();
         if let Some(project_id) = project_id {
             requested.extend(
@@ -215,6 +220,15 @@ mod tests {
                 .map(|key| key.as_str())
                 .collect::<Vec<_>>(),
             ["latency", "loss"]
+        );
+        let all_runs = session.discover(&DiscoveryRequest::default())?;
+        assert_eq!(
+            all_runs
+                .runs
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            ["run-2", "run-1", "run-3"]
         );
         Ok(())
     }

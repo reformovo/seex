@@ -206,13 +206,17 @@ fn merge_catalog(
     project_id: Option<&ProjectId>,
 ) {
     retained.projects.clone_from(&snapshot.projects);
-    retained.runs.retain(|run| {
-        snapshot
-            .projects
-            .iter()
-            .any(|project| project.project_id == run.project_id)
-            && project_id.is_none_or(|project_id| &run.project_id != project_id)
-    });
+    if let Some(project_id) = project_id {
+        retained.runs.retain(|run| {
+            snapshot
+                .projects
+                .iter()
+                .any(|project| project.project_id == run.project_id)
+                && &run.project_id != project_id
+        });
+    } else {
+        retained.runs.clear();
+    }
     retained.runs.extend(snapshot.runs.iter().cloned());
     retained.metric_keys.clone_from(&snapshot.metric_keys);
 }
@@ -382,6 +386,18 @@ mod tests {
                 .iter()
                 .any(|run| run.project_id == project.project_id)
         }));
+
+        let replacement = retained.runs[1].clone();
+        merge_catalog(
+            &mut retained,
+            &CatalogSnapshot {
+                projects,
+                runs: vec![replacement.clone()],
+                metric_keys: Vec::new(),
+            },
+            None,
+        );
+        assert_eq!(retained.runs, [replacement]);
     }
 
     #[test]

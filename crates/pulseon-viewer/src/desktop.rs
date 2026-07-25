@@ -1224,7 +1224,6 @@ impl ViewerApp {
 
     fn select_project(&mut self, project_id: ProjectId, cx: &mut Context<Self>) {
         self.core.select_project(Some(project_id));
-        self.run_filter.clear();
         self.refresh_catalog(cx);
         cx.notify();
     }
@@ -4675,6 +4674,55 @@ mod tests {
             });
 
             assert!(cx.debug_bounds("project-tree-run-0-0-11").is_some());
+        }
+
+        #[gpui::test]
+        fn project_filter_finds_runs_beyond_the_revealed_page(cx: &mut TestAppContext) {
+            let (root, _, _) = fixture_with_runs(0, 12);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.run_filter = "baseline 11".to_owned();
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            let folder = cx
+                .debug_bounds("project-folder-0-0")
+                .expect("matching Project should remain visible");
+
+            cx.simulate_click(folder.center(), Modifiers::default());
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .sources
+                    .sources()
+                    .next()
+                    .is_some_and(|source| source.catalog.runs.len() == 12)
+            });
+
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.run_filter.clone())
+                    .expect("viewer should remain open"),
+                "baseline 11"
+            );
+            assert!(cx.debug_bounds("project-tree-run-0-0-0").is_some());
+            assert!(cx.debug_bounds("project-tree-run-0-0-1").is_none());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer
+                        .sources
+                        .sources()
+                        .next()
+                        .is_some_and(|source| source
+                            .catalog
+                            .runs
+                            .iter()
+                            .any(|run| run.name == "baseline 11")))
+                    .expect("viewer should remain open")
+            );
+            assert!(cx.debug_bounds("show-more-0-0").is_none());
         }
 
         #[gpui::test]
