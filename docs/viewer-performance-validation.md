@@ -3,7 +3,7 @@
 ## Measurement Record
 
 - Date: 2026-07-25
-- Implementation commit: `d6f6fb7`, plus this validation record update
+- Implementation commit: `7228115`, plus this validation record update
 - Platform: macOS 26.3 (25D125), arm64, Apple M4 Pro
 - Rust: 1.97.1
 - uv: 0.8.12
@@ -60,10 +60,10 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Brush resize | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush pan | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush zoom | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
-| Cached path preparation | 200 | 0.669 ms | 0.768 ms | 0.820 ms |
-| Uncached path preparation | 200 | 6.882 ms | 7.155 ms | 7.233 ms |
-| Hit testing | 200 | 0.199 ms | 0.216 ms | 0.238 ms |
-| Ruler hover evidence | 1,000 | 0.002 ms | 0.002 ms | 0.015 ms |
+| Cached path preparation | 200 | 0.685 ms | 0.873 ms | 1.028 ms |
+| Uncached path preparation | 200 | 7.072 ms | 7.287 ms | 8.497 ms |
+| Hit testing | 200 | 0.200 ms | 0.342 ms | 1.266 ms |
+| Ruler hover evidence | 1,000 | 0.002 ms | 0.002 ms | 0.003 ms |
 
 After the converged renderer was integrated, an initial run failed the
 unchanged uncached-path gate at p95 9.018 ms and maximum 23.815 ms. A local
@@ -144,8 +144,9 @@ The multi-project workbench contract is covered by direct behavioral tests:
 - converged GPUI tests cover Project menu anchoring and real placement,
   five-item pagination, Metric candidate removal and independent resizing,
   compact single-line Run rows with fixed controls, shared-ruler pan/zoom
-  boundaries, simultaneous hover/locked cursors and evidence callouts,
-  baseline deltas, and the horizontally scrollable tabular Bottom inspector.
+  boundaries, simultaneous hover/locked cursors, dense evidence-callout
+  separation and full point context, baseline deltas, icon-control tooltips,
+  and narrow-window horizontal overflow of the tabular Bottom inspector.
 
 ## Zed Reference Audit
 
@@ -172,6 +173,9 @@ directly from theme roles and physical scaling is verified at the renderer
 boundary. The final audit tightened Metric tracks to the reference's 52–180 px
 range, adopted icon-only toolbar controls, made View close controls contextual,
 compacted Run rows, and converted the inspector to fixed table columns.
+The final audit also reduced the complete brush row to 40 logical pixels,
+removed redundant selected-range text, and added semantic text tooltips to
+icon-only controls without changing their compact geometry.
 
 ## Multi-Track Workbench Gate
 
@@ -208,7 +212,7 @@ teardown is not part of ordinary debug test runs.
 
 ## Verification
 
-Passed against implementation commit `d6f6fb7` on 2026-07-25:
+Passed against implementation commit `7228115` on 2026-07-25:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
