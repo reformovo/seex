@@ -84,8 +84,13 @@ impl ViewerApp {
 
         resources = resources.child(sidebar_group_label("Baseline", theme));
         if let Some(run) = baseline {
-            resources =
-                resources.child(self.render_sidebar_run(run, RunPlacement::Baseline, 0, cx));
+            resources = resources.child(self.render_sidebar_run(
+                run,
+                RunPlacement::Baseline,
+                0,
+                window,
+                cx,
+            ));
         }
 
         resources = resources.child(sidebar_group_label("Pinned", theme));
@@ -97,8 +102,13 @@ impl ViewerApp {
             resources = resources.child(self.render_sidebar_project(project, &query, window, cx));
         }
         for (index, run) in pinned_runs.iter().take(pinned_limit).cloned().enumerate() {
-            resources =
-                resources.child(self.render_sidebar_run(run, RunPlacement::Pinned, index, cx));
+            resources = resources.child(self.render_sidebar_run(
+                run,
+                RunPlacement::Pinned,
+                index,
+                window,
+                cx,
+            ));
         }
         if pinned_runs.len() > pinned_limit {
             let view_id = active_view.clone();
@@ -157,8 +167,13 @@ impl ViewerApp {
             .cloned()
             .enumerate()
         {
-            resources =
-                resources.child(self.render_sidebar_run(run, RunPlacement::Archived, index, cx));
+            resources = resources.child(self.render_sidebar_run(
+                run,
+                RunPlacement::Archived,
+                index,
+                window,
+                cx,
+            ));
         }
         if archived_runs.len() > archived_limit {
             resources = resources.child(
@@ -259,7 +274,7 @@ impl ViewerApp {
             .entry(project_ref.clone())
             .or_insert_with(|| cx.focus_handle().tab_stop(true))
             .clone();
-        let focused = project_focus.is_focused(window);
+        let focused = project_focus.contains_focused(window, cx);
         let project_matches = query.is_empty()
             || project.project.name.to_lowercase().contains(query)
             || project
@@ -470,7 +485,7 @@ impl ViewerApp {
                     let source_index = project.source_index;
                     let project_index = project.project_index;
                     tree = tree.child(
-                        self.render_sidebar_run(run_ref, RunPlacement::Projects, index, cx)
+                        self.render_sidebar_run(run_ref, RunPlacement::Projects, index, window, cx)
                             .debug_selector(move || {
                                 format!("project-tree-run-{source_index}-{project_index}-{index}")
                             }),
@@ -511,11 +526,19 @@ impl ViewerApp {
         run_ref: RunRef,
         placement: RunPlacement,
         index: usize,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
         let selected = self.views.active().runs.contains(&run_ref);
         let hovered = self.hovered_run.as_ref() == Some(&run_ref);
+        let run_focus = self
+            .run_focuses
+            .entry(run_ref.clone())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone();
+        let focused = run_focus.contains_focused(window, cx);
+        let active = hovered || focused;
         let (name, status) = self.sidebar_run(&run_ref).map_or_else(
             || (run_ref.run_id.as_str().to_owned(), "Unavailable".to_owned()),
             |run| (run.name, run_status(run.status).to_owned()),
@@ -541,6 +564,8 @@ impl ViewerApp {
             let run_ref = run_ref.clone();
             move || format!("project-tree-run-{}", run_ref.run_id.as_str())
         })
+        .track_focus(&run_focus)
+        .tab_index(0)
         .ml_5()
         .when(
             placement == RunPlacement::Projects && (selected || visible_count < MAX_SELECTED_RUNS),
@@ -593,7 +618,7 @@ impl ViewerApp {
                 .whitespace_nowrap()
                 .child(name),
         )
-        .children((!hovered).then(|| {
+        .children((!active).then(|| {
             div()
                 .debug_selector(move || format!("run-status-{index}"))
                 .flex_none()
@@ -601,7 +626,7 @@ impl ViewerApp {
                 .text_color(theme.colors.text_muted)
                 .child(status)
         }))
-        .children(hovered.then(|| {
+        .children(active.then(|| {
             div()
                 .debug_selector(move || format!("run-actions-{index}"))
                 .flex_none()

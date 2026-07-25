@@ -131,6 +131,7 @@ pub fn toolbar_button(
     disabled: bool,
 ) -> Stateful<Div> {
     focus_ring(id, theme)
+        .tab_index(if disabled { -1 } else { 0 })
         .h(theme.spacing.control_height)
         .px_3()
         .rounded(theme.spacing.corner_radius)
@@ -167,6 +168,7 @@ pub fn sidebar_icon_button(
     active: bool,
 ) -> Stateful<Div> {
     focus_ring(id, theme)
+        .tab_index(0)
         .size(theme.spacing.control_height)
         .flex_none()
         .rounded(theme.spacing.corner_radius)

@@ -255,6 +255,7 @@ struct ViewerApp {
     metric_filter: String,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
     project_focuses: HashMap<ProjectRef, FocusHandle>,
+    run_focuses: HashMap<RunRef, FocusHandle>,
     project_menu: Option<ProjectRef>,
     hovered_project: Option<ProjectRef>,
     hovered_run: Option<RunRef>,
@@ -312,6 +313,7 @@ impl ViewerApp {
             metric_filter: String::new(),
             expanded_projects: HashSet::new(),
             project_focuses: HashMap::new(),
+            run_focuses: HashMap::new(),
             project_menu: None,
             hovered_project: None,
             hovered_run: None,
@@ -1124,6 +1126,8 @@ impl ViewerApp {
             .retain(|(selected_source, _)| selected_source != source_id);
         self.project_focuses
             .retain(|project, _| &project.source_id != source_id);
+        self.run_focuses
+            .retain(|run, _| &run.source_id != source_id);
         self.views.remove_source(source_id);
         if active {
             self.core = ViewerCore::default();
@@ -1341,6 +1345,9 @@ impl ViewerApp {
 
     fn remove_project(&mut self, project: ProjectRef, cx: &mut Context<Self>) {
         self.project_focuses.remove(&project);
+        self.run_focuses.retain(|run, _| {
+            run.source_id != project.source_id || run.project_id != project.project_id
+        });
         self.views.remove_project(project.clone());
         if self.core.selection().source_id.as_ref() == Some(&project.source_id)
             && self.core.selection().project_id.as_ref() == Some(&project.project_id)
@@ -2485,8 +2492,9 @@ impl ViewerApp {
                             .tooltip(components::label_tooltip("Hide inspector", theme))
                             .flex_none()
                             .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 this.bottom_inspector_visible = false;
+                                this.focus.focus(window);
                                 cx.stop_propagation();
                                 cx.notify();
                             }))
@@ -4652,6 +4660,37 @@ mod tests {
             assert_eq!(
                 cx.debug_bounds("run-eye-0")
                     .expect("Run visibility control should keep its width")
+                    .size
+                    .width,
+                eye_width
+            );
+            let analysis_tab = cx
+                .debug_bounds("analysis-tab")
+                .expect("Analysis tab should render");
+            cx.simulate_mouse_move(analysis_tab.center(), None, Modifiers::default());
+            assert!(cx.debug_bounds("run-status-0").is_some());
+            window
+                .update(&mut cx, |viewer, window, cx| {
+                    let source = viewer.sources.sources().next().expect("source");
+                    let run = source.catalog.runs.first().expect("first Run");
+                    let run_ref = RunRef::new(
+                        source.source_id.clone(),
+                        run.project_id.clone(),
+                        run.run_id.clone(),
+                    );
+                    viewer
+                        .run_focuses
+                        .get(&run_ref)
+                        .expect("rendered Run should own focus")
+                        .focus(window);
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            assert!(cx.debug_bounds("run-status-0").is_none());
+            assert!(cx.debug_bounds("run-actions-0").is_some());
+            assert_eq!(
+                cx.debug_bounds("run-eye-0")
+                    .expect("focused Run eye should keep its width")
                     .size
                     .width,
                 eye_width
