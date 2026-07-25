@@ -2522,7 +2522,13 @@ impl ViewerApp {
                     ),
             )
             .child(
-                body.flex_1()
+                body.id("bottom-inspector-scroll")
+                    .debug_selector(|| "bottom-inspector-scroll".to_owned())
+                    .flex_1()
+                    .min_h(px(0.))
+                    .overflow_x_scroll()
+                    .overflow_y_scroll()
+                    .whitespace_nowrap()
                     .p(theme.spacing.content_padding)
                     .text_sm()
                     .text_color(theme.colors.text_muted),
@@ -5376,7 +5382,15 @@ mod tests {
                 .debug_bounds("metric-sidebar-row:loss")
                 .expect("Metric sidebar row should render");
             cx.simulate_click(metric_row.center(), Modifiers::default());
-            assert!(cx.debug_bounds("bottom-inspector").is_some());
+            let inspector = cx
+                .debug_bounds("bottom-inspector")
+                .expect("Bottom inspector should open");
+            let scroll = cx
+                .debug_bounds("bottom-inspector-scroll")
+                .expect("Inspector content should own a scroll viewport");
+            assert_eq!(scroll.origin.x, inspector.origin.x);
+            assert_eq!(scroll.size.width, inspector.size.width);
+            assert!(scroll.size.height < inspector.size.height);
             wait_for_viewer(window, &cx, |viewer| {
                 viewer.views.active().panels.first().is_some_and(|panel| {
                     panel.inspector.is_some() && !panel.is_pending(ReadKind::Inspector)
