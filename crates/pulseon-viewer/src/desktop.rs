@@ -10,7 +10,7 @@ use gpui::{
     ListAlignment, ListHorizontalSizingBehavior, ListState, Menu, MenuItem, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent,
     SharedString, SystemMenuType, Task, Window, WindowBounds, WindowOptions, actions, anchored,
-    deferred, div, list, point, prelude::*, px, size, uniform_list,
+    deferred, div, list, point, prelude::*, px, relative, size, uniform_list,
 };
 use pulseon_chart_core::{BrushState, CanvasSize};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
@@ -167,6 +167,7 @@ actions!(
         ToggleMetricSidebar,
         ToggleBottomInspector,
         ShowMetricInspector,
+        ClearLockedCursor,
         ZoomIn,
         ZoomOut,
         UseStep,
@@ -205,8 +206,10 @@ pub fn run(project_path: Option<PathBuf>) {
                 KeyBinding::new("cmd-j", ToggleBottomInspector, None),
                 KeyBinding::new("cmd-0", ResetView, None),
                 KeyBinding::new("cmd-=", ZoomIn, None),
+                KeyBinding::new("cmd-shift-=", ZoomIn, None),
                 KeyBinding::new("cmd-+", ZoomIn, None),
                 KeyBinding::new("cmd--", ZoomOut, None),
+                KeyBinding::new("escape", ClearLockedCursor, None),
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("enter", ActivateSelection, Some(SELECTABLE_CONTEXT)),
                 KeyBinding::new("space", ActivateSelection, Some(SELECTABLE_CONTEXT)),
@@ -1197,6 +1200,17 @@ impl ViewerApp {
 
     fn on_zoom_out(&mut self, _: &ZoomOut, _: &mut Window, cx: &mut Context<Self>) {
         self.zoom_from_keyboard(0.8, cx);
+    }
+
+    fn on_clear_locked_cursor(
+        &mut self,
+        _: &ClearLockedCursor,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.locked_cursor.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn zoom_from_keyboard(&mut self, factor: f64, cx: &mut Context<Self>) {
@@ -2212,15 +2226,27 @@ impl ViewerApp {
                             })),
                     )
             }))
-            .children(hover_axis.map(|value| {
+            .children(selected.zip(hover_axis).map(|(range, value)| {
+                let ratio = ((value - range.start()) / range.span()).clamp(0., 1.) as f32;
+                let offset = if ratio < 0.08 {
+                    px(0.)
+                } else if ratio > 0.92 {
+                    px(-64.)
+                } else {
+                    px(-32.)
+                };
                 components::tooltip(theme)
                     .id("ruler-hover-tooltip")
                     .debug_selector(|| "ruler-hover-tooltip".to_owned())
                     .absolute()
                     .top(px(2.))
-                    .left(px(8.))
+                    .left(relative(ratio))
+                    .ml(offset)
+                    .min_w(px(64.))
+                    .flex()
+                    .justify_center()
                     .py_0()
-                    .child(format_axis_tick(axis, value))
+                    .child(format_cursor_coordinate(axis, value))
             }))
     }
 
@@ -3709,6 +3735,7 @@ impl Render for ViewerApp {
             .on_action(cx.listener(Self::on_toggle_metric_sidebar))
             .on_action(cx.listener(Self::on_toggle_bottom_inspector))
             .on_action(cx.listener(Self::on_show_metric_inspector))
+            .on_action(cx.listener(Self::on_clear_locked_cursor))
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_step))
@@ -4015,7 +4042,35 @@ fn format_tick(value: f64) -> String {
 fn format_axis_tick(axis: CurveAxis, value: f64) -> String {
     match axis {
         CurveAxis::Step => format_tick(value),
-        CurveAxis::AbsoluteTime => format!("{:.3}s UTC", value / 1_000.),
+        CurveAxis::AbsoluteTime => format_utc_clock(value),
+    }
+}
+
+fn format_cursor_coordinate(axis: CurveAxis, value: f64) -> String {
+    match axis {
+        CurveAxis::Step if value.abs() >= 1_000_000. => format!("{:.1}M", value / 1_000_000.),
+        CurveAxis::Step if value.abs() >= 1_000. => format!("{:.0}k", value / 1_000.),
+        CurveAxis::Step => format_tick(value),
+        CurveAxis::AbsoluteTime => format_utc_clock(value),
+    }
+}
+
+fn format_utc_clock(value: f64) -> String {
+    if !value.is_finite() || value < i64::MIN as f64 || value > i64::MAX as f64 {
+        return "—".to_owned();
+    }
+    let millis = value.round() as i64;
+    let within_day = millis.rem_euclid(86_400_000);
+    let hour = within_day / 3_600_000;
+    let minute = within_day / 60_000 % 60;
+    let second = within_day / 1_000 % 60;
+    let millisecond = within_day % 1_000;
+    if second == 0 && millisecond == 0 {
+        format!("{hour:02}:{minute:02}")
+    } else if millisecond == 0 {
+        format!("{hour:02}:{minute:02}:{second:02}")
+    } else {
+        format!("{hour:02}:{minute:02}:{second:02}.{millisecond:03}")
     }
 }
 
@@ -4146,13 +4201,18 @@ mod tests {
         );
         assert_eq!(
             hover_value_line(AlignmentAxis::ElapsedTime, &hover, None),
-            "2.904s UTC · 0.51"
+            "00:00:02.904 · 0.51"
         );
         assert_eq!(
             hover_value_line(AlignmentAxis::Step, &hover, Some(0.55)),
             "2904 · 0.51(+0.55)"
         );
         assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51(-0.55)");
+        assert_eq!(format_cursor_coordinate(CurveAxis::Step, 496_000.), "496k");
+        assert_eq!(
+            format_cursor_coordinate(CurveAxis::AbsoluteTime, 34_920_000.),
+            "09:42"
+        );
     }
 
     #[test]
@@ -5346,12 +5406,24 @@ mod tests {
             let second = point(ruler.origin.x + ruler.size.width * 0.75, ruler.center().y);
             cx.simulate_mouse_move(second, None, Modifiers::default());
 
-            assert!(cx.debug_bounds("ruler-hover-tooltip").is_some());
+            let capsule = cx
+                .debug_bounds("ruler-hover-tooltip")
+                .expect("hover coordinate capsule should render");
+            assert!(f32::from(capsule.center().x - second.x).abs() < 40.);
             assert!(cx.debug_bounds("track-hover-callout").is_some());
             window
                 .read_with(&cx, |viewer, _| {
                     assert_eq!(viewer.locked_cursor, Some(locked));
                     assert!(viewer.ruler_hover.is_some_and(|hover| hover != locked));
+                })
+                .expect("viewer should remain open");
+
+            cx.dispatch_action(ClearLockedCursor);
+
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert!(viewer.locked_cursor.is_none());
+                    assert!(viewer.ruler_hover.is_some());
                 })
                 .expect("viewer should remain open");
         }
