@@ -682,18 +682,7 @@ impl ViewerApp {
     ) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
         let selected = self.views.active().runs.clone();
-        let project_runs = project
-            .runs
-            .iter()
-            .map(|run| {
-                RunRef::new(
-                    project.project_ref.source_id.clone(),
-                    run.project_id.clone(),
-                    run.run_id.clone(),
-                )
-            })
-            .filter(|run| !self.views.archived_runs().contains(run))
-            .collect::<Vec<_>>();
+        let project_runs = self.project_listing_runs(&project);
         let selected_count = project_runs
             .iter()
             .filter(|run| selected.contains(run))

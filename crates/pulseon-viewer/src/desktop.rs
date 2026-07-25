@@ -1382,9 +1382,11 @@ impl ViewerApp {
         cx.notify();
     }
 
-    fn toggle_project_runs(&mut self, project: &SidebarProject, cx: &mut Context<Self>) {
-        let archived = self.views.archived_runs().to_vec();
-        let movable = project
+    fn project_listing_runs(&self, project: &SidebarProject) -> Vec<RunRef> {
+        let baseline = self.views.active().baseline.as_ref();
+        let pinned = &self.views.active().pinned_runs;
+        let archived = self.views.archived_runs();
+        project
             .runs
             .iter()
             .map(|run| {
@@ -1394,8 +1396,12 @@ impl ViewerApp {
                     run.run_id.clone(),
                 )
             })
-            .filter(|run| !archived.contains(run))
-            .collect::<Vec<_>>();
+            .filter(|run| baseline != Some(run) && !pinned.contains(run) && !archived.contains(run))
+            .collect()
+    }
+
+    fn toggle_project_runs(&mut self, project: &SidebarProject, cx: &mut Context<Self>) {
+        let movable = self.project_listing_runs(project);
         let hide = movable
             .iter()
             .all(|run| self.views.active().runs.contains(run));
@@ -4723,6 +4729,54 @@ mod tests {
                     .expect("viewer should remain open")
             );
             assert!(cx.debug_bounds("show-more-0-0").is_none());
+        }
+
+        #[gpui::test]
+        fn project_visibility_keeps_baseline_and_pinned_runs_visible(cx: &mut TestAppContext) {
+            let (root, project_id, _) = fixture_with_runs(0, 3);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .sources
+                    .sources()
+                    .next()
+                    .is_some_and(|source| source.catalog.runs.len() == 3)
+            });
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let source = viewer.sources.sources().next().expect("source").clone();
+                    let project = SidebarProject {
+                        source_index: 0,
+                        project_index: 0,
+                        project_ref: ProjectRef::new(source.source_id.clone(), project_id.clone()),
+                        project: source.catalog.projects[0].clone(),
+                        runs: source.catalog.runs.clone(),
+                        source_path: source.root_path.clone(),
+                        source_label: "source".to_owned(),
+                        placement: ProjectPlacement::Projects,
+                    };
+                    let run_ref = |index: usize| {
+                        RunRef::new(
+                            source.source_id.clone(),
+                            project_id.clone(),
+                            project.runs[index].run_id.clone(),
+                        )
+                    };
+                    let baseline = run_ref(0);
+                    let pinned = run_ref(1);
+                    let ordinary = run_ref(2);
+                    viewer.set_run_baseline(baseline.clone(), cx);
+                    viewer.toggle_pinned_run(pinned.clone(), cx);
+                    viewer.toggle_run(ordinary.clone(), cx);
+
+                    viewer.toggle_project_runs(&project, cx);
+
+                    assert!(viewer.views.active().runs.contains(&baseline));
+                    assert!(viewer.views.active().runs.contains(&pinned));
+                    assert!(!viewer.views.active().runs.contains(&ordinary));
+                })
+                .expect("viewer should remain open");
         }
 
         #[gpui::test]
