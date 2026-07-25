@@ -1009,5 +1009,8 @@ mod tests {
         measure_cpu_budget("hit testing", 20, 200, || {
             black_box(adapter.hit_test(&snapshot, viewport, point(px(1_250.), px(400.))));
         });
+        measure_cpu_budget("ruler hover evidence", 100, 1_000, || {
+            black_box(adapter.points_at_axis(&snapshot, viewport, 5_000.5));
+        });
     }
 }
