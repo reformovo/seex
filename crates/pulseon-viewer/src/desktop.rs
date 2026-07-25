@@ -2361,29 +2361,48 @@ impl ViewerApp {
             match active_tab {
                 InspectorTab::Summary => {
                     let baseline_value = baseline_summary_value(snapshot, baseline.as_ref());
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .children(snapshot.into_iter().flat_map(|snapshot| {
-                            snapshot.runs.iter().map(|run| match &run.summary {
-                            Some(stats) => format!(
-                                "{} · count {} · last step {} · last {} · min {:.6} · max {:.6}",
-                                run.run.name,
-                                stats.effective_count,
-                                stats.last_step.value(),
-                                inspector_value(
-                                    Some(stats.last_value_f64),
-                                    &run.run_ref,
-                                    baseline.as_ref(),
-                                    baseline_value,
-                                ),
-                                stats.min_value_f64,
-                                stats.max_value_f64,
-                            ),
-                            None => format!("{} · no metric summary", run.run.name),
+                    let rows = snapshot
+                        .into_iter()
+                        .flat_map(|snapshot| {
+                            snapshot.runs.iter().map(|run| {
+                                let Some(stats) = &run.summary else {
+                                    return vec![
+                                        run.run.name.clone(),
+                                        "—".to_owned(),
+                                        "—".to_owned(),
+                                        "—".to_owned(),
+                                        "—".to_owned(),
+                                        "—".to_owned(),
+                                    ];
+                                };
+                                vec![
+                                    run.run.name.clone(),
+                                    stats.effective_count.to_string(),
+                                    stats.last_step.value().to_string(),
+                                    inspector_value(
+                                        Some(stats.last_value_f64),
+                                        &run.run_ref,
+                                        baseline.as_ref(),
+                                        baseline_value,
+                                    ),
+                                    format!("{:.6}", stats.min_value_f64),
+                                    format!("{:.6}", stats.max_value_f64),
+                                ]
+                            })
                         })
-                        }))
+                        .collect();
+                    inspector_table(
+                        &[
+                            ("Run", 180., false),
+                            ("Count", 90., true),
+                            ("Last step", 100., true),
+                            ("Last value", 150., true),
+                            ("Min", 110., true),
+                            ("Max", 110., true),
+                        ],
+                        rows,
+                        theme,
+                    )
                 }
                 InspectorTab::Ranking => {
                     let direction = self.views.active().ranking_direction;
@@ -2439,16 +2458,13 @@ impl ViewerApp {
                 }
                 InspectorTab::Evidence => {
                     let baseline_value = baseline_evidence_value(snapshot, baseline.as_ref());
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .children(snapshot.into_iter().flat_map(|snapshot| {
+                    let rows = snapshot
+                        .into_iter()
+                        .flat_map(|snapshot| {
                             snapshot.runs.iter().map(|run| {
-                                format!(
-                                    "{} · status {} · last step {} · last value {} · {:?}{} · Project {} · Source {}",
-                                    run.run.name,
-                                    run_status(run.evidence.run_status),
+                                vec![
+                                    run.run.name.clone(),
+                                    run_status(run.evidence.run_status).to_owned(),
                                     run.evidence.last_step.map_or_else(
                                         || "—".to_owned(),
                                         |step| step.value().to_string(),
@@ -2459,13 +2475,32 @@ impl ViewerApp {
                                         baseline.as_ref(),
                                         baseline_value,
                                     ),
-                                    run.evidence.completeness,
-                                    reasons_label(&run.evidence.reasons),
-                                    run.run_ref.project_id.as_str(),
-                                    run.run_ref.source_id
-                                )
+                                    format!(
+                                        "{:?}{}",
+                                        run.evidence.completeness,
+                                        reasons_label(&run.evidence.reasons)
+                                    ),
+                                    format!(
+                                        "{} · {}",
+                                        run.run_ref.project_id.as_str(),
+                                        run.run_ref.source_id
+                                    ),
+                                ]
                             })
-                        }))
+                        })
+                        .collect();
+                    inspector_table(
+                        &[
+                            ("Run", 180., false),
+                            ("Status", 90., false),
+                            ("Last step", 100., true),
+                            ("Last value", 150., true),
+                            ("Completeness", 180., false),
+                            ("Project · Source", 260., false),
+                        ],
+                        rows,
+                        theme,
+                    )
                 }
             }
         };
@@ -3773,6 +3808,67 @@ fn axis_menu_item(
                 .child(components::icon(icon, theme)),
         )
         .child(label.to_owned())
+}
+
+fn inspector_table(
+    columns: &[(&str, f32, bool)],
+    rows: Vec<Vec<String>>,
+    theme: ViewerTheme,
+) -> gpui::Div {
+    let width = columns.iter().map(|(_, width, _)| width).sum::<f32>();
+    div()
+        .min_w(px(width))
+        .flex()
+        .flex_col()
+        .child(inspector_table_row(
+            columns,
+            columns
+                .iter()
+                .map(|(label, _, _)| (*label).to_owned())
+                .collect(),
+            theme,
+            true,
+        ))
+        .children(
+            rows.into_iter()
+                .map(|row| inspector_table_row(columns, row, theme, false)),
+        )
+}
+
+fn inspector_table_row(
+    columns: &[(&str, f32, bool)],
+    cells: Vec<String>,
+    theme: ViewerTheme,
+    header: bool,
+) -> gpui::Div {
+    div()
+        .h(theme.spacing.control_height)
+        .flex_none()
+        .flex()
+        .items_center()
+        .when(header, |row| {
+            row.border_b_1()
+                .border_color(theme.colors.border)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme.colors.text)
+        })
+        .children(
+            columns
+                .iter()
+                .zip(cells)
+                .map(|((_, width, right_aligned), value)| {
+                    div()
+                        .w(px(*width))
+                        .flex_none()
+                        .px_2()
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .flex()
+                        .items_center()
+                        .when(*right_aligned, |cell| cell.justify_end())
+                        .child(value)
+                }),
+        )
 }
 
 fn ranking_lines(snapshot: &InspectorSnapshot, baseline: Option<&RunRef>) -> Vec<String> {
