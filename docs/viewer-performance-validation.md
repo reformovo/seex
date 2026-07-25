@@ -3,7 +3,7 @@
 ## Measurement Record
 
 - Date: 2026-07-25
-- Base commit: `3bb5e80`, plus this validation record update
+- Implementation commit: `d6f6fb7`, plus this validation record update
 - Platform: macOS 26.3 (25D125), arm64, Apple M4 Pro
 - Rust: 1.97.1
 - uv: 0.8.12
@@ -12,12 +12,11 @@
 - Display target: external display configured at 280 Hz; model and resolution
   were not recorded
 
-The automated scale, CPU, build, type, and test gates pass. An exploratory
-single-panel run displayed 280 FPS on the external 280 Hz display, but the
-persistent record does not yet contain the required gesture-by-gesture missed
-presentation analysis. Because the planned shared timeline and multi-panel
-workbench replace this hot path, the final display gate is carried into Roadmap
-Phase 3E rather than closing against the transitional single-panel UI.
+The automated scale, final-layout CPU, build, type, and test gates pass. An
+earlier exploratory run displayed 280 FPS on the external 280 Hz display, but
+the persistent record does not yet contain the required gesture-by-gesture
+missed-presentation analysis for the converged multi-panel workbench. The final
+display gate therefore remains open in Roadmap Phase 3E.
 
 ## Scale Fixture and Query Contract
 
@@ -61,9 +60,10 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Brush resize | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush pan | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush zoom | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
-| Cached path preparation | 200 | 0.659 ms | 0.831 ms | 0.933 ms |
-| Uncached path preparation | 200 | 7.056 ms | 7.209 ms | 7.546 ms |
-| Hit testing | 200 | 0.194 ms | 0.218 ms | 0.281 ms |
+| Cached path preparation | 200 | 0.669 ms | 0.768 ms | 0.820 ms |
+| Uncached path preparation | 200 | 6.882 ms | 7.155 ms | 7.233 ms |
+| Hit testing | 200 | 0.199 ms | 0.216 ms | 0.238 ms |
+| Ruler hover evidence | 1,000 | 0.002 ms | 0.002 ms | 0.015 ms |
 
 After the converged renderer was integrated, an initial run failed the
 unchanged uncached-path gate at p95 9.018 ms and maximum 23.815 ms. A local
@@ -143,8 +143,9 @@ The multi-project workbench contract is covered by direct behavioral tests:
   writes; and
 - converged GPUI tests cover Project menu anchoring and real placement,
   five-item pagination, Metric candidate removal and independent resizing,
-  shared-ruler pan/zoom boundaries, simultaneous hover/locked cursors,
-  baseline deltas, and the single-line scrollable Bottom inspector.
+  compact single-line Run rows with fixed controls, shared-ruler pan/zoom
+  boundaries, simultaneous hover/locked cursors and evidence callouts,
+  baseline deltas, and the horizontally scrollable tabular Bottom inspector.
 
 ## Zed Reference Audit
 
@@ -168,8 +169,9 @@ component boundaries at compact (600 x 520), default (800 x 600), and expanded
 repeatable shell audit. The GPUI test host does not emulate switching the
 macOS window appearance or display scale, so appearance hierarchy is verified
 directly from theme roles and physical scaling is verified at the renderer
-boundary. No visual-token or layout correction was required; stable element
-identifiers were added only so the shell regions can be measured.
+boundary. The final audit tightened Metric tracks to the reference's 52–180 px
+range, adopted icon-only toolbar controls, made View close controls contextual,
+compacted Run rows, and converted the inspector to fixed table columns.
 
 ## Multi-Track Workbench Gate
 
@@ -200,12 +202,13 @@ remained below 16.7 ms across three consecutive runs; the final run is recorded
 in the CPU table above.
 The representative gate is opt-in and was run with
 `cargo test -p pulseon-viewer --release --features test-support
-representative_workbench -- --ignored --nocapture` so hardware-sensitive GPUI
-window teardown is not part of ordinary debug test runs.
+representative_workbench_stays_responsive_while_a_source_is_pending --
+--ignored --nocapture --test-threads=1` so hardware-sensitive GPUI window
+teardown is not part of ordinary debug test runs.
 
 ## Verification
 
-Passed against base commit `3bb5e80` on 2026-07-25:
+Passed against implementation commit `d6f6fb7` on 2026-07-25:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -216,10 +219,8 @@ Passed against base commit `3bb5e80` on 2026-07-25:
 - `cargo test -p pulseon-viewer --release interactive_chart_cpu_budget --
   --ignored --nocapture`
 - `cargo test -p pulseon-viewer --release --features test-support
-  representative_workbench -- --ignored --nocapture`
-- `PULSEON_VIEWER_TRACE_FIXTURE_ROOT=/tmp/pulseon-viewer-trace cargo test -p
-  pulseon-viewer --release retained_multi_track_fixture -- --ignored
-  --nocapture`
+  representative_workbench_stays_responsive_while_a_source_is_pending --
+  --ignored --nocapture --test-threads=1`
 - `uv run maturin develop --uv`
 - `uv run pyright` (zero errors)
 - `uv run pytest` (106 passed, 2 opt-in MinIO tests skipped)
