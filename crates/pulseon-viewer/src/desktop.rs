@@ -2476,6 +2476,11 @@ impl ViewerApp {
             || "No Metric selected".to_owned(),
             |panel| panel.metric_key.as_str().to_owned(),
         );
+        let cursor_coordinate = self.locked_cursor.or(self.ruler_hover).map_or_else(
+            || "—".to_owned(),
+            |value| format_cursor_coordinate(self.curve_axis(), value),
+        );
+        let inspector_context = format!("Selected: {metric_name} · cursor {cursor_coordinate}");
         let snapshot = panel.as_ref().and_then(|panel| panel.inspector.as_deref());
         let baseline = self.views.active().baseline.clone();
         let body = if panel
@@ -2679,20 +2684,16 @@ impl ViewerApp {
             )
             .child(
                 div()
+                    .id("bottom-inspector-header")
                     .flex()
                     .items_center()
                     .gap_1()
                     .h(theme.spacing.tab_height)
                     .flex_shrink_0()
+                    .overflow_hidden()
                     .px(theme.spacing.panel_padding)
                     .border_b_1()
                     .border_color(theme.colors.border)
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .mr_3()
-                            .child(metric_name),
-                    )
                     .child(
                         components::toolbar_button(
                             "inspector-summary",
@@ -2734,6 +2735,31 @@ impl ViewerApp {
                             this.select_inspector_tab(InspectorTab::Evidence, cx);
                         }))
                         .child("Evidence"),
+                    )
+                    .child(
+                        div()
+                            .id("inspector-context")
+                            .debug_selector(|| "inspector-context".to_owned())
+                            .flex_1()
+                            .min_w(px(0.))
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_right()
+                            .text_xs()
+                            .text_color(theme.colors.text_muted)
+                            .child(inspector_context),
+                    )
+                    .child(
+                        components::icon_button("close-inspector", theme, false, false)
+                            .debug_selector(|| "close-inspector".to_owned())
+                            .flex_none()
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.bottom_inspector_visible = false;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }))
+                            .child(components::icon(IconName::Close, theme)),
                     ),
             )
             .child(
@@ -5951,6 +5977,8 @@ mod tests {
             let scroll = cx
                 .debug_bounds("bottom-inspector-scroll")
                 .expect("Inspector content should own a scroll viewport");
+            assert!(cx.debug_bounds("inspector-context").is_some());
+            assert!(cx.debug_bounds("close-inspector").is_some());
             assert_eq!(scroll.origin.x, inspector.origin.x);
             assert_eq!(scroll.size.width, inspector.size.width);
             assert!(scroll.size.height < inspector.size.height);
@@ -6076,7 +6104,10 @@ mod tests {
             window
                 .update(&mut cx, |viewer, window, _| viewer.focus.focus(window))
                 .expect("viewer should remain open");
-            cx.dispatch_action(ToggleBottomInspector);
+            let close = cx
+                .debug_bounds("close-inspector")
+                .expect("Inspector header should expose a close control");
+            cx.simulate_click(close.center(), Modifiers::default());
             assert!(
                 !window
                     .read_with(&cx, |viewer, _| viewer.bottom_inspector_visible)
