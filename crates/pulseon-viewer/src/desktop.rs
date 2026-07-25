@@ -1960,7 +1960,8 @@ impl ViewerApp {
                             .debug_selector(|| "brush-controls".to_owned())
                             .w(metric_sidebar_width)
                             .flex_shrink_0()
-                            .p(theme.spacing.panel_padding)
+                            .px(theme.spacing.panel_padding)
+                            .py(px(6.))
                             .bg(theme.colors.panel)
                             .border_r_1()
                             .border_color(theme.colors.border)
@@ -3411,7 +3412,7 @@ impl ViewerApp {
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some(brush) = self.core.brush() else {
-            return div().h(px(48.));
+            return div().h(px(40.));
         };
         let (snapshot, revision) = self
             .views
@@ -3423,55 +3424,39 @@ impl ViewerApp {
                 (panel.overview.clone(), panel.overview_revision)
             });
         let adapter = Rc::clone(&self.chart_adapter);
-        let selected = brush.selected();
-        div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(
-                div()
-                    .id("overview-chart")
-                    .debug_selector(|| "overview-chart".to_owned())
-                    .focusable()
-                    .h(px(48.))
-                    .w_full()
-                    .relative()
-                    .cursor_pointer()
-                    .border_1()
-                    .border_color(theme.colors.border)
-                    .bg(theme.colors.surface)
-                    .child(
-                        renderer::timeline_canvas(adapter, brush, snapshot, revision).size_full(),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                            this.begin_brush_drag(event, cx);
-                        }),
-                    )
-                    .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                        if event.dragging() {
-                            this.move_brush_drag(event, cx);
-                        }
-                    }))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_drag(cx)),
-                    )
-                    .on_mouse_up_out(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_drag(cx)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .text_xs()
-                    .text_color(theme.colors.text_muted)
-                    .child(format_tick(selected.start()))
-                    .child(format_tick(selected.end())),
-            )
+        div().h(px(40.)).child(
+            div()
+                .id("overview-chart")
+                .debug_selector(|| "overview-chart".to_owned())
+                .focusable()
+                .h_full()
+                .w_full()
+                .relative()
+                .cursor_pointer()
+                .border_1()
+                .border_color(theme.colors.border)
+                .bg(theme.colors.surface)
+                .child(renderer::timeline_canvas(adapter, brush, snapshot, revision).size_full())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        this.begin_brush_drag(event, cx);
+                    }),
+                )
+                .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                    if event.dragging() {
+                        this.move_brush_drag(event, cx);
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_drag(cx)),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|this, _: &MouseUpEvent, _, cx| this.finish_drag(cx)),
+                ),
+        )
     }
 
     fn begin_brush_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
@@ -5454,7 +5439,16 @@ mod tests {
                         );
                     })
                     .expect("viewer should remain open");
-                assert!(cx.debug_bounds("overview-chart").is_some());
+                let controls = cx
+                    .debug_bounds("brush-controls")
+                    .expect("Brush controls should render");
+                let overview = cx
+                    .debug_bounds("overview-chart")
+                    .expect("Overview chart should render");
+                assert_eq!(controls.size.height, px(40.));
+                assert_eq!(overview.size.height, px(40.));
+                assert_eq!(controls.origin.y, overview.origin.y);
+                assert_eq!(controls.bottom(), overview.bottom());
             }
         }
 
