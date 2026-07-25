@@ -302,7 +302,8 @@ impl ViewerApp {
             })
             .cloned()
             .collect::<Vec<_>>();
-        if !query.is_empty() {
+        let filtering_runs = !query.is_empty() && !project_matches;
+        if filtering_runs {
             runs.retain(|run| {
                 run.name.to_lowercase().contains(query)
                     || run.run_id.as_str().to_lowercase().contains(query)
@@ -316,10 +317,10 @@ impl ViewerApp {
             .get(&project_ref)
             .copied()
             .unwrap_or(RUN_PAGE_SIZE);
-        let visible_runs = if query.is_empty() {
-            runs.iter().take(limit).cloned().collect::<Vec<_>>()
-        } else {
+        let visible_runs = if filtering_runs {
             runs.clone()
+        } else {
+            runs.iter().take(limit).cloned().collect::<Vec<_>>()
         };
         let folder_source = project.project_ref.source_id.clone();
         let folder_project = project.project_ref.project_id.clone();
@@ -492,7 +493,7 @@ impl ViewerApp {
                     );
                 }
             }
-            if query.is_empty() && runs.len() > limit {
+            if !filtering_runs && runs.len() > limit {
                 let more_ref = project_ref.clone();
                 tree = tree.child(
                     sidebar_text_button(

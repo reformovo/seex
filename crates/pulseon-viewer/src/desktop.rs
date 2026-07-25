@@ -4761,6 +4761,23 @@ mod tests {
                     .expect("viewer should remain open")
             );
             assert!(cx.debug_bounds("show-more-0-0").is_none());
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.run_filter = "viewer".to_owned();
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            for selector in [
+                "project-tree-run-0-0-0",
+                "project-tree-run-0-0-1",
+                "project-tree-run-0-0-2",
+                "project-tree-run-0-0-3",
+                "project-tree-run-0-0-4",
+            ] {
+                assert!(cx.debug_bounds(selector).is_some());
+            }
+            assert!(cx.debug_bounds("show-more-0-0").is_some());
         }
 
         #[gpui::test]
