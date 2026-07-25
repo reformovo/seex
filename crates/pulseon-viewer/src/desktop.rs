@@ -1977,7 +1977,7 @@ impl ViewerApp {
             .filter(|metric| !selected.contains(metric))
             .collect::<Vec<_>>();
         let mut picker = div().relative().child(
-            components::toolbar_button(
+            components::icon_button(
                 "add-metric",
                 theme,
                 self.metric_picker_open,
@@ -1992,9 +1992,7 @@ impl ViewerApp {
                         cx.notify();
                     }))
             })
-            .gap_1()
-            .child(components::icon(IconName::Plus, theme))
-            .child("Metric"),
+            .child(components::icon(IconName::Plus, theme)),
         );
         if self.metric_picker_open {
             picker = picker.child(deferred(
@@ -2051,7 +2049,14 @@ impl ViewerApp {
                     this.axis_picker_open = !this.axis_picker_open;
                     cx.notify();
                 }))
-                .child(if absolute { "◷" } else { "↗" }),
+                .child(components::icon(
+                    if absolute {
+                        IconName::Clock
+                    } else {
+                        IconName::ArrowUp
+                    },
+                    theme,
+                )),
         );
         if self.axis_picker_open {
             picker = picker.child(deferred(
@@ -2066,26 +2071,42 @@ impl ViewerApp {
                             .flex()
                             .flex_col()
                             .child(
-                                axis_menu_item("axis-step", "↗", "Step", !absolute, theme)
-                                    .debug_selector(|| "axis-step".to_owned())
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                axis_menu_item(
+                                    "axis-step",
+                                    IconName::ArrowUp,
+                                    "Step",
+                                    !absolute,
+                                    theme,
+                                )
+                                .debug_selector(|| "axis-step".to_owned())
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.axis_picker_open = false;
                                         this.views.clear_active_timeline_extents();
                                         this.core.select_axis(AlignmentAxis::Step);
                                         this.request_overview(cx);
                                         cx.notify();
-                                    })),
+                                    },
+                                )),
                             )
                             .child(
-                                axis_menu_item("axis-time", "◷", "Absolute time", absolute, theme)
-                                    .debug_selector(|| "axis-time".to_owned())
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                axis_menu_item(
+                                    "axis-time",
+                                    IconName::Clock,
+                                    "Absolute time",
+                                    absolute,
+                                    theme,
+                                )
+                                .debug_selector(|| "axis-time".to_owned())
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.axis_picker_open = false;
                                         this.views.clear_active_timeline_extents();
                                         this.core.select_axis(AlignmentAxis::ElapsedTime);
                                         this.request_overview(cx);
                                         cx.notify();
-                                    })),
+                                    },
+                                )),
                             ),
                     ),
             ));
@@ -3726,7 +3747,7 @@ fn section_label(label: &str, theme: ViewerTheme) -> gpui::Div {
 
 fn axis_menu_item(
     id: impl Into<gpui::ElementId>,
-    icon: &str,
+    icon: IconName,
     label: &str,
     selected: bool,
     theme: ViewerTheme,
@@ -3744,7 +3765,13 @@ fn axis_menu_item(
         .when(!selected, |item| {
             item.hover(|style| style.bg(theme.colors.element_hover))
         })
-        .child(div().w(px(20.)).text_center().child(icon.to_owned()))
+        .child(
+            div()
+                .w(px(20.))
+                .flex()
+                .justify_center()
+                .child(components::icon(icon, theme)),
+        )
         .child(label.to_owned())
 }
 

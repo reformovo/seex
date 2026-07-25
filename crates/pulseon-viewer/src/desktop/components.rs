@@ -12,8 +12,10 @@ pub enum StatusTone {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IconName {
     Archive,
+    ArrowUp,
     Baseline,
     CirclePlay,
+    Clock,
     Close,
     Ellipsis,
     Eye,
@@ -30,8 +32,10 @@ impl IconName {
     const fn path(self) -> &'static str {
         match self {
             Self::Archive => "icons/archive.svg",
+            Self::ArrowUp => "icons/arrow-up.svg",
             Self::Baseline => "icons/baseline.svg",
             Self::CirclePlay => "icons/circle-play.svg",
+            Self::Clock => "icons/clock.svg",
             Self::Close => "icons/close.svg",
             Self::Ellipsis => "icons/ellipsis.svg",
             Self::Eye => "icons/eye.svg",
@@ -248,5 +252,7 @@ mod tests {
         assert_eq!(IconName::Close.path(), "icons/close.svg");
         assert_eq!(IconName::Ellipsis.path(), "icons/ellipsis.svg");
         assert_eq!(IconName::Plus.path(), "icons/plus.svg");
+        assert_eq!(IconName::ArrowUp.path(), "icons/arrow-up.svg");
+        assert_eq!(IconName::Clock.path(), "icons/clock.svg");
     }
 }
