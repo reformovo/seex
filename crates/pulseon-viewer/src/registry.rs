@@ -147,6 +147,7 @@ impl SourceRegistry {
         };
         entry.source.status = SourceStatus::Loading;
         if let ReadRequest::Discover(discovery) = &request {
+            entry.source.catalog.metric_keys.clear();
             entry
                 .catalog_requests
                 .insert(generation, discovery.project_id.clone());
@@ -213,9 +214,7 @@ fn merge_catalog(
             && project_id.is_none_or(|project_id| &run.project_id != project_id)
     });
     retained.runs.extend(snapshot.runs.iter().cloned());
-    if project_id.is_some() {
-        retained.metric_keys.clone_from(&snapshot.metric_keys);
-    }
+    retained.metric_keys.clone_from(&snapshot.metric_keys);
 }
 
 /// Failures while coordinating an imported source.

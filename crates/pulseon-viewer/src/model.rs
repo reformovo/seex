@@ -7,6 +7,7 @@ use pulseon_model::types::{Project, ProjectId};
 pub struct DiscoveryRequest {
     pub project_id: Option<ProjectId>,
     pub selected_run_ids: Vec<RunId>,
+    pub metric_runs: Vec<(ProjectId, RunId)>,
 }
 
 /// Immutable catalog metadata returned by a native read session.

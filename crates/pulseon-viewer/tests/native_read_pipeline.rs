@@ -179,6 +179,7 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
             .iter()
             .map(|run| run.run_id.clone())
             .collect(),
+        metric_runs: Vec::new(),
     };
     let catalog = match read(
         &worker,
@@ -332,6 +333,7 @@ fn assert_core_contract(
             .iter()
             .map(|run| run.run_id.clone())
             .collect(),
+        metric_runs: Vec::new(),
     });
     core.begin(Generation(10), source_id.clone(), &discovery);
     assert_eq!(

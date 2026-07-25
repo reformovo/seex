@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -445,29 +445,8 @@ impl ViewerApp {
             .collect::<Vec<_>>();
         for source_id in source_ids {
             let track_in_core = self.core.selection().source_id.as_ref() == Some(&source_id);
-            self.submit_to_source(
-                source_id,
-                ReadRequest::Discover(DiscoveryRequest {
-                    project_id: track_in_core
-                        .then(|| self.core.selection().project_id.clone())
-                        .flatten(),
-                    selected_run_ids: if track_in_core {
-                        self.core
-                            .selection()
-                            .runs
-                            .iter()
-                            .filter(|run| {
-                                self.core.selection().source_id.as_ref() == Some(&run.source_id)
-                            })
-                            .map(|run| run.run_id.clone())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    },
-                }),
-                track_in_core,
-                cx,
-            );
+            let request = self.discovery_request_for_source(&source_id, track_in_core);
+            self.submit_to_source(source_id, ReadRequest::Discover(request), track_in_core, cx);
         }
     }
 
@@ -480,6 +459,7 @@ impl ViewerApp {
                 ReadRequest::Discover(DiscoveryRequest {
                     project_id: None,
                     selected_run_ids: Vec::new(),
+                    metric_runs: Vec::new(),
                 }),
                 false,
                 cx,
@@ -502,25 +482,56 @@ impl ViewerApp {
     }
 
     fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
-        let selection = self.core.selection();
-        self.submit(
-            ReadRequest::Discover(DiscoveryRequest {
-                project_id: selection.project_id.clone(),
-                selected_run_ids: selection
-                    .runs
-                    .iter()
-                    .map(|run| run.run_id.clone())
-                    .collect(),
-            }),
-            cx,
-        );
-    }
-
-    fn submit(&mut self, request: ReadRequest, cx: &mut Context<Self>) {
-        let Some(source_id) = self.core.selection().source_id.clone() else {
+        let Some(active_source) = self.core.selection().source_id.clone() else {
             return;
         };
-        self.submit_to_source(source_id, request, true, cx);
+        let mut source_ids = self
+            .active_visible_runs()
+            .into_iter()
+            .map(|run| run.source_id)
+            .collect::<HashSet<_>>();
+        source_ids.insert(active_source.clone());
+        let requests = source_ids
+            .into_iter()
+            .map(|source_id| {
+                let track_in_core = source_id == active_source;
+                let request = self.discovery_request_for_source(&source_id, track_in_core);
+                (source_id, request, track_in_core)
+            })
+            .collect::<Vec<_>>();
+        for (source_id, request, track_in_core) in requests {
+            self.submit_to_source(source_id, ReadRequest::Discover(request), track_in_core, cx);
+        }
+    }
+
+    fn discovery_request_for_source(
+        &self,
+        source_id: &DataSourceId,
+        include_project: bool,
+    ) -> DiscoveryRequest {
+        let project_id = include_project
+            .then(|| self.core.selection().project_id.clone())
+            .flatten();
+        let visible = self
+            .active_visible_runs()
+            .into_iter()
+            .filter(|run| &run.source_id == source_id)
+            .collect::<Vec<_>>();
+        let selected_run_ids = project_id.as_ref().map_or_else(Vec::new, |project_id| {
+            visible
+                .iter()
+                .filter(|run| &run.project_id == project_id)
+                .map(|run| run.run_id.clone())
+                .collect()
+        });
+        DiscoveryRequest {
+            project_id,
+            selected_run_ids,
+            metric_runs: visible
+                .into_iter()
+                .map(|run| (run.project_id, run.run_id))
+                .collect(),
+        }
     }
 
     fn submit_to_source(
@@ -989,6 +1000,7 @@ impl ViewerApp {
         self.store_active_view_state();
         self.views.create_empty();
         self.restore_active_view_state();
+        self.refresh_catalog(cx);
         self.renaming_view = None;
         cx.notify();
     }
@@ -997,6 +1009,7 @@ impl ViewerApp {
         self.store_active_view_state();
         self.views.duplicate_active();
         self.restore_active_view_state();
+        self.refresh_catalog(cx);
         self.renaming_view = None;
         cx.notify();
     }
@@ -1008,6 +1021,7 @@ impl ViewerApp {
         self.store_active_view_state();
         if self.views.activate(view_id) {
             self.restore_active_view_state();
+            self.refresh_catalog(cx);
             self.renaming_view = None;
             cx.notify();
         }
@@ -1021,6 +1035,7 @@ impl ViewerApp {
         if self.views.close(view_id) {
             if active {
                 self.restore_active_view_state();
+                self.refresh_catalog(cx);
             }
             self.renaming_view = None;
             cx.notify();
@@ -1109,27 +1124,8 @@ impl ViewerApp {
 
     fn refresh_source(&mut self, source_id: DataSourceId, cx: &mut Context<Self>) {
         let active = self.core.selection().source_id.as_ref() == Some(&source_id);
-        let project_id = active
-            .then(|| self.core.selection().project_id.clone())
-            .flatten();
-        self.submit_to_source(
-            source_id,
-            ReadRequest::Discover(DiscoveryRequest {
-                project_id,
-                selected_run_ids: if active {
-                    self.core
-                        .selection()
-                        .runs
-                        .iter()
-                        .map(|run| run.run_id.clone())
-                        .collect()
-                } else {
-                    Vec::new()
-                },
-            }),
-            active,
-            cx,
-        );
+        let request = self.discovery_request_for_source(&source_id, active);
+        self.submit_to_source(source_id, ReadRequest::Discover(request), active, cx);
         self.source_menu = None;
         cx.notify();
     }
@@ -1303,6 +1299,22 @@ impl ViewerApp {
             .collect()
     }
 
+    fn available_metric_keys(&self) -> Vec<MetricKey> {
+        let source_ids = self
+            .active_visible_runs()
+            .into_iter()
+            .map(|run| run.source_id)
+            .collect::<HashSet<_>>();
+        self.sources
+            .sources()
+            .filter(|source| source_ids.contains(&source.source_id))
+            .flat_map(|source| source.catalog.metric_keys.iter().cloned())
+            .map(|metric| (metric.as_str().to_owned(), metric))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect()
+    }
+
     fn sync_core_runs(&mut self) {
         let desired = self.active_visible_runs();
         let current = self.core.selection().runs.clone();
@@ -1327,6 +1339,7 @@ impl ViewerApp {
             self.local_error = Some(error.to_string());
         } else {
             self.sync_core_runs();
+            self.refresh_catalog(cx);
             self.request_overview(cx);
             self.request_inspector(cx);
         }
@@ -1341,6 +1354,7 @@ impl ViewerApp {
             self.local_error = Some(error.to_string());
         } else {
             self.sync_core_runs();
+            self.refresh_catalog(cx);
             self.request_overview(cx);
         }
         cx.notify();
@@ -1353,6 +1367,7 @@ impl ViewerApp {
             self.views.archive_run(run);
         }
         self.sync_core_runs();
+        self.refresh_catalog(cx);
         self.request_overview(cx);
         self.request_inspector(cx);
         cx.notify();
@@ -1407,6 +1422,7 @@ impl ViewerApp {
         }
         self.sync_core_runs();
         self.project_menu = None;
+        self.refresh_catalog(cx);
         self.request_overview(cx);
         cx.notify();
     }
@@ -1629,11 +1645,7 @@ impl ViewerApp {
             .iter()
             .map(|panel| panel.metric_key.clone())
             .collect::<HashSet<_>>();
-        let available = self
-            .core
-            .catalog()
-            .map(|catalog| catalog.metric_keys.clone())
-            .unwrap_or_default();
+        let available = self.available_metric_keys();
         let metric_picker = self.render_metric_picker(available, &selected, cx);
         let axis_picker = self.render_axis_picker(cx);
         let metric_sidebar_width = self.metric_sidebar_width();
@@ -3950,6 +3962,24 @@ mod tests {
             fixture_with_runs(metric_count, 1)
         }
 
+        fn fixture_with_metric(metric_key: &str) -> (tempfile::TempDir, ProjectId, RunId) {
+            let root = tempfile::tempdir().expect("test directory should be created");
+            let client = NativeClient::open(root.path()).expect("test client should open");
+            let project = client
+                .create_project("viewer", Some(ProjectId::from_string("project")))
+                .expect("test project should be created");
+            let run = client
+                .create_run(&project.project_id, "run", Some(RunId::from_string("run")))
+                .expect("test Run should be created");
+            client
+                .run_handle(run.clone())
+                .log_metric_at_step(metric_key, 0, 1.)
+                .expect("test metric should be logged");
+            client.finish_run(&run.run_id).expect("Run should finish");
+            client.shutdown(None).expect("test client should shut down");
+            (root, project.project_id, run.run_id)
+        }
+
         fn fixture_with_runs(
             metric_count: usize,
             run_count: usize,
@@ -4690,8 +4720,8 @@ mod tests {
 
         #[gpui::test]
         fn project_sidebar_retains_multiple_imported_sources(cx: &mut TestAppContext) {
-            let (first, _, _) = fixture(0);
-            let (second, _, _) = fixture(0);
+            let (first, _, _) = fixture_with_metric("loss");
+            let (second, _, _) = fixture_with_metric("accuracy");
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(first.path().to_path_buf()));
             wait_for_viewer(window, &cx, |viewer| {
@@ -4743,6 +4773,21 @@ mod tests {
                     .read_with(&cx, |viewer, _| viewer.views.active().runs.len())
                     .expect("viewer should remain open"),
                 2
+            );
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.available_metric_keys().len() == 2
+            });
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| {
+                        viewer
+                            .available_metric_keys()
+                            .into_iter()
+                            .map(|metric| metric.as_str().to_owned())
+                            .collect::<Vec<_>>()
+                    })
+                    .expect("viewer should remain open"),
+                ["accuracy", "loss"]
             );
         }
 
