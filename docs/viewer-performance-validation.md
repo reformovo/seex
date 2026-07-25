@@ -60,10 +60,10 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Brush resize | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush pan | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush zoom | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
-| Cached path preparation | 200 | 0.673 ms | 0.778 ms | 2.171 ms |
-| Uncached path preparation | 200 | 7.122 ms | 7.368 ms | 7.966 ms |
-| Hit testing | 200 | 0.200 ms | 0.216 ms | 0.272 ms |
-| Ruler hover evidence | 1,000 | 0.002 ms | 0.002 ms | 0.016 ms |
+| Cached path preparation | 200 | 0.151 ms | 0.193 ms | 0.314 ms |
+| Uncached path preparation | 200 | 1.988 ms | 2.076 ms | 2.167 ms |
+| Hit testing | 200 | 0.202 ms | 0.236 ms | 1.996 ms |
+| Ruler hover evidence | 1,000 | 0.003 ms | 0.003 ms | 0.092 ms |
 
 After the converged renderer was integrated, an initial run failed the
 unchanged uncached-path gate at p95 9.018 ms and maximum 23.815 ms. A local
@@ -73,6 +73,18 @@ solid series now build their GPUI triangles directly; partial dashed evidence
 retains the existing GPUI/Lyon path semantics. Three subsequent standard
 release runs passed without changing thresholds. Their worst p95 was 7.485 ms
 and worst maximum was 15.362 ms. Local `.trace` bundles remain uncommitted.
+
+Multi-Run, multi-Metric manual testing then exposed two additional costs.
+Viewer-only Baseline, Pinned, Archived, and visibility changes were still
+invalidating every panel, and hover frames were preparing every static Metric
+path again. Organization changes now retain immutable snapshots and merge only
+missing Run evidence. Each Metric's static grid and curves use a cached GPUI
+child view, while cursors and callouts remain dynamic. GPUI paths preserve the
+first and last point plus min/max extrema in two-logical-pixel buckets; storage
+evidence, chart series, hit testing, and query budgets remain unchanged. The
+latest release run above reduced cached and uncached p95 by approximately 4.0x
+and 3.5x respectively. A GPUI regression confirms repeated ruler-hover frames
+do not prepare any static Metric chart again.
 
 ## High-Refresh Product Check
 
@@ -222,7 +234,7 @@ teardown is not part of ordinary debug test runs.
 
 ## Verification
 
-Passed against implementation commit `3e2be8d` on 2026-07-26:
+Passed against implementation commit `f7bc0de` on 2026-07-26:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -247,7 +259,9 @@ command passed, including 43 library tests, 53 binary tests with two ignored
 hardware gates, three native-pipeline tests, and doc tests. The serialized GPUI
 suite also passed throughout implementation. No assertion, storage worker, or
 viewer runtime failure was observed; the one teardown fault was not reproduced.
-The latest full test-support run also passed without the teardown fault.
+The latest full test-support run also passed without the teardown fault: 47
+library tests, 58 binary tests with two ignored hardware gates, three
+native-pipeline tests, and doc tests.
 
 The retained six-metric trace fixture is 89 MiB. At the time of the automated
 gate, `system_profiler` reported two connected Mi Monitor displays at
