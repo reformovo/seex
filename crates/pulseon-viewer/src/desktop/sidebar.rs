@@ -499,23 +499,15 @@ impl ViewerApp {
         let theme = self.theme;
         let selected = self.views.active().runs.contains(&run_ref);
         let hovered = self.hovered_run.as_ref() == Some(&run_ref);
-        let (name, status, identifier, source_path) = self.sidebar_run(&run_ref).map_or_else(
+        let (name, status, source_path) = self.sidebar_run(&run_ref).map_or_else(
             || {
                 (
                     run_ref.run_id.as_str().to_owned(),
                     "Unavailable".to_owned(),
-                    run_ref.run_id.as_str().to_owned(),
                     PathBuf::from(run_ref.source_id.as_str()),
                 )
             },
-            |(run, source_path)| {
-                (
-                    run.name,
-                    run_status(run.status).to_owned(),
-                    run.run_id.as_str().to_owned(),
-                    source_path,
-                )
-            },
+            |(run, source_path)| (run.name, run_status(run.status).to_owned(), source_path),
         );
         let hover_run = run_ref.clone();
         let row_run = run_ref.clone();
@@ -563,6 +555,7 @@ impl ViewerApp {
                 theme,
                 selected,
             )
+            .debug_selector(move || format!("run-eye-{index}"))
             .when(selected || visible_count < MAX_SELECTED_RUNS, |button| {
                 button.on_click(cx.listener(move |this, _, _, cx| {
                     this.toggle_tree_run(eye_run.clone(), source_path.clone(), cx);
@@ -581,64 +574,61 @@ impl ViewerApp {
         .child(
             div()
                 .flex_1()
+                .min_w(px(0.))
                 .overflow_hidden()
+                .whitespace_nowrap()
+                .child(name),
+        )
+        .children((!hovered).then(|| {
+            div()
+                .debug_selector(move || format!("run-status-{index}"))
+                .flex_none()
+                .text_xs()
+                .text_color(theme.colors.text_muted)
+                .child(status)
+        }))
+        .children(hovered.then(|| {
+            div()
+                .debug_selector(move || format!("run-actions-{index}"))
+                .flex_none()
                 .flex()
-                .flex_col()
-                .child(div().overflow_hidden().whitespace_nowrap().child(name))
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.colors.text_muted)
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .child(format!("{status} · {identifier}")),
-                ),
-        )
-        .child(
-            components::sidebar_icon_button(
-                SharedString::from(format!("run-baseline:{}", baseline_run.cache_key())),
-                theme,
-                is_baseline,
-            )
-            .when(!hovered, |button| button.opacity(0.))
-            .when(hovered, |button| {
-                button.on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_run_baseline(baseline_run.clone(), cx);
-                    cx.stop_propagation();
-                }))
-            })
-            .child(components::icon(IconName::Baseline, theme)),
-        )
-        .child(
-            components::sidebar_icon_button(
-                SharedString::from(format!("run-pin:{}", pin_run.cache_key())),
-                theme,
-                is_pinned,
-            )
-            .when(!hovered, |button| button.opacity(0.))
-            .when(hovered, |button| {
-                button.on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_pinned_run(pin_run.clone(), cx);
-                    cx.stop_propagation();
-                }))
-            })
-            .child(components::icon(IconName::Pin, theme)),
-        )
-        .child(
-            components::sidebar_icon_button(
-                SharedString::from(format!("run-archive:{}", archive_run.cache_key())),
-                theme,
-                is_archived,
-            )
-            .when(!hovered, |button| button.opacity(0.))
-            .when(hovered, |button| {
-                button.on_click(cx.listener(move |this, _, _, cx| {
-                    this.archive_run(archive_run.clone(), cx);
-                    cx.stop_propagation();
-                }))
-            })
-            .child(components::icon(IconName::Archive, theme)),
-        )
+                    components::sidebar_icon_button(
+                        SharedString::from(format!("run-baseline:{}", baseline_run.cache_key())),
+                        theme,
+                        is_baseline,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.set_run_baseline(baseline_run.clone(), cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(components::icon(IconName::Baseline, theme)),
+                )
+                .child(
+                    components::sidebar_icon_button(
+                        SharedString::from(format!("run-pin:{}", pin_run.cache_key())),
+                        theme,
+                        is_pinned,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.toggle_pinned_run(pin_run.clone(), cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(components::icon(IconName::Pin, theme)),
+                )
+                .child(
+                    components::sidebar_icon_button(
+                        SharedString::from(format!("run-archive:{}", archive_run.cache_key())),
+                        theme,
+                        is_archived,
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.archive_run(archive_run.clone(), cx);
+                        cx.stop_propagation();
+                    }))
+                    .child(components::icon(IconName::Archive, theme)),
+                )
+        }))
     }
 
     fn render_project_menu(

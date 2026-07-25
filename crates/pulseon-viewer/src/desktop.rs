@@ -4853,6 +4853,25 @@ mod tests {
                 .read_with(&cx, |viewer, _| viewer.theme.spacing.tree_row_height)
                 .expect("viewer should remain open");
             assert_eq!(first_row.size.height, expected_row_height);
+            let eye_width = cx
+                .debug_bounds("run-eye-0")
+                .expect("Run visibility control should render")
+                .size
+                .width;
+            assert!(cx.debug_bounds("run-status-0").is_some());
+            assert!(cx.debug_bounds("run-actions-0").is_none());
+
+            cx.simulate_mouse_move(first_row.center(), None, Modifiers::default());
+
+            assert!(cx.debug_bounds("run-status-0").is_none());
+            assert!(cx.debug_bounds("run-actions-0").is_some());
+            assert_eq!(
+                cx.debug_bounds("run-eye-0")
+                    .expect("Run visibility control should keep its width")
+                    .size
+                    .width,
+                eye_width
+            );
 
             for _ in 0..2 {
                 let show_more = cx
