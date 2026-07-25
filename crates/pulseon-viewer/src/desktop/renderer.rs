@@ -59,6 +59,12 @@ struct PreparedChart {
     theme: ViewerTheme,
 }
 
+#[derive(Clone, Copy)]
+struct RenderRuns<'a> {
+    baseline: Option<&'a RunRef>,
+    visible: Option<&'a [RunRef]>,
+}
+
 impl ChartAdapter {
     pub fn clear(&mut self) {
         self.detail_projection_cache.clear();
@@ -73,10 +79,12 @@ impl ChartAdapter {
         revision: u64,
         viewport: Viewport,
         canvas: CanvasSize,
+        visible_runs: &[RunRef],
     ) {
         for series in snapshot
             .series
             .iter()
+            .filter(|curve| visible_runs.contains(&curve.run_ref))
             .filter_map(|curve| curve.chart_series.as_ref())
         {
             let _ = self
@@ -92,7 +100,7 @@ impl ChartAdapter {
         viewport: Viewport,
         bounds: Bounds<Pixels>,
         appearance: WindowAppearance,
-        baseline: Option<&RunRef>,
+        runs: RenderRuns<'_>,
     ) -> PreparedChart {
         let theme = ViewerTheme::for_appearance(appearance);
         self.detail_bounds = Some(bounds);
@@ -106,11 +114,17 @@ impl ChartAdapter {
         };
         let mut paths = Vec::new();
         for curve in &snapshot.series {
+            if runs
+                .visible
+                .is_some_and(|visible| !visible.contains(&curve.run_ref))
+            {
+                continue;
+            }
             let Some(series) = curve.chart_series.as_ref() else {
                 continue;
             };
             let partial = curve.evidence.completeness == EvidenceCompleteness::Partial;
-            let highlighted = baseline == Some(&curve.run_ref);
+            let highlighted = runs.baseline == Some(&curve.run_ref);
             let key = GpuiPathKey {
                 revision,
                 viewport: [
@@ -182,6 +196,7 @@ impl ChartAdapter {
         snapshot: &CurveSnapshot,
         viewport: Viewport,
         cursor: Point<Pixels>,
+        visible_runs: &[RunRef],
     ) -> Option<HoverPoint> {
         let bounds = self.detail_bounds?;
         let canvas =
@@ -192,6 +207,9 @@ impl ChartAdapter {
         );
         let mut nearest = None;
         for curve in &snapshot.series {
+            if !visible_runs.contains(&curve.run_ref) {
+                continue;
+            }
             let Some(series) = curve.chart_series.as_ref() else {
                 continue;
             };
@@ -226,6 +244,7 @@ impl ChartAdapter {
         snapshot: &CurveSnapshot,
         viewport: Viewport,
         axis: f64,
+        visible_runs: &[RunRef],
     ) -> Vec<HoverPoint> {
         let Some(bounds) = self.detail_bounds else {
             return Vec::new();
@@ -242,6 +261,7 @@ impl ChartAdapter {
         snapshot
             .series
             .iter()
+            .filter(|curve| visible_runs.contains(&curve.run_ref))
             .filter_map(|curve| {
                 let series = curve.chart_series.as_ref()?;
                 let points = series.points();
@@ -443,7 +463,11 @@ fn physical_width(bounds: Option<Bounds<Pixels>>, scale_factor: f32) -> Option<u
     (width.is_finite() && width >= 1.).then(|| width.round() as u32)
 }
 
-pub fn detail_viewport(snapshot: &CurveSnapshot, selected: Option<AxisRange>) -> Option<Viewport> {
+pub fn detail_viewport(
+    snapshot: &CurveSnapshot,
+    selected: Option<AxisRange>,
+    visible_runs: Option<&[RunRef]>,
+) -> Option<Viewport> {
     let snapshot_x = AxisRange::new(
         snapshot.viewport.start() as f64,
         snapshot.viewport.end() as f64,
@@ -459,6 +483,7 @@ pub fn detail_viewport(snapshot: &CurveSnapshot, selected: Option<AxisRange>) ->
             snapshot
                 .series
                 .iter()
+                .filter(|curve| visible_runs.is_none_or(|runs| runs.contains(&curve.run_ref)))
                 .filter_map(|curve| curve.chart_series.as_ref()),
             range,
         )
@@ -476,6 +501,7 @@ pub fn detail_canvas(
     revision: u64,
     viewport: Viewport,
     baseline: Option<RunRef>,
+    visible_runs: std::rc::Rc<[RunRef]>,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
         move |bounds, window, _| {
@@ -486,7 +512,10 @@ pub fn detail_canvas(
                 viewport,
                 bounds,
                 window.appearance(),
-                baseline.as_ref(),
+                RenderRuns {
+                    baseline: baseline.as_ref(),
+                    visible: Some(&visible_runs),
+                },
             );
             if resized {
                 window.request_animation_frame();
@@ -598,6 +627,7 @@ pub fn timeline_canvas(
     brush: BrushState,
     snapshot: Option<Arc<CurveSnapshot>>,
     revision: u64,
+    visible_runs: std::rc::Rc<[RunRef]>,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
         move |bounds, window, _| {
@@ -613,7 +643,7 @@ pub fn timeline_canvas(
                     theme: ViewerTheme::for_appearance(window.appearance()),
                 };
             };
-            let Some(viewport) = overview_viewport(snapshot, brush.home()) else {
+            let Some(viewport) = overview_viewport(snapshot, brush.home(), &visible_runs) else {
                 return PreparedChart {
                     paths: Vec::new(),
                     theme: ViewerTheme::for_appearance(window.appearance()),
@@ -626,7 +656,10 @@ pub fn timeline_canvas(
                 viewport,
                 bounds,
                 window.appearance(),
-                None,
+                RenderRuns {
+                    baseline: None,
+                    visible: Some(&visible_runs),
+                },
             );
             adapter.detail_bounds = detail_bounds;
             prepared
@@ -671,8 +704,13 @@ pub fn timeline_canvas(
     )
 }
 
-fn overview_viewport(snapshot: &CurveSnapshot, home: AxisRange) -> Option<Viewport> {
-    detail_viewport(snapshot, None).map(|viewport| Viewport::new(home, viewport.y))
+fn overview_viewport(
+    snapshot: &CurveSnapshot,
+    home: AxisRange,
+    visible_runs: &[RunRef],
+) -> Option<Viewport> {
+    detail_viewport(snapshot, None, Some(visible_runs))
+        .map(|viewport| Viewport::new(home, viewport.y))
 }
 
 pub fn series_color_index(run_ref: &RunRef) -> usize {
@@ -729,7 +767,13 @@ mod tests {
         let snapshot = synthetic_snapshot(2, 10);
         let home = range(-5., 20.);
 
-        let viewport = overview_viewport(&snapshot, home).expect("overview should be drawable");
+        let visible = snapshot
+            .series
+            .iter()
+            .map(|curve| curve.run_ref.clone())
+            .collect::<Vec<_>>();
+        let viewport =
+            overview_viewport(&snapshot, home, &visible).expect("overview should be drawable");
 
         assert_eq!(viewport.x, home);
     }
@@ -818,6 +862,23 @@ mod tests {
     }
 
     #[test]
+    fn hidden_runs_are_excluded_from_hover_evidence() {
+        let snapshot = synthetic_snapshot(2, 10);
+        let visible = vec![snapshot.series[1].run_ref.clone()];
+        let viewport = detail_viewport(&snapshot, None, Some(&visible))
+            .expect("visible Run should be drawable");
+        let adapter = ChartAdapter {
+            detail_bounds: Some(Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.)))),
+            ..ChartAdapter::default()
+        };
+
+        let points = adapter.points_at_axis(&snapshot, viewport, 5., &visible);
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].run_ref, visible[0]);
+    }
+
+    #[test]
     fn hover_maps_a_rendered_point_back_to_stored_evidence()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -858,14 +919,19 @@ mod tests {
         let ReadSnapshot::Detail(snapshot) = event.result? else {
             return Err("worker returned the wrong snapshot kind".into());
         };
-        let viewport = detail_viewport(&snapshot, None).ok_or("detail should be drawable")?;
+        let visible = snapshot
+            .series
+            .iter()
+            .map(|curve| curve.run_ref.clone())
+            .collect::<Vec<_>>();
+        let viewport = detail_viewport(&snapshot, None, None).ok_or("detail should be drawable")?;
         let adapter = ChartAdapter {
             detail_bounds: Some(Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.)))),
             ..ChartAdapter::default()
         };
 
         let hover = adapter
-            .hit_test(&snapshot, viewport, point(px(0.), px(50.)))
+            .hit_test(&snapshot, viewport, point(px(0.), px(50.)), &visible)
             .ok_or("stored point should be hit")?;
 
         assert_eq!(
@@ -952,7 +1018,7 @@ mod tests {
         let snapshot = synthetic_snapshot(1, 2);
         let selected = range(0.25, 0.75);
 
-        let viewport = detail_viewport(&snapshot, Some(selected))
+        let viewport = detail_viewport(&snapshot, Some(selected), None)
             .expect("neighbor points should keep transient zoom drawable");
 
         assert_eq!(viewport.x, selected);
@@ -961,13 +1027,18 @@ mod tests {
     #[test]
     fn ruler_hover_maps_each_curve_to_nearest_stored_evidence() {
         let snapshot = synthetic_snapshot(2, 10);
-        let viewport = detail_viewport(&snapshot, None).expect("snapshot should be drawable");
+        let visible = snapshot
+            .series
+            .iter()
+            .map(|curve| curve.run_ref.clone())
+            .collect::<Vec<_>>();
+        let viewport = detail_viewport(&snapshot, None, None).expect("snapshot should be drawable");
         let adapter = ChartAdapter {
             detail_bounds: Some(Bounds::new(point(px(0.), px(0.)), size(px(90.), px(100.)))),
             ..ChartAdapter::default()
         };
 
-        let points = adapter.points_at_axis(&snapshot, viewport, 5.2);
+        let points = adapter.points_at_axis(&snapshot, viewport, 5.2, &visible);
 
         assert_eq!(points.len(), 2);
         assert!(points.iter().all(|point| point.axis_value == 5));
@@ -1045,6 +1116,11 @@ mod tests {
         let snapshot = synthetic_snapshot(10, 10_002);
         let viewport = Viewport::new(home, range(0., 11.));
         let bounds = Bounds::new(point(px(0.), px(0.)), size(px(2_500.), px(800.)));
+        let visible = snapshot
+            .series
+            .iter()
+            .map(|curve| curve.run_ref.clone())
+            .collect::<Vec<_>>();
         let mut adapter = ChartAdapter::default();
         black_box(adapter.prepare(
             &snapshot,
@@ -1052,7 +1128,10 @@ mod tests {
             viewport,
             bounds,
             WindowAppearance::Light,
-            None,
+            RenderRuns {
+                baseline: None,
+                visible: None,
+            },
         ));
         measure_cpu_budget("cached path preparation", 20, 200, || {
             black_box(adapter.prepare(
@@ -1061,7 +1140,10 @@ mod tests {
                 viewport,
                 bounds,
                 WindowAppearance::Light,
-                None,
+                RenderRuns {
+                    baseline: None,
+                    visible: None,
+                },
             ));
         });
         let mut revision = 2;
@@ -1072,15 +1154,18 @@ mod tests {
                 viewport,
                 bounds,
                 WindowAppearance::Light,
-                None,
+                RenderRuns {
+                    baseline: None,
+                    visible: None,
+                },
             ));
             revision += 1;
         });
         measure_cpu_budget("hit testing", 20, 200, || {
-            black_box(adapter.hit_test(&snapshot, viewport, point(px(1_250.), px(400.))));
+            black_box(adapter.hit_test(&snapshot, viewport, point(px(1_250.), px(400.)), &visible));
         });
         measure_cpu_budget("ruler hover evidence", 100, 1_000, || {
-            black_box(adapter.points_at_axis(&snapshot, viewport, 5_000.5));
+            black_box(adapter.points_at_axis(&snapshot, viewport, 5_000.5, &visible));
         });
     }
 }

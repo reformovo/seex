@@ -55,6 +55,14 @@ pub struct PanelReadTag {
     pub view_id: AnalysisViewId,
     pub panel_id: MetricPanelId,
     pub generation: Generation,
+    pub mode: PanelReadMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PanelReadMode {
+    #[default]
+    Replace,
+    Merge,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -424,6 +432,7 @@ mod tests {
             view_id: AnalysisViewId::from_string("view"),
             panel_id: MetricPanelId::from_string("panel"),
             generation: Generation(generation),
+            mode: PanelReadMode::Replace,
         }
     }
 

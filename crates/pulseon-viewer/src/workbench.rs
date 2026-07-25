@@ -7,7 +7,7 @@ use pulseon_model::metric::MetricKey;
 use pulseon_model::run::RunId;
 use pulseon_model::types::ProjectId;
 
-use crate::coordination::{AnalysisViewId, MetricPanelId, SourceReadFailure};
+use crate::coordination::{AnalysisViewId, MetricPanelId, PanelReadMode, SourceReadFailure};
 use crate::core::{DataSourceId, RunRef, SelectionError, ViewerCore, ViewerSelection};
 use crate::query::{CurveSnapshot, InspectorSnapshot};
 use crate::workbench_document::WorkbenchDocument;
@@ -468,7 +468,6 @@ impl AnalysisViews {
             view.runs.push(run);
             true
         };
-        self.invalidate_active_panels();
         Ok(selected)
     }
 
@@ -738,9 +737,11 @@ impl AnalysisViews {
         panel_id: &MetricPanelId,
         kind: ReadKind,
         generation: Generation,
+        mode: PanelReadMode,
         snapshot: Option<CurveSnapshot>,
         source_errors: Vec<SourceReadFailure>,
     ) -> bool {
+        let run_order = self.active().runs.clone();
         let Some(panel) = self.active_panel_mut(panel_id) else {
             return false;
         };
@@ -758,12 +759,26 @@ impl AnalysisViews {
         if let Some(snapshot) = snapshot {
             match kind {
                 ReadKind::Overview => {
-                    panel.overview_revision = generation.0;
-                    panel.overview = Some(Arc::new(snapshot));
+                    let replacing = mode == PanelReadMode::Replace || panel.overview.is_none();
+                    if mode == PanelReadMode::Merge {
+                        merge_curve_snapshot(&mut panel.overview, snapshot, &run_order);
+                    } else {
+                        panel.overview = Some(Arc::new(snapshot));
+                    }
+                    if replacing {
+                        panel.overview_revision = generation.0;
+                    }
                 }
                 ReadKind::Detail => {
-                    panel.detail_revision = generation.0;
-                    panel.detail = Some(Arc::new(snapshot));
+                    let replacing = mode == PanelReadMode::Replace || panel.detail.is_none();
+                    if mode == PanelReadMode::Merge {
+                        merge_curve_snapshot(&mut panel.detail, snapshot, &run_order);
+                    } else {
+                        panel.detail = Some(Arc::new(snapshot));
+                    }
+                    if replacing {
+                        panel.detail_revision = generation.0;
+                    }
                 }
                 ReadKind::Inspector => {}
                 ReadKind::Catalog => {}
@@ -882,6 +897,45 @@ impl AnalysisViews {
     }
 }
 
+fn merge_curve_snapshot(
+    current: &mut Option<Arc<CurveSnapshot>>,
+    incoming: CurveSnapshot,
+    run_order: &[RunRef],
+) {
+    let Some(current_snapshot) = current.as_mut() else {
+        *current = Some(Arc::new(incoming));
+        return;
+    };
+    if current_snapshot.viewport != incoming.viewport
+        || current_snapshot.point_budget != incoming.point_budget
+    {
+        *current = Some(Arc::new(incoming));
+        return;
+    }
+    let snapshot = Arc::make_mut(current_snapshot);
+    for curve in incoming.series {
+        snapshot
+            .series
+            .retain(|existing| existing.run_ref != curve.run_ref);
+        snapshot.series.push(curve);
+    }
+    snapshot.series.sort_by_key(|curve| {
+        run_order
+            .iter()
+            .position(|run| run == &curve.run_ref)
+            .unwrap_or(usize::MAX)
+    });
+    snapshot.real_range = match (snapshot.real_range, incoming.real_range) {
+        (Some(current), Some(incoming)) => AlignmentViewport::new(
+            current.start().min(incoming.start()),
+            current.end().max(incoming.end()),
+        )
+        .ok(),
+        (current @ Some(_), None) => current,
+        (None, incoming) => incoming,
+    };
+}
+
 fn invalidate_view_panels(view: &mut AnalysisView) {
     view.timeline_extents.clear();
     for panel in &mut view.panels {
@@ -927,6 +981,37 @@ mod tests {
         assert_eq!(views.views().len(), 1);
         assert_ne!(views.active().view_id, original);
         assert!(views.active().runs.is_empty());
+    }
+
+    #[test]
+    fn run_visibility_changes_preserve_loaded_panel_state() {
+        let mut views = AnalysisViews::default();
+        let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
+        views.begin_active_panel_read(&panel_id, ReadKind::Detail, Generation(7));
+        let run = RunRef::new(
+            DataSourceId::from_string("source"),
+            ProjectId::from_string("project"),
+            RunId::from_string("run"),
+        );
+
+        assert!(
+            views
+                .toggle_active_run(run.clone())
+                .expect("show should fit")
+        );
+        assert!(
+            views
+                .active_panel(&panel_id)
+                .expect("panel should remain")
+                .is_pending(ReadKind::Detail)
+        );
+        assert!(!views.toggle_active_run(run).expect("hide should succeed"));
+        assert!(
+            views
+                .active_panel(&panel_id)
+                .expect("panel should remain")
+                .is_pending(ReadKind::Detail)
+        );
     }
 
     #[test]
@@ -1228,6 +1313,7 @@ mod tests {
             &first,
             ReadKind::Detail,
             Generation(2),
+            PanelReadMode::Replace,
             None,
             Vec::new(),
         ));
@@ -1235,6 +1321,7 @@ mod tests {
             &second,
             ReadKind::Detail,
             Generation(2),
+            PanelReadMode::Replace,
             None,
             vec![SourceReadFailure {
                 source_id: DataSourceId::from_string("source-b"),

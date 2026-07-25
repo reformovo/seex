@@ -19,7 +19,8 @@ use pulseon_model::run::{Run, RunStatus};
 use pulseon_model::types::{Project, ProjectId};
 use pulseon_viewer::coordination::AnalysisViewId;
 use pulseon_viewer::coordination::{
-    MetricPanelId, PanelReadCoordinator, PanelReadOutcome, PanelReadRequest, PanelReadTag,
+    MetricPanelId, PanelReadCoordinator, PanelReadMode, PanelReadOutcome, PanelReadRequest,
+    PanelReadTag,
 };
 use pulseon_viewer::core::{ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore};
 use pulseon_viewer::model::DiscoveryRequest;
@@ -621,10 +622,6 @@ impl ViewerApp {
                     .views
                     .active_panel(&panel_id)
                     .map(|panel| panel.metric_key.clone());
-                let extent = completed
-                    .curves
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.real_range);
                 if !completed.source_errors.is_empty() {
                     self.local_error = Some(
                         completed
@@ -647,11 +644,17 @@ impl ViewerApp {
                         &panel_id,
                         kind,
                         completed.tag.generation,
+                        completed.tag.mode,
                         completed.curves,
                         completed.source_errors,
                     )
                 };
                 if accepted && kind == ReadKind::Overview {
+                    let extent = self
+                        .views
+                        .active_panel(&panel_id)
+                        .and_then(|panel| panel.overview.as_ref())
+                        .and_then(|snapshot| snapshot.real_range);
                     if let Some(metric_key) = metric_key
                         && let Some(home) =
                             self.views.record_active_metric_extent(metric_key, extent)
@@ -679,7 +682,7 @@ impl ViewerApp {
                 if !self.active_visible_runs().is_empty()
                     && !self.views.active().panels.is_empty() =>
             {
-                self.request_overview(cx);
+                self.request_missing_panel_curves(cx);
                 if self.bottom_inspector_visible {
                     self.request_inspector(cx);
                 }
@@ -716,6 +719,16 @@ impl ViewerApp {
 
     fn request_panel_overview(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
         let runs = self.active_visible_runs();
+        self.request_panel_overview_for_runs(panel_id, runs, PanelReadMode::Replace, cx);
+    }
+
+    fn request_panel_overview_for_runs(
+        &mut self,
+        panel_id: &MetricPanelId,
+        runs: Vec<RunRef>,
+        mode: PanelReadMode,
+        cx: &mut Context<Self>,
+    ) {
         let Some(metric_key) = self
             .views
             .active_panel(panel_id)
@@ -732,6 +745,7 @@ impl ViewerApp {
             view_id: self.views.active().view_id.clone(),
             panel_id: panel_id.clone(),
             generation,
+            mode,
         };
         let planned = match self.panel_reads.begin(
             tag,
@@ -798,6 +812,7 @@ impl ViewerApp {
             view_id: self.views.active().view_id.clone(),
             panel_id: panel_id.clone(),
             generation,
+            mode: PanelReadMode::Replace,
         };
         let planned = match self.panel_reads.begin(
             tag,
@@ -828,6 +843,25 @@ impl ViewerApp {
         cx: &mut Context<Self>,
     ) {
         let runs = self.active_visible_runs();
+        self.request_panel_detail_for_runs(
+            panel_id,
+            viewport,
+            physical_width,
+            runs,
+            PanelReadMode::Replace,
+            cx,
+        );
+    }
+
+    fn request_panel_detail_for_runs(
+        &mut self,
+        panel_id: &MetricPanelId,
+        viewport: AlignmentViewport,
+        physical_width: u32,
+        runs: Vec<RunRef>,
+        mode: PanelReadMode,
+        cx: &mut Context<Self>,
+    ) {
         let Some(metric_key) = self
             .views
             .active_panel(panel_id)
@@ -844,6 +878,7 @@ impl ViewerApp {
             view_id: self.views.active().view_id.clone(),
             panel_id: panel_id.clone(),
             generation,
+            mode,
         };
         let planned = match self.panel_reads.begin(
             tag,
@@ -906,6 +941,10 @@ impl ViewerApp {
     fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.local_error = None;
         self.refresh_all_sources(cx);
+        self.request_overview(cx);
+        if self.bottom_inspector_visible {
+            self.request_inspector(cx);
+        }
         cx.notify();
     }
 
@@ -1233,19 +1272,68 @@ impl ViewerApp {
         match self.views.toggle_active_run(run.clone()) {
             Ok(selected) => {
                 self.local_error = None;
-                let core_selected = self.core.selection().runs.contains(&run);
-                if selected != core_selected
-                    && let Err(error) = self.core.toggle_run(run)
-                {
-                    self.local_error = Some(error.to_string());
-                    cx.notify();
-                    return;
+                if selected {
+                    self.refresh_catalog(cx);
+                    self.request_missing_panel_curves(cx);
                 }
-                self.refresh_catalog(cx);
+                if self.bottom_inspector_visible {
+                    self.request_inspector(cx);
+                }
             }
             Err(error) => self.local_error = Some(error.to_string()),
         }
         cx.notify();
+    }
+
+    fn request_missing_panel_curves(&mut self, cx: &mut Context<Self>) {
+        let runs = self.active_visible_runs();
+        let viewport = self.core.selected_viewport();
+        let viewport_state = self.track_viewport.borrow().clone();
+        let panels = self.views.active().panels.clone();
+        for (index, panel) in panels.into_iter().enumerate() {
+            let missing_overview = runs
+                .iter()
+                .filter(|run| {
+                    panel.overview.as_ref().is_none_or(|snapshot| {
+                        !snapshot.series.iter().any(|curve| &curve.run_ref == *run)
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing_overview.is_empty() {
+                self.request_panel_overview_for_runs(
+                    &panel.panel_id,
+                    missing_overview,
+                    PanelReadMode::Merge,
+                    cx,
+                );
+            }
+            let Some(viewport) = viewport else {
+                continue;
+            };
+            if !viewport_state.overscan.contains(&index) {
+                continue;
+            }
+            let missing_detail = runs
+                .iter()
+                .filter(|run| {
+                    panel.detail.as_ref().is_none_or(|snapshot| {
+                        !snapshot.series.iter().any(|curve| &curve.run_ref == *run)
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !missing_detail.is_empty() {
+                self.request_panel_detail_for_runs(
+                    &panel.panel_id,
+                    viewport,
+                    viewport_state.physical_width.max(1),
+                    missing_detail,
+                    PanelReadMode::Merge,
+                    cx,
+                );
+            }
+        }
     }
 
     fn active_visible_runs(&self) -> Vec<RunRef> {
@@ -2551,6 +2639,7 @@ impl ViewerApp {
         let panel_count = self.views.active().panels.len();
         let scheduled = state.overscan.start.min(panel_count)..state.overscan.end.min(panel_count);
         let panels = self.views.active().panels[scheduled].to_vec();
+        let visible_runs = self.active_visible_runs();
         let scheduled_ids = panels
             .iter()
             .map(|panel| panel.panel_id.clone())
@@ -2568,6 +2657,7 @@ impl ViewerApp {
                 && let Some(viewport) = renderer::detail_viewport(
                     snapshot,
                     self.core.brush().map(|brush| brush.selected()),
+                    Some(&visible_runs),
                 )
                 && let Some(canvas) = canvas
             {
@@ -2575,7 +2665,13 @@ impl ViewerApp {
                     .entry(panel.panel_id.clone())
                     .or_insert_with(|| Rc::new(RefCell::new(ChartAdapter::default())))
                     .borrow_mut()
-                    .warm_projection(snapshot, panel.detail_revision, viewport, canvas);
+                    .warm_projection(
+                        snapshot,
+                        panel.detail_revision,
+                        viewport,
+                        canvas,
+                        &visible_runs,
+                    );
             }
             if self.should_schedule_panel_detail(
                 &panel.panel_id,
@@ -2811,8 +2907,10 @@ impl ViewerApp {
                 .text_color(theme.colors.text_muted)
                 .child(message);
         };
+        let visible_runs: Rc<[RunRef]> = self.active_visible_runs().into();
         let selected = self.core.brush().map(|brush| brush.selected());
-        let Some(viewport) = renderer::detail_viewport(&snapshot, selected) else {
+        let Some(viewport) = renderer::detail_viewport(&snapshot, selected, Some(&visible_runs))
+        else {
             return div()
                 .size_full()
                 .flex()
@@ -2831,7 +2929,9 @@ impl ViewerApp {
         let mut callouts = hover.map_or_else(
             || {
                 self.ruler_hover.map_or_else(Vec::new, |axis| {
-                    adapter.borrow().points_at_axis(&snapshot, viewport, axis)
+                    adapter
+                        .borrow()
+                        .points_at_axis(&snapshot, viewport, axis, &visible_runs)
                 })
             },
             |hover| vec![hover],
@@ -2871,6 +2971,7 @@ impl ViewerApp {
                             panel.detail_revision,
                             viewport,
                             baseline.clone(),
+                            Rc::clone(&visible_runs),
                         )
                         .size_full(),
                     )
@@ -2951,6 +3052,7 @@ impl ViewerApp {
                 (panel.overview.clone(), panel.overview_revision)
             });
         let adapter = Rc::clone(&self.chart_adapter);
+        let visible_runs: Rc<[RunRef]> = self.active_visible_runs().into();
         div().h(px(40.)).child(
             div()
                 .id("overview-chart")
@@ -2961,7 +3063,10 @@ impl ViewerApp {
                 .relative()
                 .cursor_pointer()
                 .bg(theme.colors.surface)
-                .child(renderer::timeline_canvas(adapter, brush, snapshot, revision).size_full())
+                .child(
+                    renderer::timeline_canvas(adapter, brush, snapshot, revision, visible_runs)
+                        .size_full(),
+                )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -3176,9 +3281,12 @@ impl ViewerApp {
         else {
             return;
         };
-        let Some(viewport) =
-            renderer::detail_viewport(&snapshot, self.core.brush().map(|brush| brush.selected()))
-        else {
+        let visible_runs = self.active_visible_runs();
+        let Some(viewport) = renderer::detail_viewport(
+            &snapshot,
+            self.core.brush().map(|brush| brush.selected()),
+            Some(&visible_runs),
+        ) else {
             return;
         };
         let Some(adapter) = self.track_adapters.get(panel_id) else {
@@ -3187,7 +3295,7 @@ impl ViewerApp {
         let adapter = adapter.borrow();
         let pointer_axis = adapter.detail_axis_at(viewport.x, event.position);
         let pointer_anchor = adapter.detail_pointer_anchor(event.position);
-        let mut hover = adapter.hit_test(&snapshot, viewport, event.position);
+        let mut hover = adapter.hit_test(&snapshot, viewport, event.position, &visible_runs);
         if let (Some(hover), Some((x, align_left))) = (&mut hover, pointer_anchor) {
             hover.canvas_position.x = x;
             hover.align_left = align_left;
@@ -5127,6 +5235,119 @@ mod tests {
         }
 
         #[gpui::test]
+        fn hiding_a_loaded_run_reuses_every_metric_snapshot(cx: &mut TestAppContext) {
+            let (root, project_id, first_run_id) = fixture_with_complete_runs(2, 2);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 2);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                    viewer.select_metric(MetricKey::from_string("metric-1"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels.iter().all(|panel| {
+                    panel
+                        .detail
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.series.len() == 1)
+                })
+            });
+            let initial_revisions = window
+                .read_with(&cx, |viewer, _| {
+                    viewer
+                        .views
+                        .active()
+                        .panels
+                        .iter()
+                        .map(|panel| panel.detail_revision)
+                        .collect::<Vec<_>>()
+                })
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let source_id = viewer
+                        .core
+                        .selection()
+                        .source_id
+                        .clone()
+                        .expect("fixture source should be selected");
+                    viewer.toggle_run(
+                        RunRef::new(
+                            source_id,
+                            project_id,
+                            RunId::from_string(
+                                "run-1-with-a-very-long-identifier-that-requires-horizontal-scrolling",
+                            ),
+                        ),
+                        cx,
+                    );
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels.iter().all(|panel| {
+                    panel
+                        .detail
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.series.len() == 2)
+                })
+            });
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert_eq!(
+                        viewer
+                            .views
+                            .active()
+                            .panels
+                            .iter()
+                            .map(|panel| panel.detail_revision)
+                            .collect::<Vec<_>>(),
+                        initial_revisions,
+                    );
+                })
+                .expect("viewer should remain open");
+            let before = window
+                .read_with(&cx, |viewer, _| {
+                    viewer
+                        .views
+                        .active()
+                        .panels
+                        .iter()
+                        .map(|panel| {
+                            (
+                                panel.detail.clone().expect("detail should be loaded"),
+                                panel.detail_revision,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let hidden = viewer.views.active().runs[1].clone();
+                    viewer.toggle_run(hidden, cx);
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert_eq!(viewer.views.active().runs.len(), 1);
+                    for (panel, (snapshot, revision)) in
+                        viewer.views.active().panels.iter().zip(&before)
+                    {
+                        assert!(Arc::ptr_eq(
+                            panel.detail.as_ref().expect("detail should remain loaded"),
+                            snapshot,
+                        ));
+                        assert_eq!(panel.detail_revision, *revision);
+                    }
+                })
+                .expect("viewer should remain open");
+        }
+
+        #[gpui::test]
         fn empty_view_keeps_the_converged_shell_and_opens_metric_picker(cx: &mut TestAppContext) {
             let (root, project_id, run_id) = fixture(20);
             cx.executor().allow_parking();
@@ -5668,6 +5889,7 @@ mod tests {
                             renderer::detail_viewport(
                                 panel.detail.as_deref().expect("detail should be loaded"),
                                 selected,
+                                None,
                             )
                             .expect("detail should be drawable")
                             .y
