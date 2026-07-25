@@ -2450,11 +2450,24 @@ impl ViewerApp {
                                     .child("Maximize"),
                                 ),
                         )
-                        .children(direction.into_iter().flat_map(|_| {
-                            snapshot
-                                .into_iter()
-                                .flat_map(|snapshot| ranking_lines(snapshot, baseline.as_ref()))
-                        }))
+                        .child(inspector_table(
+                            &[
+                                ("Rank", 60., true),
+                                ("Run", 180., false),
+                                ("Role", 90., false),
+                                ("Status", 90., false),
+                                ("Objective", 120., true),
+                                ("Δ vs baseline", 130., true),
+                                ("Evidence", 140., false),
+                                ("Project · Source", 240., false),
+                            ],
+                            direction
+                                .zip(snapshot)
+                                .map_or_else(Vec::new, |(_, snapshot)| {
+                                    ranking_table_rows(snapshot, baseline.as_ref())
+                                }),
+                            theme,
+                        ))
                 }
                 InspectorTab::Evidence => {
                     let baseline_value = baseline_evidence_value(snapshot, baseline.as_ref());
@@ -3871,6 +3884,64 @@ fn inspector_table_row(
         )
 }
 
+fn ranking_table_rows(snapshot: &InspectorSnapshot, baseline: Option<&RunRef>) -> Vec<Vec<String>> {
+    let baseline_value = baseline_evidence_value(Some(snapshot), baseline);
+    let mut runs = snapshot.runs.iter().collect::<Vec<_>>();
+    runs.sort_by(|left, right| {
+        left.run_ref
+            .source_id
+            .as_str()
+            .cmp(right.run_ref.source_id.as_str())
+            .then_with(|| {
+                left.run_ref
+                    .project_id
+                    .as_str()
+                    .cmp(right.run_ref.project_id.as_str())
+            })
+            .then_with(|| {
+                left.ranking
+                    .map(|ranking| ranking.order)
+                    .unwrap_or(usize::MAX)
+                    .cmp(
+                        &right
+                            .ranking
+                            .map(|ranking| ranking.order)
+                            .unwrap_or(usize::MAX),
+                    )
+            })
+    });
+    runs.into_iter()
+        .map(|run| {
+            let value = run.evidence.last_value_f64;
+            vec![
+                run.ranking
+                    .and_then(|ranking| ranking.rank)
+                    .map_or_else(|| "—".to_owned(), |rank| format!("#{rank}")),
+                run.run.name.clone(),
+                if baseline == Some(&run.run_ref) {
+                    "Baseline".to_owned()
+                } else {
+                    "Candidate".to_owned()
+                },
+                run_status(run.evidence.run_status).to_owned(),
+                value.map_or_else(|| "—".to_owned(), |value| format!("{value:.6}")),
+                inspector_delta(value, &run.run_ref, baseline, baseline_value),
+                format!(
+                    "{:?}{}",
+                    run.evidence.completeness,
+                    reasons_label(&run.evidence.reasons)
+                ),
+                format!(
+                    "{} · {}",
+                    run.run_ref.project_id.as_str(),
+                    run.run_ref.source_id
+                ),
+            ]
+        })
+        .collect()
+}
+
+#[cfg(test)]
 fn ranking_lines(snapshot: &InspectorSnapshot, baseline: Option<&RunRef>) -> Vec<String> {
     let baseline_value = baseline_evidence_value(Some(snapshot), baseline);
     let mut projects = Vec::<((DataSourceId, ProjectId), Vec<_>)>::new();
@@ -3971,6 +4042,21 @@ fn inspector_value(
     } else {
         format!("{value:.6}")
     }
+}
+
+fn inspector_delta(
+    value: Option<f64>,
+    run_ref: &RunRef,
+    baseline: Option<&RunRef>,
+    baseline_value: Option<f64>,
+) -> String {
+    if baseline == Some(run_ref) {
+        return "—".to_owned();
+    }
+    value.zip(baseline_value).map_or_else(
+        || "—".to_owned(),
+        |(value, baseline)| format!("{:+.6}", value - baseline),
+    )
 }
 
 fn error_banner(message: String, theme: ViewerTheme) -> gpui::Div {
@@ -4268,6 +4354,22 @@ mod tests {
         assert_eq!(
             lines[2],
             "#2 · Run 2 · status finished · step 1 · value 2.000000 · Baseline · Complete"
+        );
+        let rows = ranking_table_rows(&snapshot, Some(&baseline));
+        assert_eq!(
+            rows.iter()
+                .map(|row| [
+                    row[0].as_str(),
+                    row[1].as_str(),
+                    row[2].as_str(),
+                    row[5].as_str()
+                ])
+                .collect::<Vec<_>>(),
+            [
+                ["#1", "Run 1", "Candidate", "-1.000000"],
+                ["#2", "Run 2", "Baseline", "—"],
+                ["#1", "Run 3", "Candidate", "+1.000000"],
+            ]
         );
     }
 
