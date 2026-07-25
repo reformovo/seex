@@ -4121,7 +4121,7 @@ fn inspector_delta(
     }
     value.zip(baseline_value).map_or_else(
         || "—".to_owned(),
-        |(value, baseline)| format!("{:+.6}", value - baseline),
+        |(value, baseline)| format_signed_delta(value - baseline, 6),
     )
 }
 
@@ -4220,8 +4220,13 @@ fn hover_value_line(axis: AlignmentAxis, hover: &HoverPoint, delta: Option<f64>)
 fn hover_value_label(hover: &HoverPoint, delta: Option<f64>) -> String {
     delta.map_or_else(
         || format!("{:.2}", hover.value),
-        |delta| format!("{:.2}({delta:+.2})", hover.value),
+        |delta| format!("{:.2}({})", hover.value, format_signed_delta(delta, 2)),
     )
+}
+
+fn format_signed_delta(delta: f64, precision: usize) -> String {
+    let sign = if delta.is_sign_negative() { '−' } else { '+' };
+    format!("{sign}{:.precision$}", delta.abs())
 }
 
 fn baseline_delta(panel: &MetricPanel, baseline: &RunRef, hover: &HoverPoint) -> Option<f64> {
@@ -4339,7 +4344,7 @@ mod tests {
             hover_value_line(AlignmentAxis::Step, &hover, Some(0.55)),
             "2904 · 0.51(+0.55)"
         );
-        assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51(-0.55)");
+        assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51(−0.55)");
         assert_eq!(format_cursor_coordinate(CurveAxis::Step, 496_000.), "496k");
         assert_eq!(
             format_cursor_coordinate(CurveAxis::AbsoluteTime, 34_920_000.),
@@ -4451,7 +4456,7 @@ mod tests {
                 ])
                 .collect::<Vec<_>>(),
             [
-                ["#1", "Run 1", "Candidate", "-1.000000"],
+                ["#1", "Run 1", "Candidate", "−1.000000"],
                 ["#2", "Run 2", "Baseline", "—"],
                 ["#1", "Run 3", "Candidate", "—"],
             ]
