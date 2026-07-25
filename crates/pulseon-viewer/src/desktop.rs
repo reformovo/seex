@@ -45,6 +45,8 @@ use components::{IconName, StatusTone};
 use renderer::{ChartAdapter, HoverPoint};
 use theme::ViewerTheme;
 
+const METRIC_TRACK_VERTICAL_PADDING: f32 = 4.;
+
 #[derive(Clone, Debug)]
 enum DragGesture {
     BrushStart,
@@ -1736,12 +1738,7 @@ impl ViewerApp {
                             .child(axis_picker)
                             .child(metric_picker),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .px(theme.spacing.content_padding)
-                            .child(timeline),
-                    ),
+                    .child(div().flex_1().child(timeline)),
             )
             .child(
                 div()
@@ -2600,7 +2597,7 @@ impl ViewerApp {
         let logical_width = f32::from_bits(state.logical_width_bits) as f64;
         for panel in panels {
             let canvas_height =
-                f64::from(panel.row_height) - f64::from(self.theme.spacing.content_padding * 2.);
+                f64::from(panel.row_height) - f64::from(METRIC_TRACK_VERTICAL_PADDING * 2.);
             let canvas = CanvasSize::new(logical_width, canvas_height.max(1.)).ok();
             if let Some(snapshot) = panel.detail.as_deref()
                 && let Some(viewport) = renderer::detail_viewport(
@@ -2889,8 +2886,7 @@ impl ViewerApp {
         div()
             .relative()
             .size_full()
-            .px_2()
-            .py_1()
+            .py(px(METRIC_TRACK_VERTICAL_PADDING))
             .child(
                 div()
                     .id(SharedString::from(format!(
@@ -2941,8 +2937,8 @@ impl ViewerApp {
                     })),
             )
             .children(callouts.into_iter().map(move |(hover, delta)| {
-                let x = px(8.) + hover.canvas_position.x;
-                let y = px(4.) + hover.canvas_position.y;
+                let x = hover.canvas_position.x;
+                let y = px(METRIC_TRACK_VERTICAL_PADDING) + hover.canvas_position.y;
                 let left = if hover.align_left {
                     (x - px(112.)).max(px(0.))
                 } else {
@@ -2999,8 +2995,6 @@ impl ViewerApp {
                 .w_full()
                 .relative()
                 .cursor_pointer()
-                .border_1()
-                .border_color(theme.colors.border)
                 .bg(theme.colors.surface)
                 .child(renderer::timeline_canvas(adapter, brush, snapshot, revision).size_full())
                 .on_mouse_down(
@@ -5447,6 +5441,14 @@ mod tests {
                 .expect("Metric track viewport should render");
             assert_eq!(track_scroll.origin.x, workspace.origin.x);
             assert_eq!(track_scroll.size.width, workspace.size.width);
+            let overview = cx
+                .debug_bounds("overview-chart")
+                .expect("Global overview should render");
+            let ruler = cx
+                .debug_bounds("viewport-ruler")
+                .expect("Viewport ruler should render");
+            assert_eq!(overview.origin.x, ruler.origin.x);
+            assert_eq!(overview.size.width, ruler.size.width);
 
             for metric in ["metric-0", "metric-1"] {
                 let sidebar = cx
@@ -5484,6 +5486,10 @@ mod tests {
                     track.origin.x + track.size.width,
                     workspace.origin.x + workspace.size.width
                 );
+                assert_eq!(track.origin.x, ruler.origin.x);
+                assert_eq!(track.size.width, ruler.size.width);
+                assert_eq!(canvas.origin.x, track.origin.x);
+                assert_eq!(canvas.size.width, track.size.width);
                 assert!(canvas.size.width > px(0.));
                 assert!(canvas.size.height >= track.size.height - px(8.));
                 assert!(metadata.size.height > px(0.));
