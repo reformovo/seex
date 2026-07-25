@@ -3060,10 +3060,6 @@ impl Render for ViewerApp {
         self.theme = ViewerTheme::for_appearance(window.appearance());
         let theme = self.theme;
         self.reconcile_canvas_widths(window.scale_factor(), cx);
-        let source = self.source_path.as_ref().map_or_else(
-            || "No project open".to_owned(),
-            |path| path.display().to_string(),
-        );
         let error = self.error().map(ToOwned::to_owned);
         let has_catalog = self
             .core
@@ -3091,37 +3087,13 @@ impl Render for ViewerApp {
             .on_action(cx.listener(Self::on_step))
             .on_action(cx.listener(Self::on_elapsed))
             .flex()
-            .flex_col()
             .size_full()
             .bg(theme.colors.window)
             .text_color(theme.colors.text)
             .child(
                 div()
-                    .id("application-header")
-                    .debug_selector(|| "application-header".to_owned())
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_5()
-                    .py_3()
-                    .bg(theme.colors.panel)
-                    .border_b_1()
-                    .border_color(theme.colors.border)
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("PulseOn Viewer"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(theme.colors.text_muted)
-                            .child(source),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
+                    .size_full()
                     .flex_1()
                     .overflow_hidden()
                     .children(
@@ -3141,6 +3113,22 @@ impl Render for ViewerApp {
                                 components::tab_bar(theme)
                                     .id("analysis-tab-bar")
                                     .debug_selector(|| "analysis-tab-bar".to_owned())
+                                    .flex_shrink_0()
+                                    .children((!self.project_sidebar_visible).then(|| {
+                                        components::icon_button(
+                                            "show-project-sidebar",
+                                            theme,
+                                            false,
+                                            false,
+                                        )
+                                        .debug_selector(|| "show-project-sidebar".to_owned())
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.project_sidebar_visible = true;
+                                            cx.notify();
+                                        }))
+                                        .child(components::icon(IconName::FolderOpen, theme))
+                                    }))
                                     .children(views.into_iter().enumerate().map(|(index, view)| {
                                         let selected = view.view_id == active_view_id;
                                         let activate_id = view.view_id.clone();
@@ -4071,6 +4059,7 @@ mod tests {
                     .expect("viewer should remain open")
             );
             assert!(cx.debug_bounds("project-run-tree").is_none());
+            assert!(cx.debug_bounds("show-project-sidebar").is_some());
             let analysis_after = cx
                 .debug_bounds("analysis-tab")
                 .expect("Analysis workspace should remain rendered");
@@ -4090,9 +4079,6 @@ mod tests {
                 cx.simulate_resize(size(px(window_size.0), px(window_size.1)));
                 cx.run_until_parked();
 
-                let header = cx
-                    .debug_bounds("application-header")
-                    .expect("application header should render");
                 let sidebar = cx
                     .debug_bounds("project-sidebar")
                     .expect("Project sidebar should render");
@@ -4109,8 +4095,8 @@ mod tests {
                     .debug_bounds("duplicate-view")
                     .expect("View toolbar control should render");
 
-                assert_eq!(header.size.width, px(window_size.0));
-                assert_eq!(sidebar.origin.y, header.origin.y + header.size.height);
+                assert_eq!(sidebar.origin.y, px(0.));
+                assert_eq!(sidebar.size.height, px(window_size.1));
                 assert_eq!(analysis.origin.x, sidebar.origin.x + sidebar.size.width);
                 assert_eq!(tab_bar.origin.x, analysis.origin.x);
                 assert_eq!(tab_bar.size.width, analysis.size.width);
