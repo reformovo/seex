@@ -37,7 +37,6 @@ impl ViewerApp {
                         .filter(|run| run.project_id == project.project_id)
                         .cloned()
                         .collect(),
-                    source_path: source.root_path.clone(),
                     source_label: source_label.clone(),
                     placement,
                 });
@@ -46,14 +45,14 @@ impl ViewerApp {
         projects
     }
 
-    fn sidebar_run(&self, run_ref: &RunRef) -> Option<(Run, PathBuf)> {
+    fn sidebar_run(&self, run_ref: &RunRef) -> Option<Run> {
         let source = self.sources.source(&run_ref.source_id)?;
-        let run = source
+        source
             .catalog
             .runs
             .iter()
-            .find(|run| run.project_id == run_ref.project_id && run.run_id == run_ref.run_id)?;
-        Some((run.clone(), source.root_path.clone()))
+            .find(|run| run.project_id == run_ref.project_id && run.run_id == run_ref.run_id)
+            .cloned()
     }
 
     pub(super) fn render_converged_project_sidebar(
@@ -308,10 +307,8 @@ impl ViewerApp {
             runs.clone()
         };
         let folder_source = project.project_ref.source_id.clone();
-        let folder_path = project.source_path.clone();
         let folder_project = project.project_ref.project_id.clone();
         let keyboard_source = project.project_ref.source_id.clone();
-        let keyboard_path = project.source_path.clone();
         let keyboard_project = project.project_ref.project_id.clone();
         let hover_ref = project_ref.clone();
         let menu_ref = project_ref.clone();
@@ -348,7 +345,6 @@ impl ViewerApp {
                 .on_action(cx.listener(move |this, _: &ActivateSelection, _, cx| {
                     this.activate_tree_project(
                         keyboard_source.clone(),
-                        keyboard_path.clone(),
                         keyboard_project.clone(),
                         cx,
                     );
@@ -386,7 +382,6 @@ impl ViewerApp {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.activate_tree_project(
                             folder_source.clone(),
-                            folder_path.clone(),
                             folder_project.clone(),
                             cx,
                         );
@@ -519,19 +514,12 @@ impl ViewerApp {
         let theme = self.theme;
         let selected = self.views.active().runs.contains(&run_ref);
         let hovered = self.hovered_run.as_ref() == Some(&run_ref);
-        let (name, status, source_path) = self.sidebar_run(&run_ref).map_or_else(
-            || {
-                (
-                    run_ref.run_id.as_str().to_owned(),
-                    "Unavailable".to_owned(),
-                    PathBuf::from(run_ref.source_id.as_str()),
-                )
-            },
-            |(run, source_path)| (run.name, run_status(run.status).to_owned(), source_path),
+        let (name, status) = self.sidebar_run(&run_ref).map_or_else(
+            || (run_ref.run_id.as_str().to_owned(), "Unavailable".to_owned()),
+            |run| (run.name, run_status(run.status).to_owned()),
         );
         let hover_run = run_ref.clone();
         let row_run = run_ref.clone();
-        let row_path = source_path.clone();
         let eye_run = run_ref.clone();
         let baseline_run = run_ref.clone();
         let pin_run = run_ref.clone();
@@ -557,7 +545,7 @@ impl ViewerApp {
             |row| {
                 row.cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_tree_run(row_run.clone(), row_path.clone(), cx);
+                        this.toggle_tree_run(row_run.clone(), cx);
                     }))
             },
         )
@@ -582,7 +570,7 @@ impl ViewerApp {
             ))
             .when(selected || visible_count < MAX_SELECTED_RUNS, |button| {
                 button.on_click(cx.listener(move |this, _, _, cx| {
-                    this.toggle_tree_run(eye_run.clone(), source_path.clone(), cx);
+                    this.toggle_tree_run(eye_run.clone(), cx);
                     cx.stop_propagation();
                 }))
             })

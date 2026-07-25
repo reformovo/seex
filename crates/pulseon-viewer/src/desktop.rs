@@ -109,7 +109,6 @@ struct SidebarProject {
     project_ref: ProjectRef,
     project: Project,
     runs: Vec<Run>,
-    source_path: PathBuf,
     source_label: String,
     placement: ProjectPlacement,
 }
@@ -276,7 +275,6 @@ struct ViewerApp {
     bottom_inspector_visible: bool,
     bottom_inspector_height: gpui::Pixels,
     inspector_resize: Option<InspectorResize>,
-    source_path: Option<PathBuf>,
     sources: SourceRegistry,
     event_tasks: HashMap<DataSourceId, Task<()>>,
     core: ViewerCore,
@@ -335,7 +333,6 @@ impl ViewerApp {
             bottom_inspector_visible: false,
             bottom_inspector_height: px(220.),
             inspector_resize: None,
-            source_path: None,
             sources: SourceRegistry::default(),
             event_tasks: HashMap::new(),
             core: ViewerCore::default(),
@@ -431,7 +428,7 @@ impl ViewerApp {
     }
 
     fn open_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let source_id = self.sources.import(path.clone());
+        let source_id = self.sources.import(path);
         self.local_error = None;
         if self.core.selection().source_id.is_some() {
             self.submit_to_source(
@@ -457,7 +454,6 @@ impl ViewerApp {
         self.locked_cursor = None;
         self.drag = None;
         self.cancel_detail_refresh();
-        self.source_path = Some(path);
         self.refresh_catalog(cx);
     }
 
@@ -903,23 +899,6 @@ impl ViewerApp {
             .or_else(|| self.core.last_error())
     }
 
-    fn status(&self) -> SharedString {
-        if self.source_path.is_none() {
-            return "Import a local PulseOn source to compare Runs.".into();
-        }
-        if self.core.catalog().is_none() && self.core.is_pending(ReadKind::Catalog) {
-            return "Loading Projects…".into();
-        }
-        let Some(catalog) = self.core.catalog() else {
-            return "No catalog is available.".into();
-        };
-        if catalog.projects.is_empty() {
-            "This store does not contain any Projects.".into()
-        } else {
-            "Select a Project to begin.".into()
-        }
-    }
-
     fn on_open(&mut self, _: &OpenProject, _: &mut Window, cx: &mut Context<Self>) {
         self.open_picker(cx);
     }
@@ -1050,13 +1029,6 @@ impl ViewerApp {
         let view = self.views.active_mut();
         self.core = std::mem::take(&mut view.core);
         self.local_error = view.local_error.take();
-        self.source_path = self
-            .core
-            .selection()
-            .source_id
-            .as_ref()
-            .and_then(|source_id| self.sources.source(source_id))
-            .map(|source| source.root_path.clone());
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
         self.track_hovers.clear();
@@ -1157,7 +1129,6 @@ impl ViewerApp {
         self.views.remove_source(source_id);
         if active {
             self.core = ViewerCore::default();
-            self.source_path = None;
             self.chart_adapter.borrow_mut().clear();
         }
         cx.notify();
@@ -1231,7 +1202,6 @@ impl ViewerApp {
     fn activate_tree_project(
         &mut self,
         source_id: DataSourceId,
-        source_path: PathBuf,
         project_id: ProjectId,
         cx: &mut Context<Self>,
     ) {
@@ -1241,16 +1211,14 @@ impl ViewerApp {
         }
         if self.core.selection().source_id.as_ref() != Some(&source_id) {
             self.core.reset_source(source_id);
-            self.source_path = Some(source_path);
             self.chart_adapter.borrow_mut().clear();
         }
         self.select_project(project_id, cx);
     }
 
-    fn toggle_tree_run(&mut self, run_ref: RunRef, source_path: PathBuf, cx: &mut Context<Self>) {
+    fn toggle_tree_run(&mut self, run_ref: RunRef, cx: &mut Context<Self>) {
         if self.core.selection().source_id.as_ref() != Some(&run_ref.source_id) {
             self.core.reset_source(run_ref.source_id.clone());
-            self.source_path = Some(source_path);
         }
         if self.core.selection().project_id.as_ref() != Some(&run_ref.project_id) {
             self.core.select_project(Some(run_ref.project_id.clone()));
@@ -3373,10 +3341,7 @@ impl Render for ViewerApp {
         let theme = self.theme;
         self.reconcile_canvas_widths(window.scale_factor(), cx);
         let error = self.error().map(ToOwned::to_owned);
-        let has_catalog = self
-            .core
-            .catalog()
-            .is_some_and(|catalog| !catalog.projects.is_empty());
+        let has_sources = self.sources.sources().next().is_some();
 
         div()
             .track_focus(&self.focus)
@@ -3418,13 +3383,14 @@ impl Render for ViewerApp {
                             .overflow_hidden()
                             .child(self.render_analysis_bar(cx))
                             .children(error.clone().map(|message| error_banner(message, theme)))
-                            .child(if has_catalog {
+                            .child(if has_sources {
                                 self.render_workspace(cx)
                             } else {
                                 components::empty_state(theme)
                                     .child(
-                                        components::status_badge(theme, StatusTone::Info)
-                                            .child(self.status()),
+                                        components::status_badge(theme, StatusTone::Info).child(
+                                            "Import a local PulseOn source to compare Runs.",
+                                        ),
                                     )
                                     .child(
                                         components::toolbar_button(
@@ -4752,7 +4718,6 @@ mod tests {
                         project_ref: ProjectRef::new(source.source_id.clone(), project_id.clone()),
                         project: source.catalog.projects[0].clone(),
                         runs: source.catalog.runs.clone(),
-                        source_path: source.root_path.clone(),
                         source_label: "source".to_owned(),
                         placement: ProjectPlacement::Projects,
                     };
@@ -4906,6 +4871,10 @@ mod tests {
                     viewer.next_generation
                 })
                 .expect("viewer should remain open");
+            assert!(cx.debug_bounds("brush-controls").is_some());
+            assert!(cx.debug_bounds("viewport-ruler").is_some());
+            assert!(cx.debug_bounds("metric-track-scroll").is_some());
+            assert!(cx.debug_bounds("open-project").is_none());
 
             let refresh = cx
                 .debug_bounds("refresh-view")
@@ -4946,12 +4915,7 @@ mod tests {
                 let source_id = DataSourceId::from_path(root);
                 window
                     .update(&mut cx, |viewer, _, cx| {
-                        viewer.activate_tree_project(
-                            source_id.clone(),
-                            root.to_path_buf(),
-                            project_id.clone(),
-                            cx,
-                        );
+                        viewer.activate_tree_project(source_id.clone(), project_id.clone(), cx);
                     })
                     .expect("viewer should remain open");
                 wait_for_viewer(window, &cx, |viewer| {
@@ -4963,7 +4927,6 @@ mod tests {
                     .update(&mut cx, |viewer, _, cx| {
                         viewer.toggle_tree_run(
                             RunRef::new(source_id.clone(), project_id.clone(), run_id.clone()),
-                            root.to_path_buf(),
                             cx,
                         );
                     })
