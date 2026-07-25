@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use gpui::Styled;
 use gpui::{
-    Bounds, ContentMask, Path, PathBuilder, Pixels, Point, Rgba, WindowAppearance, canvas, fill,
-    point, px, size,
+    AnyView, Bounds, ContentMask, Context, Entity, IntoElement, Path, PathBuilder, Pixels, Point,
+    Render, Rgba, StyleRefinement, Window, WindowAppearance, canvas, fill, point, px, size,
 };
 use pulseon_chart_core::{
     AxisRange, BrushState, CanvasSize, LinearScale, PathCache, ScreenPoint, Viewport,
@@ -52,11 +52,86 @@ pub struct ChartAdapter {
     detail_gpui_paths: HashMap<String, (GpuiPathKey, Path<Pixels>)>,
     detail_bounds: Option<Bounds<Pixels>>,
     overview_bounds: Option<Bounds<Pixels>>,
+    #[cfg(all(test, feature = "test-support"))]
+    detail_prepare_count: usize,
 }
 
 struct PreparedChart {
     paths: Vec<(Path<Pixels>, Rgba)>,
     theme: ViewerTheme,
+}
+
+const RENDER_BUCKET_WIDTH: f64 = 2.;
+
+pub struct DetailChart {
+    adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
+    snapshot: Arc<CurveSnapshot>,
+    revision: u64,
+    viewport: Viewport,
+    baseline: Option<RunRef>,
+    visible_runs: std::rc::Rc<[RunRef]>,
+}
+
+impl DetailChart {
+    pub fn new(
+        adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
+        snapshot: Arc<CurveSnapshot>,
+        revision: u64,
+        viewport: Viewport,
+        baseline: Option<RunRef>,
+        visible_runs: std::rc::Rc<[RunRef]>,
+    ) -> Self {
+        Self {
+            adapter,
+            snapshot,
+            revision,
+            viewport,
+            baseline,
+            visible_runs,
+        }
+    }
+
+    pub fn update(
+        &mut self,
+        snapshot: Arc<CurveSnapshot>,
+        revision: u64,
+        viewport: Viewport,
+        baseline: Option<RunRef>,
+        visible_runs: std::rc::Rc<[RunRef]>,
+    ) -> bool {
+        if Arc::ptr_eq(&self.snapshot, &snapshot)
+            && self.revision == revision
+            && self.viewport == viewport
+            && self.baseline == baseline
+            && self.visible_runs == visible_runs
+        {
+            return false;
+        }
+        self.snapshot = snapshot;
+        self.revision = revision;
+        self.viewport = viewport;
+        self.baseline = baseline;
+        self.visible_runs = visible_runs;
+        true
+    }
+}
+
+impl Render for DetailChart {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        detail_canvas(
+            std::rc::Rc::clone(&self.adapter),
+            Arc::clone(&self.snapshot),
+            self.revision,
+            self.viewport,
+            self.baseline.clone(),
+            std::rc::Rc::clone(&self.visible_runs),
+        )
+        .size_full()
+    }
+}
+
+pub fn cached_detail_chart(chart: Entity<DetailChart>) -> AnyView {
+    AnyView::from(chart).cached(StyleRefinement::default().size_full())
 }
 
 #[derive(Clone, Copy)]
@@ -102,6 +177,10 @@ impl ChartAdapter {
         appearance: WindowAppearance,
         runs: RenderRuns<'_>,
     ) -> PreparedChart {
+        #[cfg(all(test, feature = "test-support"))]
+        {
+            self.detail_prepare_count = self.detail_prepare_count.saturating_add(1);
+        }
         let theme = ViewerTheme::for_appearance(appearance);
         self.detail_bounds = Some(bounds);
         let Ok(canvas) =
@@ -157,6 +236,7 @@ impl ChartAdapter {
                 else {
                     continue;
                 };
+                let points = compact_render_points(&points, RENDER_BUCKET_WIDTH);
                 let width = if highlighted { px(3.) } else { px(2.) };
                 let path = if partial {
                     let mut builder = PathBuilder::stroke(width).dash_array(&[px(7.), px(4.)]);
@@ -301,6 +381,11 @@ impl ChartAdapter {
         axis_at(self.detail_bounds?, range, cursor)
     }
 
+    #[cfg(all(test, feature = "test-support"))]
+    pub const fn detail_prepare_count(&self) -> usize {
+        self.detail_prepare_count
+    }
+
     pub fn detail_pointer_anchor(&self, cursor: Point<Pixels>) -> Option<(Pixels, bool)> {
         let bounds = self.detail_bounds?;
         if cursor.x < bounds.origin.x || cursor.x > bounds.right() {
@@ -408,6 +493,42 @@ fn projected_point(bounds: Bounds<Pixels>, projected: ScreenPoint) -> Point<Pixe
         bounds.origin.x + px(projected.x as f32),
         bounds.origin.y + px(projected.y as f32),
     )
+}
+
+fn compact_render_points(points: &[ScreenPoint], bucket_width: f64) -> Vec<ScreenPoint> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let mut compact = Vec::with_capacity(points.len());
+    compact.push(points[0]);
+    let mut start = 0;
+    while start < points.len() {
+        let bucket = (points[start].x / bucket_width).floor();
+        let mut end = start + 1;
+        while end < points.len() && (points[end].x / bucket_width).floor() == bucket {
+            end += 1;
+        }
+        let mut min = start;
+        let mut max = start;
+        for index in start + 1..end {
+            if points[index].y < points[min].y {
+                min = index;
+            }
+            if points[index].y > points[max].y {
+                max = index;
+            }
+        }
+        for index in [min.min(max), min.max(max)] {
+            if compact.last() != Some(&points[index]) {
+                compact.push(points[index]);
+            }
+        }
+        start = end;
+    }
+    if compact.last() != points.last() {
+        compact.push(points[points.len() - 1]);
+    }
+    compact
 }
 
 fn solid_polyline_path(
@@ -786,6 +907,32 @@ mod tests {
 
         assert!(solid_polyline_path(&repeated, bounds, px(2.)).is_none());
         assert!(solid_polyline_path(&line, bounds, px(2.)).is_some());
+    }
+
+    #[test]
+    fn render_compaction_preserves_endpoints_and_bucket_extrema() {
+        let points = [
+            ScreenPoint::new(0., 5.),
+            ScreenPoint::new(0.5, 1.),
+            ScreenPoint::new(1., 9.),
+            ScreenPoint::new(1.5, 4.),
+            ScreenPoint::new(2.2, 6.),
+        ];
+
+        let compact = compact_render_points(&points, RENDER_BUCKET_WIDTH);
+
+        assert_eq!(compact, [points[0], points[1], points[2], points[4]]);
+    }
+
+    #[test]
+    fn render_compaction_caps_dense_paths_by_logical_width() {
+        let points = (0..10_002)
+            .map(|index| ScreenPoint::new(index as f64 * 2_500. / 10_001., (index % 17) as f64))
+            .collect::<Vec<_>>();
+
+        let compact = compact_render_points(&points, RENDER_BUCKET_WIDTH);
+
+        assert!(compact.len() <= 2_504, "{} points remained", compact.len());
     }
 
     #[test]

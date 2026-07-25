@@ -283,6 +283,7 @@ struct ViewerApp {
     local_error: Option<String>,
     chart_adapter: Rc<RefCell<ChartAdapter>>,
     track_adapters: HashMap<MetricPanelId, Rc<RefCell<ChartAdapter>>>,
+    track_charts: HashMap<MetricPanelId, gpui::Entity<renderer::DetailChart>>,
     track_hovers: HashMap<MetricPanelId, HoverPoint>,
     metric_scroll: ListState,
     metric_resize: Option<MetricResize>,
@@ -341,6 +342,7 @@ impl ViewerApp {
             local_error: None,
             chart_adapter: Rc::new(RefCell::new(ChartAdapter::default())),
             track_adapters: HashMap::new(),
+            track_charts: HashMap::new(),
             track_hovers: HashMap::new(),
             metric_scroll: ListState::new(0, ListAlignment::Top, px(480.)),
             metric_resize: None,
@@ -447,6 +449,7 @@ impl ViewerApp {
         self.core.reset_source(source_id);
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
+        self.track_charts.clear();
         self.track_hovers.clear();
         self.metric_scroll = ListState::new(0, ListAlignment::Top, px(480.));
         *self.track_viewport.borrow_mut() = TrackViewport::default();
@@ -1071,6 +1074,7 @@ impl ViewerApp {
         self.local_error = view.local_error.take();
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
+        self.track_charts.clear();
         self.track_hovers.clear();
         self.metric_scroll = ListState::new(
             self.views.active().panels.len(),
@@ -1378,6 +1382,8 @@ impl ViewerApp {
     }
 
     fn set_run_baseline(&mut self, run: RunRef, cx: &mut Context<Self>) {
+        let was_visible = self.active_visible_runs().contains(&run);
+        let was_selected = self.views.active().runs.contains(&run);
         if self.views.archived_runs().contains(&run) {
             self.views.restore_run(&run);
         }
@@ -1385,38 +1391,49 @@ impl ViewerApp {
         if let Err(error) = self.views.set_active_baseline(baseline) {
             self.local_error = Some(error.to_string());
         } else {
-            self.sync_core_runs();
-            self.refresh_catalog(cx);
-            self.request_overview(cx);
-            self.request_inspector(cx);
+            if !was_visible {
+                if !was_selected {
+                    self.refresh_catalog(cx);
+                }
+                self.request_missing_panel_curves(cx);
+            }
+            if self.bottom_inspector_visible {
+                self.request_inspector(cx);
+            }
         }
         cx.notify();
     }
 
     fn toggle_pinned_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
+        let was_visible = self.active_visible_runs().contains(&run);
+        let was_selected = self.views.active().runs.contains(&run);
         if self.views.archived_runs().contains(&run) {
             self.views.restore_run(&run);
         }
         if let Err(error) = self.views.toggle_active_pinned_run(run) {
             self.local_error = Some(error.to_string());
-        } else {
-            self.sync_core_runs();
-            self.refresh_catalog(cx);
-            self.request_overview(cx);
+        } else if !was_visible {
+            if !was_selected {
+                self.refresh_catalog(cx);
+            }
+            self.request_missing_panel_curves(cx);
         }
         cx.notify();
     }
 
     fn archive_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
-        if self.views.archived_runs().contains(&run) {
+        let restoring = self.views.archived_runs().contains(&run);
+        if restoring {
             self.views.restore_run(&run);
         } else {
             self.views.archive_run(run);
         }
-        self.sync_core_runs();
-        self.refresh_catalog(cx);
-        self.request_overview(cx);
-        self.request_inspector(cx);
+        if restoring {
+            self.request_missing_panel_curves(cx);
+        }
+        if self.bottom_inspector_visible {
+            self.request_inspector(cx);
+        }
         cx.notify();
     }
 
@@ -1483,10 +1500,14 @@ impl ViewerApp {
                 break;
             }
         }
-        self.sync_core_runs();
         self.project_menu = None;
-        self.refresh_catalog(cx);
-        self.request_overview(cx);
+        if !hide {
+            self.refresh_catalog(cx);
+            self.request_missing_panel_curves(cx);
+        }
+        if self.bottom_inspector_visible {
+            self.request_inspector(cx);
+        }
         cx.notify();
     }
 
@@ -1610,6 +1631,7 @@ impl ViewerApp {
         if self.views.remove_active_panel(panel_id) {
             self.metric_scroll.reset(self.views.active().panels.len());
             self.track_adapters.remove(panel_id);
+            self.track_charts.remove(panel_id);
             self.track_hovers.remove(panel_id);
             let selected_metric = self
                 .views
@@ -2646,6 +2668,8 @@ impl ViewerApp {
             .collect::<HashSet<_>>();
         self.track_adapters
             .retain(|panel_id, _| scheduled_ids.contains(panel_id));
+        self.track_charts
+            .retain(|panel_id, _| scheduled_ids.contains(panel_id));
         self.track_hovers
             .retain(|panel_id, _| scheduled_ids.contains(panel_id));
         let logical_width = f32::from_bits(state.logical_width_bits) as f64;
@@ -2925,6 +2949,33 @@ impl ViewerApp {
         let hover_axis = self.hover_cursor_axis();
         let locked_cursor = self.locked_cursor;
         let baseline = self.views.active().baseline.clone();
+        let chart = if let Some(chart) = self.track_charts.get(&panel_id).cloned() {
+            chart.update(cx, |chart, cx| {
+                if chart.update(
+                    snapshot.clone(),
+                    panel.detail_revision,
+                    viewport,
+                    baseline.clone(),
+                    Rc::clone(&visible_runs),
+                ) {
+                    cx.notify();
+                }
+            });
+            chart
+        } else {
+            let chart = cx.new(|_| {
+                renderer::DetailChart::new(
+                    Rc::clone(&paint_adapter),
+                    snapshot.clone(),
+                    panel.detail_revision,
+                    viewport,
+                    baseline.clone(),
+                    Rc::clone(&visible_runs),
+                )
+            });
+            self.track_charts.insert(panel_id.clone(), chart.clone());
+            chart
+        };
         let hover = self.track_hovers.get(&panel_id).cloned();
         let mut callouts = hover.map_or_else(
             || {
@@ -2964,17 +3015,7 @@ impl ViewerApp {
                     })
                     .size_full()
                     .cursor_crosshair()
-                    .child(
-                        renderer::detail_canvas(
-                            paint_adapter,
-                            snapshot,
-                            panel.detail_revision,
-                            viewport,
-                            baseline.clone(),
-                            Rc::clone(&visible_runs),
-                        )
-                        .size_full(),
-                    )
+                    .child(renderer::cached_detail_chart(chart))
                     .child(
                         renderer::cursor_canvas(None, viewport.x, hover_axis, locked_cursor)
                             .absolute()
@@ -5235,7 +5276,7 @@ mod tests {
         }
 
         #[gpui::test]
-        fn hiding_a_loaded_run_reuses_every_metric_snapshot(cx: &mut TestAppContext) {
+        fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext) {
             let (root, project_id, first_run_id) = fixture_with_complete_runs(2, 2);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
@@ -5266,24 +5307,25 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
                 .expect("viewer should remain open");
+            let second_run = window
+                .read_with(&cx, |viewer, _| {
+                    RunRef::new(
+                        viewer
+                            .core
+                            .selection()
+                            .source_id
+                            .clone()
+                            .expect("fixture source should be selected"),
+                        project_id.clone(),
+                        RunId::from_string(
+                            "run-1-with-a-very-long-identifier-that-requires-horizontal-scrolling",
+                        ),
+                    )
+                })
+                .expect("viewer should remain open");
             window
                 .update(&mut cx, |viewer, _, cx| {
-                    let source_id = viewer
-                        .core
-                        .selection()
-                        .source_id
-                        .clone()
-                        .expect("fixture source should be selected");
-                    viewer.toggle_run(
-                        RunRef::new(
-                            source_id,
-                            project_id,
-                            RunId::from_string(
-                                "run-1-with-a-very-long-identifier-that-requires-horizontal-scrolling",
-                            ),
-                        ),
-                        cx,
-                    );
+                    viewer.toggle_run(second_run.clone(), cx);
                 })
                 .expect("viewer should remain open");
             wait_for_viewer(window, &cx, |viewer| {
@@ -5334,6 +5376,65 @@ mod tests {
             window
                 .read_with(&cx, |viewer, _| {
                     assert_eq!(viewer.views.active().runs.len(), 1);
+                    for (panel, (snapshot, revision)) in
+                        viewer.views.active().panels.iter().zip(&before)
+                    {
+                        assert!(Arc::ptr_eq(
+                            panel.detail.as_ref().expect("detail should remain loaded"),
+                            snapshot,
+                        ));
+                        assert_eq!(panel.detail_revision, *revision);
+                    }
+                })
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let baseline = viewer.views.active().runs[0].clone();
+                    viewer.set_run_baseline(baseline, cx);
+                    viewer.toggle_pinned_run(second_run.clone(), cx);
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            window
+                .read_with(&cx, |viewer, _| {
+                    for (panel, (snapshot, revision)) in
+                        viewer.views.active().panels.iter().zip(&before)
+                    {
+                        assert!(Arc::ptr_eq(
+                            panel.detail.as_ref().expect("detail should remain loaded"),
+                            snapshot,
+                        ));
+                        assert_eq!(panel.detail_revision, *revision);
+                    }
+                })
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.archive_run(second_run.clone(), cx);
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            window
+                .read_with(&cx, |viewer, _| {
+                    for (panel, (snapshot, revision)) in
+                        viewer.views.active().panels.iter().zip(&before)
+                    {
+                        assert!(Arc::ptr_eq(
+                            panel.detail.as_ref().expect("detail should remain loaded"),
+                            snapshot,
+                        ));
+                        assert_eq!(panel.detail_revision, *revision);
+                    }
+                })
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.archive_run(second_run.clone(), cx);
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            window
+                .read_with(&cx, |viewer, _| {
                     for (panel, (snapshot, revision)) in
                         viewer.views.active().panels.iter().zip(&before)
                     {
@@ -5551,6 +5652,80 @@ mod tests {
                     assert!(viewer.ruler_hover.is_some());
                 })
                 .expect("viewer should remain open");
+        }
+
+        #[gpui::test]
+        fn hover_frames_reuse_static_metric_chart_preparation(cx: &mut TestAppContext) {
+            let (root, project_id, first_run_id) = fixture_with_complete_runs(3, 2);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 3);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let source_id = viewer
+                        .core
+                        .selection()
+                        .source_id
+                        .clone()
+                        .expect("fixture source should be selected");
+                    viewer.toggle_run(
+                        RunRef::new(
+                            source_id,
+                            project_id,
+                            RunId::from_string(
+                                "run-1-with-a-very-long-identifier-that-requires-horizontal-scrolling",
+                            ),
+                        ),
+                        cx,
+                    );
+                    for index in 0..3 {
+                        viewer.select_metric(
+                            MetricKey::from_string(format!("metric-{index}")),
+                            cx,
+                        );
+                    }
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.track_adapters.len() == 3
+                    && viewer.views.active().panels.iter().all(|panel| {
+                        panel.detail.as_ref().is_some_and(|snapshot| {
+                            snapshot.series.len() == 2 && !panel.is_pending(ReadKind::Detail)
+                        })
+                    })
+            });
+            cx.run_until_parked();
+            let preparation_counts = |viewer: &ViewerApp| {
+                viewer
+                    .track_adapters
+                    .iter()
+                    .map(|(panel_id, adapter)| {
+                        (
+                            panel_id.as_str().to_owned(),
+                            adapter.borrow().detail_prepare_count(),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            };
+            let before = window
+                .read_with(&cx, |viewer, _| preparation_counts(viewer))
+                .expect("viewer should remain open");
+            let ruler = cx
+                .debug_bounds("ruler-hit-area")
+                .expect("shared ruler should render");
+            for index in 1..10 {
+                let position = point(
+                    ruler.origin.x + ruler.size.width * (index as f32 / 10.),
+                    ruler.center().y,
+                );
+                cx.simulate_mouse_move(position, None, Modifiers::default());
+            }
+            let after = window
+                .read_with(&cx, |viewer, _| preparation_counts(viewer))
+                .expect("viewer should remain open");
+
+            assert_eq!(after, before);
         }
 
         #[gpui::test]

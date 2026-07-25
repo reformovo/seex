@@ -481,7 +481,6 @@ impl AnalysisViews {
             self.active_mut().pinned_runs.retain(|item| item != run);
         }
         self.active_mut().baseline = baseline;
-        self.invalidate_active_panels();
         Ok(())
     }
 
@@ -502,7 +501,6 @@ impl AnalysisViews {
         if added && was_baseline {
             self.active_mut().baseline = None;
         }
-        self.invalidate_active_panels();
         Ok(added)
     }
 
@@ -568,9 +566,6 @@ impl AnalysisViews {
             if view.baseline.as_ref() == Some(&run) {
                 view.baseline = None;
             }
-            if view.core.selection().runs.contains(&run) {
-                let _ = view.core.toggle_run(run.clone());
-            }
         }
         if !self.archived_runs.contains(&run) {
             self.archived_runs.push(run);
@@ -579,11 +574,6 @@ impl AnalysisViews {
 
     pub fn restore_run(&mut self, run: &RunRef) {
         self.archived_runs.retain(|item| item != run);
-        for view in &mut self.views {
-            if view.runs.contains(run) && !view.core.selection().runs.contains(run) {
-                let _ = view.core.toggle_run(run.clone());
-            }
-        }
     }
 
     pub fn select_active_metric(&mut self, metric_key: MetricKey) -> MetricPanelId {
@@ -1006,6 +996,33 @@ mod tests {
                 .is_pending(ReadKind::Detail)
         );
         assert!(!views.toggle_active_run(run).expect("hide should succeed"));
+        assert!(
+            views
+                .active_panel(&panel_id)
+                .expect("panel should remain")
+                .is_pending(ReadKind::Detail)
+        );
+    }
+
+    #[test]
+    fn run_organization_changes_preserve_loaded_panel_state() {
+        let mut views = AnalysisViews::default();
+        let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
+        views.begin_active_panel_read(&panel_id, ReadKind::Detail, Generation(9));
+        let run = RunRef::new(
+            DataSourceId::from_string("source"),
+            ProjectId::from_string("project"),
+            RunId::from_string("run"),
+        );
+
+        views
+            .set_active_baseline(Some(run.clone()))
+            .expect("baseline should fit");
+        views
+            .toggle_active_pinned_run(run.clone())
+            .expect("pin should succeed");
+        views.archive_run(run);
+
         assert!(
             views
                 .active_panel(&panel_id)
