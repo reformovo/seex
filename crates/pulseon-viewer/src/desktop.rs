@@ -2110,23 +2110,6 @@ impl ViewerApp {
             .relative()
             .flex()
             .cursor_crosshair()
-            .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _, cx| {
-                let Some(range) = this.core.brush().map(|brush| brush.selected()) else {
-                    return;
-                };
-                let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
-                let factor = f64::from((-delta / 240.).exp().clamp(0.5, 2.));
-                let anchor = range.start() + range.span() / 2.;
-                if this
-                    .core
-                    .brush_mut()
-                    .is_some_and(|brush| brush.zoom_at(anchor, factor).is_ok())
-                {
-                    this.schedule_detail_refresh(cx);
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-            }))
             .child(
                 div()
                     .size_full()
@@ -2158,6 +2141,11 @@ impl ViewerApp {
                             .debug_selector(|| "ruler-hit-area".to_owned())
                             .absolute()
                             .size_full()
+                            .on_scroll_wheel(cx.listener(
+                                |this, event: &ScrollWheelEvent, window, cx| {
+                                    this.scroll_ruler(event, window, cx);
+                                },
+                            ))
                             .on_mouse_move(cx.listener(
                                 move |this, event: &MouseMoveEvent, window, cx| {
                                     this.ruler_hover = this.ruler_axis_at(event.position, window);
@@ -2217,14 +2205,55 @@ impl ViewerApp {
 
     fn ruler_axis_at(&self, position: gpui::Point<gpui::Pixels>, window: &Window) -> Option<f64> {
         let range = self.core.brush()?.selected();
+        let (left, width) = self.ruler_plot_geometry(window);
+        let ratio = (f64::from(position.x - left) / f64::from(width)).clamp(0., 1.);
+        Some(range.start() + range.span() * ratio)
+    }
+
+    fn ruler_plot_geometry(&self, window: &Window) -> (gpui::Pixels, gpui::Pixels) {
         let left = if self.project_sidebar_visible {
             self.project_sidebar_width
         } else {
             px(0.)
         } + self.metric_sidebar_width();
         let width = (window.viewport_size().width - left).max(px(1.));
-        let ratio = (f64::from(position.x - left) / f64::from(width)).clamp(0., 1.);
-        Some(range.start() + range.span() * ratio)
+        (left, width)
+    }
+
+    fn scroll_ruler(&mut self, event: &ScrollWheelEvent, window: &Window, cx: &mut Context<Self>) {
+        let delta = event.delta.pixel_delta(px(16.));
+        let delta = if delta.x.abs() > delta.y.abs() {
+            f32::from(delta.x)
+        } else {
+            f32::from(delta.y)
+        };
+        let Some(before) = self.core.brush().map(|brush| brush.selected()) else {
+            return;
+        };
+        let transformed = if event.modifiers.platform || event.modifiers.control {
+            self.ruler_axis_at(event.position, window)
+                .zip(self.core.brush_mut())
+                .is_some_and(|(anchor, brush)| {
+                    let factor = f64::from((-delta * 0.002).exp().clamp(0.5, 2.));
+                    brush.zoom_at(anchor, factor).is_ok()
+                })
+        } else {
+            let (_, width) = self.ruler_plot_geometry(window);
+            let axis_delta = -f64::from(delta) * before.span() / f64::from(width);
+            self.core
+                .brush_mut()
+                .is_some_and(|brush| brush.pan_by(axis_delta).is_ok())
+        };
+        if transformed
+            && self
+                .core
+                .brush()
+                .is_some_and(|brush| brush.selected() != before)
+        {
+            self.schedule_detail_refresh(cx);
+            cx.stop_propagation();
+            cx.notify();
+        }
     }
 
     fn begin_ruler_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
@@ -5191,6 +5220,112 @@ mod tests {
                     assert!(brush.selected().start() >= brush.home().start());
                     assert!(brush.selected().end() <= brush.home().end());
                     assert!(viewer.drag.is_none());
+                })
+                .expect("viewer should remain open");
+        }
+
+        #[gpui::test]
+        fn ruler_scroll_pans_the_viewport_and_clamps_to_home(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| viewer.core.brush().is_some());
+            window
+                .update(&mut cx, |viewer, _, _| {
+                    let brush = viewer.core.brush_mut().expect("brush should exist");
+                    let center = brush.home().start() + brush.home().span() / 2.;
+                    brush.zoom_at(center, 2.).expect("zoom should succeed");
+                })
+                .expect("viewer should remain open");
+            let before = window
+                .read_with(&cx, |viewer, _| {
+                    viewer.core.brush().expect("brush").selected()
+                })
+                .expect("viewer should remain open");
+            let ruler = cx
+                .debug_bounds("ruler-hit-area")
+                .expect("shared ruler hit area should render");
+
+            for delta in [-80., -10_000.] {
+                cx.simulate_event(ScrollWheelEvent {
+                    position: ruler.center(),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+                    modifiers: Modifiers::default(),
+                    touch_phase: TouchPhase::Moved,
+                });
+            }
+
+            window
+                .read_with(&cx, |viewer, _| {
+                    let brush = viewer.core.brush().expect("brush should remain available");
+                    assert_eq!(brush.selected().span(), before.span());
+                    assert!(brush.selected().start() > before.start());
+                    assert_eq!(brush.selected().end(), brush.home().end());
+                    assert!(viewer.detail_refresh_pending);
+                })
+                .expect("viewer should remain open");
+        }
+
+        #[gpui::test]
+        fn modified_ruler_scroll_zooms_around_the_pointer(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| viewer.core.brush().is_some());
+            window
+                .update(&mut cx, |viewer, _, _| {
+                    let brush = viewer.core.brush_mut().expect("brush should exist");
+                    let center = brush.home().start() + brush.home().span() / 2.;
+                    brush.zoom_at(center, 2.).expect("zoom should succeed");
+                })
+                .expect("viewer should remain open");
+            let before = window
+                .read_with(&cx, |viewer, _| {
+                    viewer.core.brush().expect("brush").selected()
+                })
+                .expect("viewer should remain open");
+            let ruler = cx
+                .debug_bounds("ruler-hit-area")
+                .expect("shared ruler hit area should render");
+            let anchor_ratio = 0.25;
+            let position = point(
+                ruler.origin.x + ruler.size.width * anchor_ratio,
+                ruler.center().y,
+            );
+            let anchor = before.start() + before.span() * f64::from(anchor_ratio);
+            let modifiers = Modifiers {
+                platform: true,
+                ..Modifiers::default()
+            };
+
+            cx.simulate_event(ScrollWheelEvent {
+                position,
+                delta: ScrollDelta::Pixels(point(px(0.), px(-80.))),
+                modifiers,
+                touch_phase: TouchPhase::Moved,
+            });
+
+            window
+                .read_with(&cx, |viewer, _| {
+                    let selected = viewer.core.brush().expect("brush").selected();
+                    let anchored = selected.start() + selected.span() * f64::from(anchor_ratio);
+                    assert!(selected.span() < before.span());
+                    assert!((anchored - anchor).abs() < 1e-9);
+                    assert!(viewer.detail_refresh_pending);
                 })
                 .expect("viewer should remain open");
         }
