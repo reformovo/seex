@@ -6,18 +6,18 @@ use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
-    AnyElement, App, Application, Bounds, Context, EntityId, FocusHandle, KeyBinding, KeyDownEvent,
-    ListHorizontalSizingBehavior, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathPromptOptions, Point, Render, ScrollWheelEvent, SharedString, SystemMenuType,
-    Task, UniformListDecoration, UniformListScrollHandle, Window, WindowBounds, WindowOptions,
-    actions, div, prelude::*, px, size, uniform_list,
+    AnyElement, App, Application, Bounds, Context, Corner, EntityId, FocusHandle, KeyBinding,
+    KeyDownEvent, ListHorizontalSizingBehavior, Menu, MenuItem, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Point, Render, ScrollWheelEvent, SharedString,
+    SystemMenuType, Task, UniformListDecoration, UniformListScrollHandle, Window, WindowBounds,
+    WindowOptions, actions, anchored, deferred, div, point, prelude::*, px, size, uniform_list,
 };
 use pulseon_chart_core::{BrushState, CanvasSize};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
 use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason, ObjectiveDirection};
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunStatus};
-use pulseon_model::types::ProjectId;
+use pulseon_model::types::{Project, ProjectId};
 use pulseon_viewer::coordination::AnalysisViewId;
 use pulseon_viewer::coordination::{
     MetricPanelId, PanelReadCoordinator, PanelReadOutcome, PanelReadRequest, PanelReadTag,
@@ -39,6 +39,7 @@ use pulseon_viewer::worker::{Generation, ReadEvent, ReadEventReceiver, ReadKind,
 mod assets;
 mod components;
 mod renderer;
+mod sidebar;
 mod theme;
 
 use assets::ViewerAssets;
@@ -81,6 +82,33 @@ struct TrackViewportObserver {
     viewer_id: EntityId,
     metric_sidebar_width: gpui::Pixels,
     plot_inset: gpui::Pixels,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectPlacement {
+    Pinned,
+    Projects,
+    Archived,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RunPlacement {
+    Baseline,
+    Pinned,
+    Projects,
+    Archived,
+}
+
+#[derive(Clone)]
+struct SidebarProject {
+    source_index: usize,
+    project_index: usize,
+    project_ref: ProjectRef,
+    project: Project,
+    runs: Vec<Run>,
+    source_path: PathBuf,
+    source_label: String,
+    placement: ProjectPlacement,
 }
 
 impl UniformListDecoration for TrackViewportObserver {
@@ -275,6 +303,13 @@ struct ViewerApp {
     run_filter: String,
     run_list: RunListCache,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
+    removed_projects: HashSet<ProjectRef>,
+    project_menu: Option<ProjectRef>,
+    hovered_project: Option<ProjectRef>,
+    hovered_run: Option<RunRef>,
+    project_run_limits: HashMap<ProjectRef, usize>,
+    pinned_run_limits: HashMap<AnalysisViewId, usize>,
+    archived_run_limit: usize,
     views: AnalysisViews,
     panel_reads: PanelReadCoordinator,
     renaming_view: Option<AnalysisViewId>,
@@ -322,6 +357,13 @@ impl ViewerApp {
             run_filter: String::new(),
             run_list: RunListCache::default(),
             expanded_projects: HashSet::new(),
+            removed_projects: HashSet::new(),
+            project_menu: None,
+            hovered_project: None,
+            hovered_run: None,
+            project_run_limits: HashMap::new(),
+            pinned_run_limits: HashMap::new(),
+            archived_run_limit: 5,
             views: AnalysisViews::default(),
             panel_reads: PanelReadCoordinator::default(),
             renaming_view: None,
@@ -654,7 +696,7 @@ impl ViewerApp {
         }
         match kind {
             ReadKind::Catalog
-                if !self.views.active().runs.is_empty()
+                if !self.active_visible_runs().is_empty()
                     && !self.views.active().panels.is_empty() =>
             {
                 self.request_overview(cx);
@@ -681,7 +723,7 @@ impl ViewerApp {
     }
 
     fn request_panel_overview(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
-        let runs = self.views.active().runs.clone();
+        let runs = self.active_visible_runs();
         let Some(metric_key) = self
             .views
             .active_panel(panel_id)
@@ -747,7 +789,7 @@ impl ViewerApp {
         let Some(panel_id) = self.views.active().selected_panel_id.clone() else {
             return;
         };
-        let runs = self.views.active().runs.clone();
+        let runs = self.active_visible_runs();
         let Some(metric_key) = self
             .views
             .active_panel(&panel_id)
@@ -793,7 +835,7 @@ impl ViewerApp {
         physical_width: u32,
         cx: &mut Context<Self>,
     ) {
-        let runs = self.views.active().runs.clone();
+        let runs = self.active_visible_runs();
         let Some(metric_key) = self
             .views
             .active_panel(panel_id)
@@ -900,6 +942,9 @@ impl ViewerApp {
     ) {
         self.project_sidebar_visible = !self.project_sidebar_visible;
         self.source_menu = None;
+        self.project_menu = None;
+        self.hovered_project = None;
+        self.hovered_run = None;
         self.focus.focus(window);
         cx.notify();
     }
@@ -1245,6 +1290,123 @@ impl ViewerApp {
         cx.notify();
     }
 
+    fn active_visible_runs(&self) -> Vec<RunRef> {
+        self.views
+            .active()
+            .runs
+            .iter()
+            .filter(|run| !self.views.archived_runs().contains(run))
+            .cloned()
+            .collect()
+    }
+
+    fn sync_core_runs(&mut self) {
+        let desired = self.active_visible_runs();
+        let current = self.core.selection().runs.clone();
+        for run in current {
+            if !desired.contains(&run) {
+                let _ = self.core.toggle_run(run);
+            }
+        }
+        for run in desired {
+            if !self.core.selection().runs.contains(&run) {
+                let _ = self.core.toggle_run(run);
+            }
+        }
+    }
+
+    fn set_run_baseline(&mut self, run: RunRef, cx: &mut Context<Self>) {
+        if self.views.archived_runs().contains(&run) {
+            self.views.restore_run(&run);
+        }
+        let baseline = (self.views.active().baseline.as_ref() != Some(&run)).then_some(run);
+        if let Err(error) = self.views.set_active_baseline(baseline) {
+            self.local_error = Some(error.to_string());
+        } else {
+            self.sync_core_runs();
+            self.request_overview(cx);
+            self.request_inspector(cx);
+        }
+        cx.notify();
+    }
+
+    fn toggle_pinned_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
+        if self.views.archived_runs().contains(&run) {
+            self.views.restore_run(&run);
+        }
+        if let Err(error) = self.views.toggle_active_pinned_run(run) {
+            self.local_error = Some(error.to_string());
+        } else {
+            self.sync_core_runs();
+            self.request_overview(cx);
+        }
+        cx.notify();
+    }
+
+    fn archive_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
+        if self.views.archived_runs().contains(&run) {
+            self.views.restore_run(&run);
+        } else {
+            self.views.archive_run(run);
+        }
+        self.sync_core_runs();
+        self.request_overview(cx);
+        self.request_inspector(cx);
+        cx.notify();
+    }
+
+    fn set_project_placement(&mut self, project: ProjectRef, placement: ProjectPlacement) {
+        match placement {
+            ProjectPlacement::Pinned => self.views.pin_project(project),
+            ProjectPlacement::Projects => {
+                self.views.unpin_project(&project);
+                self.views.restore_project(&project);
+            }
+            ProjectPlacement::Archived => self.views.archive_project(project),
+        }
+        self.project_menu = None;
+    }
+
+    fn remove_project(&mut self, project: ProjectRef, cx: &mut Context<Self>) {
+        self.removed_projects.insert(project.clone());
+        self.views.unpin_project(&project);
+        self.views.restore_project(&project);
+        self.project_menu = None;
+        cx.notify();
+    }
+
+    fn toggle_project_runs(&mut self, project: &SidebarProject, cx: &mut Context<Self>) {
+        let archived = self.views.archived_runs().to_vec();
+        let movable = project
+            .runs
+            .iter()
+            .map(|run| {
+                RunRef::new(
+                    project.project_ref.source_id.clone(),
+                    run.project_id.clone(),
+                    run.run_id.clone(),
+                )
+            })
+            .filter(|run| !archived.contains(run))
+            .collect::<Vec<_>>();
+        let hide = movable
+            .iter()
+            .all(|run| self.views.active().runs.contains(run));
+        for run in movable {
+            let selected = self.views.active().runs.contains(&run);
+            if selected == hide
+                && let Err(error) = self.views.toggle_active_run(run)
+            {
+                self.local_error = Some(error.to_string());
+                break;
+            }
+        }
+        self.sync_core_runs();
+        self.project_menu = None;
+        self.request_overview(cx);
+        cx.notify();
+    }
+
     fn select_metric(&mut self, metric_key: MetricKey, cx: &mut Context<Self>) {
         let panel_id = self.views.select_active_metric(metric_key.clone());
         self.core.select_metric(Some(metric_key));
@@ -1371,353 +1533,7 @@ impl ViewerApp {
     }
 
     fn render_project_sidebar(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
-        let theme = self.theme;
-        let sources = self.sources.sources().cloned().collect::<Vec<_>>();
-        let selected_runs = self.views.active().runs.clone();
-        let expanded = self.expanded_projects.clone();
-        let query = self.run_filter.trim().to_lowercase();
-        let filter_focus = self.filter_focus.clone();
-        let mut name_counts = HashMap::<String, usize>::new();
-        for project in sources
-            .iter()
-            .flat_map(|source| source.catalog.projects.iter())
-        {
-            *name_counts.entry(project.name.to_lowercase()).or_default() += 1;
-        }
-
-        div()
-            .id("project-sidebar")
-            .debug_selector(|| "project-sidebar".to_owned())
-            .w(self.project_sidebar_width)
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p(theme.spacing.panel_padding)
-            .bg(theme.colors.panel)
-            .border_r_1()
-            .border_color(theme.colors.border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(section_label("Projects", theme))
-                    .child(
-                        components::icon_button("import-source", theme, false, false)
-                            .debug_selector(|| "import-source".to_owned())
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.open_picker(cx)))
-                            .child(components::icon(IconName::Plus, theme)),
-                    ),
-            )
-            .child(
-                div()
-                    .id("project-run-filter")
-                    .track_focus(&filter_focus)
-                    .cursor_text()
-                    .px_3()
-                    .h(theme.spacing.control_height)
-                    .flex()
-                    .items_center()
-                    .rounded(theme.spacing.corner_radius)
-                    .border_1()
-                    .border_color(theme.colors.border)
-                    .focus(|style| style.border_color(theme.colors.focus))
-                    .on_key_down(cx.listener(Self::on_filter_key))
-                    .on_click(move |_, window, _| filter_focus.focus(window))
-                    .child(if self.run_filter.is_empty() {
-                        "Filter Projects and Runs".to_owned()
-                    } else {
-                        self.run_filter.clone()
-                    }),
-            )
-            .child(
-                div()
-                    .id("project-run-tree")
-                    .debug_selector(|| "project-run-tree".to_owned())
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .children(sources.into_iter().enumerate().map(|(source_index, source)| {
-                        let source_label = source
-                            .root_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .unwrap_or(source.source_id.as_str())
-                            .to_owned();
-                        let status = match &source.status {
-                            SourceStatus::Dormant => "Dormant",
-                            SourceStatus::Loading => "Loading…",
-                            SourceStatus::Ready => "Ready",
-                            SourceStatus::Failed(_) => "Unavailable · click to retry",
-                        };
-                        let retry_path = source.root_path.clone();
-                        let source_failed = matches!(source.status, SourceStatus::Failed(_));
-                        let menu_open = self.source_menu.as_ref() == Some(&source.source_id);
-                        let menu_source_id = source.source_id.clone();
-                        let reveal_source_id = source.source_id.clone();
-                        let refresh_source_id = source.source_id.clone();
-                        let remove_source_id = source.source_id.clone();
-                        div()
-                            .mb_2()
-                            .child(
-                                components::sidebar_tree_row(
-                                    SharedString::from(format!(
-                                        "source:{}",
-                                        source.source_id.as_str()
-                                    )),
-                                    theme,
-                                    false,
-                                    false,
-                                )
-                                .when(source_failed, |row| {
-                                    row.cursor_pointer().on_click(cx.listener(
-                                        move |this, _, _, cx| {
-                                            this.open_source(retry_path.clone(), cx);
-                                        },
-                                    ))
-                                })
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .overflow_hidden()
-                                        .whitespace_nowrap()
-                                        .child(source_label),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(if source_failed {
-                                            theme.colors.error_text
-                                        } else {
-                                            theme.colors.text_muted
-                                        })
-                                        .child(status),
-                                )
-                                .child(
-                                    components::icon_button(
-                                        SharedString::from(format!(
-                                            "source-menu:{}",
-                                            source.source_id
-                                        )),
-                                        theme,
-                                        menu_open,
-                                        false,
-                                    )
-                                    .debug_selector(move || {
-                                        format!("source-menu-{source_index}")
-                                    })
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if this.source_menu.as_ref() == Some(&menu_source_id) {
-                                            this.source_menu = None;
-                                        } else {
-                                            this.source_menu = Some(menu_source_id.clone());
-                                        }
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }))
-                                    .child(components::icon(IconName::Ellipsis, theme)),
-                                ),
-                            )
-                            .children(menu_open.then(|| {
-                                components::popover(theme)
-                                    .id(SharedString::from(format!(
-                                        "source-popover:{source_index}"
-                                    )))
-                                    .debug_selector(move || {
-                                        format!("source-popover-{source_index}")
-                                    })
-                                    .ml_2()
-                                    .mb_2()
-                                    .flex()
-                                    .flex_col()
-                                    .child(
-                                        components::toolbar_button(
-                                            SharedString::from(format!(
-                                                "reveal-source:{}",
-                                                reveal_source_id
-                                            )),
-                                            theme,
-                                            false,
-                                            false,
-                                        )
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.reveal_source(&reveal_source_id, cx);
-                                        }))
-                                        .child("Reveal in Finder"),
-                                    )
-                                    .child(
-                                        components::toolbar_button(
-                                            SharedString::from(format!(
-                                                "refresh-source:{}",
-                                                refresh_source_id
-                                            )),
-                                            theme,
-                                            false,
-                                            false,
-                                        )
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.refresh_source(refresh_source_id.clone(), cx);
-                                        }))
-                                        .child("Refresh"),
-                                    )
-                                    .child(
-                                        components::toolbar_button(
-                                            SharedString::from(format!(
-                                                "remove-source:{}",
-                                                remove_source_id
-                                            )),
-                                            theme,
-                                            false,
-                                            false,
-                                        )
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.remove_source(&remove_source_id, cx);
-                                        }))
-                                        .child("Remove from Workbench"),
-                                    )
-                            }))
-                            .children(source.catalog.projects.into_iter().enumerate().filter_map(|(project_index, project)| {
-                                let project_runs = source
-                                    .catalog
-                                    .runs
-                                    .iter()
-                                    .filter(|run| run.project_id == project.project_id)
-                                    .cloned()
-                                    .collect::<Vec<_>>();
-                                let matches = query.is_empty()
-                                    || project.name.to_lowercase().contains(&query)
-                                    || project.project_id.as_str().to_lowercase().contains(&query)
-                                    || project_runs.iter().any(|run| {
-                                        run.name.to_lowercase().contains(&query)
-                                            || run.run_id.as_str().to_lowercase().contains(&query)
-                                    });
-                                if !matches {
-                                    return None;
-                                }
-                                let project_key =
-                                    (source.source_id.clone(), project.project_id.clone());
-                                let is_expanded = expanded.contains(&project_key);
-                                let source_id = source.source_id.clone();
-                                let source_path = source.root_path.clone();
-                                let project_id = project.project_id.clone();
-                                let action_source_id = source_id.clone();
-                                let action_source_path = source_path.clone();
-                                let action_project_id = project_id.clone();
-                                let duplicate = name_counts
-                                    .get(&project.name.to_lowercase())
-                                    .is_some_and(|count| *count > 1);
-                                let label = project_tree_label(
-                                    &project.name,
-                                    &source.source_id,
-                                    duplicate,
-                                );
-                                Some(
-                                    div()
-                                        .ml_2()
-                                        .child(
-                                            components::sidebar_tree_row(
-                                                SharedString::from(format!(
-                                                    "project:{}:{}",
-                                                    source.source_id,
-                                                    project.project_id.as_str()
-                                                )),
-                                                theme,
-                                                self.core.selection().source_id.as_ref()
-                                                    == Some(&source.source_id)
-                                                    && self.core.selection().project_id.as_ref()
-                                                        == Some(&project.project_id),
-                                                false,
-                                            )
-                                            .debug_selector(move || {
-                                                format!(
-                                                    "project-tree-row-{source_index}-{project_index}"
-                                                )
-                                            })
-                                            .key_context(SELECTABLE_CONTEXT)
-                                            .tab_index(0)
-                                            .cursor_pointer()
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.activate_tree_project(
-                                                    source_id.clone(),
-                                                    source_path.clone(),
-                                                    project_id.clone(),
-                                                    cx,
-                                                );
-                                            }))
-                                            .on_action(cx.listener(
-                                                move |this, _: &ActivateSelection, _, cx| {
-                                                    this.activate_tree_project(
-                                                        action_source_id.clone(),
-                                                        action_source_path.clone(),
-                                                        action_project_id.clone(),
-                                                        cx,
-                                                    );
-                                                },
-                                            ))
-                                            .child(components::icon(
-                                                if is_expanded {
-                                                    IconName::ChevronDown
-                                                } else {
-                                                    IconName::ChevronRight
-                                                },
-                                                theme,
-                                            ))
-                                            .child(label),
-                                        )
-                                        .when(is_expanded, |tree| {
-                                            tree.children(project_runs.into_iter().enumerate().map(|(run_index, run)| {
-                                                let run_ref = RunRef::new(
-                                                    source.source_id.clone(),
-                                                    run.project_id.clone(),
-                                                    run.run_id.clone(),
-                                                );
-                                                let selected = selected_runs.contains(&run_ref);
-                                                let action_run = run_ref.clone();
-                                                let action_path = source.root_path.clone();
-                                                components::sidebar_tree_row(
-                                                    SharedString::from(format!(
-                                                        "run:{}",
-                                                        run_ref.cache_key()
-                                                    )),
-                                                    theme,
-                                                    selected,
-                                                    !selected
-                                                        && selected_runs.len() >= MAX_SELECTED_RUNS,
-                                                )
-                                                .debug_selector(move || {
-                                                    format!(
-                                                        "project-tree-run-{source_index}-{project_index}-{run_index}"
-                                                    )
-                                                })
-                                                .ml_5()
-                                                .cursor_pointer()
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.toggle_tree_run(
-                                                        action_run.clone(),
-                                                        action_path.clone(),
-                                                        cx,
-                                                    );
-                                                }))
-                                                .child(if selected { "✓" } else { "○" })
-                                                .child(run.name)
-                                                .child(
-                                                    div()
-                                                        .text_xs()
-                                                        .text_color(theme.colors.text_muted)
-                                                        .child(run_status(run.status)),
-                                                )
-                                            }))
-                                        }),
-                                )
-                            }))
-                    })),
-            )
+        self.render_converged_project_sidebar(cx)
     }
 
     fn render_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
@@ -4078,16 +3894,22 @@ mod tests {
                         source_id.clone(),
                         ProjectId::from_string("archive"),
                     ));
-                    viewer.views.set_active_baseline(Some(RunRef::new(
-                        source_id.clone(),
-                        project_id.clone(),
-                        RunId::from_string("baseline"),
-                    )));
-                    viewer.views.toggle_active_pinned_run(RunRef::new(
-                        source_id.clone(),
-                        project_id.clone(),
-                        RunId::from_string("pinned"),
-                    ));
+                    viewer
+                        .views
+                        .set_active_baseline(Some(RunRef::new(
+                            source_id.clone(),
+                            project_id.clone(),
+                            RunId::from_string("baseline"),
+                        )))
+                        .expect("baseline should fit the visible Run limit");
+                    viewer
+                        .views
+                        .toggle_active_pinned_run(RunRef::new(
+                            source_id.clone(),
+                            project_id.clone(),
+                            RunId::from_string("pinned"),
+                        ))
+                        .expect("pinned Run should fit the visible Run limit");
                     viewer.views.archive_run(RunRef::new(
                         source_id,
                         project_id,
@@ -4297,18 +4119,33 @@ mod tests {
                 assert_eq!(control.size.height, px(28.));
             }
 
-            let source_menu = cx
-                .debug_bounds("source-menu-0")
-                .expect("source menu control should render");
-            cx.simulate_click(source_menu.center(), Modifiers::default());
-            assert!(cx.debug_bounds("source-popover-0").is_some());
             window
                 .update(&mut cx, |viewer, _, cx| {
-                    viewer.source_menu = None;
+                    viewer.hovered_project = Some(ProjectRef::new(
+                        DataSourceId::from_path(root.path()),
+                        ProjectId::from_string("project"),
+                    ));
                     cx.notify();
                 })
                 .expect("viewer should remain open");
             cx.run_until_parked();
+            let project_menu = cx
+                .debug_bounds("project-menu-project")
+                .expect("Project menu control should render while hovered");
+            cx.simulate_click(project_menu.center(), Modifiers::default());
+            let popover = cx
+                .debug_bounds("project-popover-project")
+                .expect("Project menu should open");
+            assert!(popover.origin.x >= project_menu.origin.x);
+            let pin = cx
+                .debug_bounds("pin-project")
+                .expect("normal Project menu should offer Pin project");
+            cx.simulate_click(pin.center(), Modifiers::default());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| !viewer.views.pinned_projects().is_empty())
+                    .expect("viewer should remain open")
+            );
         }
 
         #[gpui::test]
@@ -4419,10 +4256,10 @@ mod tests {
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
-            let project = cx
-                .debug_bounds("project-tree-row-0-0")
-                .expect("first Project row should be rendered");
-            cx.simulate_click(project.center(), Modifiers::default());
+            let folder = cx
+                .debug_bounds("project-folder-0-0")
+                .expect("first Project folder should be rendered");
+            cx.simulate_click(folder.center(), Modifiers::default());
             wait_for_viewer(window, &cx, |viewer| {
                 viewer.sources.sources().next().is_some_and(|source| {
                     source
@@ -4442,6 +4279,13 @@ mod tests {
                 .read_with(&cx, |viewer, _| viewer.theme.spacing.tree_row_height)
                 .expect("viewer should remain open");
             assert_eq!(first_row.size.height, expected_row_height);
+
+            for _ in 0..2 {
+                let show_more = cx
+                    .debug_bounds("show-more-0-0")
+                    .expect("Project pagination should expose more Runs");
+                cx.simulate_click(show_more.center(), Modifiers::default());
+            }
 
             cx.simulate_event(ScrollWheelEvent {
                 position: tree.center(),
@@ -4515,14 +4359,14 @@ mod tests {
             assert!(cx.debug_bounds("project-tree-row-1-0").is_some());
             assert!(cx.debug_bounds("analysis-tab").is_some());
 
-            for (source_index, project_selector, run_selector) in [
-                (0, "project-tree-row-0-0", "project-tree-run-0-0-0"),
-                (1, "project-tree-row-1-0", "project-tree-run-1-0-0"),
+            for (source_index, folder_selector, run_selector) in [
+                (0, "project-folder-0-0", "project-tree-run-0-0-0"),
+                (1, "project-folder-1-0", "project-tree-run-1-0-0"),
             ] {
-                let project = cx
-                    .debug_bounds(project_selector)
-                    .expect("Project row should be rendered");
-                cx.simulate_click(project.center(), Modifiers::default());
+                let folder = cx
+                    .debug_bounds(folder_selector)
+                    .expect("Project folder should be rendered");
+                cx.simulate_click(folder.center(), Modifiers::default());
                 wait_for_viewer(window, &cx, |viewer| {
                     viewer
                         .sources

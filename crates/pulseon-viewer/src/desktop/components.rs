@@ -11,10 +11,17 @@ pub enum StatusTone {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IconName {
-    ChevronDown,
-    ChevronRight,
+    Archive,
+    Baseline,
+    CirclePlay,
     Close,
     Ellipsis,
+    Eye,
+    EyeClosed,
+    EyeOff,
+    Folder,
+    FolderOpen,
+    Pin,
     Plus,
     Refresh,
 }
@@ -22,10 +29,17 @@ pub enum IconName {
 impl IconName {
     const fn path(self) -> &'static str {
         match self {
-            Self::ChevronDown => "icons/chevron-down.svg",
-            Self::ChevronRight => "icons/chevron-right.svg",
+            Self::Archive => "icons/archive.svg",
+            Self::Baseline => "icons/baseline.svg",
+            Self::CirclePlay => "icons/circle-play.svg",
             Self::Close => "icons/close.svg",
             Self::Ellipsis => "icons/ellipsis.svg",
+            Self::Eye => "icons/eye.svg",
+            Self::EyeClosed => "icons/eye-closed.svg",
+            Self::EyeOff => "icons/eye-off.svg",
+            Self::Folder => "icons/folder.svg",
+            Self::FolderOpen => "icons/folder-open.svg",
+            Self::Pin => "icons/pin.svg",
             Self::Plus => "icons/plus.svg",
             Self::Refresh => "icons/refresh.svg",
         }
@@ -137,8 +151,26 @@ pub fn icon_button(
         .px_0()
 }
 
+pub fn sidebar_icon_button(
+    id: impl Into<ElementId>,
+    theme: ViewerTheme,
+    active: bool,
+) -> Stateful<Div> {
+    focus_ring(id, theme)
+        .size(theme.spacing.control_height)
+        .flex_none()
+        .rounded(theme.spacing.corner_radius)
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .opacity(if active { 1. } else { 0.62 })
+        .hover(|style| style.opacity(1.))
+}
+
 pub fn popover(theme: ViewerTheme) -> Div {
     div()
+        .occlude()
         .p_3()
         .rounded(theme.spacing.corner_radius)
         .border_1()
@@ -206,8 +238,9 @@ mod tests {
     #[test]
     fn icon_name_has_a_stable_asset_path() {
         assert_eq!(IconName::Refresh.path(), "icons/refresh.svg");
-        assert_eq!(IconName::ChevronDown.path(), "icons/chevron-down.svg");
-        assert_eq!(IconName::ChevronRight.path(), "icons/chevron-right.svg");
+        assert_eq!(IconName::Folder.path(), "icons/folder.svg");
+        assert_eq!(IconName::FolderOpen.path(), "icons/folder-open.svg");
+        assert_eq!(IconName::Eye.path(), "icons/eye.svg");
         assert_eq!(IconName::Close.path(), "icons/close.svg");
         assert_eq!(IconName::Ellipsis.path(), "icons/ellipsis.svg");
         assert_eq!(IconName::Plus.path(), "icons/plus.svg");

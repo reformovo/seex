@@ -8,9 +8,7 @@ use pulseon_model::run::RunId;
 use pulseon_model::types::ProjectId;
 
 use crate::coordination::{AnalysisViewId, MetricPanelId, SourceReadFailure};
-use crate::core::{
-    DataSourceId, RunRef, SelectionError, ViewerCore, ViewerSelection, toggle_run_selection,
-};
+use crate::core::{DataSourceId, RunRef, SelectionError, ViewerCore, ViewerSelection};
 use crate::query::{CurveSnapshot, InspectorSnapshot};
 use crate::workbench_document::WorkbenchDocument;
 use crate::worker::{Generation, ReadKind};
@@ -189,6 +187,19 @@ impl AnalysisViews {
             }
             let baseline = saved.baseline.as_ref().map(saved_run_ref);
             let pinned_runs = saved.pinned_runs.iter().map(saved_run_ref).collect();
+            for organized in baseline.iter().chain(&pinned_runs) {
+                if runs.contains(organized) {
+                    continue;
+                }
+                if runs.len() == crate::core::MAX_SELECTED_RUNS {
+                    issues.push(format!(
+                        "View {:?} cannot make every organized Run visible",
+                        saved.name
+                    ));
+                    break;
+                }
+                runs.push(organized.clone());
+            }
             let mut panels = Vec::new();
             for metric in &saved.metrics {
                 let metric_key = MetricKey::from_string(metric);
@@ -216,10 +227,19 @@ impl AnalysisViews {
                     saved.name
                 ));
             }
+            let archived_runs = document
+                .archived_runs
+                .iter()
+                .map(saved_run_ref)
+                .collect::<Vec<_>>();
             let mut core = ViewerCore::new(ViewerSelection {
                 source_id: runs.first().map(|run| run.source_id.clone()),
                 project_id: runs.first().map(|run| run.project_id.clone()),
-                runs: runs.clone(),
+                runs: runs
+                    .iter()
+                    .filter(|run| !archived_runs.contains(run))
+                    .cloned()
+                    .collect(),
                 metric_key: selected_panel_id.as_ref().and_then(|panel_id| {
                     panels
                         .iter()
@@ -415,17 +435,47 @@ impl AnalysisViews {
     }
 
     pub fn toggle_active_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
-        let selected = toggle_run_selection(&mut self.active_mut().runs, run)?;
+        let archived = self.archived_runs.clone();
+        let view = self.active_mut();
+        let selected = if let Some(index) = view.runs.iter().position(|item| item == &run) {
+            view.runs.remove(index);
+            false
+        } else {
+            let visible_count = view
+                .runs
+                .iter()
+                .filter(|item| !archived.contains(item))
+                .count();
+            if visible_count == crate::core::MAX_SELECTED_RUNS {
+                return Err(SelectionError::RunLimit);
+            }
+            view.runs.push(run);
+            true
+        };
         self.invalidate_active_panels();
         Ok(selected)
     }
 
-    pub fn set_active_baseline(&mut self, baseline: Option<RunRef>) {
+    pub fn set_active_baseline(&mut self, baseline: Option<RunRef>) -> Result<(), SelectionError> {
+        if let Some(run) = &baseline
+            && !self.active().runs.contains(run)
+        {
+            self.toggle_active_run(run.clone())?;
+        }
+        if let Some(run) = &baseline {
+            self.active_mut().pinned_runs.retain(|item| item != run);
+        }
         self.active_mut().baseline = baseline;
         self.invalidate_active_panels();
+        Ok(())
     }
 
-    pub fn toggle_active_pinned_run(&mut self, run: RunRef) -> bool {
+    pub fn toggle_active_pinned_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
+        let adding = !self.active().pinned_runs.contains(&run);
+        let was_baseline = self.active().baseline.as_ref() == Some(&run);
+        if adding && !self.active().runs.contains(&run) {
+            self.toggle_active_run(run.clone())?;
+        }
         let pinned = &mut self.active_mut().pinned_runs;
         let added = if let Some(index) = pinned.iter().position(|candidate| candidate == &run) {
             pinned.remove(index);
@@ -434,8 +484,11 @@ impl AnalysisViews {
             pinned.push(run);
             true
         };
+        if added && was_baseline {
+            self.active_mut().baseline = None;
+        }
         self.invalidate_active_panels();
-        added
+        Ok(added)
     }
 
     pub fn pin_project(&mut self, project: ProjectRef) {
@@ -462,7 +515,6 @@ impl AnalysisViews {
 
     pub fn archive_run(&mut self, run: RunRef) {
         for view in &mut self.views {
-            view.runs.retain(|item| item != &run);
             view.pinned_runs.retain(|item| item != &run);
             if view.baseline.as_ref() == Some(&run) {
                 view.baseline = None;
@@ -478,6 +530,11 @@ impl AnalysisViews {
 
     pub fn restore_run(&mut self, run: &RunRef) {
         self.archived_runs.retain(|item| item != run);
+        for view in &mut self.views {
+            if view.runs.contains(run) && !view.core.selection().runs.contains(run) {
+                let _ = view.core.toggle_run(run.clone());
+            }
+        }
     }
 
     pub fn select_active_metric(&mut self, metric_key: MetricKey) -> MetricPanelId {
@@ -800,8 +857,19 @@ mod tests {
             ProjectId::from_string("project"),
             RunId::from_string("baseline"),
         );
-        views.set_active_baseline(Some(baseline.clone()));
-        assert!(views.toggle_active_pinned_run(baseline));
+        views
+            .set_active_baseline(Some(baseline.clone()))
+            .expect("baseline should fit the visible Run limit");
+        let pinned = RunRef::new(
+            DataSourceId::from_string("source"),
+            ProjectId::from_string("project"),
+            RunId::from_string("pinned"),
+        );
+        assert!(
+            views
+                .toggle_active_pinned_run(pinned)
+                .expect("pinned Run should fit the visible Run limit")
+        );
         views.select_active_metric(MetricKey::from_string("loss"));
         views
             .active_mut()
@@ -819,7 +887,7 @@ mod tests {
             .select_axis(pulseon_model::alignment::AlignmentAxis::Step);
         assert!(views.activate(&AnalysisViewId::from_string("view-1")));
 
-        assert_eq!(views.active().runs.len(), 1);
+        assert_eq!(views.active().runs.len(), 3);
         assert!(views.active().baseline.is_some());
         assert_eq!(views.active().pinned_runs.len(), 1);
         assert_eq!(
@@ -949,20 +1017,33 @@ mod tests {
                 RunId::from_string(name),
             )
         };
-        views.set_active_baseline(Some(run("baseline")));
-        assert!(views.toggle_active_pinned_run(run("pinned")));
+        views
+            .set_active_baseline(Some(run("baseline")))
+            .expect("baseline should fit the visible Run limit");
+        assert!(
+            views
+                .toggle_active_pinned_run(run("pinned"))
+                .expect("pinned Run should fit the visible Run limit")
+        );
         let first = views.active().view_id.clone();
         let second = views.create_empty();
 
         assert!(views.active().baseline.is_none());
         assert!(views.active().pinned_runs.is_empty());
-        views.archive_run(run("archived"));
+        let archived = run("archived");
+        views
+            .toggle_active_run(archived.clone())
+            .expect("archived candidate should fit the visible Run limit");
+        views.archive_run(archived.clone());
+        assert!(views.active().runs.contains(&archived));
         assert!(views.activate(&first));
         assert_eq!(views.active().baseline.as_ref(), Some(&run("baseline")));
         assert_eq!(views.active().pinned_runs, [run("pinned")]);
-        assert_eq!(views.archived_runs(), [run("archived")]);
+        assert_eq!(views.archived_runs(), std::slice::from_ref(&archived));
         assert!(views.activate(&second));
-        assert_eq!(views.archived_runs(), [run("archived")]);
+        assert_eq!(views.archived_runs(), std::slice::from_ref(&archived));
+        views.restore_run(&archived);
+        assert!(views.active().runs.contains(&archived));
     }
 
     #[test]
