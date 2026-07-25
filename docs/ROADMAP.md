@@ -349,7 +349,7 @@ roadmap phase identifiers.
 ##### Design Convergence and Viewer-Only Organization
 
 The completed items above record the first multi-project workbench delivery.
-The following unchecked work converges that implementation on the durable
+The following checklist converges that implementation on the durable
 interaction design in
 [`multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md)
 before release work begins.
