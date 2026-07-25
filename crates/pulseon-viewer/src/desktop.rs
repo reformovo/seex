@@ -2218,6 +2218,7 @@ impl ViewerApp {
             |panel| panel.metric_key.as_str().to_owned(),
         );
         let snapshot = panel.as_ref().and_then(|panel| panel.inspector.as_deref());
+        let baseline = self.views.active().baseline.clone();
         let body = if panel
             .as_ref()
             .is_some_and(|panel| panel.is_pending(ReadKind::Inspector))
@@ -2226,6 +2227,7 @@ impl ViewerApp {
         } else {
             match active_tab {
                 InspectorTab::Summary => {
+                    let baseline_value = baseline_summary_value(snapshot, baseline.as_ref());
                     div()
                         .flex()
                         .flex_col()
@@ -2233,11 +2235,16 @@ impl ViewerApp {
                         .children(snapshot.into_iter().flat_map(|snapshot| {
                             snapshot.runs.iter().map(|run| match &run.summary {
                             Some(stats) => format!(
-                                "{} · count {} · last step {} · last {:.6} · min {:.6} · max {:.6}",
+                                "{} · count {} · last step {} · last {} · min {:.6} · max {:.6}",
                                 run.run.name,
                                 stats.effective_count,
                                 stats.last_step.value(),
-                                stats.last_value_f64,
+                                inspector_value(
+                                    Some(stats.last_value_f64),
+                                    &run.run_ref,
+                                    baseline.as_ref(),
+                                    baseline_value,
+                                ),
                                 stats.min_value_f64,
                                 stats.max_value_f64,
                             ),
@@ -2294,10 +2301,11 @@ impl ViewerApp {
                         .children(direction.into_iter().flat_map(|_| {
                             snapshot
                                 .into_iter()
-                                .flat_map(ranking_lines)
+                                .flat_map(|snapshot| ranking_lines(snapshot, baseline.as_ref()))
                         }))
                 }
                 InspectorTab::Evidence => {
+                    let baseline_value = baseline_evidence_value(snapshot, baseline.as_ref());
                     div()
                         .flex()
                         .flex_col()
@@ -2312,9 +2320,11 @@ impl ViewerApp {
                                         || "—".to_owned(),
                                         |step| step.value().to_string(),
                                     ),
-                                    run.evidence.last_value_f64.map_or_else(
-                                        || "—".to_owned(),
-                                        |value| format!("{value:.6}"),
+                                    inspector_value(
+                                        run.evidence.last_value_f64,
+                                        &run.run_ref,
+                                        baseline.as_ref(),
+                                        baseline_value,
                                     ),
                                     run.evidence.completeness,
                                     reasons_label(&run.evidence.reasons),
@@ -2716,6 +2726,13 @@ impl ViewerApp {
             .map(|hover| hover.axis_value as f64)
             .or(self.ruler_hover);
         let locked_cursor = self.locked_cursor;
+        let baseline = self.views.active().baseline.clone();
+        let hover = self.track_hovers.get(&panel_id).cloned();
+        let delta = hover.as_ref().and_then(|hover| {
+            baseline
+                .as_ref()
+                .and_then(|baseline| baseline_delta(panel, baseline, hover))
+        });
         div()
             .relative()
             .size_full()
@@ -2738,6 +2755,7 @@ impl ViewerApp {
                             snapshot,
                             panel.detail_revision,
                             viewport,
+                            baseline.clone(),
                         )
                         .size_full(),
                     )
@@ -2761,13 +2779,13 @@ impl ViewerApp {
                         }
                     })),
             )
-            .children(self.track_hovers.get(&panel_id).map(|hover| {
+            .children(hover.as_ref().map(|hover| {
                 components::tooltip(theme)
                     .absolute()
                     .top_2()
                     .left_2()
                     .child(format!("{} · {}", hover.run_name, hover.metric_key))
-                    .child(hover_value_line(self.core.axis(), hover))
+                    .child(hover_value_line(self.core.axis(), hover, delta))
             }))
     }
 
@@ -2858,6 +2876,7 @@ impl ViewerApp {
                                     Arc::clone(&snapshot),
                                     self.detail_revision,
                                     viewport,
+                                    self.views.active().baseline.clone(),
                                 )
                                 .size_full(),
                             )
@@ -2940,7 +2959,7 @@ impl ViewerApp {
                     .top(px(84.))
                     .left(px(100.))
                     .child(format!("{} · {}", hover.run_name, hover.metric_key))
-                    .child(hover_value_line(axis, hover))
+                    .child(hover_value_line(axis, hover, None))
             }))
     }
 
@@ -3564,7 +3583,8 @@ fn axis_menu_item(
         .child(label.to_owned())
 }
 
-fn ranking_lines(snapshot: &InspectorSnapshot) -> Vec<String> {
+fn ranking_lines(snapshot: &InspectorSnapshot, baseline: Option<&RunRef>) -> Vec<String> {
+    let baseline_value = baseline_evidence_value(Some(snapshot), baseline);
     let mut projects = Vec::<((DataSourceId, ProjectId), Vec<_>)>::new();
     for run in &snapshot.runs {
         let key = (
@@ -3598,10 +3618,12 @@ fn ranking_lines(snapshot: &InspectorSnapshot) -> Vec<String> {
                 .evidence
                 .last_step
                 .map_or_else(|| "—".to_owned(), |step| step.value().to_string());
-            let value = run
-                .evidence
-                .last_value_f64
-                .map_or_else(|| "—".to_owned(), |value| format!("{value:.6}"));
+            let value = inspector_value(
+                run.evidence.last_value_f64,
+                &run.run_ref,
+                baseline,
+                baseline_value,
+            );
             lines.push(format!(
                 "{rank} · {} · status {} · step {step} · value {value} · {:?}{}",
                 run.run.name,
@@ -3612,6 +3634,55 @@ fn ranking_lines(snapshot: &InspectorSnapshot) -> Vec<String> {
         }
     }
     lines
+}
+
+fn baseline_summary_value(
+    snapshot: Option<&InspectorSnapshot>,
+    baseline: Option<&RunRef>,
+) -> Option<f64> {
+    let baseline = baseline?;
+    snapshot?
+        .runs
+        .iter()
+        .find(|run| &run.run_ref == baseline)?
+        .summary
+        .as_ref()
+        .map(|summary| summary.last_value_f64)
+}
+
+fn baseline_evidence_value(
+    snapshot: Option<&InspectorSnapshot>,
+    baseline: Option<&RunRef>,
+) -> Option<f64> {
+    let baseline = baseline?;
+    snapshot?
+        .runs
+        .iter()
+        .find(|run| &run.run_ref == baseline)?
+        .evidence
+        .last_value_f64
+}
+
+fn inspector_value(
+    value: Option<f64>,
+    run_ref: &RunRef,
+    baseline: Option<&RunRef>,
+    baseline_value: Option<f64>,
+) -> String {
+    let Some(value) = value else {
+        return if baseline == Some(run_ref) {
+            "— · Baseline".to_owned()
+        } else {
+            "—".to_owned()
+        };
+    };
+    if baseline == Some(run_ref) {
+        format!("{value:.6} · Baseline")
+    } else if let Some(baseline_value) = baseline_value {
+        format!("{value:.6}({:+.6})", value - baseline_value)
+    } else {
+        format!("{value:.6}")
+    }
 }
 
 fn error_banner(message: String, theme: ViewerTheme) -> gpui::Div {
@@ -3667,16 +3738,36 @@ fn format_axis_tick(axis: CurveAxis, value: f64) -> String {
     }
 }
 
-fn hover_value_line(axis: AlignmentAxis, hover: &HoverPoint) -> String {
+fn hover_value_line(axis: AlignmentAxis, hover: &HoverPoint, delta: Option<f64>) -> String {
+    let value = delta.map_or_else(
+        || format!("{:.2}", hover.value),
+        |delta| format!("{:.2}({delta:+.2})", hover.value),
+    );
     match axis {
-        AlignmentAxis::Step => format!("step={} · value={}", hover.axis_value, hover.value),
+        AlignmentAxis::Step => format!("{} · {value}", hover.axis_value),
         AlignmentAxis::ElapsedTime => format!(
-            "time={} · step={} · value={}",
+            "{} · {value}",
             format_axis_tick(CurveAxis::AbsoluteTime, hover.axis_value as f64),
-            hover.step,
-            hover.value
         ),
     }
+}
+
+fn baseline_delta(panel: &MetricPanel, baseline: &RunRef, hover: &HoverPoint) -> Option<f64> {
+    if &hover.run_ref == baseline {
+        return None;
+    }
+    let curve = panel
+        .detail
+        .as_ref()?
+        .series
+        .iter()
+        .find(|curve| &curve.run_ref == baseline)?;
+    let point = curve
+        .evidence
+        .points
+        .iter()
+        .min_by_key(|point| point.axis_value.abs_diff(hover.axis_value))?;
+    Some(hover.value - point.point.value_f64)
 }
 
 const fn empty_detail_message(has_overview: bool, pending: bool) -> &'static str {
@@ -3749,7 +3840,7 @@ mod tests {
     }
 
     #[test]
-    fn hover_value_line_avoids_duplicate_step_but_retains_step_for_elapsed_axis() {
+    fn hover_value_line_formats_axis_value_and_optional_baseline_delta() {
         let hover = HoverPoint {
             run_ref: RunRef::new(
                 DataSourceId::from_string("source"),
@@ -3759,17 +3850,20 @@ mod tests {
             run_name: "run".to_owned(),
             metric_key: "loss".to_owned(),
             axis_value: 2_904,
-            step: 497,
             value: 0.506,
         };
 
         assert_eq!(
-            hover_value_line(AlignmentAxis::Step, &hover),
-            "step=2904 · value=0.506"
+            hover_value_line(AlignmentAxis::Step, &hover, None),
+            "2904 · 0.51"
         );
         assert_eq!(
-            hover_value_line(AlignmentAxis::ElapsedTime, &hover),
-            "time=2.904s UTC · step=497 · value=0.506"
+            hover_value_line(AlignmentAxis::ElapsedTime, &hover, None),
+            "2.904s UTC · 0.51"
+        );
+        assert_eq!(
+            hover_value_line(AlignmentAxis::Step, &hover, Some(0.55)),
+            "2904 · 0.51(+0.55)"
         );
     }
 
@@ -3857,7 +3951,7 @@ mod tests {
             ],
         };
 
-        let lines = ranking_lines(&snapshot);
+        let lines = ranking_lines(&snapshot, None);
 
         assert_eq!(
             lines,
@@ -3868,6 +3962,17 @@ mod tests {
                 "Project beta · Source source",
                 "#1 · Run 3 · status finished · step 1 · value 3.000000 · Complete",
             ]
+        );
+
+        let baseline = snapshot.runs[0].run_ref.clone();
+        let lines = ranking_lines(&snapshot, Some(&baseline));
+        assert_eq!(
+            lines[1],
+            "#1 · Run 1 · status finished · step 1 · value 1.000000(-1.000000) · Complete"
+        );
+        assert_eq!(
+            lines[2],
+            "#2 · Run 2 · status finished · step 1 · value 2.000000 · Baseline · Complete"
         );
     }
 

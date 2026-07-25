@@ -23,7 +23,6 @@ pub struct HoverPoint {
     pub run_name: String,
     pub metric_key: String,
     pub axis_value: i64,
-    pub step: i64,
     pub value: f64,
 }
 
@@ -34,6 +33,7 @@ struct GpuiPathKey {
     bounds: [u32; 4],
     dark: bool,
     partial: bool,
+    highlighted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +89,7 @@ impl ChartAdapter {
         viewport: Viewport,
         bounds: Bounds<Pixels>,
         appearance: WindowAppearance,
+        baseline: Option<&RunRef>,
     ) -> PreparedChart {
         let theme = ViewerTheme::for_appearance(appearance);
         self.detail_bounds = Some(bounds);
@@ -106,6 +107,7 @@ impl ChartAdapter {
                 continue;
             };
             let partial = curve.evidence.completeness == EvidenceCompleteness::Partial;
+            let highlighted = baseline == Some(&curve.run_ref);
             let key = GpuiPathKey {
                 revision,
                 viewport: [
@@ -122,6 +124,7 @@ impl ChartAdapter {
                 ],
                 dark: theme.dark,
                 partial,
+                highlighted,
             };
             let projection_cache = &mut self.detail_projection_cache;
             let gpui_paths = &mut self.detail_gpui_paths;
@@ -137,7 +140,7 @@ impl ChartAdapter {
                 else {
                     continue;
                 };
-                let mut builder = PathBuilder::stroke(px(2.));
+                let mut builder = PathBuilder::stroke(if highlighted { px(3.) } else { px(2.) });
                 if partial {
                     builder = builder.dash_array(&[px(7.), px(4.)]);
                 }
@@ -203,7 +206,6 @@ impl ChartAdapter {
                     run_name: curve.run.name.clone(),
                     metric_key: aligned.point.metric_key.as_str().to_owned(),
                     axis_value: aligned.axis_value,
-                    step: aligned.point.step.value(),
                     value: aligned.point.value_f64,
                 },
             ));
@@ -329,6 +331,7 @@ pub fn detail_canvas(
     snapshot: Arc<CurveSnapshot>,
     revision: u64,
     viewport: Viewport,
+    baseline: Option<RunRef>,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
         move |bounds, window, _| {
@@ -339,6 +342,7 @@ pub fn detail_canvas(
                 viewport,
                 bounds,
                 window.appearance(),
+                baseline.as_ref(),
             );
             if resized {
                 window.request_animation_frame();
@@ -623,11 +627,10 @@ mod tests {
                 hover.run_name.as_str(),
                 hover.metric_key.as_str(),
                 hover.axis_value,
-                hover.step,
                 hover.value,
                 hover.run_ref,
             ),
-            ("baseline", "loss", 7, 7, 1.25, run_ref)
+            ("baseline", "loss", 7, 1.25, run_ref)
         );
         Ok(())
     }
@@ -776,9 +779,23 @@ mod tests {
         let viewport = Viewport::new(home, range(0., 11.));
         let bounds = Bounds::new(point(px(0.), px(0.)), size(px(2_500.), px(800.)));
         let mut adapter = ChartAdapter::default();
-        black_box(adapter.prepare(&snapshot, 1, viewport, bounds, WindowAppearance::Light));
+        black_box(adapter.prepare(
+            &snapshot,
+            1,
+            viewport,
+            bounds,
+            WindowAppearance::Light,
+            None,
+        ));
         measure_cpu_budget("cached path preparation", 20, 200, || {
-            black_box(adapter.prepare(&snapshot, 1, viewport, bounds, WindowAppearance::Light));
+            black_box(adapter.prepare(
+                &snapshot,
+                1,
+                viewport,
+                bounds,
+                WindowAppearance::Light,
+                None,
+            ));
         });
         let mut revision = 2;
         measure_cpu_budget("uncached path preparation", 20, 200, || {
@@ -788,6 +805,7 @@ mod tests {
                 viewport,
                 bounds,
                 WindowAppearance::Light,
+                None,
             ));
             revision += 1;
         });
