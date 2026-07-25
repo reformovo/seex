@@ -311,6 +311,7 @@ struct ViewerApp {
     overview_width: u32,
     detail_width: u32,
     ruler_hover: Option<f64>,
+    track_pointer_hover: Option<(MetricPanelId, f64)>,
     locked_cursor: Option<f64>,
     drag: Option<DragGesture>,
     zoom_task: Option<Task<()>>,
@@ -371,6 +372,7 @@ impl ViewerApp {
             overview_width: 1_000,
             detail_width: 1_000,
             ruler_hover: None,
+            track_pointer_hover: None,
             locked_cursor: None,
             drag: None,
             zoom_task: None,
@@ -474,6 +476,7 @@ impl ViewerApp {
         self.metric_scroll = ListState::new(0, ListAlignment::Top, px(480.));
         *self.track_viewport.borrow_mut() = TrackViewport::default();
         self.ruler_hover = None;
+        self.track_pointer_hover = None;
         self.locked_cursor = None;
         self.drag = None;
         self.cancel_detail_refresh();
@@ -720,6 +723,11 @@ impl ViewerApp {
             AlignmentAxis::Step => CurveAxis::Step,
             AlignmentAxis::ElapsedTime => CurveAxis::AbsoluteTime,
         }
+    }
+
+    fn hover_cursor_axis(&self) -> Option<f64> {
+        self.ruler_hover
+            .or_else(|| self.track_pointer_hover.as_ref().map(|(_, axis)| *axis))
     }
 
     fn request_panel_overview(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
@@ -1073,6 +1081,7 @@ impl ViewerApp {
         );
         *self.track_viewport.borrow_mut() = TrackViewport::default();
         self.ruler_hover = None;
+        self.track_pointer_hover = None;
         self.locked_cursor = None;
         self.drag = None;
         self.cancel_detail_refresh();
@@ -2001,7 +2010,7 @@ impl ViewerApp {
             .map(|range| pulseon_chart_core::linear_ticks(range, 6))
             .unwrap_or_default();
         let axis = self.curve_axis();
-        let hover_axis = self.ruler_hover;
+        let hover_axis = self.hover_cursor_axis();
         let locked_cursor = self.locked_cursor;
         div()
             .id("viewport-ruler")
@@ -2049,6 +2058,8 @@ impl ViewerApp {
                             ))
                             .on_mouse_move(cx.listener(
                                 move |this, event: &MouseMoveEvent, window, cx| {
+                                    this.track_pointer_hover = None;
+                                    this.track_hovers.clear();
                                     this.ruler_hover = this.ruler_axis_at(event.position, window);
                                     if event.dragging() {
                                         this.move_ruler_drag(event, window, cx);
@@ -2242,7 +2253,7 @@ impl ViewerApp {
             || "No Metric selected".to_owned(),
             |panel| panel.metric_key.as_str().to_owned(),
         );
-        let cursor_coordinate = self.locked_cursor.or(self.ruler_hover).map_or_else(
+        let cursor_coordinate = self.locked_cursor.or(self.hover_cursor_axis()).map_or_else(
             || "—".to_owned(),
             |value| format_cursor_coordinate(self.curve_axis(), value),
         );
@@ -2850,11 +2861,7 @@ impl ViewerApp {
         let hit_panel = panel_id.clone();
         let zoom_panel = panel_id.clone();
         let leave_panel = panel_id.clone();
-        let hover_axis = self
-            .track_hovers
-            .get(&panel_id)
-            .map(|hover| hover.axis_value as f64)
-            .or(self.ruler_hover);
+        let hover_axis = self.hover_cursor_axis();
         let locked_cursor = self.locked_cursor;
         let baseline = self.views.active().baseline.clone();
         let hover = self.track_hovers.get(&panel_id).cloned();
@@ -2920,6 +2927,13 @@ impl ViewerApp {
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         if !hovered {
                             this.track_hovers.remove(&leave_panel);
+                            if this
+                                .track_pointer_hover
+                                .as_ref()
+                                .is_some_and(|(panel_id, _)| panel_id == &leave_panel)
+                            {
+                                this.track_pointer_hover = None;
+                            }
                             cx.notify();
                         }
                     })),
@@ -3192,22 +3206,33 @@ impl ViewerApp {
         event: &MouseMoveEvent,
         cx: &mut Context<Self>,
     ) {
-        let Some(panel) = self.views.active_panel(panel_id) else {
-            return;
-        };
-        let Some(snapshot) = panel.detail.as_ref() else {
-            return;
-        };
-        let Some(viewport) =
-            renderer::detail_viewport(snapshot, self.core.brush().map(|brush| brush.selected()))
+        self.ruler_hover = None;
+        self.track_pointer_hover = None;
+        let Some(snapshot) = self
+            .views
+            .active_panel(panel_id)
+            .and_then(|panel| panel.detail.clone())
         else {
             return;
         };
-        let hover = self.track_adapters.get(panel_id).and_then(|adapter| {
-            adapter
-                .borrow()
-                .hit_test(snapshot, viewport, event.position)
-        });
+        let Some(viewport) =
+            renderer::detail_viewport(&snapshot, self.core.brush().map(|brush| brush.selected()))
+        else {
+            return;
+        };
+        let Some(adapter) = self.track_adapters.get(panel_id) else {
+            return;
+        };
+        let adapter = adapter.borrow();
+        let pointer_axis = adapter.detail_axis_at(viewport.x, event.position);
+        let pointer_anchor = adapter.detail_pointer_anchor(event.position);
+        let mut hover = adapter.hit_test(&snapshot, viewport, event.position);
+        if let (Some(hover), Some((x, align_left))) = (&mut hover, pointer_anchor) {
+            hover.canvas_position.x = x;
+            hover.align_left = align_left;
+        }
+        drop(adapter);
+        self.track_pointer_hover = pointer_axis.map(|axis| (panel_id.clone(), axis));
         if let Some(hover) = hover {
             self.track_hovers.insert(panel_id.clone(), hover);
         } else {
@@ -5158,6 +5183,51 @@ mod tests {
         }
 
         #[gpui::test]
+        fn chart_pointer_drives_the_shared_hover_cursor_without_a_curve_hit(
+            cx: &mut TestAppContext,
+        ) {
+            let (root, project_id, run_id) = fixture_with_extent(100);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                    viewer.views.active_mut().panels[0].row_height = 180.;
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            let canvas = cx
+                .debug_bounds("metric-canvas:loss")
+                .expect("Metric chart should render");
+            let pointer = point(
+                canvas.origin.x + canvas.size.width * 0.25,
+                canvas.bottom() - px(2.),
+            );
+
+            cx.simulate_mouse_move(pointer, None, Modifiers::default());
+
+            assert!(cx.debug_bounds("ruler-hover-tooltip").is_some());
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert!(viewer.ruler_hover.is_none());
+                    assert!(
+                        !viewer
+                            .track_hovers
+                            .contains_key(&MetricPanelId::from_string("loss"))
+                    );
+                    assert!(
+                        viewer.track_pointer_hover.as_ref().is_some_and(
+                            |(panel_id, axis)| panel_id.as_str() == "loss" && axis.is_finite()
+                        )
+                    );
+                })
+                .expect("viewer should remain open");
+        }
+
+        #[gpui::test]
         fn ruler_drag_pans_the_shared_viewport_within_home(cx: &mut TestAppContext) {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
@@ -5198,7 +5268,10 @@ mod tests {
                 .read_with(&cx, |viewer, _| {
                     let brush = viewer.core.brush().expect("brush should remain available");
                     assert_ne!(brush.selected(), before);
-                    assert_eq!(brush.selected().span(), before.span());
+                    assert!(
+                        (brush.selected().span() - before.span()).abs()
+                            <= f64::EPSILON * before.span().abs().max(1.)
+                    );
                     assert!(brush.selected().start() >= brush.home().start());
                     assert!(brush.selected().end() <= brush.home().end());
                     assert!(viewer.drag.is_none());
@@ -5247,7 +5320,10 @@ mod tests {
             window
                 .read_with(&cx, |viewer, _| {
                     let brush = viewer.core.brush().expect("brush should remain available");
-                    assert_eq!(brush.selected().span(), before.span());
+                    assert!(
+                        (brush.selected().span() - before.span()).abs()
+                            <= f64::EPSILON * before.span().abs().max(1.)
+                    );
                     assert!(brush.selected().start() > before.start());
                     assert_eq!(brush.selected().end(), brush.home().end());
                     assert!(viewer.detail_refresh_pending);

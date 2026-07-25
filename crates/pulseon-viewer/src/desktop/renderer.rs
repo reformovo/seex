@@ -281,6 +281,15 @@ impl ChartAdapter {
         axis_at(self.detail_bounds?, range, cursor)
     }
 
+    pub fn detail_pointer_anchor(&self, cursor: Point<Pixels>) -> Option<(Pixels, bool)> {
+        let bounds = self.detail_bounds?;
+        if cursor.x < bounds.origin.x || cursor.x > bounds.right() {
+            return None;
+        }
+        let x = cursor.x - bounds.origin.x;
+        Some((x, x > bounds.size.width * 0.72))
+    }
+
     pub fn detail_pan_delta(
         &self,
         range: AxisRange,
