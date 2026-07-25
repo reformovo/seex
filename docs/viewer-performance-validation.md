@@ -2,8 +2,8 @@
 
 ## Measurement Record
 
-- Date: 2026-07-23
-- Base commit: `a7226dc`, plus this validation record update
+- Date: 2026-07-25
+- Base commit: `3bb5e80`, plus this validation record update
 - Platform: macOS 26.3 (25D125), arm64, Apple M4 Pro
 - Rust: 1.97.1
 - uv: 0.8.12
@@ -61,9 +61,18 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Brush resize | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush pan | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush zoom | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
-| Cached path preparation | 200 | 0.339 ms | 0.410 ms | 0.539 ms |
-| Uncached path preparation | 200 | 7.456 ms | 7.817 ms | 8.412 ms |
-| Hit testing | 200 | 0.190 ms | 0.207 ms | 0.223 ms |
+| Cached path preparation | 200 | 0.659 ms | 0.831 ms | 0.933 ms |
+| Uncached path preparation | 200 | 7.056 ms | 7.209 ms | 7.546 ms |
+| Hit testing | 200 | 0.194 ms | 0.218 ms | 0.281 ms |
+
+After the converged renderer was integrated, an initial run failed the
+unchanged uncached-path gate at p95 9.018 ms and maximum 23.815 ms. A local
+Time Profiler recording identified GPUI/Lyon stroke tessellation and path
+construction, rather than storage projection, as the dominant work. Complete
+solid series now build their GPUI triangles directly; partial dashed evidence
+retains the existing GPUI/Lyon path semantics. Three subsequent standard
+release runs passed without changing thresholds. Their worst p95 was 7.485 ms
+and worst maximum was 15.362 ms. Local `.trace` bundles remain uncommitted.
 
 ## High-Refresh Product Check
 
@@ -130,7 +139,12 @@ The multi-project workbench contract is covered by direct behavioral tests:
   and
 - workbench document round trips plus healthy, removed-Run, unknown-Metric,
   duplicate-identity, unsupported-version, and missing-source recovery tests
-  cover persistence and unavailable-source reconciliation without native writes.
+  cover persistence and unavailable-source reconciliation without native
+  writes; and
+- converged GPUI tests cover Project menu anchoring and real placement,
+  five-item pagination, Metric candidate removal and independent resizing,
+  shared-ruler pan/zoom boundaries, simultaneous hover/locked cursors,
+  baseline deltas, and the single-line scrollable Bottom inspector.
 
 ## Zed Reference Audit
 
@@ -180,9 +194,10 @@ connection. `concurrency_gate_blocks_reads_beyond_its_limit` verifies that an
 extra read waits for a permit, and pending-request tests verify latest-only
 coalescing per Metric panel.
 
-The release CPU command was rerun after the multi-track workbench test was
-added. Every p95 remained below 8.33 ms and every maximum remained below
-16.7 ms; the current measurements are recorded in the CPU table above.
+The release CPU command was rerun against the final layout and direct solid
+path implementation. Every p95 remained below 8.33 ms and every maximum
+remained below 16.7 ms across three consecutive runs; the final run is recorded
+in the CPU table above.
 The representative gate is opt-in and was run with
 `cargo test -p pulseon-viewer --release --features test-support
 representative_workbench -- --ignored --nocapture` so hardware-sensitive GPUI
@@ -190,7 +205,7 @@ window teardown is not part of ordinary debug test runs.
 
 ## Verification
 
-Passed against base commit `a7226dc` on 2026-07-23:
+Passed against base commit `3bb5e80` on 2026-07-25:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
