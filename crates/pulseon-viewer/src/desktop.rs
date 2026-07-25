@@ -2702,7 +2702,8 @@ impl ViewerApp {
                     .flex()
                     .items_start()
                     .justify_between()
-                    .p(theme.spacing.panel_padding)
+                    .px_2()
+                    .py_1()
                     .bg(if selected {
                         theme.colors.element_active
                     } else {
@@ -2720,7 +2721,7 @@ impl ViewerApp {
                             .overflow_hidden()
                             .flex()
                             .flex_col()
-                            .gap_1()
+                            .gap_0()
                             .child(panel.metric_key.as_str().to_owned())
                             .child(
                                 div()
@@ -2888,7 +2889,8 @@ impl ViewerApp {
         div()
             .relative()
             .size_full()
-            .p(theme.spacing.content_padding)
+            .px_2()
+            .py_1()
             .child(
                 div()
                     .id(SharedString::from(format!(
@@ -2939,8 +2941,8 @@ impl ViewerApp {
                     })),
             )
             .children(callouts.into_iter().map(move |(hover, delta)| {
-                let x = theme.spacing.content_padding + hover.canvas_position.x;
-                let y = theme.spacing.content_padding + hover.canvas_position.y;
+                let x = px(8.) + hover.canvas_position.x;
+                let y = px(4.) + hover.canvas_position.y;
                 let left = if hover.align_left {
                     (x - px(112.)).max(px(0.))
                 } else {
@@ -5483,7 +5485,13 @@ mod tests {
                     workspace.origin.x + workspace.size.width
                 );
                 assert!(canvas.size.width > px(0.));
+                assert!(canvas.size.height >= track.size.height - px(8.));
                 assert!(metadata.size.height > px(0.));
+                assert!(
+                    metadata.origin.y + metadata.size.height
+                        <= sidebar.origin.y + sidebar.size.height,
+                    "metadata {metadata:?} must remain inside sidebar {sidebar:?}",
+                );
             }
             let (ranges, unavailable) = window
                 .read_with(&cx, |viewer, _| {
