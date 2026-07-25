@@ -190,7 +190,7 @@ impl WorkbenchDocument {
             views: Vec::new(),
             active_view: 0,
             project_sidebar_visible: true,
-            project_sidebar_width: 320.,
+            project_sidebar_width: 190.,
             metric_sidebar_compact: false,
             bottom_inspector_visible: false,
             bottom_inspector_height: 220.,
@@ -532,5 +532,9 @@ mod tests {
         assert!(document.archived_runs.is_empty());
         assert!(document.views[0].baseline.is_none());
         assert!(document.views[0].pinned_runs.is_empty());
+
+        let without_dock = WorkbenchDocument::decode("pulseon-workbench 1\n")
+            .expect("v1 document without dock state should load");
+        assert_eq!(without_dock.project_sidebar_width, 190.);
     }
 }

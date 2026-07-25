@@ -350,7 +350,7 @@ impl ViewerApp {
             metric_picker_open: false,
             axis_picker_open: false,
             project_sidebar_visible: true,
-            project_sidebar_width: px(320.),
+            project_sidebar_width: px(190.),
             metric_sidebar_compact: false,
             bottom_inspector_visible: false,
             bottom_inspector_height: px(220.),
