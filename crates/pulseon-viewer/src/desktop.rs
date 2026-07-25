@@ -21,10 +21,8 @@ use pulseon_viewer::coordination::AnalysisViewId;
 use pulseon_viewer::coordination::{
     MetricPanelId, PanelReadCoordinator, PanelReadOutcome, PanelReadRequest, PanelReadTag,
 };
-use pulseon_viewer::core::{
-    ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore, run_matches_filter,
-};
-use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
+use pulseon_viewer::core::{ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore};
+use pulseon_viewer::model::DiscoveryRequest;
 use pulseon_viewer::query::{CurveAxis, InspectorSnapshot};
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
 use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, ProjectRef};
@@ -133,25 +131,6 @@ fn update_brush_drag(brush: &mut BrushState, gesture: &mut DragGesture, axis: f6
         | DragGesture::BrushEnd
         | DragGesture::Ruler { .. }
         | DragGesture::Detail { .. } => {}
-    }
-}
-
-#[derive(Default)]
-struct RunListCache {
-    runs: Rc<[Run]>,
-}
-
-impl RunListCache {
-    fn rebuild(&mut self, catalog: Option<&CatalogSnapshot>, filter: &str) {
-        self.runs = catalog.map_or_else(Rc::default, |catalog| {
-            catalog
-                .runs
-                .iter()
-                .filter(|run| run_matches_filter(run, filter))
-                .cloned()
-                .collect::<Vec<_>>()
-                .into()
-        });
     }
 }
 
@@ -275,7 +254,6 @@ struct ViewerApp {
     view_name_focus: FocusHandle,
     run_filter: String,
     metric_filter: String,
-    run_list: RunListCache,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
     removed_projects: HashSet<ProjectRef>,
     project_focuses: HashMap<ProjectRef, FocusHandle>,
@@ -298,7 +276,6 @@ struct ViewerApp {
     bottom_inspector_visible: bool,
     bottom_inspector_height: gpui::Pixels,
     inspector_resize: Option<InspectorResize>,
-    source_menu: Option<DataSourceId>,
     source_path: Option<PathBuf>,
     sources: SourceRegistry,
     event_tasks: HashMap<DataSourceId, Task<()>>,
@@ -336,7 +313,6 @@ impl ViewerApp {
             view_name_focus: cx.focus_handle().tab_stop(true),
             run_filter: String::new(),
             metric_filter: String::new(),
-            run_list: RunListCache::default(),
             expanded_projects: HashSet::new(),
             removed_projects: HashSet::new(),
             project_focuses: HashMap::new(),
@@ -359,7 +335,6 @@ impl ViewerApp {
             bottom_inspector_visible: false,
             bottom_inspector_height: px(220.),
             inspector_resize: None,
-            source_menu: None,
             source_path: None,
             sources: SourceRegistry::default(),
             event_tasks: HashMap::new(),
@@ -472,7 +447,6 @@ impl ViewerApp {
             return;
         }
         self.core.reset_source(source_id);
-        self.run_list = RunListCache::default();
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
         self.track_hovers.clear();
@@ -689,9 +663,6 @@ impl ViewerApp {
         let succeeded = event.result.is_ok();
         if self.core.apply(event) != ApplyOutcome::Applied || !succeeded {
             return;
-        }
-        if kind == ReadKind::Catalog {
-            self.run_list.rebuild(self.core.catalog(), &self.run_filter);
         }
         match kind {
             ReadKind::Catalog
@@ -952,7 +923,6 @@ impl ViewerApp {
         cx: &mut Context<Self>,
     ) {
         self.project_sidebar_visible = !self.project_sidebar_visible;
-        self.source_menu = None;
         self.project_menu = None;
         self.hovered_project = None;
         self.hovered_run = None;
@@ -1073,7 +1043,6 @@ impl ViewerApp {
             .as_ref()
             .and_then(|source_id| self.sources.source(source_id))
             .map(|source| source.root_path.clone());
-        self.run_list.rebuild(self.core.catalog(), &self.run_filter);
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
         self.track_hovers.clear();
@@ -1138,7 +1107,6 @@ impl ViewerApp {
         let active = self.core.selection().source_id.as_ref() == Some(&source_id);
         let request = self.discovery_request_for_source(&source_id, active);
         self.submit_to_source(source_id, ReadRequest::Discover(request), active, cx);
-        self.source_menu = None;
         cx.notify();
     }
 
@@ -1161,7 +1129,6 @@ impl ViewerApp {
                 source.root_path.display()
             ));
         }
-        self.source_menu = None;
         cx.notify();
     }
 
@@ -1174,11 +1141,9 @@ impl ViewerApp {
         self.project_focuses
             .retain(|project, _| &project.source_id != source_id);
         self.views.remove_source(source_id);
-        self.source_menu = None;
         if active {
             self.core = ViewerCore::default();
             self.source_path = None;
-            self.run_list = RunListCache::default();
             self.chart_adapter.borrow_mut().clear();
         }
         cx.notify();
@@ -1246,7 +1211,6 @@ impl ViewerApp {
     fn select_project(&mut self, project_id: ProjectId, cx: &mut Context<Self>) {
         self.core.select_project(Some(project_id));
         self.run_filter.clear();
-        self.run_list.rebuild(self.core.catalog(), &self.run_filter);
         self.refresh_catalog(cx);
         cx.notify();
     }
@@ -1265,7 +1229,6 @@ impl ViewerApp {
         if self.core.selection().source_id.as_ref() != Some(&source_id) {
             self.core.reset_source(source_id);
             self.source_path = Some(source_path);
-            self.run_list = RunListCache::default();
             self.chart_adapter.borrow_mut().clear();
         }
         self.select_project(project_id, cx);
@@ -1605,7 +1568,6 @@ impl ViewerApp {
             }
             _ => return,
         }
-        self.run_list.rebuild(self.core.catalog(), &self.run_filter);
         cx.stop_propagation();
         cx.notify();
     }
