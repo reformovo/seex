@@ -2045,9 +2045,9 @@ impl ViewerApp {
         );
         if self.metric_picker_open {
             picker = picker.child(
-                div().absolute().top_0().right_0().child(deferred(
+                div().absolute().top_0().left_0().child(deferred(
                     anchored()
-                        .anchor(Corner::TopRight)
+                        .anchor(Corner::TopLeft)
                         .snap_to_window_with_margin(px(8.))
                         .offset(point(px(0.), px(BRUSH_ROW_HEIGHT + 4.)))
                         .child(
@@ -6028,7 +6028,7 @@ mod tests {
                 .expect("Brush controls should own the fixed Metric label cell");
             assert_eq!(metric_picker.size.width, px(180.));
             assert_eq!(metric_picker.top(), controls.bottom() + px(4.));
-            assert_eq!(metric_picker.right(), add.right());
+            assert_eq!(metric_picker.left(), add.left());
             assert_eq!(axis.origin.x, controls.origin.x + px(4.));
             assert_eq!(add.right(), controls.right() - px(5.));
             cx.simulate_click(axis.center(), Modifiers::default());
