@@ -4930,7 +4930,7 @@ mod tests {
 
         #[gpui::test]
         fn run_markers_align_with_project_icons_and_run_labels(cx: &mut TestAppContext) {
-            let (root, project_id, _) = fixture_with_runs(0, 3);
+            let (root, project_id, _) = fixture_with_runs(0, 4);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             wait_for_viewer(window, &cx, |viewer| {
@@ -4938,7 +4938,7 @@ mod tests {
                     .sources
                     .sources()
                     .next()
-                    .is_some_and(|source| source.catalog.runs.len() == 3)
+                    .is_some_and(|source| source.catalog.runs.len() == 4)
             });
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -4952,6 +4952,7 @@ mod tests {
                     };
                     viewer.set_run_baseline(run_ref(0), cx);
                     viewer.toggle_pinned_run(run_ref(1), cx);
+                    viewer.archive_run(run_ref(2), cx);
                 })
                 .expect("viewer should remain open");
 
@@ -4973,8 +4974,24 @@ mod tests {
             let pinned_color = cx
                 .debug_bounds("run-color-pinned-0")
                 .expect("Pinned color marker should render");
+            let archived_label = cx
+                .debug_bounds("archived-run-name-0")
+                .expect("Archived Run label should render");
+            let archived_color = cx
+                .debug_bounds("run-color-archived-0")
+                .expect("Archived color marker should render");
             assert_eq!(baseline_label.origin.x, pinned_label.origin.x);
-            assert_eq!(baseline_color.origin.x, pinned_color.origin.x);
+            assert_eq!(baseline_label.origin.x, archived_label.origin.x);
+            for color in [baseline_color, pinned_color, archived_color] {
+                assert_eq!(color.origin.x, project_folder.origin.x);
+            }
+            let sidebar = cx
+                .debug_bounds("project-sidebar")
+                .expect("Project sidebar should render");
+            let archived_tree = cx
+                .debug_bounds("archived-run-tree")
+                .expect("Archived section should render");
+            assert_eq!(archived_tree.bottom(), sidebar.bottom());
             let project_row = cx
                 .debug_bounds("project-tree-row-0-0")
                 .expect("Project row should render");
@@ -4989,8 +5006,8 @@ mod tests {
                 .debug_bounds("run-color-project-0")
                 .expect("nested Run color marker should render");
             assert_eq!(nested_eye.origin.x, project_folder.origin.x);
-            assert_eq!(nested_color.origin.x, baseline_color.origin.x);
-            assert_eq!(nested_run.origin.x, baseline_label.origin.x);
+            assert!(nested_color.origin.x > baseline_color.origin.x);
+            assert!(nested_run.origin.x > baseline_label.origin.x);
             assert!(nested_run.origin.x > project_label.origin.x);
         }
 

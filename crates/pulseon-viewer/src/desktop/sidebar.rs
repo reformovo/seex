@@ -141,12 +141,23 @@ impl ViewerApp {
             resources = resources.child(self.render_sidebar_project(project, &query, window, cx));
         }
 
-        resources = resources.child(sidebar_group_label("Archived", theme));
+        let mut archived_resources = div()
+            .id("archived-run-tree")
+            .debug_selector(|| "archived-run-tree".to_owned())
+            .max_h(px(220.))
+            .flex_none()
+            .overflow_y_scroll()
+            .border_t_1()
+            .border_color(theme.colors.border)
+            .px(theme.spacing.panel_padding)
+            .pb_3()
+            .child(sidebar_group_label("Archived", theme));
         for project in projects
             .into_iter()
             .filter(|project| project.placement == ProjectPlacement::Archived)
         {
-            resources = resources.child(self.render_sidebar_project(project, &query, window, cx));
+            archived_resources =
+                archived_resources.child(self.render_sidebar_project(project, &query, window, cx));
         }
         for (index, run) in archived_runs
             .iter()
@@ -154,7 +165,7 @@ impl ViewerApp {
             .cloned()
             .enumerate()
         {
-            resources = resources.child(self.render_sidebar_run(
+            archived_resources = archived_resources.child(self.render_sidebar_run(
                 run,
                 RunPlacement::Archived,
                 index,
@@ -163,7 +174,7 @@ impl ViewerApp {
             ));
         }
         if archived_runs.len() > archived_limit {
-            resources = resources.child(
+            archived_resources = archived_resources.child(
                 sidebar_text_button("show-more-archived", "Show more", theme)
                     .debug_selector(|| "show-more-archived".to_owned())
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -308,6 +319,7 @@ impl ViewerApp {
                     ),
             )
             .child(resources)
+            .child(archived_resources)
     }
 
     fn render_sidebar_project(
@@ -664,7 +676,6 @@ impl ViewerApp {
             }
             cx.notify();
         }))
-        .children((placement != RunPlacement::Projects).then(|| div().size(px(20.)).flex_none()))
         .children((placement == RunPlacement::Projects).then(|| {
             components::sidebar_icon_button(
                 SharedString::from(format!("run-eye:{}", eye_run.cache_key())),
