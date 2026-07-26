@@ -2482,25 +2482,35 @@ impl ViewerApp {
             }))
             .children(selected.zip(hover_axis).map(|(range, value)| {
                 let ratio = ((value - range.start()) / range.span()).clamp(0., 1.) as f32;
+                let label = format_cursor_coordinate(axis, value);
+                let width = px((label.chars().count() as f32 * 7. + 14.).clamp(36., 96.));
                 let offset = if ratio < 0.08 {
                     px(0.)
                 } else if ratio > 0.92 {
-                    px(-64.)
+                    -width
                 } else {
-                    px(-32.)
+                    -width / 2.
                 };
                 components::tooltip(theme)
                     .id("ruler-hover-tooltip")
                     .debug_selector(|| "ruler-hover-tooltip".to_owned())
                     .absolute()
-                    .top(px(2.))
+                    .top(px(5.))
                     .left(px(plot_left_px + ratio * plot_width))
                     .ml(offset)
-                    .min_w(px(64.))
+                    .w(width)
+                    .h(px(18.))
+                    .rounded(px(9.))
+                    .border_color(theme.colors.accent)
+                    .bg(theme.colors.accent)
+                    .text_color(theme.colors.accent_text)
+                    .text_xs()
                     .flex()
+                    .items_center()
                     .justify_center()
+                    .px_2()
                     .py_0()
-                    .child(format_cursor_coordinate(axis, value))
+                    .child(label)
             }))
     }
 
@@ -3417,13 +3427,16 @@ impl ViewerApp {
             .zip((!tooltip_rows.is_empty()).then_some(tooltip_rows))
             .map(move |((x, y, align_left), rows)| {
                 let height = px(8. + rows.len() as f32 * 20.);
+                let width = px(track_tooltip_width(
+                    rows.iter().map(|(_, label)| label.as_str()),
+                ));
                 let top = (y - height / 2.)
                     .max(px(0.))
                     .min((px(panel.row_height) - height).max(px(0.)));
                 let left = if align_left {
-                    (x - px(168.)).max(px(0.))
+                    (x - width - px(10.)).max(px(0.))
                 } else {
-                    x + px(8.)
+                    x + px(10.)
                 };
                 let pointer_top = (y - top - px(6.))
                     .max(px(2.))
@@ -3437,17 +3450,25 @@ impl ViewerApp {
                     .absolute()
                     .left(left)
                     .top(top)
-                    .w(px(160.))
+                    .w(width)
+                    .rounded(px(2.))
+                    .border_color(theme.colors.text_muted)
+                    .bg(theme.colors.surface)
+                    .text_color(theme.colors.text)
                     .px_2()
                     .py_1()
                     .flex()
                     .flex_col()
                     .child(
-                        renderer::callout_pointer(align_left)
-                            .absolute()
-                            .top(pointer_top)
-                            .when(align_left, |pointer| pointer.right(px(-8.)))
-                            .when(!align_left, |pointer| pointer.left(px(-8.))),
+                        renderer::callout_pointer(
+                            align_left,
+                            theme.colors.surface,
+                            theme.colors.text_muted,
+                        )
+                        .absolute()
+                        .top(pointer_top)
+                        .when(align_left, |pointer| pointer.right(px(-10.)))
+                        .when(!align_left, |pointer| pointer.left(px(-10.))),
                     )
                     .children(rows.into_iter().map(|(color, label)| {
                         div()
@@ -4321,6 +4342,15 @@ fn track_tooltip_row_limit(row_height: f32) -> usize {
     (((row_height - 8.).max(0.) / 24.).floor() as usize).clamp(1, 5)
 }
 
+fn track_tooltip_width<'a>(labels: impl IntoIterator<Item = &'a str>) -> f32 {
+    let characters = labels
+        .into_iter()
+        .map(|label| label.chars().count())
+        .max()
+        .unwrap_or_default();
+    (characters as f32 * 7. + 32.).clamp(72., 180.)
+}
+
 fn format_signed_delta(delta: f64, precision: usize) -> String {
     let sign = if delta.is_sign_negative() { '−' } else { '+' };
     format!("{sign}{:.precision$}", delta.abs())
@@ -4422,6 +4452,9 @@ mod tests {
             "3k: 0.51 (+0.55)"
         );
         assert_eq!([52., 92., 180.].map(track_tooltip_row_limit), [1, 3, 5]);
+        assert_eq!(track_tooltip_width(["0.28"]), 72.);
+        let long_label = "x".repeat(40);
+        assert_eq!(track_tooltip_width([long_label.as_str()]), 180.);
         assert_eq!(format_cursor_coordinate(CurveAxis::Step, 496_000.), "496k");
         assert_eq!(
             format_cursor_coordinate(CurveAxis::AbsoluteTime, 34_920_000.),
@@ -6522,6 +6555,7 @@ mod tests {
                 .debug_bounds("ruler-hover-tooltip")
                 .expect("hover coordinate capsule should render");
             assert!(f32::from(capsule.center().x - second.x).abs() < 40.);
+            assert_eq!(capsule.size.height, px(18.));
             assert!(cx.debug_bounds("track-hover-callout").is_some());
             let track_scroll = cx
                 .debug_bounds("metric-track-scroll")
@@ -6568,6 +6602,7 @@ mod tests {
                 .debug_bounds("metric-track:loss")
                 .expect("Metric track should render");
             assert!(callout.size.height < track.size.height);
+            assert!(callout.size.width < px(160.));
             assert!(cx.debug_bounds("track-tooltip-color").is_some());
             assert!(cx.debug_bounds("track-tooltip-label").is_some());
         }

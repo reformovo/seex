@@ -693,29 +693,40 @@ pub fn cursor_canvas(
     )
 }
 
-pub fn callout_pointer(points_right: bool) -> impl gpui::Styled + gpui::IntoElement {
+pub fn callout_pointer(
+    points_right: bool,
+    background: Rgba,
+    border: Rgba,
+) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
-        move |_, window, _| ViewerTheme::for_appearance(window.appearance()),
-        move |bounds, theme, window, _| {
-            let mut triangle = PathBuilder::fill();
-            let middle = bounds.origin.y + bounds.size.height / 2.;
-            if points_right {
-                triangle.move_to(bounds.origin);
-                triangle.line_to(point(bounds.origin.x, bounds.bottom()));
-                triangle.line_to(point(bounds.right(), middle));
-            } else {
-                triangle.move_to(point(bounds.right(), bounds.origin.y));
-                triangle.line_to(point(bounds.right(), bounds.bottom()));
-                triangle.line_to(point(bounds.origin.x, middle));
-            }
-            triangle.close();
-            if let Ok(path) = triangle.build() {
-                window.paint_path(path, theme.colors.tooltip_background);
+        move |_, _, _| (background, border),
+        move |bounds, colors, window, _| {
+            for (inset, color) in [(0., colors.1), (1., colors.0)] {
+                let inset = px(inset);
+                let left = bounds.origin.x + inset;
+                let right = bounds.right() - inset;
+                let top = bounds.origin.y + inset;
+                let bottom = bounds.bottom() - inset;
+                let middle = bounds.origin.y + bounds.size.height / 2.;
+                let mut triangle = PathBuilder::fill();
+                if points_right {
+                    triangle.move_to(point(left, top));
+                    triangle.line_to(point(left, bottom));
+                    triangle.line_to(point(right, middle));
+                } else {
+                    triangle.move_to(point(right, top));
+                    triangle.line_to(point(right, bottom));
+                    triangle.line_to(point(left, middle));
+                }
+                triangle.close();
+                if let Ok(path) = triangle.build() {
+                    window.paint_path(path, color);
+                }
             }
         },
     )
-    .w(px(8.))
-    .h(px(12.))
+    .w(px(10.))
+    .h(px(14.))
 }
 
 pub fn timeline_canvas(
