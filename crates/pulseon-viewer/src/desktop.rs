@@ -1133,53 +1133,6 @@ impl ViewerApp {
         cx.notify();
     }
 
-    fn refresh_source(&mut self, source_id: DataSourceId, cx: &mut Context<Self>) {
-        let active = self.core.selection().source_id.as_ref() == Some(&source_id);
-        let request = self.discovery_request_for_source(&source_id, active);
-        self.submit_to_source(source_id, ReadRequest::Discover(request), active, cx);
-        cx.notify();
-    }
-
-    fn reveal_source(&mut self, source_id: &DataSourceId, cx: &mut Context<Self>) {
-        let Some(source) = self.sources.source(source_id) else {
-            return;
-        };
-        #[cfg(target_os = "macos")]
-        if let Err(error) = std::process::Command::new("open")
-            .arg("-R")
-            .arg(&source.root_path)
-            .spawn()
-        {
-            self.local_error = Some(format!("failed to reveal source: {error}"));
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            self.local_error = Some(format!(
-                "Reveal is unavailable on this platform: {}",
-                source.root_path.display()
-            ));
-        }
-        cx.notify();
-    }
-
-    fn remove_source(&mut self, source_id: &DataSourceId, cx: &mut Context<Self>) {
-        let active = self.core.selection().source_id.as_ref() == Some(source_id);
-        self.sources.remove(source_id);
-        self.event_tasks.remove(source_id);
-        self.expanded_projects
-            .retain(|(selected_source, _)| selected_source != source_id);
-        self.project_focuses
-            .retain(|project, _| &project.source_id != source_id);
-        self.run_focuses
-            .retain(|run, _| &run.source_id != source_id);
-        self.views.remove_source(source_id);
-        if active {
-            self.core = ViewerCore::default();
-            self.chart_adapter.borrow_mut().clear();
-        }
-        cx.notify();
-    }
-
     fn on_reset(&mut self, _: &ResetView, _: &mut Window, cx: &mut Context<Self>) {
         self.cancel_detail_refresh();
         if self.core.reset_view() {
@@ -4619,6 +4572,25 @@ mod tests {
                     cx.notify();
                 })
                 .expect("viewer should remain open");
+            cx.run_until_parked();
+            let wide_project = cx
+                .debug_bounds("project-tree-row-0-0")
+                .expect("Project row should render");
+            let wide_information = cx
+                .debug_bounds("project-information-project")
+                .expect("Project information should render on hover");
+            assert!(wide_information.origin.x >= wide_project.right());
+            assert!(
+                f32::from(wide_information.origin.y - wide_project.origin.y).abs() <= 12.,
+                "information {wide_information:?} should align with Project {wide_project:?}",
+            );
+            for selector in ["project-information-name", "project-information-source"] {
+                let content = cx
+                    .debug_bounds(selector)
+                    .expect("Project information content should render");
+                assert!(content.left() >= wide_information.left());
+                assert!(content.right() <= wide_information.right());
+            }
             cx.simulate_resize(size(px(420.), px(520.)));
             cx.run_until_parked();
             let project_menu = cx
@@ -4633,9 +4605,20 @@ mod tests {
             let popover = cx
                 .debug_bounds("project-popover-project")
                 .expect("Project menu should open");
+            let narrow_project = cx
+                .debug_bounds("project-tree-row-0-0")
+                .expect("Project row should remain rendered");
             assert!(popover.origin.x >= project_menu.origin.x);
+            assert!(
+                f32::from(popover.origin.y - narrow_project.origin.y).abs() <= 20.,
+                "popover {popover:?} should anchor beside Project {narrow_project:?}",
+            );
             assert!(popover.right() <= px(412.));
             assert!(popover.bottom() <= px(512.));
+            assert!(cx.debug_bounds("project-menu-separator").is_some());
+            assert!(cx.debug_bounds("reveal-project-source").is_none());
+            assert!(cx.debug_bounds("refresh-project-source").is_none());
+            assert!(cx.debug_bounds("remove-project-source").is_none());
             let pin = cx
                 .debug_bounds("pin-project")
                 .expect("normal Project menu should offer Pin project");
@@ -4644,6 +4627,20 @@ mod tests {
                 window
                     .read_with(&cx, |viewer, _| !viewer.views.pinned_projects().is_empty())
                     .expect("viewer should remain open")
+            );
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.hovered_project = Some(ProjectRef::new(
+                        DataSourceId::from_path(root.path()),
+                        ProjectId::from_string("project"),
+                    ));
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            assert!(
+                cx.debug_bounds("project-information-placement-icon")
+                    .is_some()
             );
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -4977,7 +4974,7 @@ mod tests {
         }
 
         #[gpui::test]
-        fn focused_project_activates_from_the_keyboard(cx: &mut TestAppContext) {
+        fn project_row_click_toggles_runs(cx: &mut TestAppContext) {
             let (root, _, _) = fixture(1);
             cx.executor().allow_parking();
             cx.update(|cx| {
@@ -4994,19 +4991,18 @@ mod tests {
                 .expect("first Project row should be rendered");
             cx.simulate_click(project.center(), Modifiers::default());
             cx.run_until_parked();
+            assert!(cx.debug_bounds("project-tree-run-0-0-0").is_some());
+            assert!(cx.debug_bounds("project-information-project").is_none());
+            cx.simulate_mouse_move(project.center(), None, Modifiers::default());
             assert!(cx.debug_bounds("project-information-project").is_some());
             assert!(cx.debug_bounds("project-menu-project").is_some());
-            let before = window
-                .read_with(&cx, |viewer, _| viewer.next_generation)
-                .expect("viewer should remain open");
-
-            cx.simulate_keystrokes("enter");
-
-            assert!(
+            cx.simulate_click(project.center(), Modifiers::default());
+            cx.run_until_parked();
+            assert_eq!(
                 window
-                    .read_with(&cx, |viewer, _| viewer.next_generation)
-                    .expect("viewer should remain open")
-                    > before
+                    .read_with(&cx, |viewer, _| viewer.expanded_projects.len())
+                    .expect("viewer should remain open"),
+                0,
             );
         }
 

@@ -107,7 +107,7 @@ impl ViewerApp {
                                 .opacity(if selected { 0.62 } else { 0. })
                                 .group_hover(hover_group, |style| style.opacity(1.))
                                 .tab_index(0)
-                                .focus(|style| style.opacity(1.).border_color(theme.colors.focus))
+                                .focus(|style| style.opacity(1.))
                                 .tooltip(components::label_tooltip("Close View", theme))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.close_analysis_view(&close_id, cx);

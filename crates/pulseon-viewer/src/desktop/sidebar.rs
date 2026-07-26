@@ -322,8 +322,8 @@ impl ViewerApp {
         } else {
             runs.iter().take(limit).cloned().collect::<Vec<_>>()
         };
-        let folder_source = project.project_ref.source_id.clone();
-        let folder_project = project.project_ref.project_id.clone();
+        let row_source = project.project_ref.source_id.clone();
+        let row_project = project.project_ref.project_id.clone();
         let keyboard_source = project.project_ref.source_id.clone();
         let keyboard_project = project.project_ref.project_id.clone();
         let hover_ref = project_ref.clone();
@@ -348,8 +348,9 @@ impl ViewerApp {
             duplicate_name,
         );
 
-        let mut tree = div().relative().child(
+        let mut row =
             components::sidebar_tree_row(SharedString::from(row_id), theme, selected, false)
+                .relative()
                 .debug_selector({
                     let source_index = project.source_index;
                     let project_index = project.project_index;
@@ -358,6 +359,10 @@ impl ViewerApp {
                 .key_context(SELECTABLE_CONTEXT)
                 .track_focus(&project_focus)
                 .tab_index(0)
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.activate_tree_project(row_source.clone(), row_project.clone(), cx);
+                }))
                 .on_action(cx.listener(move |this, _: &ActivateSelection, _, cx| {
                     this.activate_tree_project(
                         keyboard_source.clone(),
@@ -374,43 +379,29 @@ impl ViewerApp {
                     cx.notify();
                 }))
                 .child(
-                    components::sidebar_icon_button(
-                        SharedString::from(format!(
+                    div()
+                        .id(SharedString::from(format!(
                             "project-folder:{}",
                             project_ref.project_id.as_str()
+                        )))
+                        .debug_selector({
+                            let source_index = project.source_index;
+                            let project_index = project.project_index;
+                            move || format!("project-folder-{source_index}-{project_index}")
+                        })
+                        .size(theme.spacing.control_height)
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(components::icon(
+                            if expanded {
+                                IconName::FolderOpen
+                            } else {
+                                IconName::Folder
+                            },
+                            theme,
                         )),
-                        theme,
-                        expanded,
-                    )
-                    .tooltip(components::label_tooltip(
-                        if expanded {
-                            "Collapse project"
-                        } else {
-                            "Expand project"
-                        },
-                        theme,
-                    ))
-                    .debug_selector({
-                        let source_index = project.source_index;
-                        let project_index = project.project_index;
-                        move || format!("project-folder-{source_index}-{project_index}")
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.activate_tree_project(
-                            folder_source.clone(),
-                            folder_project.clone(),
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }))
-                    .child(components::icon(
-                        if expanded {
-                            IconName::FolderOpen
-                        } else {
-                            IconName::Folder
-                        },
-                        theme,
-                    )),
                 )
                 .child(
                     div()
@@ -443,26 +434,30 @@ impl ViewerApp {
                         cx.notify();
                     }))
                     .child(components::icon(IconName::Ellipsis, theme))
-                })),
-        );
+                }));
 
         if menu_open {
-            tree = tree.child(deferred(
-                anchored()
-                    .anchor(Corner::TopLeft)
-                    .snap_to_window_with_margin(px(8.))
-                    .offset(point(self.project_sidebar_width - px(12.), px(24.)))
-                    .child(self.render_project_menu(project.clone(), cx)),
-            ));
-        } else if hovered || focused {
-            tree = tree.child(deferred(
-                anchored()
-                    .anchor(Corner::TopLeft)
-                    .snap_to_window_with_margin(px(8.))
-                    .offset(point(self.project_sidebar_width - px(12.), px(0.)))
-                    .child(project_information_card(&project, theme)),
-            ));
+            row = row.child(
+                div().absolute().top_0().left_0().child(deferred(
+                    anchored()
+                        .anchor(Corner::TopLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .offset(point(self.project_sidebar_width - px(12.), px(12.)))
+                        .child(self.render_project_menu(project.clone(), cx)),
+                )),
+            );
+        } else if hovered {
+            row = row.child(
+                div().absolute().top_0().left_0().child(deferred(
+                    anchored()
+                        .anchor(Corner::TopLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .offset(point(self.project_sidebar_width - px(12.), px(-8.)))
+                        .child(project_information_card(&project, theme)),
+                )),
+            );
         }
+        let mut tree = div().relative().child(row);
 
         if expanded {
             if visible_runs.is_empty() {
@@ -718,11 +713,7 @@ impl ViewerApp {
         let toggle_project = project.clone();
         let placement_ref = project.project_ref.clone();
         let archive_ref = project.project_ref.clone();
-        let archived_pin_ref = project.project_ref.clone();
         let remove_ref = project.project_ref.clone();
-        let reveal_source = project.project_ref.source_id.clone();
-        let refresh_source = project.project_ref.source_id.clone();
-        let remove_source = project.project_ref.source_id.clone();
 
         components::popover(theme)
             .id(SharedString::from(format!(
@@ -733,9 +724,11 @@ impl ViewerApp {
                 let project_ref = project.project_ref.clone();
                 move || format!("project-popover-{}", project_ref.project_id.as_str())
             })
-            .w(px(220.))
+            .w(px(210.))
+            .p_1()
             .flex()
             .flex_col()
+            .text_xs()
             .child(
                 sidebar_menu_item(
                     "project-visibility",
@@ -748,6 +741,14 @@ impl ViewerApp {
                     cx.stop_propagation();
                 })),
             )
+            .child(
+                div()
+                    .id("project-menu-separator")
+                    .debug_selector(|| "project-menu-separator".to_owned())
+                    .h(px(1.))
+                    .my_1()
+                    .bg(theme.colors.border),
+            )
             .child(match project.placement {
                 ProjectPlacement::Pinned => {
                     sidebar_menu_item("unpin-project", "Unpin project", IconName::Pin, theme)
@@ -757,6 +758,7 @@ impl ViewerApp {
                                 placement_ref.clone(),
                                 ProjectPlacement::Projects,
                             );
+                            cx.stop_propagation();
                             cx.notify();
                         }))
                 }
@@ -769,6 +771,7 @@ impl ViewerApp {
                 .debug_selector(|| "restore-project".to_owned())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.set_project_placement(placement_ref.clone(), ProjectPlacement::Projects);
+                    cx.stop_propagation();
                     cx.notify();
                 })),
                 ProjectPlacement::Projects => {
@@ -779,6 +782,7 @@ impl ViewerApp {
                                 placement_ref.clone(),
                                 ProjectPlacement::Pinned,
                             );
+                            cx.stop_propagation();
                             cx.notify();
                         }))
                 }
@@ -793,57 +797,16 @@ impl ViewerApp {
                 .debug_selector(|| "archive-project".to_owned())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.set_project_placement(archive_ref.clone(), ProjectPlacement::Archived);
+                    cx.stop_propagation();
                     cx.notify();
                 }))
             }))
-            .children((project.placement == ProjectPlacement::Archived).then(|| {
-                sidebar_menu_item("pin-archived-project", "Pin project", IconName::Pin, theme)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_project_placement(
-                            archived_pin_ref.clone(),
-                            ProjectPlacement::Pinned,
-                        );
-                        cx.notify();
-                    }))
-            }))
-            .child(
-                sidebar_menu_item(
-                    "reveal-project-source",
-                    "Reveal source",
-                    IconName::Folder,
-                    theme,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.reveal_source(&reveal_source, cx);
-                })),
-            )
-            .child(
-                sidebar_menu_item(
-                    "refresh-project-source",
-                    "Refresh source",
-                    IconName::Refresh,
-                    theme,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.refresh_source(refresh_source.clone(), cx);
-                })),
-            )
             .child(
                 sidebar_menu_item("remove-project", "Remove project", IconName::Close, theme)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.remove_project(remove_ref.clone(), cx);
+                        cx.stop_propagation();
                     })),
-            )
-            .child(
-                sidebar_menu_item(
-                    "remove-project-source",
-                    "Remove source from Workbench",
-                    IconName::Close,
-                    theme,
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.remove_source(&remove_source, cx);
-                })),
             )
     }
 }
@@ -901,7 +864,7 @@ fn project_information_card(
     project: &SidebarProject,
     theme: ViewerTheme,
 ) -> gpui::Stateful<gpui::Div> {
-    components::popover(theme)
+    div()
         .id(SharedString::from(format!(
             "project-information:{}",
             project.project_ref.project_id.as_str()
@@ -910,25 +873,49 @@ fn project_information_card(
             let project_ref = project.project_ref.clone();
             move || format!("project-information-{}", project_ref.project_id.as_str())
         })
-        .w(px(220.))
+        .w(px(300.))
+        .p_2()
+        .rounded(theme.spacing.corner_radius)
+        .border_1()
+        .border_color(theme.colors.border)
+        .bg(theme.colors.surface)
         .flex()
         .flex_col()
         .gap_2()
+        .text_sm()
         .child(
             div()
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(components::icon(IconName::Folder, theme))
-                .child(project.project.name.clone())
+                .child(
+                    div()
+                        .flex_none()
+                        .child(components::icon(IconName::Folder, theme)),
+                )
+                .child(
+                    div()
+                        .id("project-information-name")
+                        .debug_selector(|| "project-information-name".to_owned())
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(project.project.name.clone()),
+                )
                 .children((project.placement != ProjectPlacement::Projects).then(|| {
-                    div().text_xs().text_color(theme.colors.text_muted).child(
-                        match project.placement {
-                            ProjectPlacement::Pinned => "Pinned",
-                            ProjectPlacement::Archived => "Archived",
-                            ProjectPlacement::Projects => "",
-                        },
-                    )
+                    div()
+                        .id("project-information-placement-icon")
+                        .debug_selector(|| "project-information-placement-icon".to_owned())
+                        .flex_none()
+                        .child(components::icon(
+                            match project.placement {
+                                ProjectPlacement::Pinned => IconName::Pin,
+                                ProjectPlacement::Archived => IconName::Archive,
+                                ProjectPlacement::Projects => IconName::Folder,
+                            },
+                            theme,
+                        ))
                 })),
         )
         .child(
@@ -941,8 +928,28 @@ fn project_information_card(
         )
         .child(
             div()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .flex()
+                .items_center()
+                .gap_2()
                 .text_xs()
                 .text_color(theme.colors.text_muted)
-                .child(format!("Source · {}", project.source_label)),
+                .child(
+                    div()
+                        .flex_none()
+                        .child(components::icon(IconName::Folder, theme)),
+                )
+                .child(
+                    div()
+                        .id("project-information-source")
+                        .debug_selector(|| "project-information-source".to_owned())
+                        .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .child(project.source_label.clone()),
+                ),
         )
 }

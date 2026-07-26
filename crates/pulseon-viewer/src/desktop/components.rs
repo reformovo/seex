@@ -68,7 +68,6 @@ pub fn focus_ring(id: impl Into<ElementId>, theme: ViewerTheme) -> Stateful<Div>
         .id(id)
         .border_1()
         .border_color(theme.colors.transparent)
-        .focus(|style| style.border_color(theme.colors.focus))
 }
 
 pub fn tab_bar(theme: ViewerTheme) -> Div {
