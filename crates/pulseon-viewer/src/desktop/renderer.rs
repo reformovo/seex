@@ -62,6 +62,7 @@ struct PreparedChart {
 }
 
 const RENDER_BUCKET_WIDTH: f64 = 2.;
+const BRUSH_HANDLE_WIDTH: f32 = 2.;
 
 pub struct DetailChart {
     adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
@@ -814,8 +815,8 @@ pub fn timeline_canvas(
                 for x in [start, end] {
                     window.paint_quad(fill(
                         Bounds::new(
-                            point(x - px(4.), bounds.origin.y),
-                            size(px(8.), bounds.size.height),
+                            point(x - px(BRUSH_HANDLE_WIDTH / 2.), bounds.origin.y),
+                            size(px(BRUSH_HANDLE_WIDTH), bounds.size.height),
                         ),
                         prepared.theme.colors.accent,
                     ));

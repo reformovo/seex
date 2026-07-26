@@ -48,6 +48,7 @@ use theme::ViewerTheme;
 
 const METRIC_TRACK_VERTICAL_PADDING: f32 = 4.;
 const METRIC_TRACK_SEPARATOR_WIDTH: f32 = 1.;
+const BRUSH_ROW_HEIGHT: f32 = 40.;
 
 #[derive(Clone, Debug)]
 enum DragGesture {
@@ -1944,15 +1945,15 @@ impl ViewerApp {
                             .id("brush-controls")
                             .debug_selector(|| "brush-controls".to_owned())
                             .w(metric_sidebar_width)
+                            .h(px(BRUSH_ROW_HEIGHT))
                             .flex_shrink_0()
-                            .px(theme.spacing.panel_padding)
-                            .py(px(6.))
+                            .px_1()
                             .bg(theme.colors.panel)
                             .border_r_1()
                             .border_color(theme.colors.border)
                             .relative()
                             .flex()
-                            .items_start()
+                            .items_center()
                             .justify_between()
                             .child(axis_picker)
                             .child(metric_picker),
@@ -2023,8 +2024,8 @@ impl ViewerApp {
             .collect::<Vec<_>>();
         let filter_focus = self.metric_filter_focus.clone();
         let picker_open = self.metric_picker_open;
-        let mut picker = div().relative().child(
-            components::icon_button("add-metric", theme, self.metric_picker_open, false)
+        let mut picker = div().relative().h_full().flex().items_center().child(
+            components::top_bar_icon_button("add-metric", theme, self.metric_picker_open, false)
                 .debug_selector(|| "add-metric".to_owned())
                 .tooltip(components::label_tooltip("Add Metric", theme))
                 .cursor_pointer()
@@ -2043,104 +2044,106 @@ impl ViewerApp {
                 .child(components::icon(IconName::Plus, theme)),
         );
         if self.metric_picker_open {
-            picker = picker.child(deferred(
-                anchored()
-                    .anchor(Corner::TopLeft)
-                    .snap_to_window_with_margin(px(8.))
-                    .offset(point(px(0.), theme.spacing.control_height + px(4.)))
-                    .child(
-                        components::popover(theme)
-                            .id("metric-picker")
-                            .debug_selector(|| "metric-picker".to_owned())
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                if this.dismiss_popovers() {
-                                    cx.notify();
-                                }
-                            }))
-                            .w(px(260.))
-                            .max_h(px(320.))
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child("Add Metric"),
-                            )
-                            .child(
-                                div()
-                                    .id("metric-filter")
-                                    .debug_selector(|| "metric-filter".to_owned())
-                                    .track_focus(&filter_focus)
-                                    .h(theme.spacing.control_height)
-                                    .px_3()
-                                    .border_1()
-                                    .border_color(theme.colors.border)
-                                    .rounded(theme.spacing.corner_radius)
-                                    .flex()
-                                    .items_center()
-                                    .cursor_text()
-                                    .focus(|style| style.border_color(theme.colors.focus))
-                                    .on_key_down(cx.listener(Self::on_metric_filter_key))
-                                    .on_click(move |_, window, _| filter_focus.focus(window))
-                                    .text_color(if self.metric_filter.is_empty() {
-                                        theme.colors.text_muted
-                                    } else {
-                                        theme.colors.text
-                                    })
-                                    .child(if self.metric_filter.is_empty() {
-                                        "Filter available metrics".to_owned()
-                                    } else {
-                                        self.metric_filter.clone()
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .id("metric-candidates")
-                                    .debug_selector(|| "metric-candidates".to_owned())
-                                    .max_h(px(240.))
-                                    .overflow_y_scroll()
-                                    .flex()
-                                    .flex_col()
-                                    .children(candidates.iter().map(|metric| {
-                                        let action_metric = metric.clone();
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "metric-candidate:{}",
-                                                metric.as_str()
-                                            )))
-                                            .debug_selector({
-                                                let metric = metric.clone();
-                                                move || {
-                                                    format!("metric-candidate:{}", metric.as_str())
-                                                }
-                                            })
-                                            .h(theme.spacing.control_height)
-                                            .flex_none()
-                                            .px_2()
-                                            .rounded(theme.spacing.corner_radius)
-                                            .flex()
-                                            .items_center()
-                                            .cursor_pointer()
-                                            .hover(|style| style.bg(theme.colors.element_hover))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.select_metric(action_metric.clone(), cx);
-                                            }))
-                                            .child(metric.as_str().to_owned())
-                                    }))
-                                    .children(candidates.is_empty().then(|| {
-                                        div()
-                                            .h(theme.spacing.control_height)
-                                            .px_2()
-                                            .flex()
-                                            .items_center()
-                                            .text_color(theme.colors.text_muted)
-                                            .child("No matching metrics")
-                                    })),
-                            ),
-                    ),
-            ));
+            picker = picker.child(
+                div().absolute().top_0().right_0().child(deferred(
+                    anchored()
+                        .anchor(Corner::TopRight)
+                        .snap_to_window_with_margin(px(8.))
+                        .offset(point(px(0.), px(BRUSH_ROW_HEIGHT + 4.)))
+                        .child(
+                            components::popover(theme)
+                                .id("metric-picker")
+                                .debug_selector(|| "metric-picker".to_owned())
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    if this.dismiss_popovers() {
+                                        cx.notify();
+                                    }
+                                }))
+                                .w(px(180.))
+                                .max_h(px(280.))
+                                .p_1()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .text_xs()
+                                .child(
+                                    div()
+                                        .id("metric-filter")
+                                        .debug_selector(|| "metric-filter".to_owned())
+                                        .track_focus(&filter_focus)
+                                        .h(theme.spacing.control_height)
+                                        .px_2()
+                                        .border_1()
+                                        .border_color(theme.colors.border)
+                                        .rounded(theme.spacing.corner_radius)
+                                        .flex()
+                                        .items_center()
+                                        .cursor_text()
+                                        .on_key_down(cx.listener(Self::on_metric_filter_key))
+                                        .on_click(move |_, window, _| filter_focus.focus(window))
+                                        .text_color(if self.metric_filter.is_empty() {
+                                            theme.colors.text_muted
+                                        } else {
+                                            theme.colors.text
+                                        })
+                                        .child(if self.metric_filter.is_empty() {
+                                            "Filter available metrics".to_owned()
+                                        } else {
+                                            self.metric_filter.clone()
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .id("metric-candidates")
+                                        .debug_selector(|| "metric-candidates".to_owned())
+                                        .max_h(px(220.))
+                                        .overflow_y_scroll()
+                                        .flex()
+                                        .flex_col()
+                                        .children(candidates.iter().map(|metric| {
+                                            let action_metric = metric.clone();
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "metric-candidate:{}",
+                                                    metric.as_str()
+                                                )))
+                                                .debug_selector({
+                                                    let metric = metric.clone();
+                                                    move || {
+                                                        format!(
+                                                            "metric-candidate:{}",
+                                                            metric.as_str()
+                                                        )
+                                                    }
+                                                })
+                                                .h(px(24.))
+                                                .flex_none()
+                                                .px_2()
+                                                .rounded(theme.spacing.corner_radius)
+                                                .flex()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .hover(|style| style.bg(theme.colors.element_hover))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.select_metric(action_metric.clone(), cx);
+                                                }))
+                                                .overflow_hidden()
+                                                .whitespace_nowrap()
+                                                .child(metric.as_str().to_owned())
+                                        }))
+                                        .children(candidates.is_empty().then(|| {
+                                            div()
+                                                .h(px(24.))
+                                                .px_2()
+                                                .flex()
+                                                .items_center()
+                                                .text_color(theme.colors.text_muted)
+                                                .child("No matching metrics")
+                                        })),
+                                ),
+                        ),
+                )),
+            );
         }
         picker
     }
@@ -2149,8 +2152,8 @@ impl ViewerApp {
         let theme = self.theme;
         let absolute = self.curve_axis() == CurveAxis::AbsoluteTime;
         let picker_open = self.axis_picker_open;
-        let mut picker = div().relative().child(
-            components::icon_button("axis-picker", theme, self.axis_picker_open, false)
+        let mut picker = div().relative().h_full().flex().items_center().child(
+            components::top_bar_icon_button("axis-picker", theme, self.axis_picker_open, false)
                 .debug_selector(|| "axis-picker".to_owned())
                 .tooltip(components::label_tooltip(
                     if absolute { "Absolute time" } else { "Step" },
@@ -2179,63 +2182,67 @@ impl ViewerApp {
                 )),
         );
         if self.axis_picker_open {
-            picker = picker.child(deferred(
-                anchored()
-                    .anchor(Corner::TopLeft)
-                    .snap_to_window_with_margin(px(8.))
-                    .offset(point(px(0.), theme.spacing.control_height + px(4.)))
-                    .child(
-                        components::popover(theme)
-                            .id("axis-menu")
-                            .debug_selector(|| "axis-menu".to_owned())
-                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                                if this.dismiss_popovers() {
-                                    cx.notify();
-                                }
-                            }))
-                            .w(px(180.))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                axis_menu_item(
-                                    "axis-step",
-                                    IconName::ArrowUp,
-                                    "Step",
-                                    !absolute,
-                                    theme,
-                                )
-                                .debug_selector(|| "axis-step".to_owned())
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.axis_picker_open = false;
-                                        this.views.clear_active_timeline_extents();
-                                        this.core.select_axis(AlignmentAxis::Step);
-                                        this.request_overview(cx);
+            picker = picker.child(
+                div().absolute().top_0().left_0().child(deferred(
+                    anchored()
+                        .anchor(Corner::TopLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .offset(point(px(0.), px(BRUSH_ROW_HEIGHT + 4.)))
+                        .child(
+                            components::popover(theme)
+                                .id("axis-menu")
+                                .debug_selector(|| "axis-menu".to_owned())
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    if this.dismiss_popovers() {
                                         cx.notify();
-                                    },
-                                )),
-                            )
-                            .child(
-                                axis_menu_item(
-                                    "axis-time",
-                                    IconName::Clock,
-                                    "Absolute time",
-                                    absolute,
-                                    theme,
+                                    }
+                                }))
+                                .w(px(160.))
+                                .p_1()
+                                .flex()
+                                .flex_col()
+                                .text_xs()
+                                .child(
+                                    axis_menu_item(
+                                        "axis-step",
+                                        IconName::ArrowUp,
+                                        "Step",
+                                        !absolute,
+                                        theme,
+                                    )
+                                    .debug_selector(|| "axis-step".to_owned())
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.axis_picker_open = false;
+                                            this.views.clear_active_timeline_extents();
+                                            this.core.select_axis(AlignmentAxis::Step);
+                                            this.request_overview(cx);
+                                            cx.notify();
+                                        },
+                                    )),
                                 )
-                                .debug_selector(|| "axis-time".to_owned())
-                                .on_click(cx.listener(
-                                    |this, _, _, cx| {
-                                        this.axis_picker_open = false;
-                                        this.views.clear_active_timeline_extents();
-                                        this.core.select_axis(AlignmentAxis::ElapsedTime);
-                                        this.request_overview(cx);
-                                        cx.notify();
-                                    },
-                                )),
-                            ),
-                    ),
-            ));
+                                .child(
+                                    axis_menu_item(
+                                        "axis-time",
+                                        IconName::Clock,
+                                        "Absolute time",
+                                        absolute,
+                                        theme,
+                                    )
+                                    .debug_selector(|| "axis-time".to_owned())
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.axis_picker_open = false;
+                                            this.views.clear_active_timeline_extents();
+                                            this.core.select_axis(AlignmentAxis::ElapsedTime);
+                                            this.request_overview(cx);
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
+                        ),
+                )),
+            );
         }
         picker
     }
@@ -3247,7 +3254,7 @@ impl ViewerApp {
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some(brush) = self.core.brush() else {
-            return div().h(px(40.));
+            return div().h(px(BRUSH_ROW_HEIGHT));
         };
         let (snapshot, revision) = self
             .views
@@ -3260,7 +3267,7 @@ impl ViewerApp {
             });
         let adapter = Rc::clone(&self.chart_adapter);
         let visible_runs: Rc<[RunRef]> = self.active_visible_runs().into();
-        div().h(px(40.)).child(
+        div().h(px(BRUSH_ROW_HEIGHT)).child(
             div()
                 .id("overview-chart")
                 .debug_selector(|| "overview-chart".to_owned())
@@ -3765,27 +3772,9 @@ fn axis_menu_item(
     selected: bool,
     theme: ViewerTheme,
 ) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .h(theme.spacing.control_height)
-        .px_2()
-        .gap_2()
-        .rounded(theme.spacing.corner_radius)
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .when(selected, |item| item.bg(theme.colors.element_active))
-        .when(!selected, |item| {
-            item.hover(|style| style.bg(theme.colors.element_hover))
-        })
-        .child(
-            div()
-                .w(px(20.))
-                .flex()
-                .justify_center()
-                .child(components::icon(icon, theme)),
-        )
-        .child(label.to_owned())
+    components::popover_menu_item(id, label, Some(icon), theme).when(selected, |item| {
+        item.font_weight(gpui::FontWeight::SEMIBOLD)
+    })
 }
 
 fn inspector_table(
@@ -4884,6 +4873,9 @@ mod tests {
                 let axis_picker = cx
                     .debug_bounds("axis-picker")
                     .expect("Axis picker should render");
+                let add_metric = cx
+                    .debug_bounds("add-metric")
+                    .expect("Add Metric control should render");
                 let tab = cx
                     .debug_bounds("analysis-tab")
                     .expect("active Analysis tab should render");
@@ -4913,8 +4905,11 @@ mod tests {
                 assert_eq!(sidebar_header.size.height, tab_bar.size.height);
                 assert_eq!(filter_row.origin.y, brush_controls.origin.y);
                 assert_eq!(filter_row.size.height, brush_controls.size.height);
-                assert_eq!(filter.origin.y, axis_picker.origin.y);
-                assert_eq!(filter.size.height, axis_picker.size.height);
+                assert_eq!(filter.center().y, axis_picker.center().y);
+                assert_eq!(axis_picker.size, size(px(20.), px(20.)));
+                assert_eq!(add_metric.size, axis_picker.size);
+                assert_eq!(axis_picker.origin.x, brush_controls.origin.x + px(4.));
+                assert_eq!(add_metric.right(), brush_controls.right() - px(5.));
                 assert_eq!(tab.size.height, px(31.));
                 assert_eq!(close.right(), tab.right() - px(5.));
                 assert_eq!(new_view.origin.x, controls.origin.x + px(4.));
@@ -6004,12 +5999,16 @@ mod tests {
                 .debug_bounds("add-metric")
                 .expect("Add Metric control should render beside the brush");
             cx.simulate_click(add.center(), Modifiers::default());
+            let metric_picker = cx
+                .debug_bounds("metric-picker")
+                .expect("Metric picker should open below the Brush row");
             let candidates = cx
                 .debug_bounds("metric-candidates")
                 .expect("Metric candidates should use their own scroll region");
             let late_before = cx
                 .debug_bounds("metric-candidate:metric-19")
                 .expect("late Metric candidate should be laid out");
+            assert_eq!(late_before.size.height, px(24.));
             assert!(late_before.origin.y >= candidates.bottom());
             cx.simulate_event(ScrollWheelEvent {
                 position: candidates.center(),
@@ -6027,13 +6026,18 @@ mod tests {
             let controls = cx
                 .debug_bounds("brush-controls")
                 .expect("Brush controls should own the fixed Metric label cell");
-            let padding = window
-                .read_with(&cx, |viewer, _| viewer.theme.spacing.panel_padding)
-                .expect("viewer should remain open");
-            assert_eq!(axis.origin.x, controls.origin.x + padding);
-            assert!(f32::from(add.right() - (controls.right() - padding)).abs() <= 1.);
+            assert_eq!(metric_picker.size.width, px(180.));
+            assert_eq!(metric_picker.top(), controls.bottom() + px(4.));
+            assert_eq!(metric_picker.right(), add.right());
+            assert_eq!(axis.origin.x, controls.origin.x + px(4.));
+            assert_eq!(add.right(), controls.right() - px(5.));
             cx.simulate_click(axis.center(), Modifiers::default());
-            assert!(cx.debug_bounds("axis-menu").is_some());
+            let axis_menu = cx
+                .debug_bounds("axis-menu")
+                .expect("Axis menu should open below the Brush row");
+            assert_eq!(axis_menu.size.width, px(160.));
+            assert_eq!(axis_menu.top(), controls.bottom() + px(4.));
+            assert_eq!(axis_menu.left(), axis.left());
             window
                 .read_with(&cx, |viewer, _| {
                     assert!(viewer.axis_picker_open);
