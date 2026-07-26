@@ -68,6 +68,7 @@ impl ViewerApp {
                         .on_mouse_down(
                             MouseButton::Right,
                             cx.listener(move |this, _, _, cx| {
+                                this.dismiss_popovers();
                                 this.view_menu = Some(menu_id.clone());
                                 cx.stop_propagation();
                                 cx.notify();
@@ -197,6 +198,11 @@ impl ViewerApp {
         components::popover(theme)
             .id(SharedString::from(format!("view-menu:{view_id}")))
             .debug_selector(|| "view-menu".to_owned())
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if this.dismiss_popovers() {
+                    cx.notify();
+                }
+            }))
             .w(px(180.))
             .flex()
             .flex_col()

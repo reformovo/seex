@@ -937,6 +937,35 @@ impl ViewerApp {
             .or_else(|| self.core.last_error())
     }
 
+    fn dismiss_popovers(&mut self) -> bool {
+        let dismissed = self.project_menu.is_some()
+            || self.view_menu.is_some()
+            || self.metric_picker_open
+            || self.axis_picker_open;
+        self.project_menu = None;
+        self.view_menu = None;
+        self.metric_picker_open = false;
+        self.axis_picker_open = false;
+        dismissed
+    }
+
+    fn set_metric_picker_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_popovers();
+        self.metric_picker_open = open;
+        if open {
+            self.metric_filter.clear();
+            self.metric_filter_focus.focus(window);
+        }
+        cx.notify();
+    }
+
+    fn set_axis_picker_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        self.dismiss_popovers();
+        self.axis_picker_open = open;
+        self.metric_filter.clear();
+        cx.notify();
+    }
+
     fn on_open(&mut self, _: &OpenProject, _: &mut Window, cx: &mut Context<Self>) {
         self.open_picker(cx);
     }
@@ -1829,20 +1858,23 @@ impl ViewerApp {
             .cloned()
             .collect::<Vec<_>>();
         let filter_focus = self.metric_filter_focus.clone();
+        let picker_open = self.metric_picker_open;
         let mut picker = div().relative().child(
             components::icon_button("add-metric", theme, self.metric_picker_open, false)
                 .debug_selector(|| "add-metric".to_owned())
                 .tooltip(components::label_tooltip("Add Metric", theme))
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, window, cx| {
-                    let opening = !this.metric_picker_open;
-                    this.metric_picker_open = opening;
-                    this.axis_picker_open = false;
-                    if opening {
-                        this.metric_filter.clear();
-                        this.metric_filter_focus.focus(window);
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        this.set_metric_picker_open(!picker_open, window, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .on_click(cx.listener(move |this, event, window, cx| {
+                    if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                        this.set_metric_picker_open(!picker_open, window, cx);
                     }
-                    cx.notify();
                 }))
                 .child(components::icon(IconName::Plus, theme)),
         );
@@ -1856,6 +1888,11 @@ impl ViewerApp {
                         components::popover(theme)
                             .id("metric-picker")
                             .debug_selector(|| "metric-picker".to_owned())
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                if this.dismiss_popovers() {
+                                    cx.notify();
+                                }
+                            }))
                             .w(px(260.))
                             .max_h(px(320.))
                             .flex()
@@ -1947,6 +1984,7 @@ impl ViewerApp {
     fn render_axis_picker(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let absolute = self.curve_axis() == CurveAxis::AbsoluteTime;
+        let picker_open = self.axis_picker_open;
         let mut picker = div().relative().child(
             components::icon_button("axis-picker", theme, self.axis_picker_open, false)
                 .debug_selector(|| "axis-picker".to_owned())
@@ -1955,11 +1993,17 @@ impl ViewerApp {
                     theme,
                 ))
                 .cursor_pointer()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.axis_picker_open = !this.axis_picker_open;
-                    this.metric_picker_open = false;
-                    this.metric_filter.clear();
-                    cx.notify();
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.set_axis_picker_open(!picker_open, cx);
+                        cx.stop_propagation();
+                    }),
+                )
+                .on_click(cx.listener(move |this, event, _, cx| {
+                    if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                        this.set_axis_picker_open(!picker_open, cx);
+                    }
                 }))
                 .child(components::icon(
                     if absolute {
@@ -1980,6 +2024,11 @@ impl ViewerApp {
                         components::popover(theme)
                             .id("axis-menu")
                             .debug_selector(|| "axis-menu".to_owned())
+                            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                if this.dismiss_popovers() {
+                                    cx.notify();
+                                }
+                            }))
                             .w(px(180.))
                             .flex()
                             .flex_col()
@@ -5470,6 +5519,93 @@ mod tests {
             assert!(
                 window
                     .read_with(&cx, |viewer, _| viewer.metric_picker_open)
+                    .expect("viewer should remain open")
+            );
+        }
+
+        #[gpui::test]
+        fn popovers_close_after_clicking_outside_their_controls(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture(2);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            select_fixture_run(window, &mut cx, project_id, run_id, 2);
+
+            let outside = cx
+                .debug_bounds("new-view")
+                .expect("New View should provide an outside click target")
+                .center();
+            let add_metric = cx
+                .debug_bounds("add-metric")
+                .expect("Add Metric control should render");
+            cx.simulate_mouse_move(add_metric.center(), None, Modifiers::default());
+            cx.simulate_click(add_metric.center(), Modifiers::default());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.metric_picker_open)
+                    .expect("viewer should remain open")
+            );
+            cx.simulate_click(add_metric.center(), Modifiers::default());
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.metric_picker_open)
+                    .expect("viewer should remain open")
+            );
+            cx.simulate_click(add_metric.center(), Modifiers::default());
+            let metric_picker = cx
+                .debug_bounds("metric-picker")
+                .expect("Metric picker should open");
+            assert!(
+                !metric_picker.contains(&outside),
+                "outside target {outside:?} should not overlap picker {metric_picker:?}",
+            );
+            cx.simulate_mouse_move(outside, None, Modifiers::default());
+            cx.simulate_mouse_down(outside, MouseButton::Left, Modifiers::default());
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.metric_picker_open)
+                    .expect("viewer should remain open"),
+                "outside mouse-down should clear the Metric picker state",
+            );
+            cx.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.metric_picker_open)
+                    .expect("viewer should remain open")
+            );
+
+            let axis_picker = cx
+                .debug_bounds("axis-picker")
+                .expect("Axis picker control should render");
+            cx.simulate_click(axis_picker.center(), Modifiers::default());
+            assert!(cx.debug_bounds("axis-menu").is_some());
+            cx.simulate_mouse_move(outside, None, Modifiers::default());
+            cx.simulate_click(outside, Modifiers::default());
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.axis_picker_open)
+                    .expect("viewer should remain open")
+            );
+
+            let active_tab = cx
+                .debug_bounds("analysis-tab")
+                .expect("active Analysis View should render");
+            cx.simulate_mouse_down(
+                active_tab.center(),
+                MouseButton::Right,
+                Modifiers::default(),
+            );
+            cx.simulate_mouse_up(
+                active_tab.center(),
+                MouseButton::Right,
+                Modifiers::default(),
+            );
+            assert!(cx.debug_bounds("view-menu").is_some());
+            cx.simulate_mouse_move(outside, None, Modifiers::default());
+            cx.simulate_click(outside, Modifiers::default());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.view_menu.is_none())
                     .expect("viewer should remain open")
             );
         }

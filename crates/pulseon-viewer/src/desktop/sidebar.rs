@@ -328,13 +328,12 @@ impl ViewerApp {
         let keyboard_project = project.project_ref.project_id.clone();
         let hover_ref = project_ref.clone();
         let menu_ref = project_ref.clone();
+        let keyboard_menu_ref = project_ref.clone();
         let row_id = format!(
             "project:{}:{}",
             project_ref.source_id,
             project_ref.project_id.as_str()
         );
-        let selected = self.core.selection().source_id.as_ref() == Some(&project_ref.source_id)
-            && self.core.selection().project_id.as_ref() == Some(&project_ref.project_id);
         let duplicate_name = self
             .sources
             .sources()
@@ -348,6 +347,7 @@ impl ViewerApp {
             duplicate_name,
         );
 
+        let selected = false;
         let mut row =
             components::sidebar_tree_row(SharedString::from(row_id), theme, selected, false)
                 .relative()
@@ -424,13 +424,21 @@ impl ViewerApp {
                         let project_ref = project_ref.clone();
                         move || format!("project-menu-{}", project_ref.project_id.as_str())
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if this.project_menu.as_ref() == Some(&menu_ref) {
-                            this.project_menu = None;
-                        } else {
-                            this.project_menu = Some(menu_ref.clone());
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.dismiss_popovers();
+                            this.project_menu = (!menu_open).then(|| menu_ref.clone());
+                            cx.stop_propagation();
+                            cx.notify();
+                        }),
+                    )
+                    .on_click(cx.listener(move |this, event, _, cx| {
+                        if !matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                            return;
                         }
-                        cx.stop_propagation();
+                        this.dismiss_popovers();
+                        this.project_menu = (!menu_open).then(|| keyboard_menu_ref.clone());
                         cx.notify();
                     }))
                     .child(components::icon(IconName::Ellipsis, theme))
@@ -724,6 +732,11 @@ impl ViewerApp {
                 let project_ref = project.project_ref.clone();
                 move || format!("project-popover-{}", project_ref.project_id.as_str())
             })
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                if this.dismiss_popovers() {
+                    cx.notify();
+                }
+            }))
             .w(px(210.))
             .p_1()
             .flex()
