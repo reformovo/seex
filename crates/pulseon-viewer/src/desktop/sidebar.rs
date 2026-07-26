@@ -622,13 +622,16 @@ impl ViewerApp {
         let is_baseline = placement == RunPlacement::Baseline;
         let is_pinned = placement == RunPlacement::Pinned;
         let is_archived = placement == RunPlacement::Archived;
-        let name_selector = match placement {
-            RunPlacement::Baseline => "baseline-run-name",
-            RunPlacement::Pinned => "pinned-run-name",
-            RunPlacement::Projects => "project-run-name",
-            RunPlacement::Archived => "archived-run-name",
+        let (placement_selector, name_selector) = match placement {
+            RunPlacement::Baseline => ("baseline", "baseline-run-name"),
+            RunPlacement::Pinned => ("pinned", "pinned-run-name"),
+            RunPlacement::Projects => ("project", "project-run-name"),
+            RunPlacement::Archived => ("archived", "archived-run-name"),
         };
         let visible_count = self.active_visible_runs().len();
+        let run_color = theme
+            .colors
+            .series_color(renderer::series_color_index(&run_ref));
 
         components::sidebar_tree_row(
             SharedString::from(format!("run:{}:{index}", run_ref.cache_key())),
@@ -644,7 +647,6 @@ impl ViewerApp {
         .tab_index(0)
         .gap_1()
         .text_xs()
-        .when(placement == RunPlacement::Projects, |row| row.ml_5())
         .when(
             placement == RunPlacement::Projects && (selected || visible_count < MAX_SELECTED_RUNS),
             |row| {
@@ -690,6 +692,14 @@ impl ViewerApp {
                 theme,
             ))
         }))
+        .child(
+            div()
+                .debug_selector(move || format!("run-color-{placement_selector}-{index}"))
+                .size(px(7.))
+                .flex_none()
+                .rounded(px(3.5))
+                .bg(run_color),
+        )
         .child(
             div()
                 .debug_selector(move || format!("{name_selector}-{index}"))

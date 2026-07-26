@@ -4929,7 +4929,7 @@ mod tests {
         }
 
         #[gpui::test]
-        fn root_project_and_run_labels_share_a_compact_text_origin(cx: &mut TestAppContext) {
+        fn run_markers_align_with_project_icons_and_run_labels(cx: &mut TestAppContext) {
             let (root, project_id, _) = fixture_with_runs(0, 3);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
@@ -4958,12 +4958,23 @@ mod tests {
             let project_label = cx
                 .debug_bounds("project-tree-label-0-0")
                 .expect("Project label should render");
-            for selector in ["baseline-run-name-0", "pinned-run-name-0"] {
-                let run_label = cx
-                    .debug_bounds(selector)
-                    .expect("organized Run label should render");
-                assert_eq!(run_label.origin.x, project_label.origin.x);
-            }
+            let project_folder = cx
+                .debug_bounds("project-folder-0-0")
+                .expect("Project folder should render");
+            let baseline_label = cx
+                .debug_bounds("baseline-run-name-0")
+                .expect("Baseline Run label should render");
+            let pinned_label = cx
+                .debug_bounds("pinned-run-name-0")
+                .expect("Pinned Run label should render");
+            let baseline_color = cx
+                .debug_bounds("run-color-baseline-0")
+                .expect("Baseline color marker should render");
+            let pinned_color = cx
+                .debug_bounds("run-color-pinned-0")
+                .expect("Pinned color marker should render");
+            assert_eq!(baseline_label.origin.x, pinned_label.origin.x);
+            assert_eq!(baseline_color.origin.x, pinned_color.origin.x);
             let project_row = cx
                 .debug_bounds("project-tree-row-0-0")
                 .expect("Project row should render");
@@ -4971,6 +4982,15 @@ mod tests {
             let nested_run = cx
                 .debug_bounds("project-run-name-0")
                 .expect("nested Run label should render");
+            let nested_eye = cx
+                .debug_bounds("run-eye-0")
+                .expect("nested Run eye should render");
+            let nested_color = cx
+                .debug_bounds("run-color-project-0")
+                .expect("nested Run color marker should render");
+            assert_eq!(nested_eye.origin.x, project_folder.origin.x);
+            assert_eq!(nested_color.origin.x, baseline_color.origin.x);
+            assert_eq!(nested_run.origin.x, baseline_label.origin.x);
             assert!(nested_run.origin.x > project_label.origin.x);
         }
 
