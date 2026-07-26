@@ -2026,6 +2026,7 @@ impl ViewerApp {
         let picker_open = self.metric_picker_open;
         let mut picker = div().relative().h_full().flex().items_center().child(
             components::top_bar_icon_button("add-metric", theme, self.metric_picker_open, false)
+                .size(theme.spacing.control_height)
                 .debug_selector(|| "add-metric".to_owned())
                 .tooltip(components::label_tooltip("Add Metric", theme))
                 .cursor_pointer()
@@ -2154,6 +2155,7 @@ impl ViewerApp {
         let picker_open = self.axis_picker_open;
         let mut picker = div().relative().h_full().flex().items_center().child(
             components::top_bar_icon_button("axis-picker", theme, self.axis_picker_open, false)
+                .size(theme.spacing.control_height)
                 .debug_selector(|| "axis-picker".to_owned())
                 .tooltip(components::label_tooltip(
                     if absolute { "Absolute time" } else { "Step" },
@@ -4905,8 +4907,9 @@ mod tests {
                 assert_eq!(sidebar_header.size.height, tab_bar.size.height);
                 assert_eq!(filter_row.origin.y, brush_controls.origin.y);
                 assert_eq!(filter_row.size.height, brush_controls.size.height);
-                assert_eq!(filter.center().y, axis_picker.center().y);
-                assert_eq!(axis_picker.size, size(px(20.), px(20.)));
+                assert_eq!(filter.origin.y, axis_picker.origin.y);
+                assert_eq!(axis_picker.size.height, filter.size.height);
+                assert_eq!(axis_picker.size.width, filter.size.height);
                 assert_eq!(add_metric.size, axis_picker.size);
                 assert_eq!(axis_picker.origin.x, brush_controls.origin.x + px(4.));
                 assert_eq!(add_metric.right(), brush_controls.right() - px(5.));
