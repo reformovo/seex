@@ -1972,14 +1972,6 @@ impl ViewerApp {
                     .flex()
                     .border_b_1()
                     .border_color(theme.colors.border)
-                    .child(
-                        div()
-                            .w(metric_sidebar_width)
-                            .flex_shrink_0()
-                            .bg(theme.colors.panel)
-                            .border_r_1()
-                            .border_color(theme.colors.border),
-                    )
                     .child(ruler),
             )
             .child(
@@ -2266,6 +2258,13 @@ impl ViewerApp {
         let ticks = selected
             .map(|range| pulseon_chart_core::linear_ticks(range, 6))
             .unwrap_or_default();
+        let minor_ticks = ticks
+            .windows(2)
+            .flat_map(|pair| {
+                let step = (pair[1] - pair[0]) / 5.;
+                (1..5).map(move |index| pair[0] + step * f64::from(index))
+            })
+            .collect::<Vec<_>>();
         let axis = self.curve_axis();
         let hover_axis = self.hover_cursor_axis();
         let locked_cursor = self.locked_cursor;
@@ -2280,17 +2279,61 @@ impl ViewerApp {
             .child(
                 div()
                     .size_full()
-                    .px(theme.spacing.content_padding)
-                    .flex()
-                    .items_center()
-                    .justify_between()
+                    .relative()
                     .text_xs()
                     .text_color(theme.colors.text_muted)
-                    .children(
-                        ticks
-                            .into_iter()
-                            .map(move |tick| format_axis_tick(axis, tick)),
-                    ),
+                    .children(selected.into_iter().flat_map(|range| {
+                        minor_ticks
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .map(move |(index, tick)| {
+                                let ratio =
+                                    ((tick - range.start()) / range.span()).clamp(0., 1.) as f32;
+                                div()
+                                    .id(SharedString::from(format!("ruler-minor-tick-{index}")))
+                                    .debug_selector(move || format!("ruler-minor-tick-{index}"))
+                                    .absolute()
+                                    .left(relative(ratio))
+                                    .bottom_0()
+                                    .w(px(1.))
+                                    .h(px(5.))
+                                    .bg(theme.colors.border)
+                            })
+                    }))
+                    .children(selected.into_iter().flat_map(|range| {
+                        ticks.iter().copied().enumerate().map(move |(index, tick)| {
+                            let ratio =
+                                ((tick - range.start()) / range.span()).clamp(0., 1.) as f32;
+                            let label_offset = if ratio > 0.9 { px(-56.) } else { px(4.) };
+                            div()
+                                .id(SharedString::from(format!("ruler-major-tick-{index}")))
+                                .debug_selector(move || format!("ruler-major-tick-{index}"))
+                                .absolute()
+                                .left(relative(ratio))
+                                .top_0()
+                                .bottom_0()
+                                .w(px(1.))
+                                .child(
+                                    div()
+                                        .id(SharedString::from(format!("ruler-major-mark-{index}")))
+                                        .debug_selector(move || format!("ruler-major-mark-{index}"))
+                                        .absolute()
+                                        .bottom_0()
+                                        .w(px(1.))
+                                        .h(px(8.))
+                                        .bg(theme.colors.text_muted),
+                                )
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(1.))
+                                        .ml(label_offset)
+                                        .whitespace_nowrap()
+                                        .child(format_axis_tick(axis, tick)),
+                                )
+                        })
+                    })),
             )
             .children(selected.map(|range| {
                 div()
@@ -2396,7 +2439,7 @@ impl ViewerApp {
             self.project_sidebar_width
         } else {
             px(0.)
-        } + self.metric_sidebar_width();
+        };
         let width = (window.viewport_size().width - left).max(px(1.));
         (left, width)
     }
@@ -6391,10 +6434,15 @@ mod tests {
             let ruler = cx
                 .debug_bounds("ruler-hit-area")
                 .expect("shared ruler hit area should render");
+            let track = cx
+                .debug_bounds("metric-track:loss")
+                .expect("Metric track should render");
+            let position = point(ruler.origin.x + px(10.), ruler.center().y);
+            assert!(position.x < track.origin.x);
 
             for delta in [-80., -10_000.] {
                 cx.simulate_event(ScrollWheelEvent {
-                    position: ruler.center(),
+                    position,
                     delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
                     modifiers: Modifiers::default(),
                     touch_phase: TouchPhase::Moved,
@@ -6535,8 +6583,18 @@ mod tests {
             let ruler = cx
                 .debug_bounds("viewport-ruler")
                 .expect("Viewport ruler should render");
-            assert_eq!(overview.origin.x, ruler.origin.x);
-            assert_eq!(overview.size.width, ruler.size.width);
+            assert_eq!(ruler.origin.x, workspace.origin.x);
+            assert_eq!(ruler.size.width, workspace.size.width);
+            assert!(overview.origin.x > ruler.origin.x);
+            assert_eq!(overview.right(), ruler.right());
+            let major_tick = cx
+                .debug_bounds("ruler-major-mark-0")
+                .expect("Ruler should render major tick marks");
+            let minor_tick = cx
+                .debug_bounds("ruler-minor-tick-0")
+                .expect("Ruler should render minor tick marks");
+            assert_eq!(major_tick.size, size(px(1.), px(8.)));
+            assert_eq!(minor_tick.size, size(px(1.), px(5.)));
 
             for metric in ["metric-0", "metric-1"] {
                 let sidebar = cx
@@ -6574,8 +6632,8 @@ mod tests {
                     track.origin.x + track.size.width,
                     workspace.origin.x + workspace.size.width
                 );
-                assert_eq!(track.origin.x, ruler.origin.x);
-                assert_eq!(track.size.width, ruler.size.width);
+                assert!(track.origin.x > ruler.origin.x);
+                assert_eq!(track.right(), ruler.right());
                 assert_eq!(canvas.origin.x, track.origin.x);
                 assert_eq!(canvas.size.width, track.size.width);
                 assert!(canvas.size.width > px(0.));
