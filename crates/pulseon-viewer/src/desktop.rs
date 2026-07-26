@@ -48,7 +48,7 @@ use theme::ViewerTheme;
 
 const METRIC_TRACK_VERTICAL_PADDING: f32 = 4.;
 const METRIC_TRACK_SEPARATOR_WIDTH: f32 = 1.;
-const BRUSH_CONTENT_HEIGHT: f32 = 28.;
+const BRUSH_ROW_HEIGHT: f32 = 40.;
 const BRUSH_CONTENT_TOP_PADDING: f32 = 6.;
 
 #[derive(Clone, Debug)]
@@ -1937,6 +1937,9 @@ impl ViewerApp {
             .overflow_hidden()
             .child(
                 div()
+                    .id("brush-row")
+                    .debug_selector(|| "brush-row".to_owned())
+                    .h(px(BRUSH_ROW_HEIGHT))
                     .flex()
                     .flex_shrink_0()
                     .border_b_1()
@@ -1946,6 +1949,7 @@ impl ViewerApp {
                             .id("brush-controls")
                             .debug_selector(|| "brush-controls".to_owned())
                             .w(metric_sidebar_width)
+                            .h_full()
                             .flex_shrink_0()
                             .px_1()
                             .pt(px(BRUSH_CONTENT_TOP_PADDING))
@@ -1954,17 +1958,12 @@ impl ViewerApp {
                             .border_color(theme.colors.border)
                             .relative()
                             .flex()
-                            .items_center()
+                            .items_start()
                             .justify_between()
                             .child(axis_picker)
                             .child(metric_picker),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .pt(px(BRUSH_CONTENT_TOP_PADDING))
-                            .child(timeline),
-                    ),
+                    .child(div().h_full().flex_1().child(timeline)),
             )
             .child(
                 div()
@@ -2056,7 +2055,10 @@ impl ViewerApp {
                     anchored()
                         .anchor(Corner::TopLeft)
                         .snap_to_window_with_margin(px(8.))
-                        .offset(point(px(0.), theme.spacing.control_height + px(4.)))
+                        .offset(point(
+                            px(0.),
+                            px(BRUSH_ROW_HEIGHT - BRUSH_CONTENT_TOP_PADDING + 4.),
+                        ))
                         .child(
                             components::popover(theme)
                                 .id("metric-picker")
@@ -2195,7 +2197,10 @@ impl ViewerApp {
                     anchored()
                         .anchor(Corner::TopLeft)
                         .snap_to_window_with_margin(px(8.))
-                        .offset(point(px(0.), theme.spacing.control_height + px(4.)))
+                        .offset(point(
+                            px(0.),
+                            px(BRUSH_ROW_HEIGHT - BRUSH_CONTENT_TOP_PADDING + 4.),
+                        ))
                         .child(
                             components::popover(theme)
                                 .id("axis-menu")
@@ -3262,7 +3267,7 @@ impl ViewerApp {
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some(brush) = self.core.brush() else {
-            return div().h(px(BRUSH_CONTENT_HEIGHT));
+            return div().h_full();
         };
         let (snapshot, revision) = self
             .views
@@ -3275,7 +3280,7 @@ impl ViewerApp {
             });
         let adapter = Rc::clone(&self.chart_adapter);
         let visible_runs: Rc<[RunRef]> = self.active_visible_runs().into();
-        div().h(px(BRUSH_CONTENT_HEIGHT)).child(
+        div().h_full().child(
             div()
                 .id("overview-chart")
                 .debug_selector(|| "overview-chart".to_owned())
@@ -4875,6 +4880,9 @@ mod tests {
                 let filter = cx
                     .debug_bounds("project-run-filter")
                     .expect("Project filter should render");
+                let brush_row = cx
+                    .debug_bounds("brush-row")
+                    .expect("Brush row should render");
                 let brush_controls = cx
                     .debug_bounds("brush-controls")
                     .expect("Brush controls should render");
@@ -4911,8 +4919,9 @@ mod tests {
                 assert_eq!(tab_bar.size.height, px(32.));
                 assert_eq!(sidebar_header.origin.y, tab_bar.origin.y);
                 assert_eq!(sidebar_header.size.height, tab_bar.size.height);
-                assert_eq!(filter_row.origin.y, brush_controls.origin.y);
-                assert_eq!(filter.bottom(), brush_controls.bottom());
+                assert_eq!(filter_row.origin.y, brush_row.origin.y);
+                assert_eq!(filter_row.size.height, brush_row.size.height);
+                assert_eq!(filter_row.bottom(), brush_row.bottom());
                 assert_eq!(filter.origin.y, axis_picker.origin.y);
                 assert_eq!(axis_picker.size.height, filter.size.height);
                 assert_eq!(axis_picker.size.width, filter.size.height);
@@ -5692,12 +5701,15 @@ mod tests {
                 let controls = cx
                     .debug_bounds("brush-controls")
                     .expect("Brush controls should render");
+                let row = cx
+                    .debug_bounds("brush-row")
+                    .expect("Brush row should render");
                 let overview = cx
                     .debug_bounds("overview-chart")
                     .expect("Overview chart should render");
-                assert_eq!(controls.size.height, px(34.));
-                assert_eq!(overview.size.height, px(28.));
-                assert_eq!(controls.origin.y + px(6.), overview.origin.y);
+                assert_eq!(row.size.height, px(40.));
+                assert_eq!(controls.size.height, overview.size.height);
+                assert_eq!(controls.origin.y, overview.origin.y);
                 assert_eq!(controls.bottom(), overview.bottom());
             }
         }
@@ -6035,8 +6047,11 @@ mod tests {
             let controls = cx
                 .debug_bounds("brush-controls")
                 .expect("Brush controls should own the fixed Metric label cell");
+            let brush_row = cx
+                .debug_bounds("brush-row")
+                .expect("Brush row should render");
             assert_eq!(metric_picker.size.width, px(180.));
-            assert_eq!(metric_picker.top(), controls.bottom() + px(4.));
+            assert_eq!(metric_picker.top(), brush_row.bottom() + px(4.));
             assert_eq!(metric_picker.left(), add.left());
             assert_eq!(axis.origin.x, controls.origin.x + px(4.));
             assert_eq!(add.right(), controls.right() - px(5.));
@@ -6045,7 +6060,7 @@ mod tests {
                 .debug_bounds("axis-menu")
                 .expect("Axis menu should open below the Brush row");
             assert_eq!(axis_menu.size.width, px(160.));
-            assert_eq!(axis_menu.top(), controls.bottom() + px(4.));
+            assert_eq!(axis_menu.top(), brush_row.bottom() + px(4.));
             assert_eq!(axis_menu.left(), axis.left());
             window
                 .read_with(&cx, |viewer, _| {
