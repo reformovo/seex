@@ -200,28 +200,44 @@ impl ViewerApp {
                             .child("PulseOn"),
                     )
                     .child(
-                        components::top_bar_icon_button("import-source", theme, false, false)
-                            .debug_selector(|| "import-source".to_owned())
-                            .tooltip(components::label_tooltip("Import Source", theme))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.open_picker(cx)))
-                            .child(components::icon(IconName::Plus, theme)),
-                    )
-                    .child(
-                        components::top_bar_icon_button(
-                            "hide-project-sidebar",
-                            theme,
-                            false,
-                            false,
-                        )
-                        .tooltip(components::label_tooltip("Hide Projects", theme))
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.project_sidebar_visible = false;
-                            this.project_menu = None;
-                            cx.notify();
-                        }))
-                        .child(components::icon(IconName::PanelLeft, theme)),
+                        div()
+                            .id("project-header-controls")
+                            .debug_selector(|| "project-header-controls".to_owned())
+                            .h_full()
+                            .flex_none()
+                            .pl_1()
+                            .gap_1()
+                            .flex()
+                            .items_center()
+                            .child(
+                                components::top_bar_icon_button(
+                                    "import-source",
+                                    theme,
+                                    false,
+                                    false,
+                                )
+                                .debug_selector(|| "import-source".to_owned())
+                                .tooltip(components::label_tooltip("Import Source", theme))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| this.open_picker(cx)))
+                                .child(components::icon(IconName::Plus, theme)),
+                            )
+                            .child(
+                                components::top_bar_icon_button(
+                                    "hide-project-sidebar",
+                                    theme,
+                                    false,
+                                    false,
+                                )
+                                .tooltip(components::label_tooltip("Hide Projects", theme))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.project_sidebar_visible = false;
+                                    this.project_menu = None;
+                                    cx.notify();
+                                }))
+                                .child(components::icon(IconName::PanelLeft, theme)),
+                            ),
                     ),
             )
             .child(
@@ -909,18 +925,7 @@ fn sidebar_menu_item(
     icon: IconName,
     theme: ViewerTheme,
 ) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .h(theme.spacing.control_height)
-        .px_2()
-        .gap_2()
-        .rounded(theme.spacing.corner_radius)
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.colors.element_hover))
-        .child(components::icon(icon, theme))
-        .child(label.to_owned())
+    components::popover_menu_item(id, label, Some(icon), theme)
 }
 
 fn project_information_card(

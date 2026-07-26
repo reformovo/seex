@@ -18,15 +18,30 @@ impl ViewerApp {
             .debug_selector(|| "analysis-tab-bar".to_owned())
             .flex_shrink_0()
             .children((!self.project_sidebar_visible).then(|| {
-                components::top_bar_icon_button("show-project-sidebar", theme, false, false)
-                    .debug_selector(|| "show-project-sidebar".to_owned())
-                    .tooltip(components::label_tooltip("Show Projects", theme))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.project_sidebar_visible = true;
-                        cx.notify();
-                    }))
-                    .child(components::icon(IconName::PanelLeft, theme))
+                div()
+                    .id("analysis-left-controls")
+                    .debug_selector(|| "analysis-left-controls".to_owned())
+                    .h_full()
+                    .flex_none()
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .child(
+                        components::top_bar_icon_button(
+                            "show-project-sidebar",
+                            theme,
+                            false,
+                            false,
+                        )
+                        .debug_selector(|| "show-project-sidebar".to_owned())
+                        .tooltip(components::label_tooltip("Show Projects", theme))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.project_sidebar_visible = true;
+                            cx.notify();
+                        }))
+                        .child(components::icon(IconName::PanelLeft, theme)),
+                    )
             }))
             .child(
                 div()
@@ -36,9 +51,9 @@ impl ViewerApp {
                     .flex_1()
                     .flex()
                     .overflow_x_scroll()
-                    .border_l_1()
                     .border_r_1()
                     .border_color(theme.colors.border)
+                    .when(!self.project_sidebar_visible, |tabs| tabs.border_l_1())
                     .children(views.into_iter().enumerate().map(|(index, view)| {
                         let selected = view.view_id == active_view_id;
                         let activate_id = view.view_id.clone();
@@ -56,6 +71,7 @@ impl ViewerApp {
                         .group(hover_group.clone())
                         .relative()
                         .flex_none()
+                        .min_w(px(112.))
                         .debug_selector(move || {
                             if selected {
                                 "analysis-tab".to_owned()
@@ -80,12 +96,33 @@ impl ViewerApp {
                         .child(if editing {
                             div()
                                 .id(SharedString::from(format!("rename-view:{}", view.view_id)))
+                                .debug_selector(|| "rename-view-input".to_owned())
                                 .track_focus(&focus)
+                                .flex_1()
+                                .min_w(px(0.))
+                                .px_1()
+                                .rounded(theme.spacing.corner_radius)
+                                .bg(theme.colors.element_active)
+                                .flex()
+                                .items_center()
+                                .cursor_text()
                                 .on_key_down(cx.listener(Self::on_view_name_key))
-                                .child(view_name_draft.clone())
+                                .on_click(|_, _, cx| cx.stop_propagation())
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .child(view_name_draft.clone()),
+                                )
+                                .child(div().ml(px(1.)).w(px(1.)).h(px(14.)).bg(theme.colors.text))
                         } else {
                             div()
                                 .id(SharedString::from(format!("view-name:{}", view.view_id)))
+                                .flex_1()
+                                .min_w(px(0.))
+                                .overflow_hidden()
                                 .whitespace_nowrap()
                                 .child(view.name)
                         })
@@ -132,60 +169,74 @@ impl ViewerApp {
                     })),
             )
             .child(
-                components::top_bar_icon_button("new-view", theme, false, false)
-                    .debug_selector(|| "new-view".to_owned())
-                    .tooltip(components::label_tooltip("New View", theme))
+                div()
+                    .id("analysis-right-controls")
+                    .debug_selector(|| "analysis-right-controls".to_owned())
+                    .h_full()
                     .flex_none()
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _, _, cx| this.create_analysis_view(cx)))
-                    .child(components::icon(IconName::Plus, theme)),
-            )
-            .child(
-                components::top_bar_icon_button(
-                    "toggle-bottom-inspector",
-                    theme,
-                    self.bottom_inspector_visible,
-                    self.views.active().selected_panel_id.is_none(),
-                )
-                .debug_selector(|| "toggle-bottom-inspector".to_owned())
-                .tooltip(components::label_tooltip(
-                    if self.bottom_inspector_visible {
-                        "Hide bottom inspector"
-                    } else {
-                        "Show bottom inspector"
-                    },
-                    theme,
-                ))
-                .when(self.views.active().selected_panel_id.is_some(), |button| {
-                    button
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.on_toggle_bottom_inspector(&ToggleBottomInspector, window, cx);
-                        }))
-                })
-                .child(components::icon(
-                    if self.bottom_inspector_visible {
-                        IconName::PanelBottomClose
-                    } else {
-                        IconName::PanelBottomOpen
-                    },
-                    theme,
-                )),
-            )
-            .child(
-                components::top_bar_icon_button("refresh-view", theme, false, !can_refresh)
-                    .debug_selector(|| "refresh-view".to_owned())
-                    .tooltip(components::label_tooltip("Refresh", theme))
-                    .when(can_refresh, |button| {
-                        button
+                    .px_1()
+                    .gap_1()
+                    .flex()
+                    .items_center()
+                    .child(
+                        components::top_bar_icon_button("new-view", theme, false, false)
+                            .debug_selector(|| "new-view".to_owned())
+                            .tooltip(components::label_tooltip("New View", theme))
                             .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.local_error = None;
-                                this.refresh_all_sources(cx);
-                                cx.notify();
-                            }))
-                    })
-                    .child(components::icon(IconName::Refresh, theme)),
+                            .on_click(cx.listener(|this, _, _, cx| this.create_analysis_view(cx)))
+                            .child(components::icon(IconName::Plus, theme)),
+                    )
+                    .child(
+                        components::top_bar_icon_button(
+                            "toggle-bottom-inspector",
+                            theme,
+                            self.bottom_inspector_visible,
+                            self.views.active().selected_panel_id.is_none(),
+                        )
+                        .debug_selector(|| "toggle-bottom-inspector".to_owned())
+                        .tooltip(components::label_tooltip(
+                            if self.bottom_inspector_visible {
+                                "Hide bottom inspector"
+                            } else {
+                                "Show bottom inspector"
+                            },
+                            theme,
+                        ))
+                        .when(self.views.active().selected_panel_id.is_some(), |button| {
+                            button
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.on_toggle_bottom_inspector(
+                                        &ToggleBottomInspector,
+                                        window,
+                                        cx,
+                                    );
+                                }))
+                        })
+                        .child(components::icon(
+                            if self.bottom_inspector_visible {
+                                IconName::PanelBottomClose
+                            } else {
+                                IconName::PanelBottomOpen
+                            },
+                            theme,
+                        )),
+                    )
+                    .child(
+                        components::top_bar_icon_button("refresh-view", theme, false, !can_refresh)
+                            .debug_selector(|| "refresh-view".to_owned())
+                            .tooltip(components::label_tooltip("Refresh", theme))
+                            .when(can_refresh, |button| {
+                                button
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.local_error = None;
+                                        this.refresh_all_sources(cx);
+                                        cx.notify();
+                                    }))
+                            })
+                            .child(components::icon(IconName::Refresh, theme)),
+                    ),
             )
     }
 
@@ -207,49 +258,37 @@ impl ViewerApp {
                 }
             }))
             .w(px(180.))
+            .p_1()
             .flex()
             .flex_col()
+            .text_xs()
             .child(
-                view_menu_item("duplicate-view", "Duplicate View", theme)
+                components::popover_menu_item("duplicate-view", "Duplicate View", None, theme)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.activate_analysis_view(&duplicate_id, cx);
                         this.duplicate_analysis_view(cx);
                         this.view_menu = None;
+                        cx.stop_propagation();
                     }))
                     .debug_selector(|| "duplicate-view".to_owned()),
             )
             .child(
-                view_menu_item("rename-view", "Rename View", theme)
+                components::popover_menu_item("rename-view", "Rename View", None, theme)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.begin_rename_analysis_view(rename_id.clone(), window, cx);
                         this.view_menu = None;
+                        this.begin_rename_analysis_view(rename_id.clone(), window, cx);
+                        cx.stop_propagation();
                     }))
                     .debug_selector(|| "rename-view".to_owned()),
             )
             .child(
-                view_menu_item("close-view", "Close View", theme).on_click(cx.listener(
-                    move |this, _, _, cx| {
+                components::popover_menu_item("close-view", "Close View", None, theme).on_click(
+                    cx.listener(move |this, _, _, cx| {
                         this.close_analysis_view(&close_id, cx);
                         this.view_menu = None;
-                    },
-                )),
+                        cx.stop_propagation();
+                    }),
+                ),
             )
     }
-}
-
-fn view_menu_item(
-    id: impl Into<gpui::ElementId>,
-    label: &str,
-    theme: ViewerTheme,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .h(theme.spacing.control_height)
-        .px_2()
-        .rounded(theme.spacing.corner_radius)
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.colors.element_hover))
-        .child(label.to_owned())
 }

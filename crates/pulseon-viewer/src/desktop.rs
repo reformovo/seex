@@ -1148,8 +1148,9 @@ impl ViewerApp {
         };
         self.view_name_draft.clone_from(&view.name);
         self.renaming_view = Some(view_id);
-        self.view_name_focus.focus(window);
         cx.notify();
+        let focus = self.view_name_focus.clone();
+        window.defer(cx, move |window, _| focus.focus(window));
     }
 
     fn on_view_name_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -4130,8 +4131,8 @@ mod tests {
         use std::sync::Arc;
 
         use gpui::{
-            Keystroke, Modifiers, ScrollDelta, TestAppContext, TouchPhase, VisualTestContext,
-            WindowHandle, point,
+            Modifiers, ScrollDelta, TestAppContext, TouchPhase, VisualTestContext, WindowHandle,
+            point,
         };
         use pulseon_core::engine::client::NativeClient;
         use pulseon_viewer::workbench::TrackDensity;
@@ -4610,7 +4611,17 @@ mod tests {
                     .expect("viewer should remain open")
             );
             assert!(cx.debug_bounds("project-run-tree").is_none());
-            assert!(cx.debug_bounds("show-project-sidebar").is_some());
+            let left_controls = cx
+                .debug_bounds("analysis-left-controls")
+                .expect("sidebar reveal group should render");
+            let show_sidebar = cx
+                .debug_bounds("show-project-sidebar")
+                .expect("sidebar reveal control should render");
+            let tabs = cx
+                .debug_bounds("analysis-view-tabs")
+                .expect("View tabs should remain rendered");
+            assert_eq!(show_sidebar.origin.x, left_controls.origin.x + px(4.));
+            assert_eq!(tabs.origin.x, left_controls.right());
             let analysis_after = cx
                 .debug_bounds("analysis-tab")
                 .expect("Analysis workspace should remain rendered");
@@ -4740,9 +4751,21 @@ mod tests {
                 let tab = cx
                     .debug_bounds("analysis-tab")
                     .expect("active Analysis tab should render");
-                let control = cx
+                let close = cx
+                    .debug_bounds("close-active-view")
+                    .expect("active View close control should render");
+                let controls = cx
+                    .debug_bounds("analysis-right-controls")
+                    .expect("View toolbar controls should render");
+                let new_view = cx
                     .debug_bounds("new-view")
                     .expect("View toolbar control should render");
+                let inspector = cx
+                    .debug_bounds("toggle-bottom-inspector")
+                    .expect("bottom inspector control should render");
+                let refresh = cx
+                    .debug_bounds("refresh-view")
+                    .expect("refresh control should render");
 
                 assert_eq!(sidebar.origin.y, px(0.));
                 assert_eq!(sidebar.size.height, px(window_size.1));
@@ -4757,7 +4780,12 @@ mod tests {
                 assert_eq!(filter.origin.y, axis_picker.origin.y);
                 assert_eq!(filter.size.height, axis_picker.size.height);
                 assert_eq!(tab.size.height, px(31.));
-                assert_eq!(control.size.height, px(20.));
+                assert_eq!(close.right(), tab.right() - px(9.));
+                assert_eq!(new_view.origin.x, controls.origin.x + px(4.));
+                assert_eq!(inspector.origin.x, new_view.right() + px(4.));
+                assert_eq!(refresh.origin.x, inspector.right() + px(4.));
+                assert_eq!(refresh.right(), controls.right() - px(4.));
+                assert_eq!(new_view.size.height, px(20.));
             }
 
             window
@@ -4893,35 +4921,22 @@ mod tests {
                 3
             );
 
-            window
-                .update(&mut cx, |viewer, window, cx| {
-                    let view_id = viewer.views.active().view_id.clone();
-                    viewer.begin_rename_analysis_view(view_id, window, cx);
-                    viewer.on_view_name_key(
-                        &KeyDownEvent {
-                            keystroke: Keystroke {
-                                key: "x".to_owned(),
-                                key_char: Some("x".to_owned()),
-                                ..Keystroke::default()
-                            },
-                            is_held: false,
-                        },
-                        window,
-                        cx,
-                    );
-                    viewer.on_view_name_key(
-                        &KeyDownEvent {
-                            keystroke: Keystroke {
-                                key: "enter".to_owned(),
-                                ..Keystroke::default()
-                            },
-                            is_held: false,
-                        },
-                        window,
-                        cx,
-                    );
-                })
-                .expect("viewer should remain open");
+            let active_tab = cx
+                .debug_bounds("analysis-tab")
+                .expect("duplicated View tab should be active");
+            cx.simulate_mouse_move(active_tab.center(), None, Modifiers::default());
+            cx.simulate_mouse_down(
+                active_tab.center(),
+                MouseButton::Right,
+                Modifiers::default(),
+            );
+            let rename = cx
+                .debug_bounds("rename-view")
+                .expect("View menu should expose Rename");
+            cx.simulate_mouse_move(rename.center(), None, Modifiers::default());
+            cx.simulate_click(rename.center(), Modifiers::default());
+            assert!(cx.debug_bounds("rename-view-input").is_some());
+            cx.simulate_keystrokes("x enter");
             assert!(
                 window
                     .read_with(&cx, |viewer, _| viewer.views.active().name.ends_with('x'))
