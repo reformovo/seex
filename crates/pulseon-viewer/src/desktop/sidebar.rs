@@ -74,6 +74,8 @@ impl ViewerApp {
         let archived_limit = self.archived_run_limit;
         let query = self.run_filter.trim().to_lowercase();
         let filter_focus = self.filter_focus.clone();
+        let click_filter_focus = filter_focus.clone();
+        let filter_focused = filter_focus.is_focused(window);
 
         let mut resources = div()
             .id("project-run-tree")
@@ -196,6 +198,7 @@ impl ViewerApp {
             .flex_col()
             .gap_2()
             .p(theme.spacing.panel_padding)
+            .text_xs()
             .bg(theme.colors.panel)
             .border_r_1()
             .border_color(theme.colors.border)
@@ -232,23 +235,45 @@ impl ViewerApp {
             .child(
                 div()
                     .id("project-run-filter")
+                    .debug_selector(|| "project-run-filter".to_owned())
                     .track_focus(&filter_focus)
                     .cursor_text()
                     .px_3()
                     .h(theme.spacing.control_height)
                     .flex()
                     .items_center()
+                    .text_xs()
                     .rounded(theme.spacing.corner_radius)
                     .border_1()
                     .border_color(theme.colors.border)
-                    .focus(|style| style.border_color(theme.colors.focus))
                     .on_key_down(cx.listener(Self::on_filter_key))
-                    .on_click(move |_, window, _| filter_focus.focus(window))
-                    .child(if self.run_filter.is_empty() {
-                        "Filter Projects and Runs".to_owned()
-                    } else {
-                        self.run_filter.clone()
-                    }),
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        click_filter_focus.focus(window);
+                        this.start_filter_cursor_blink(cx);
+                    }))
+                    .children((!filter_focused && self.run_filter.is_empty()).then(|| {
+                        div()
+                            .id("project-run-filter-placeholder")
+                            .debug_selector(|| "project-run-filter-placeholder".to_owned())
+                            .text_color(theme.colors.disabled)
+                            .child("Filter Projects and Runs")
+                    }))
+                    .children((!self.run_filter.is_empty()).then(|| {
+                        div()
+                            .id("project-run-filter-value")
+                            .debug_selector(|| "project-run-filter-value".to_owned())
+                            .text_color(theme.colors.text)
+                            .child(self.run_filter.clone())
+                    }))
+                    .children((filter_focused && self.filter_cursor_visible).then(|| {
+                        div()
+                            .id("project-run-filter-caret")
+                            .debug_selector(|| "project-run-filter-caret".to_owned())
+                            .ml(px(1.))
+                            .w(px(1.))
+                            .h(px(14.))
+                            .bg(theme.colors.text)
+                    })),
             )
             .child(resources)
     }
@@ -359,6 +384,8 @@ impl ViewerApp {
                 .key_context(SELECTABLE_CONTEXT)
                 .track_focus(&project_focus)
                 .tab_index(0)
+                .gap_1()
+                .text_xs()
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.activate_tree_project(row_source.clone(), row_project.clone(), cx);
@@ -389,7 +416,7 @@ impl ViewerApp {
                             let project_index = project.project_index;
                             move || format!("project-folder-{source_index}-{project_index}")
                         })
-                        .size(theme.spacing.control_height)
+                        .size(px(20.))
                         .flex_none()
                         .flex()
                         .items_center()
@@ -405,6 +432,11 @@ impl ViewerApp {
                 )
                 .child(
                     div()
+                        .debug_selector({
+                            let source_index = project.source_index;
+                            let project_index = project.project_index;
+                            move || format!("project-tree-label-{source_index}-{project_index}")
+                        })
                         .flex_1()
                         .overflow_hidden()
                         .whitespace_nowrap()
@@ -473,6 +505,7 @@ impl ViewerApp {
                     div()
                         .h(theme.spacing.tree_row_height)
                         .ml_8()
+                        .pl_5()
                         .flex()
                         .items_center()
                         .text_xs()
@@ -507,6 +540,7 @@ impl ViewerApp {
                         "Show more",
                         theme,
                     )
+                    .pl_5()
                     .debug_selector({
                         let source_index = project.source_index;
                         let project_index = project.project_index;
@@ -556,6 +590,12 @@ impl ViewerApp {
         let is_baseline = placement == RunPlacement::Baseline;
         let is_pinned = placement == RunPlacement::Pinned;
         let is_archived = placement == RunPlacement::Archived;
+        let name_selector = match placement {
+            RunPlacement::Baseline => "baseline-run-name",
+            RunPlacement::Pinned => "pinned-run-name",
+            RunPlacement::Projects => "project-run-name",
+            RunPlacement::Archived => "archived-run-name",
+        };
         let visible_count = self.active_visible_runs().len();
 
         components::sidebar_tree_row(
@@ -570,7 +610,9 @@ impl ViewerApp {
         })
         .track_focus(&run_focus)
         .tab_index(0)
-        .ml_5()
+        .gap_1()
+        .text_xs()
+        .when(placement == RunPlacement::Projects, |row| row.ml_5())
         .when(
             placement == RunPlacement::Projects && (selected || visible_count < MAX_SELECTED_RUNS),
             |row| {
@@ -588,6 +630,7 @@ impl ViewerApp {
             }
             cx.notify();
         }))
+        .children((placement != RunPlacement::Projects).then(|| div().size(px(20.)).flex_none()))
         .children((placement == RunPlacement::Projects).then(|| {
             components::sidebar_icon_button(
                 SharedString::from(format!("run-eye:{}", eye_run.cache_key())),
@@ -595,6 +638,7 @@ impl ViewerApp {
                 selected,
             )
             .debug_selector(move || format!("run-eye-{index}"))
+            .size(px(20.))
             .tooltip(components::label_tooltip(
                 if selected { "Hide Run" } else { "Show Run" },
                 theme,
@@ -616,6 +660,7 @@ impl ViewerApp {
         }))
         .child(
             div()
+                .debug_selector(move || format!("{name_selector}-{index}"))
                 .flex_1()
                 .min_w(px(0.))
                 .overflow_hidden()
@@ -895,7 +940,7 @@ fn project_information_card(
         .flex()
         .flex_col()
         .gap_2()
-        .text_sm()
+        .text_xs()
         .child(
             div()
                 .flex()

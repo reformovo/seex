@@ -253,6 +253,8 @@ struct ViewerApp {
     metric_filter_focus: FocusHandle,
     view_name_focus: FocusHandle,
     run_filter: String,
+    filter_cursor_visible: bool,
+    filter_cursor_epoch: u64,
     metric_filter: String,
     expanded_projects: HashSet<(DataSourceId, ProjectId)>,
     project_focuses: HashMap<ProjectRef, FocusHandle>,
@@ -312,6 +314,8 @@ impl ViewerApp {
             metric_filter_focus: cx.focus_handle().tab_stop(true),
             view_name_focus: cx.focus_handle().tab_stop(true),
             run_filter: String::new(),
+            filter_cursor_visible: false,
+            filter_cursor_epoch: 0,
             metric_filter: String::new(),
             expanded_projects: HashSet::new(),
             project_focuses: HashMap::new(),
@@ -359,6 +363,14 @@ impl ViewerApp {
             workbench_path: default_workbench_path(),
             last_saved_workbench: None,
         };
+        cx.on_focus(&app.filter_focus, window, |this, _, cx| {
+            this.start_filter_cursor_blink(cx);
+        })
+        .detach();
+        cx.on_blur(&app.filter_focus, window, |this, _, cx| {
+            this.stop_filter_cursor_blink(cx);
+        })
+        .detach();
         if let Some(path) = app.workbench_path.clone() {
             match WorkbenchDocument::load(&path) {
                 Ok(Some(document)) => app.restore_workbench(document, cx),
@@ -1660,7 +1672,37 @@ impl ViewerApp {
             }
             _ => return,
         }
+        self.start_filter_cursor_blink(cx);
         cx.stop_propagation();
+    }
+
+    fn start_filter_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.filter_cursor_epoch = self.filter_cursor_epoch.saturating_add(1);
+        self.filter_cursor_visible = true;
+        self.schedule_filter_cursor_blink(cx);
+        cx.notify();
+    }
+
+    fn schedule_filter_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        let epoch = self.filter_cursor_epoch;
+        let timer = cx.background_executor().timer(Duration::from_millis(500));
+        cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.filter_cursor_epoch != epoch {
+                    return;
+                }
+                this.filter_cursor_visible = !this.filter_cursor_visible;
+                this.schedule_filter_cursor_blink(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn stop_filter_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.filter_cursor_epoch = self.filter_cursor_epoch.saturating_add(1);
+        self.filter_cursor_visible = false;
         cx.notify();
     }
 
@@ -4571,6 +4613,89 @@ mod tests {
                 .debug_bounds("analysis-tab")
                 .expect("Analysis workspace should remain rendered");
             assert!(analysis_after.origin.x < analysis_before.origin.x);
+        }
+
+        #[gpui::test]
+        fn project_filter_uses_placeholder_and_blinking_caret_states(cx: &mut TestAppContext) {
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, None);
+            assert!(cx.debug_bounds("project-run-filter-placeholder").is_some());
+
+            let filter = cx
+                .debug_bounds("project-run-filter")
+                .expect("Project filter should render");
+            cx.simulate_mouse_move(filter.center(), None, Modifiers::default());
+            cx.simulate_click(filter.center(), Modifiers::default());
+            assert!(
+                window
+                    .update(&mut cx, |viewer, window, _| viewer
+                        .filter_focus
+                        .is_focused(window))
+                    .expect("viewer should remain open")
+            );
+            assert!(cx.debug_bounds("project-run-filter-caret").is_some());
+
+            cx.executor().advance_clock(Duration::from_millis(500));
+            cx.run_until_parked();
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.filter_cursor_visible)
+                    .expect("viewer should remain open")
+            );
+            cx.simulate_keystrokes("viewer");
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.run_filter.clone())
+                    .expect("viewer should remain open"),
+                "viewer"
+            );
+            assert!(cx.debug_bounds("project-run-filter-value").is_some());
+        }
+
+        #[gpui::test]
+        fn root_project_and_run_labels_share_a_compact_text_origin(cx: &mut TestAppContext) {
+            let (root, project_id, _) = fixture_with_runs(0, 3);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer
+                    .sources
+                    .sources()
+                    .next()
+                    .is_some_and(|source| source.catalog.runs.len() == 3)
+            });
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let source = viewer.sources.sources().next().expect("source").clone();
+                    let run_ref = |index: usize| {
+                        RunRef::new(
+                            source.source_id.clone(),
+                            project_id.clone(),
+                            source.catalog.runs[index].run_id.clone(),
+                        )
+                    };
+                    viewer.set_run_baseline(run_ref(0), cx);
+                    viewer.toggle_pinned_run(run_ref(1), cx);
+                })
+                .expect("viewer should remain open");
+
+            let project_label = cx
+                .debug_bounds("project-tree-label-0-0")
+                .expect("Project label should render");
+            for selector in ["baseline-run-name-0", "pinned-run-name-0"] {
+                let run_label = cx
+                    .debug_bounds(selector)
+                    .expect("organized Run label should render");
+                assert_eq!(run_label.origin.x, project_label.origin.x);
+            }
+            let project_row = cx
+                .debug_bounds("project-tree-row-0-0")
+                .expect("Project row should render");
+            cx.simulate_click(project_row.center(), Modifiers::default());
+            let nested_run = cx
+                .debug_bounds("project-run-name-0")
+                .expect("nested Run label should render");
+            assert!(nested_run.origin.x > project_label.origin.x);
         }
 
         #[gpui::test]
