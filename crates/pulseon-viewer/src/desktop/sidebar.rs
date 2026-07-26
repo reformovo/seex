@@ -92,7 +92,11 @@ impl ViewerApp {
             .pt_2()
             .pb_3();
 
-        resources = resources.child(sidebar_group_label("Baseline", theme));
+        resources = resources.child(
+            sidebar_group_label("Baseline", theme)
+                .mt_1()
+                .debug_selector(|| "baseline-group-label".to_owned()),
+        );
         if let Some(run) = baseline {
             resources = resources.child(self.render_sidebar_run(
                 run,

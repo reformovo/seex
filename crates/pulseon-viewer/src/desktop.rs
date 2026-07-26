@@ -5069,6 +5069,9 @@ mod tests {
                 let filter = cx
                     .debug_bounds("project-run-filter")
                     .expect("Project filter should render");
+                let baseline_group = cx
+                    .debug_bounds("baseline-group-label")
+                    .expect("Baseline group label should render");
                 let brush_row = cx
                     .debug_bounds("brush-row")
                     .expect("Brush row should render");
@@ -5111,6 +5114,7 @@ mod tests {
                 assert_eq!(filter_row.origin.y, brush_row.origin.y);
                 assert_eq!(filter_row.size.height, brush_row.size.height);
                 assert_eq!(filter_row.bottom(), brush_row.bottom());
+                assert_eq!(baseline_group.origin.y - filter_row.bottom(), px(12.));
                 assert_eq!(filter.origin.y, axis_picker.origin.y);
                 assert_eq!(axis_picker.size.height, filter.size.height);
                 assert_eq!(axis_picker.size.width, filter.size.height);
