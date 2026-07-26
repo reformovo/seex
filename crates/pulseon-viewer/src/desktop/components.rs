@@ -19,6 +19,8 @@ pub enum IconName {
     CirclePlay,
     Clock,
     Close,
+    Duplicate,
+    Edit,
     Ellipsis,
     Eye,
     EyeClosed,
@@ -42,6 +44,8 @@ impl IconName {
             Self::CirclePlay => "icons/circle-play.svg",
             Self::Clock => "icons/clock.svg",
             Self::Close => "icons/close.svg",
+            Self::Duplicate => "icons/duplicate.svg",
+            Self::Edit => "icons/edit.svg",
             Self::Ellipsis => "icons/ellipsis.svg",
             Self::Eye => "icons/eye.svg",
             Self::EyeClosed => "icons/eye-closed.svg",
@@ -327,6 +331,8 @@ mod tests {
         assert_eq!(IconName::FolderOpen.path(), "icons/folder-open.svg");
         assert_eq!(IconName::Eye.path(), "icons/eye.svg");
         assert_eq!(IconName::Close.path(), "icons/close.svg");
+        assert_eq!(IconName::Duplicate.path(), "icons/duplicate.svg");
+        assert_eq!(IconName::Edit.path(), "icons/edit.svg");
         assert_eq!(IconName::Ellipsis.path(), "icons/ellipsis.svg");
         assert_eq!(IconName::Plus.path(), "icons/plus.svg");
         assert_eq!(IconName::ArrowUp.path(), "icons/arrow-up.svg");

@@ -11,6 +11,8 @@ impl ViewerApp {
         let renaming_view = self.renaming_view.clone();
         let view_name_focus = self.view_name_focus.clone();
         let view_name_draft = self.view_name_draft.clone();
+        let view_name_select_all = self.view_name_select_all;
+        let view_name_cursor_visible = self.view_name_cursor_visible;
         let can_refresh = self.sources.sources().next().is_some();
 
         components::tab_bar(theme)
@@ -72,6 +74,7 @@ impl ViewerApp {
                         .relative()
                         .flex_none()
                         .min_w(px(112.))
+                        .pr_1()
                         .debug_selector(move || {
                             if selected {
                                 "analysis-tab".to_owned()
@@ -101,22 +104,43 @@ impl ViewerApp {
                                 .flex_1()
                                 .min_w(px(0.))
                                 .px_1()
-                                .rounded(theme.spacing.corner_radius)
-                                .bg(theme.colors.element_active)
+                                .overflow_hidden()
                                 .flex()
                                 .items_center()
                                 .cursor_text()
                                 .on_key_down(cx.listener(Self::on_view_name_key))
                                 .on_click(|_, _, cx| cx.stop_propagation())
+                                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                                    this.finish_rename_analysis_view(true, cx);
+                                }))
                                 .child(
                                     div()
-                                        .flex_1()
                                         .min_w(px(0.))
                                         .overflow_hidden()
                                         .whitespace_nowrap()
+                                        .rounded(px(2.))
+                                        .when(view_name_select_all, |value| {
+                                            value.bg(theme.colors.element_active)
+                                        })
+                                        .debug_selector(move || {
+                                            if view_name_select_all {
+                                                "rename-view-selection".to_owned()
+                                            } else {
+                                                "rename-view-value".to_owned()
+                                            }
+                                        })
                                         .child(view_name_draft.clone()),
                                 )
-                                .child(div().ml(px(1.)).w(px(1.)).h(px(14.)).bg(theme.colors.text))
+                                .children(view_name_cursor_visible.then(|| {
+                                    div()
+                                        .id("rename-view-caret")
+                                        .debug_selector(|| "rename-view-caret".to_owned())
+                                        .ml(px(1.))
+                                        .w(px(1.))
+                                        .h(px(14.))
+                                        .flex_none()
+                                        .bg(theme.colors.text)
+                                }))
                         } else {
                             div()
                                 .id(SharedString::from(format!("view-name:{}", view.view_id)))
@@ -157,13 +181,15 @@ impl ViewerApp {
                                 .child(components::icon(IconName::Close, theme)),
                         );
                         if menu_open {
-                            tab = tab.child(deferred(
-                                anchored()
-                                    .anchor(Corner::TopLeft)
-                                    .snap_to_window_with_margin(px(8.))
-                                    .offset(point(px(0.), theme.spacing.tab_height))
-                                    .child(self.render_view_menu(view.view_id, cx)),
-                            ));
+                            tab = tab.child(
+                                div().absolute().top_0().left_0().child(deferred(
+                                    anchored()
+                                        .anchor(Corner::TopLeft)
+                                        .snap_to_window_with_margin(px(8.))
+                                        .offset(point(px(0.), theme.spacing.tab_height + px(4.)))
+                                        .child(self.render_view_menu(view.view_id, cx)),
+                                )),
+                            );
                         }
                         tab
                     })),
@@ -263,32 +289,46 @@ impl ViewerApp {
             .flex_col()
             .text_xs()
             .child(
-                components::popover_menu_item("duplicate-view", "Duplicate View", None, theme)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.activate_analysis_view(&duplicate_id, cx);
-                        this.duplicate_analysis_view(cx);
-                        this.view_menu = None;
-                        cx.stop_propagation();
-                    }))
-                    .debug_selector(|| "duplicate-view".to_owned()),
+                components::popover_menu_item(
+                    "duplicate-view",
+                    "Duplicate View",
+                    Some(IconName::Duplicate),
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.activate_analysis_view(&duplicate_id, cx);
+                    this.duplicate_analysis_view(cx);
+                    this.view_menu = None;
+                    cx.stop_propagation();
+                }))
+                .debug_selector(|| "duplicate-view".to_owned()),
             )
             .child(
-                components::popover_menu_item("rename-view", "Rename View", None, theme)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.view_menu = None;
-                        this.begin_rename_analysis_view(rename_id.clone(), window, cx);
-                        cx.stop_propagation();
-                    }))
-                    .debug_selector(|| "rename-view".to_owned()),
+                components::popover_menu_item(
+                    "rename-view",
+                    "Rename View",
+                    Some(IconName::Edit),
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.view_menu = None;
+                    this.begin_rename_analysis_view(rename_id.clone(), window, cx);
+                    cx.stop_propagation();
+                }))
+                .debug_selector(|| "rename-view".to_owned()),
             )
             .child(
-                components::popover_menu_item("close-view", "Close View", None, theme).on_click(
-                    cx.listener(move |this, _, _, cx| {
-                        this.close_analysis_view(&close_id, cx);
-                        this.view_menu = None;
-                        cx.stop_propagation();
-                    }),
-                ),
+                components::popover_menu_item(
+                    "close-view",
+                    "Close View",
+                    Some(IconName::Close),
+                    theme,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.close_analysis_view(&close_id, cx);
+                    this.view_menu = None;
+                    cx.stop_propagation();
+                })),
             )
     }
 }

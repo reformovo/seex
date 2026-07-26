@@ -272,6 +272,9 @@ struct ViewerApp {
     renaming_view: Option<AnalysisViewId>,
     view_menu: Option<AnalysisViewId>,
     view_name_draft: String,
+    view_name_select_all: bool,
+    view_name_cursor_visible: bool,
+    view_name_cursor_epoch: u64,
     metric_picker_open: bool,
     axis_picker_open: bool,
     project_sidebar_visible: bool,
@@ -333,6 +336,9 @@ impl ViewerApp {
             renaming_view: None,
             view_menu: None,
             view_name_draft: String::new(),
+            view_name_select_all: false,
+            view_name_cursor_visible: false,
+            view_name_cursor_epoch: 0,
             metric_picker_open: false,
             axis_picker_open: false,
             project_sidebar_visible: true,
@@ -371,6 +377,10 @@ impl ViewerApp {
         .detach();
         cx.on_blur(&app.filter_focus, window, |this, _, cx| {
             this.stop_filter_cursor_blink(cx);
+        })
+        .detach();
+        cx.on_blur(&app.view_name_focus, window, |this, _, cx| {
+            this.finish_rename_analysis_view(true, cx);
         })
         .detach();
         if let Some(path) = app.workbench_path.clone() {
@@ -1148,32 +1158,80 @@ impl ViewerApp {
         };
         self.view_name_draft.clone_from(&view.name);
         self.renaming_view = Some(view_id);
-        cx.notify();
+        self.view_name_select_all = true;
+        self.start_view_name_cursor_blink(cx);
         let focus = self.view_name_focus.clone();
         window.defer(cx, move |window, _| focus.focus(window));
     }
 
     fn on_view_name_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
-            "enter" => {
-                if let Some(view_id) = self.renaming_view.take() {
-                    self.views.rename(&view_id, &self.view_name_draft);
-                }
-            }
-            "escape" => self.renaming_view = None,
+            "enter" => self.finish_rename_analysis_view(true, cx),
+            "escape" => self.finish_rename_analysis_view(false, cx),
             "backspace" => {
-                self.view_name_draft.pop();
+                if self.view_name_select_all {
+                    self.view_name_draft.clear();
+                } else {
+                    self.view_name_draft.pop();
+                }
+                self.view_name_select_all = false;
+                self.start_view_name_cursor_blink(cx);
             }
             _ if !event.keystroke.modifiers.platform && !event.keystroke.modifiers.control => {
                 if let Some(text) = event.keystroke.key_char.as_deref()
                     && !text.chars().any(char::is_control)
                 {
+                    if self.view_name_select_all {
+                        self.view_name_draft.clear();
+                    }
                     self.view_name_draft.push_str(text);
+                    self.view_name_select_all = false;
+                    self.start_view_name_cursor_blink(cx);
                 }
             }
             _ => return,
         }
         cx.stop_propagation();
+    }
+
+    fn finish_rename_analysis_view(&mut self, commit: bool, cx: &mut Context<Self>) {
+        let Some(view_id) = self.renaming_view.take() else {
+            return;
+        };
+        if commit {
+            self.views.rename(&view_id, &self.view_name_draft);
+        }
+        self.view_name_select_all = false;
+        self.stop_view_name_cursor_blink(cx);
+    }
+
+    fn start_view_name_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.view_name_cursor_epoch = self.view_name_cursor_epoch.saturating_add(1);
+        self.view_name_cursor_visible = true;
+        self.schedule_view_name_cursor_blink(cx);
+        cx.notify();
+    }
+
+    fn schedule_view_name_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        let epoch = self.view_name_cursor_epoch;
+        let timer = cx.background_executor().timer(Duration::from_millis(500));
+        cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.view_name_cursor_epoch != epoch || this.renaming_view.is_none() {
+                    return;
+                }
+                this.view_name_cursor_visible = !this.view_name_cursor_visible;
+                this.schedule_view_name_cursor_blink(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn stop_view_name_cursor_blink(&mut self, cx: &mut Context<Self>) {
+        self.view_name_cursor_epoch = self.view_name_cursor_epoch.saturating_add(1);
+        self.view_name_cursor_visible = false;
         cx.notify();
     }
 
@@ -4780,7 +4838,7 @@ mod tests {
                 assert_eq!(filter.origin.y, axis_picker.origin.y);
                 assert_eq!(filter.size.height, axis_picker.size.height);
                 assert_eq!(tab.size.height, px(31.));
-                assert_eq!(close.right(), tab.right() - px(9.));
+                assert_eq!(close.right(), tab.right() - px(5.));
                 assert_eq!(new_view.origin.x, controls.origin.x + px(4.));
                 assert_eq!(inspector.origin.x, new_view.right() + px(4.));
                 assert_eq!(refresh.origin.x, inspector.right() + px(4.));
@@ -4909,7 +4967,10 @@ mod tests {
                 MouseButton::Right,
                 Modifiers::default(),
             );
-            assert!(cx.debug_bounds("view-menu").is_some());
+            let menu = cx
+                .debug_bounds("view-menu")
+                .expect("View menu should render");
+            assert!(menu.top() >= active_tab.bottom());
             let duplicate = cx
                 .debug_bounds("duplicate-view")
                 .expect("duplicate View control should render");
@@ -4936,11 +4997,57 @@ mod tests {
             cx.simulate_mouse_move(rename.center(), None, Modifiers::default());
             cx.simulate_click(rename.center(), Modifiers::default());
             assert!(cx.debug_bounds("rename-view-input").is_some());
-            cx.simulate_keystrokes("x enter");
+            assert!(cx.debug_bounds("rename-view-selection").is_some());
+            assert!(cx.debug_bounds("rename-view-caret").is_some());
+            cx.executor().advance_clock(Duration::from_millis(500));
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("rename-view-caret").is_none());
+            cx.simulate_keystrokes("x");
+            let value = cx
+                .debug_bounds("rename-view-value")
+                .expect("typed View name should render");
+            let caret = cx
+                .debug_bounds("rename-view-caret")
+                .expect("typing should reveal the View name caret");
+            assert_eq!(caret.origin.x, value.right() + px(1.));
+            cx.simulate_keystrokes("enter");
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.views.active().name.clone())
+                    .expect("viewer should remain open"),
+                "x"
+            );
+
+            let active_tab = cx
+                .debug_bounds("analysis-tab")
+                .expect("renamed View tab should remain active");
+            cx.simulate_mouse_down(
+                active_tab.center(),
+                MouseButton::Right,
+                Modifiers::default(),
+            );
+            let rename = cx
+                .debug_bounds("rename-view")
+                .expect("View menu should expose Rename");
+            cx.simulate_click(rename.center(), Modifiers::default());
+            cx.simulate_keystrokes("outside");
+            let controls = cx
+                .debug_bounds("analysis-right-controls")
+                .expect("View toolbar controls should render");
+            cx.simulate_click(
+                point(controls.origin.x + px(2.), controls.center().y),
+                Modifiers::default(),
+            );
             assert!(
                 window
-                    .read_with(&cx, |viewer, _| viewer.views.active().name.ends_with('x'))
+                    .read_with(&cx, |viewer, _| viewer.renaming_view.is_none())
                     .expect("viewer should remain open")
+            );
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.views.active().name.clone())
+                    .expect("viewer should remain open"),
+                "outside"
             );
 
             let close = cx

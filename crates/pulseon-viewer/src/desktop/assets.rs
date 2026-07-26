@@ -20,8 +20,10 @@ const CLOCK: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000
 const PANEL_BOTTOM_OPEN: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2.5" width="12" height="11" rx="1" fill="none" stroke="black" stroke-width="1.2"/><path d="M2 9.5h12M6 12l2-2 2 2" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const PANEL_BOTTOM_CLOSE: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2.5" width="12" height="11" rx="1" fill="none" stroke="black" stroke-width="1.2"/><path d="M2 9.5h12m-8-1.5 2 2 2-2" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const PANEL_LEFT: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="black" stroke-width="1.2"/><path d="M5.5 2.5v11" fill="none" stroke="black" stroke-width="1.2"/></svg>"##;
+const DUPLICATE: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="5" y="5" width="8" height="8" rx="1" fill="none" stroke="black" stroke-width="1.2"/><path d="M3 10.5V4a1 1 0 0 1 1-1h6.5" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round"/></svg>"##;
+const EDIT: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path d="m3 11.5-.5 2 2-.5 7.8-7.8-1.5-1.5zM9.8 4.7l1.5 1.5" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
-const ASSETS: [(&str, &[u8]); 18] = [
+const ASSETS: [(&str, &[u8]); 20] = [
     ("icons/refresh.svg", REFRESH),
     ("icons/plus.svg", PLUS),
     ("icons/close.svg", CLOSE),
@@ -40,6 +42,8 @@ const ASSETS: [(&str, &[u8]); 18] = [
     ("icons/panel-bottom-open.svg", PANEL_BOTTOM_OPEN),
     ("icons/panel-bottom-close.svg", PANEL_BOTTOM_CLOSE),
     ("icons/panel-left.svg", PANEL_LEFT),
+    ("icons/duplicate.svg", DUPLICATE),
+    ("icons/edit.svg", EDIT),
 ];
 
 pub struct ViewerAssets;
