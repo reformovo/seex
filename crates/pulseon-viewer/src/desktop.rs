@@ -9,7 +9,7 @@ use gpui::{
     ListAlignment, ListState, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent, SharedString, SystemMenuType, Task,
     Window, WindowBounds, WindowOptions, actions, anchored, deferred, div, list, point, prelude::*,
-    px, relative, size,
+    px, size,
 };
 use pulseon_chart_core::{BrushState, CanvasSize};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
@@ -1866,10 +1866,10 @@ impl ViewerApp {
         self.render_converged_project_sidebar(window, cx)
     }
 
-    fn render_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
-        self.render_metric_workspace(cx)
+    fn render_workspace(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+        self.render_metric_workspace(window, cx)
     }
-    fn render_metric_workspace(&mut self, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_metric_workspace(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         self.reconcile_track_schedule(cx);
         let theme = self.theme;
         let panels: Rc<[MetricPanel]> = self.views.active().panels.clone().into();
@@ -1882,7 +1882,7 @@ impl ViewerApp {
         let axis_picker = self.render_axis_picker(cx);
         let metric_sidebar_width = self.metric_sidebar_width();
         let timeline = self.render_overview(cx);
-        let ruler = self.render_ruler(cx);
+        let ruler = self.render_ruler(window, cx);
         let list_panels = Rc::clone(&panels);
         let panel_count = panels.len();
         let scroll = self.metric_scroll.clone();
@@ -2252,12 +2252,45 @@ impl ViewerApp {
         picker
     }
 
-    fn render_ruler(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    fn render_ruler(
+        &mut self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
-        let selected = self.core.brush().map(|brush| brush.selected());
-        let ticks = selected
+        let (selected, home) = self.core.brush().map_or((None, None), |brush| {
+            (Some(brush.selected()), Some(brush.home()))
+        });
+        let mut ticks = selected
             .map(|range| pulseon_chart_core::linear_ticks(range, 6))
             .unwrap_or_default();
+        if let (Some(home), Some(step)) = (
+            home,
+            ticks
+                .windows(2)
+                .next()
+                .map(|pair| pair[1] - pair[0])
+                .filter(|step| step.is_finite() && *step > 0.),
+        ) && let Some(first) = ticks.first().copied()
+        {
+            let mut preceding = Vec::new();
+            let mut value = first - step;
+            while value >= home.start() - step * 1e-10 && preceding.len() < 8 {
+                preceding.push(if value == -0. { 0. } else { value });
+                value -= step;
+            }
+            if first - home.start() > step * 1e-10
+                && first - home.start() <= step * 8.
+                && preceding
+                    .last()
+                    .is_none_or(|tick| (*tick - home.start()).abs() > step * 1e-10)
+            {
+                preceding.push(home.start());
+            }
+            preceding.reverse();
+            preceding.extend(ticks);
+            ticks = preceding;
+        }
         let minor_ticks = ticks
             .windows(2)
             .flat_map(|pair| {
@@ -2268,6 +2301,11 @@ impl ViewerApp {
         let axis = self.curve_axis();
         let hover_axis = self.hover_cursor_axis();
         let locked_cursor = self.locked_cursor;
+        let plot_left = self.metric_sidebar_width();
+        let plot_left_px = f32::from(plot_left);
+        let (_, plot_width) = self.ruler_plot_geometry(window);
+        let plot_width = f32::from(plot_width);
+        let ruler_width = plot_left_px + plot_width;
         div()
             .id("viewport-ruler")
             .debug_selector(|| "viewport-ruler".to_owned())
@@ -2278,6 +2316,7 @@ impl ViewerApp {
             .cursor_crosshair()
             .child(
                 div()
+                    .absolute()
                     .size_full()
                     .relative()
                     .text_xs()
@@ -2287,52 +2326,64 @@ impl ViewerApp {
                             .iter()
                             .copied()
                             .enumerate()
-                            .map(move |(index, tick)| {
-                                let ratio =
-                                    ((tick - range.start()) / range.span()).clamp(0., 1.) as f32;
-                                div()
-                                    .id(SharedString::from(format!("ruler-minor-tick-{index}")))
-                                    .debug_selector(move || format!("ruler-minor-tick-{index}"))
-                                    .absolute()
-                                    .left(relative(ratio))
-                                    .bottom_0()
-                                    .w(px(1.))
-                                    .h(px(5.))
-                                    .bg(theme.colors.border)
+                            .filter_map(move |(index, tick)| {
+                                let ratio = ((tick - range.start()) / range.span()) as f32;
+                                let left = plot_left_px + ratio * plot_width;
+                                (-0.5..=ruler_width + 0.5).contains(&left).then(|| {
+                                    div()
+                                        .id(SharedString::from(format!("ruler-minor-tick-{index}")))
+                                        .debug_selector(move || format!("ruler-minor-tick-{index}"))
+                                        .absolute()
+                                        .left(px(left.clamp(0., ruler_width)))
+                                        .bottom_0()
+                                        .w(px(1.))
+                                        .h(px(5.))
+                                        .bg(theme.colors.border)
+                                })
                             })
                     }))
                     .children(selected.into_iter().flat_map(|range| {
-                        ticks.iter().copied().enumerate().map(move |(index, tick)| {
-                            let ratio =
-                                ((tick - range.start()) / range.span()).clamp(0., 1.) as f32;
-                            let label_offset = if ratio > 0.9 { px(-56.) } else { px(4.) };
-                            div()
-                                .id(SharedString::from(format!("ruler-major-tick-{index}")))
-                                .debug_selector(move || format!("ruler-major-tick-{index}"))
-                                .absolute()
-                                .left(relative(ratio))
-                                .top_0()
-                                .bottom_0()
-                                .w(px(1.))
-                                .child(
+                        ticks
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .filter_map(move |(index, tick)| {
+                                let ratio = ((tick - range.start()) / range.span()) as f32;
+                                let left = plot_left_px + ratio * plot_width;
+                                let label_offset = if ratio > 0.9 { px(-56.) } else { px(4.) };
+                                (-0.5..=ruler_width + 0.5).contains(&left).then(|| {
                                     div()
-                                        .id(SharedString::from(format!("ruler-major-mark-{index}")))
-                                        .debug_selector(move || format!("ruler-major-mark-{index}"))
+                                        .id(SharedString::from(format!("ruler-major-tick-{index}")))
+                                        .debug_selector(move || format!("ruler-major-tick-{index}"))
                                         .absolute()
+                                        .left(px(left.clamp(0., ruler_width)))
+                                        .top_0()
                                         .bottom_0()
                                         .w(px(1.))
-                                        .h(px(8.))
-                                        .bg(theme.colors.text_muted),
-                                )
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top(px(1.))
-                                        .ml(label_offset)
-                                        .whitespace_nowrap()
-                                        .child(format_axis_tick(axis, tick)),
-                                )
-                        })
+                                        .child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "ruler-major-mark-{index}"
+                                                )))
+                                                .debug_selector(move || {
+                                                    format!("ruler-major-mark-{index}")
+                                                })
+                                                .absolute()
+                                                .bottom_0()
+                                                .w(px(1.))
+                                                .h(px(8.))
+                                                .bg(theme.colors.text_muted),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .top(px(1.))
+                                                .ml(label_offset)
+                                                .whitespace_nowrap()
+                                                .child(format_axis_tick(axis, tick)),
+                                        )
+                                })
+                            })
                     })),
             )
             .children(selected.map(|range| {
@@ -2342,7 +2393,10 @@ impl ViewerApp {
                     .child(
                         renderer::cursor_canvas(None, range, hover_axis, locked_cursor)
                             .absolute()
-                            .size_full(),
+                            .left(plot_left)
+                            .right_0()
+                            .top_0()
+                            .bottom_0(),
                     )
                     .child(
                         div()
@@ -2417,7 +2471,7 @@ impl ViewerApp {
                     .debug_selector(|| "ruler-hover-tooltip".to_owned())
                     .absolute()
                     .top(px(2.))
-                    .left(relative(ratio))
+                    .left(px(plot_left_px + ratio * plot_width))
                     .ml(offset)
                     .min_w(px(64.))
                     .flex()
@@ -2439,7 +2493,7 @@ impl ViewerApp {
             self.project_sidebar_width
         } else {
             px(0.)
-        };
+        } + self.metric_sidebar_width();
         let width = (window.viewport_size().width - left).max(px(1.));
         (left, width)
     }
@@ -3783,7 +3837,7 @@ impl Render for ViewerApp {
                             .child(self.render_analysis_bar(cx))
                             .children(error.clone().map(|message| error_banner(message, theme)))
                             .child(if has_sources {
-                                self.render_workspace(cx)
+                                self.render_workspace(window, cx)
                             } else {
                                 components::empty_state(theme)
                                     .child(
@@ -6488,12 +6542,15 @@ mod tests {
                     viewer.core.brush().expect("brush").selected()
                 })
                 .expect("viewer should remain open");
+            let plot = cx
+                .debug_bounds("overview-chart")
+                .expect("Overview plot should render");
             let ruler = cx
                 .debug_bounds("ruler-hit-area")
-                .expect("shared ruler hit area should render");
+                .expect("Shared ruler hit area should render");
             let anchor_ratio = 0.25;
             let position = point(
-                ruler.origin.x + ruler.size.width * anchor_ratio,
+                plot.origin.x + plot.size.width * anchor_ratio,
                 ruler.center().y,
             );
             let anchor = before.start() + before.span() * f64::from(anchor_ratio);
@@ -6522,7 +6579,7 @@ mod tests {
 
         #[gpui::test]
         fn metric_sidebar_rows_align_with_independent_chart_tracks(cx: &mut TestAppContext) {
-            let (root, project_id, first_run_id) = fixture_with_runs(2, 2);
+            let (root, project_id, first_run_id) = fixture_with_complete_runs(2, 2);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
@@ -6595,6 +6652,32 @@ mod tests {
                 .expect("Ruler should render minor tick marks");
             assert_eq!(major_tick.size, size(px(1.), px(8.)));
             assert_eq!(minor_tick.size, size(px(1.), px(5.)));
+            assert_eq!(major_tick.origin.x, overview.origin.x);
+
+            let gutter_width = f64::from(overview.origin.x - ruler.origin.x);
+            let plot_width = f64::from(overview.size.width);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let brush = viewer.core.brush_mut().expect("brush should exist");
+                    let center = brush.home().start() + brush.home().span() / 2.;
+                    brush.zoom_at(center, 2.).expect("zoom should succeed");
+                    let selected = brush.selected();
+                    let target_start =
+                        brush.home().start() + selected.span() * gutter_width / plot_width;
+                    brush
+                        .pan_by(target_start - selected.start())
+                        .expect("ruler viewport should pan");
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            let home_tick = cx
+                .debug_bounds("ruler-major-mark-0")
+                .expect("Home tick should remain visible over the Metric label gutter");
+            assert!(
+                f32::from(home_tick.origin.x - ruler.origin.x).abs() < 0.5,
+                "home tick {home_tick:?} should align with ruler {ruler:?}",
+            );
 
             for metric in ["metric-0", "metric-1"] {
                 let sidebar = cx
@@ -6677,7 +6760,7 @@ mod tests {
                 })
                 .expect("viewer should remain open");
             assert_ne!(ranges[0], ranges[1]);
-            assert!(unavailable);
+            assert!(!unavailable);
 
             let resize = cx
                 .debug_bounds("metric-resize:metric-0")
