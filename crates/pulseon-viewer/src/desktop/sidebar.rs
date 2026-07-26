@@ -82,6 +82,8 @@ impl ViewerApp {
             .debug_selector(|| "project-run-tree".to_owned())
             .flex_1()
             .overflow_y_scroll()
+            .px(theme.spacing.panel_padding)
+            .pt_2()
             .pb_3();
 
         resources = resources.child(sidebar_group_label("Baseline", theme));
@@ -128,26 +130,6 @@ impl ViewerApp {
         }
 
         resources = resources.child(sidebar_group_label("Projects", theme));
-        for source in self
-            .sources
-            .sources()
-            .filter(|source| matches!(source.status, SourceStatus::Failed(_)))
-            .cloned()
-        {
-            let path = source.root_path.clone();
-            resources = resources.child(
-                components::sidebar_tree_row(
-                    SharedString::from(format!("unavailable:{}", source.source_id)),
-                    theme,
-                    false,
-                    false,
-                )
-                .cursor_pointer()
-                .text_color(theme.colors.error_text)
-                .on_click(cx.listener(move |this, _, _, cx| this.open_source(path.clone(), cx)))
-                .child(format!("{} · Unavailable", source.root_path.display())),
-            );
-        }
         for project in projects
             .iter()
             .filter(|project| project.placement == ProjectPlacement::Projects)
@@ -196,16 +178,21 @@ impl ViewerApp {
             .flex_shrink_0()
             .flex()
             .flex_col()
-            .gap_2()
-            .p(theme.spacing.panel_padding)
             .text_xs()
             .bg(theme.colors.panel)
             .border_r_1()
             .border_color(theme.colors.border)
             .child(
                 div()
+                    .id("project-sidebar-header")
+                    .debug_selector(|| "project-sidebar-header".to_owned())
+                    .h(theme.spacing.tab_height)
+                    .flex_none()
+                    .px(theme.spacing.panel_padding)
                     .flex()
                     .items_center()
+                    .border_b_1()
+                    .border_color(theme.colors.border)
                     .child(
                         div()
                             .flex_1()
@@ -234,46 +221,59 @@ impl ViewerApp {
             )
             .child(
                 div()
-                    .id("project-run-filter")
-                    .debug_selector(|| "project-run-filter".to_owned())
-                    .track_focus(&filter_focus)
-                    .cursor_text()
-                    .px_3()
-                    .h(theme.spacing.control_height)
+                    .id("project-filter-row")
+                    .debug_selector(|| "project-filter-row".to_owned())
+                    .h(px(40.))
+                    .flex_none()
+                    .px(theme.spacing.panel_padding)
+                    .py(px(6.))
                     .flex()
-                    .items_center()
-                    .text_xs()
-                    .rounded(theme.spacing.corner_radius)
-                    .border_1()
+                    .border_b_1()
                     .border_color(theme.colors.border)
-                    .on_key_down(cx.listener(Self::on_filter_key))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        click_filter_focus.focus(window);
-                        this.start_filter_cursor_blink(cx);
-                    }))
-                    .children((!filter_focused && self.run_filter.is_empty()).then(|| {
+                    .child(
                         div()
-                            .id("project-run-filter-placeholder")
-                            .debug_selector(|| "project-run-filter-placeholder".to_owned())
-                            .text_color(theme.colors.disabled)
-                            .child("Filter Projects and Runs")
-                    }))
-                    .children((!self.run_filter.is_empty()).then(|| {
-                        div()
-                            .id("project-run-filter-value")
-                            .debug_selector(|| "project-run-filter-value".to_owned())
-                            .text_color(theme.colors.text)
-                            .child(self.run_filter.clone())
-                    }))
-                    .children((filter_focused && self.filter_cursor_visible).then(|| {
-                        div()
-                            .id("project-run-filter-caret")
-                            .debug_selector(|| "project-run-filter-caret".to_owned())
-                            .ml(px(1.))
-                            .w(px(1.))
-                            .h(px(14.))
-                            .bg(theme.colors.text)
-                    })),
+                            .id("project-run-filter")
+                            .debug_selector(|| "project-run-filter".to_owned())
+                            .track_focus(&filter_focus)
+                            .cursor_text()
+                            .px_3()
+                            .h(theme.spacing.control_height)
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .text_xs()
+                            .rounded(theme.spacing.corner_radius)
+                            .border_1()
+                            .border_color(theme.colors.border)
+                            .on_key_down(cx.listener(Self::on_filter_key))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                click_filter_focus.focus(window);
+                                this.start_filter_cursor_blink(cx);
+                            }))
+                            .children((!filter_focused && self.run_filter.is_empty()).then(|| {
+                                div()
+                                    .id("project-run-filter-placeholder")
+                                    .debug_selector(|| "project-run-filter-placeholder".to_owned())
+                                    .text_color(theme.colors.disabled)
+                                    .child("Filter Projects and Runs")
+                            }))
+                            .children((!self.run_filter.is_empty()).then(|| {
+                                div()
+                                    .id("project-run-filter-value")
+                                    .debug_selector(|| "project-run-filter-value".to_owned())
+                                    .text_color(theme.colors.text)
+                                    .child(self.run_filter.clone())
+                            }))
+                            .children((filter_focused && self.filter_cursor_visible).then(|| {
+                                div()
+                                    .id("project-run-filter-caret")
+                                    .debug_selector(|| "project-run-filter-caret".to_owned())
+                                    .ml(px(1.))
+                                    .w(px(1.))
+                                    .h(px(14.))
+                                    .bg(theme.colors.text)
+                            })),
+                    ),
             )
             .child(resources)
     }

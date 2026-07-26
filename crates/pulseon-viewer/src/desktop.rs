@@ -25,7 +25,9 @@ use pulseon_viewer::coordination::{
 use pulseon_viewer::core::{ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore};
 use pulseon_viewer::model::DiscoveryRequest;
 use pulseon_viewer::query::{CurveAxis, InspectorSnapshot};
-use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
+use pulseon_viewer::registry::SourceRegistry;
+#[cfg(test)]
+use pulseon_viewer::registry::SourceStatus;
 use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, ProjectRef};
 use pulseon_viewer::workbench_document::{
     SavedAnalysisView, SavedProjectRef, SavedRunRef, WorkbenchDocument,
@@ -4720,6 +4722,21 @@ mod tests {
                 let tab_bar = cx
                     .debug_bounds("analysis-tab-bar")
                     .expect("Analysis tab bar should render");
+                let sidebar_header = cx
+                    .debug_bounds("project-sidebar-header")
+                    .expect("Project sidebar header should render");
+                let filter_row = cx
+                    .debug_bounds("project-filter-row")
+                    .expect("Project filter row should render");
+                let filter = cx
+                    .debug_bounds("project-run-filter")
+                    .expect("Project filter should render");
+                let brush_controls = cx
+                    .debug_bounds("brush-controls")
+                    .expect("Brush controls should render");
+                let axis_picker = cx
+                    .debug_bounds("axis-picker")
+                    .expect("Axis picker should render");
                 let tab = cx
                     .debug_bounds("analysis-tab")
                     .expect("active Analysis tab should render");
@@ -4733,6 +4750,12 @@ mod tests {
                 assert_eq!(tab_bar.origin.x, analysis.origin.x);
                 assert_eq!(tab_bar.size.width, analysis.size.width);
                 assert_eq!(tab_bar.size.height, px(32.));
+                assert_eq!(sidebar_header.origin.y, tab_bar.origin.y);
+                assert_eq!(sidebar_header.size.height, tab_bar.size.height);
+                assert_eq!(filter_row.origin.y, brush_controls.origin.y);
+                assert_eq!(filter_row.size.height, brush_controls.size.height);
+                assert_eq!(filter.origin.y, axis_picker.origin.y);
+                assert_eq!(filter.size.height, axis_picker.size.height);
                 assert_eq!(tab.size.height, px(31.));
                 assert_eq!(control.size.height, px(28.));
             }
