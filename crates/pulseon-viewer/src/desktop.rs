@@ -3034,23 +3034,6 @@ impl ViewerApp {
             .min_h(row_height)
             .border_b_1()
             .border_color(theme.colors.border)
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if event.dragging() && this.metric_resize.is_some() {
-                    this.move_metric_resize(event, cx);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.finish_metric_resize(cx);
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.finish_metric_resize(cx);
-                }),
-            )
             .child(
                 div()
                     .id(SharedString::from(format!(
@@ -3087,6 +3070,7 @@ impl ViewerApp {
                             .flex()
                             .flex_col()
                             .gap_0()
+                            .text_sm()
                             .child(panel.metric_key.as_str().to_owned())
                             .child(
                                 div()
@@ -3110,19 +3094,30 @@ impl ViewerApp {
                             ),
                     )
                     .child(
-                        components::icon_button(
-                            SharedString::from(format!("remove-metric:{}", panel_id.as_str())),
-                            theme,
-                            false,
-                            false,
-                        )
-                        .tooltip(components::label_tooltip("Remove Metric", theme))
-                        .cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.remove_metric_panel(&remove_id, cx);
-                            cx.stop_propagation();
-                        }))
-                        .child(components::icon(IconName::Close, theme)),
+                        div()
+                            .id(SharedString::from(format!(
+                                "remove-metric:{}",
+                                panel_id.as_str()
+                            )))
+                            .size(px(20.))
+                            .flex_none()
+                            .border_1()
+                            .border_color(theme.colors.transparent)
+                            .rounded(theme.spacing.corner_radius)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .opacity(0.62)
+                            .hover(|style| style.opacity(1.))
+                            .tab_index(0)
+                            .focus(|style| style.opacity(1.))
+                            .tooltip(components::label_tooltip("Remove Metric", theme))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.remove_metric_panel(&remove_id, cx);
+                                cx.stop_propagation();
+                            }))
+                            .child(components::icon(IconName::Close, theme)),
                     ),
             )
             .child(
@@ -3135,7 +3130,7 @@ impl ViewerApp {
                     .flex_1()
                     .h_full()
                     .overflow_hidden()
-                    .bg(theme.colors.brush_selection)
+                    .bg(theme.colors.window)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -3175,7 +3170,7 @@ impl ViewerApp {
                         move || format!("metric-resize:{}", resize_id.as_str())
                     })
                     .absolute()
-                    .bottom(px(-2.))
+                    .bottom_0()
                     .left_0()
                     .w_full()
                     .h(px(5.))
@@ -3799,6 +3794,23 @@ impl Render for ViewerApp {
         div()
             .track_focus(&self.focus)
             .tab_group()
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                if event.dragging() && this.metric_resize.is_some() {
+                    this.move_metric_resize(event, cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.finish_metric_resize(cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.finish_metric_resize(cx);
+                }),
+            )
             .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_reset))
@@ -6762,20 +6774,15 @@ mod tests {
             assert_ne!(ranges[0], ranges[1]);
             assert!(!unavailable);
 
-            let resize = cx
-                .debug_bounds("metric-resize:metric-0")
-                .expect("Metric row resize handle should render");
-            cx.simulate_mouse_down(resize.center(), MouseButton::Left, Modifiers::default());
-            cx.simulate_mouse_move(
-                point(resize.center().x, resize.center().y + px(40.)),
-                Some(MouseButton::Left),
-                Modifiers::default(),
-            );
-            cx.simulate_mouse_up(
-                point(resize.center().x, resize.center().y + px(40.)),
-                MouseButton::Left,
-                Modifiers::default(),
-            );
+            for selector in ["metric-resize:metric-0", "metric-resize:metric-1"] {
+                let resize = cx
+                    .debug_bounds(selector)
+                    .expect("Every Metric row resize handle should render");
+                let target = point(resize.center().x, resize.center().y + px(40.));
+                cx.simulate_mouse_down(resize.center(), MouseButton::Left, Modifiers::default());
+                cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+                cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            }
             let heights = window
                 .read_with(&cx, |viewer, _| {
                     viewer
@@ -6787,7 +6794,7 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
                 .expect("viewer should remain open");
-            assert_eq!(heights, [92., 52.]);
+            assert_eq!(heights, [92., 92.]);
 
             window
                 .update(&mut cx, |viewer, _, cx| {
