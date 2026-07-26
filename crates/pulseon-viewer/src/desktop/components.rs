@@ -27,6 +27,7 @@ pub enum IconName {
     FolderOpen,
     PanelBottomClose,
     PanelBottomOpen,
+    PanelLeft,
     Pin,
     Plus,
     Refresh,
@@ -49,6 +50,7 @@ impl IconName {
             Self::FolderOpen => "icons/folder-open.svg",
             Self::PanelBottomClose => "icons/panel-bottom-close.svg",
             Self::PanelBottomOpen => "icons/panel-bottom-open.svg",
+            Self::PanelLeft => "icons/panel-left.svg",
             Self::Pin => "icons/pin.svg",
             Self::Plus => "icons/plus.svg",
             Self::Refresh => "icons/refresh.svg",
@@ -84,9 +86,10 @@ pub fn tab_bar(theme: ViewerTheme) -> Div {
 pub fn analysis_tab(id: impl Into<ElementId>, theme: ViewerTheme, selected: bool) -> Stateful<Div> {
     focus_ring(id, theme)
         .h_full()
-        .px_3()
+        .px_2()
         .flex()
         .items_center()
+        .text_xs()
         .cursor_pointer()
         .text_color(if selected {
             theme.colors.text
@@ -159,6 +162,29 @@ pub fn icon_button(
     toolbar_button(id, theme, selected, disabled)
         .w(theme.spacing.control_height)
         .px_0()
+}
+
+pub fn top_bar_icon_button(
+    id: impl Into<ElementId>,
+    theme: ViewerTheme,
+    active: bool,
+    disabled: bool,
+) -> Stateful<Div> {
+    focus_ring(id, theme)
+        .tab_index(if disabled { -1 } else { 0 })
+        .size(px(20.))
+        .flex_none()
+        .rounded(theme.spacing.corner_radius)
+        .flex()
+        .items_center()
+        .justify_center()
+        .opacity(if active { 1. } else { 0.62 })
+        .when(!disabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|style| style.bg(theme.colors.element_hover).opacity(1.))
+        })
+        .when(disabled, |button| button.opacity(0.35).cursor_default())
 }
 
 pub fn sidebar_icon_button(

@@ -200,7 +200,7 @@ impl ViewerApp {
                             .child("PulseOn"),
                     )
                     .child(
-                        components::icon_button("import-source", theme, false, false)
+                        components::top_bar_icon_button("import-source", theme, false, false)
                             .debug_selector(|| "import-source".to_owned())
                             .tooltip(components::label_tooltip("Import Source", theme))
                             .cursor_pointer()
@@ -208,15 +208,20 @@ impl ViewerApp {
                             .child(components::icon(IconName::Plus, theme)),
                     )
                     .child(
-                        components::icon_button("hide-project-sidebar", theme, false, false)
-                            .tooltip(components::label_tooltip("Hide Projects", theme))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.project_sidebar_visible = false;
-                                this.project_menu = None;
-                                cx.notify();
-                            }))
-                            .child(components::icon(IconName::Close, theme)),
+                        components::top_bar_icon_button(
+                            "hide-project-sidebar",
+                            theme,
+                            false,
+                            false,
+                        )
+                        .tooltip(components::label_tooltip("Hide Projects", theme))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.project_sidebar_visible = false;
+                            this.project_menu = None;
+                            cx.notify();
+                        }))
+                        .child(components::icon(IconName::PanelLeft, theme)),
                     ),
             )
             .child(

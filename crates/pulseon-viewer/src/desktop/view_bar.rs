@@ -18,7 +18,7 @@ impl ViewerApp {
             .debug_selector(|| "analysis-tab-bar".to_owned())
             .flex_shrink_0()
             .children((!self.project_sidebar_visible).then(|| {
-                components::icon_button("show-project-sidebar", theme, false, false)
+                components::top_bar_icon_button("show-project-sidebar", theme, false, false)
                     .debug_selector(|| "show-project-sidebar".to_owned())
                     .tooltip(components::label_tooltip("Show Projects", theme))
                     .cursor_pointer()
@@ -26,7 +26,7 @@ impl ViewerApp {
                         this.project_sidebar_visible = true;
                         cx.notify();
                     }))
-                    .child(components::icon(IconName::FolderOpen, theme))
+                    .child(components::icon(IconName::PanelLeft, theme))
             }))
             .child(
                 div()
@@ -36,6 +36,9 @@ impl ViewerApp {
                     .flex_1()
                     .flex()
                     .overflow_x_scroll()
+                    .border_l_1()
+                    .border_r_1()
+                    .border_color(theme.colors.border)
                     .children(views.into_iter().enumerate().map(|(index, view)| {
                         let selected = view.view_id == active_view_id;
                         let activate_id = view.view_id.clone();
@@ -96,7 +99,7 @@ impl ViewerApp {
                                         format!("close-view-{index}")
                                     }
                                 })
-                                .size(theme.spacing.control_height)
+                                .size(px(20.))
                                 .flex_none()
                                 .border_1()
                                 .border_color(theme.colors.transparent)
@@ -129,7 +132,7 @@ impl ViewerApp {
                     })),
             )
             .child(
-                components::icon_button("new-view", theme, false, false)
+                components::top_bar_icon_button("new-view", theme, false, false)
                     .debug_selector(|| "new-view".to_owned())
                     .tooltip(components::label_tooltip("New View", theme))
                     .flex_none()
@@ -138,7 +141,7 @@ impl ViewerApp {
                     .child(components::icon(IconName::Plus, theme)),
             )
             .child(
-                components::icon_button(
+                components::top_bar_icon_button(
                     "toggle-bottom-inspector",
                     theme,
                     self.bottom_inspector_visible,
@@ -170,7 +173,7 @@ impl ViewerApp {
                 )),
             )
             .child(
-                components::icon_button("refresh-view", theme, false, !can_refresh)
+                components::top_bar_icon_button("refresh-view", theme, false, !can_refresh)
                     .debug_selector(|| "refresh-view".to_owned())
                     .tooltip(components::label_tooltip("Refresh", theme))
                     .when(can_refresh, |button| {

@@ -19,8 +19,9 @@ const ARROW_UP: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2
 const CLOCK: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><circle cx="8" cy="8" r="5.5" fill="none" stroke="black" stroke-width="1.2"/><path d="M8 4.8V8l2.3 1.4" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const PANEL_BOTTOM_OPEN: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2.5" width="12" height="11" rx="1" fill="none" stroke="black" stroke-width="1.2"/><path d="M2 9.5h12M6 12l2-2 2 2" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 const PANEL_BOTTOM_CLOSE: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2.5" width="12" height="11" rx="1" fill="none" stroke="black" stroke-width="1.2"/><path d="M2 9.5h12m-8-1.5 2 2 2-2" fill="none" stroke="black" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
+const PANEL_LEFT: &[u8] = br##"<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2.5" width="12" height="11" rx="1.5" fill="none" stroke="black" stroke-width="1.2"/><path d="M5.5 2.5v11" fill="none" stroke="black" stroke-width="1.2"/></svg>"##;
 
-const ASSETS: [(&str, &[u8]); 17] = [
+const ASSETS: [(&str, &[u8]); 18] = [
     ("icons/refresh.svg", REFRESH),
     ("icons/plus.svg", PLUS),
     ("icons/close.svg", CLOSE),
@@ -38,6 +39,7 @@ const ASSETS: [(&str, &[u8]); 17] = [
     ("icons/clock.svg", CLOCK),
     ("icons/panel-bottom-open.svg", PANEL_BOTTOM_OPEN),
     ("icons/panel-bottom-close.svg", PANEL_BOTTOM_CLOSE),
+    ("icons/panel-left.svg", PANEL_LEFT),
 ];
 
 pub struct ViewerAssets;

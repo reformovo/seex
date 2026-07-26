@@ -4757,7 +4757,7 @@ mod tests {
                 assert_eq!(filter.origin.y, axis_picker.origin.y);
                 assert_eq!(filter.size.height, axis_picker.size.height);
                 assert_eq!(tab.size.height, px(31.));
-                assert_eq!(control.size.height, px(28.));
+                assert_eq!(control.size.height, px(20.));
             }
 
             window
