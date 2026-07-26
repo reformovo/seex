@@ -4930,7 +4930,7 @@ mod tests {
 
         #[gpui::test]
         fn run_markers_align_with_project_icons_and_run_labels(cx: &mut TestAppContext) {
-            let (root, project_id, _) = fixture_with_runs(0, 4);
+            let (root, project_id, _) = fixture_with_runs(0, 9);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             wait_for_viewer(window, &cx, |viewer| {
@@ -4938,7 +4938,7 @@ mod tests {
                     .sources
                     .sources()
                     .next()
-                    .is_some_and(|source| source.catalog.runs.len() == 4)
+                    .is_some_and(|source| source.catalog.runs.len() == 9)
             });
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -4952,7 +4952,9 @@ mod tests {
                     };
                     viewer.set_run_baseline(run_ref(0), cx);
                     viewer.toggle_pinned_run(run_ref(1), cx);
-                    viewer.archive_run(run_ref(2), cx);
+                    for index in 2..8 {
+                        viewer.archive_run(run_ref(index), cx);
+                    }
                 })
                 .expect("viewer should remain open");
 
@@ -4980,8 +4982,12 @@ mod tests {
             let archived_color = cx
                 .debug_bounds("run-color-archived-0")
                 .expect("Archived color marker should render");
+            let archived_more = cx
+                .debug_bounds("show-more-archived")
+                .expect("Archived pagination should render");
             assert_eq!(baseline_label.origin.x, pinned_label.origin.x);
             assert_eq!(baseline_label.origin.x, archived_label.origin.x);
+            assert_eq!(archived_more.origin.x, archived_label.origin.x);
             for color in [baseline_color, pinned_color, archived_color] {
                 assert_eq!(color.origin.x, project_folder.origin.x);
             }
@@ -5009,6 +5015,27 @@ mod tests {
             assert!(nested_color.origin.x > baseline_color.origin.x);
             assert!(nested_run.origin.x > baseline_label.origin.x);
             assert!(nested_run.origin.x > project_label.origin.x);
+            assert!(nested_color.center().y >= nested_run.center().y);
+            assert!(f32::from(nested_color.center().y - nested_run.center().y) <= 2.);
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let run_ref = {
+                        let source = viewer.sources.sources().next().expect("source");
+                        RunRef::new(
+                            source.source_id.clone(),
+                            project_id.clone(),
+                            source.catalog.runs[8].run_id.clone(),
+                        )
+                    };
+                    viewer.archive_run(run_ref, cx);
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            let no_runs = cx
+                .debug_bounds("project-no-runs")
+                .expect("Empty Project should render its placeholder");
+            assert_eq!(no_runs.origin.x, project_label.origin.x);
         }
 
         #[gpui::test]
@@ -5390,6 +5417,13 @@ mod tests {
             let first_row = cx
                 .debug_bounds("project-tree-run-0-0-0")
                 .expect("first Run row should be rendered");
+            let project_label = cx
+                .debug_bounds("project-tree-label-0-0")
+                .expect("Project label should render");
+            let show_more = cx
+                .debug_bounds("show-more-0-0")
+                .expect("Project pagination should render");
+            assert_eq!(show_more.origin.x, project_label.origin.x);
             let expected_row_height = window
                 .read_with(&cx, |viewer, _| viewer.theme.spacing.tree_row_height)
                 .expect("viewer should remain open");

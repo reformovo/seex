@@ -1,6 +1,9 @@
 use super::*;
 
 const RUN_PAGE_SIZE: usize = 5;
+const RUN_COLOR_MARKER_SIZE: f32 = 7.;
+const RUN_TEXT_OFFSET: f32 = 20.;
+const PROJECT_TEXT_OFFSET: f32 = 33.;
 
 impl ViewerApp {
     fn sidebar_projects(&self) -> Vec<SidebarProject> {
@@ -547,9 +550,9 @@ impl ViewerApp {
             if visible_runs.is_empty() {
                 tree = tree.child(
                     div()
+                        .debug_selector(|| "project-no-runs".to_owned())
                         .h(theme.spacing.tree_row_height)
-                        .ml_8()
-                        .pl_5()
+                        .ml(px(PROJECT_TEXT_OFFSET))
                         .flex()
                         .items_center()
                         .text_xs()
@@ -584,7 +587,7 @@ impl ViewerApp {
                         "Show more",
                         theme,
                     )
-                    .pl_5()
+                    .ml(px(PROJECT_TEXT_OFFSET))
                     .debug_selector({
                         let source_index = project.source_index;
                         let project_index = project.project_index;
@@ -706,9 +709,10 @@ impl ViewerApp {
         .child(
             div()
                 .debug_selector(move || format!("run-color-{placement_selector}-{index}"))
-                .size(px(7.))
+                .size(px(RUN_COLOR_MARKER_SIZE))
                 .flex_none()
-                .rounded(px(3.5))
+                .mt(px(1.))
+                .rounded(px(RUN_COLOR_MARKER_SIZE / 2.))
                 .bg(run_color),
         )
         .child(
@@ -940,7 +944,7 @@ fn sidebar_text_button(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
-        .ml_8()
+        .ml(px(RUN_TEXT_OFFSET))
         .h(theme.spacing.tree_row_height)
         .flex()
         .items_center()
