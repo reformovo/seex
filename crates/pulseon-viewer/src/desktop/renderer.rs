@@ -673,6 +673,7 @@ pub fn cursor_canvas(
     range: AxisRange,
     hover: Option<f64>,
     locked: Option<f64>,
+    show_locked_marker: bool,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
         move |bounds, window, _| {
@@ -694,13 +695,15 @@ pub fn cursor_canvas(
                     Bounds::new(point(x, bounds.origin.y), size(px(1.), bounds.size.height)),
                     theme.colors.accent,
                 ));
-                let mut triangle = PathBuilder::fill();
-                triangle.move_to(point(x - px(5.), bounds.origin.y));
-                triangle.line_to(point(x + px(5.), bounds.origin.y));
-                triangle.line_to(point(x, bounds.origin.y + px(7.)));
-                triangle.close();
-                if let Ok(path) = triangle.build() {
-                    window.paint_path(path, theme.colors.accent);
+                if show_locked_marker {
+                    let mut triangle = PathBuilder::fill();
+                    triangle.move_to(point(x - px(5.), bounds.origin.y));
+                    triangle.line_to(point(x + px(5.), bounds.origin.y));
+                    triangle.line_to(point(x, bounds.origin.y + px(7.)));
+                    triangle.close();
+                    if let Ok(path) = triangle.build() {
+                        window.paint_path(path, theme.colors.accent);
+                    }
                 }
             }
             if let Some(axis) = hover.filter(|axis| *axis >= range.start() && *axis <= range.end())

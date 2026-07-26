@@ -1883,6 +1883,27 @@ impl ViewerApp {
         let metric_sidebar_width = self.metric_sidebar_width();
         let timeline = self.render_overview(cx);
         let ruler = self.render_ruler(window, cx);
+        let cursor_layer = self.core.brush().map(|brush| {
+            div()
+                .id("metric-cursor-overlay")
+                .debug_selector(|| "metric-cursor-overlay".to_owned())
+                .absolute()
+                .left(metric_sidebar_width)
+                .right_0()
+                .top_0()
+                .bottom_0()
+                .child(
+                    renderer::cursor_canvas(
+                        None,
+                        brush.selected(),
+                        self.hover_cursor_axis(),
+                        self.locked_cursor,
+                        false,
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+        });
         let list_panels = Rc::clone(&panels);
         let panel_count = panels.len();
         let scroll = self.metric_scroll.clone();
@@ -1978,6 +1999,7 @@ impl ViewerApp {
                 div()
                     .id("metric-track-scroll")
                     .debug_selector(|| "metric-track-scroll".to_owned())
+                    .relative()
                     .flex_1()
                     .overflow_hidden()
                     .child(
@@ -1997,7 +2019,8 @@ impl ViewerApp {
                                 .unwrap_or_else(|_| div().into_any_element())
                         })
                         .size_full(),
-                    ),
+                    )
+                    .children(cursor_layer),
             )
             .children(inspector)
     }
@@ -2391,7 +2414,7 @@ impl ViewerApp {
                     .absolute()
                     .size_full()
                     .child(
-                        renderer::cursor_canvas(None, range, hover_axis, locked_cursor)
+                        renderer::cursor_canvas(None, range, hover_axis, locked_cursor, true)
                             .absolute()
                             .left(plot_left)
                             .right_0()
@@ -3224,8 +3247,6 @@ impl ViewerApp {
         let hit_panel = panel_id.clone();
         let zoom_panel = panel_id.clone();
         let leave_panel = panel_id.clone();
-        let hover_axis = self.hover_cursor_axis();
-        let locked_cursor = self.locked_cursor;
         let baseline = self.views.active().baseline.clone();
         let chart = if let Some(chart) = self.track_charts.get(&panel_id).cloned() {
             chart.update(cx, |chart, cx| {
@@ -3294,11 +3315,6 @@ impl ViewerApp {
                     .size_full()
                     .cursor_crosshair()
                     .child(renderer::cached_detail_chart(chart))
-                    .child(
-                        renderer::cursor_canvas(None, viewport.x, hover_axis, locked_cursor)
-                            .absolute()
-                            .size_full(),
-                    )
                     .on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
                         if !event.dragging() {
                             this.update_track_hover(&hit_panel, event, cx);
@@ -6284,6 +6300,18 @@ mod tests {
                 .expect("hover coordinate capsule should render");
             assert!(f32::from(capsule.center().x - second.x).abs() < 40.);
             assert!(cx.debug_bounds("track-hover-callout").is_some());
+            let track_scroll = cx
+                .debug_bounds("metric-track-scroll")
+                .expect("Metric track viewport should render");
+            let track = cx
+                .debug_bounds("metric-track:loss")
+                .expect("Metric track should render");
+            let cursor_overlay = cx
+                .debug_bounds("metric-cursor-overlay")
+                .expect("Shared Metric cursor overlay should render");
+            assert_eq!(cursor_overlay.origin.x, track.origin.x);
+            assert_eq!(cursor_overlay.origin.y, track_scroll.origin.y);
+            assert_eq!(cursor_overlay.bottom(), track_scroll.bottom());
             window
                 .read_with(&cx, |viewer, _| {
                     assert_eq!(viewer.locked_cursor, Some(locked));
