@@ -272,6 +272,7 @@ struct ViewerApp {
     renaming_view: Option<AnalysisViewId>,
     view_menu: Option<AnalysisViewId>,
     view_name_draft: String,
+    view_name_cursor: usize,
     view_name_select_all: bool,
     view_name_cursor_visible: bool,
     view_name_cursor_epoch: u64,
@@ -336,6 +337,7 @@ impl ViewerApp {
             renaming_view: None,
             view_menu: None,
             view_name_draft: String::new(),
+            view_name_cursor: 0,
             view_name_select_all: false,
             view_name_cursor_visible: false,
             view_name_cursor_epoch: 0,
@@ -1035,11 +1037,11 @@ impl ViewerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.views.active().selected_panel_id.is_some() {
-            self.bottom_inspector_visible = !self.bottom_inspector_visible;
-            if self.bottom_inspector_visible {
-                self.request_inspector(cx);
-            }
+        if self.bottom_inspector_visible {
+            self.bottom_inspector_visible = false;
+        } else if self.views.active().selected_panel_id.is_some() {
+            self.bottom_inspector_visible = true;
+            self.request_inspector(cx);
         }
         self.focus.focus(window);
         cx.notify();
@@ -1157,6 +1159,7 @@ impl ViewerApp {
             return;
         };
         self.view_name_draft.clone_from(&view.name);
+        self.view_name_cursor = self.view_name_draft.len();
         self.renaming_view = Some(view_id);
         self.view_name_select_all = true;
         self.start_view_name_cursor_blink(cx);
@@ -1168,11 +1171,40 @@ impl ViewerApp {
         match event.keystroke.key.as_str() {
             "enter" => self.finish_rename_analysis_view(true, cx),
             "escape" => self.finish_rename_analysis_view(false, cx),
+            "left" => {
+                if self.view_name_select_all {
+                    self.view_name_cursor = 0;
+                } else if let Some((cursor, _)) = self.view_name_draft[..self.view_name_cursor]
+                    .char_indices()
+                    .next_back()
+                {
+                    self.view_name_cursor = cursor;
+                }
+                self.view_name_select_all = false;
+                self.start_view_name_cursor_blink(cx);
+            }
+            "right" => {
+                if self.view_name_select_all {
+                    self.view_name_cursor = self.view_name_draft.len();
+                } else if let Some(character) =
+                    self.view_name_draft[self.view_name_cursor..].chars().next()
+                {
+                    self.view_name_cursor += character.len_utf8();
+                }
+                self.view_name_select_all = false;
+                self.start_view_name_cursor_blink(cx);
+            }
             "backspace" => {
                 if self.view_name_select_all {
                     self.view_name_draft.clear();
-                } else {
-                    self.view_name_draft.pop();
+                    self.view_name_cursor = 0;
+                } else if let Some((previous, _)) = self.view_name_draft[..self.view_name_cursor]
+                    .char_indices()
+                    .next_back()
+                {
+                    self.view_name_draft
+                        .replace_range(previous..self.view_name_cursor, "");
+                    self.view_name_cursor = previous;
                 }
                 self.view_name_select_all = false;
                 self.start_view_name_cursor_blink(cx);
@@ -1183,8 +1215,10 @@ impl ViewerApp {
                 {
                     if self.view_name_select_all {
                         self.view_name_draft.clear();
+                        self.view_name_cursor = 0;
                     }
-                    self.view_name_draft.push_str(text);
+                    self.view_name_draft.insert_str(self.view_name_cursor, text);
+                    self.view_name_cursor += text.len();
                     self.view_name_select_all = false;
                     self.start_view_name_cursor_blink(cx);
                 }
@@ -1201,6 +1235,7 @@ impl ViewerApp {
         if commit {
             self.views.rename(&view_id, &self.view_name_draft);
         }
+        self.view_name_cursor = 0;
         self.view_name_select_all = false;
         self.stop_view_name_cursor_blink(cx);
     }
@@ -5002,20 +5037,21 @@ mod tests {
             cx.executor().advance_clock(Duration::from_millis(500));
             cx.run_until_parked();
             assert!(cx.debug_bounds("rename-view-caret").is_none());
-            cx.simulate_keystrokes("x");
-            let value = cx
-                .debug_bounds("rename-view-value")
-                .expect("typed View name should render");
+            cx.simulate_keystrokes("view left left right x");
+            let prefix = cx
+                .debug_bounds("rename-view-prefix")
+                .expect("View name before the cursor should render");
+            assert!(cx.debug_bounds("rename-view-suffix").is_some());
             let caret = cx
                 .debug_bounds("rename-view-caret")
                 .expect("typing should reveal the View name caret");
-            assert_eq!(caret.origin.x, value.right() + px(1.));
+            assert_eq!(caret.origin.x, prefix.right() + px(1.));
             cx.simulate_keystrokes("enter");
             assert_eq!(
                 window
                     .read_with(&cx, |viewer, _| viewer.views.active().name.clone())
                     .expect("viewer should remain open"),
-                "x"
+                "viexw"
             );
 
             let active_tab = cx
@@ -5070,6 +5106,35 @@ mod tests {
                     .read_with(&cx, |viewer, _| viewer.core.axis())
                     .expect("viewer should remain open"),
                 AlignmentAxis::ElapsedTime
+            );
+        }
+
+        #[gpui::test]
+        fn bottom_inspector_can_close_after_switching_to_an_empty_view(cx: &mut TestAppContext) {
+            let (window, mut cx) = open_viewer(cx, None);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
+                    viewer.bottom_inspector_visible = true;
+                    viewer.create_analysis_view(cx);
+                })
+                .expect("viewer should remain open");
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert!(viewer.views.active().selected_panel_id.is_none());
+                    assert!(viewer.bottom_inspector_visible);
+                })
+                .expect("viewer should remain open");
+
+            let toggle = cx
+                .debug_bounds("toggle-bottom-inspector")
+                .expect("bottom inspector toggle should remain available");
+            cx.simulate_click(toggle.center(), Modifiers::default());
+
+            assert!(
+                !window
+                    .read_with(&cx, |viewer, _| viewer.bottom_inspector_visible)
+                    .expect("viewer should remain open")
             );
         }
 

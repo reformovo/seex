@@ -11,6 +11,9 @@ impl ViewerApp {
         let renaming_view = self.renaming_view.clone();
         let view_name_focus = self.view_name_focus.clone();
         let view_name_draft = self.view_name_draft.clone();
+        let (view_name_prefix, view_name_suffix) = view_name_draft.split_at(self.view_name_cursor);
+        let view_name_prefix = view_name_prefix.to_owned();
+        let view_name_suffix = view_name_suffix.to_owned();
         let view_name_select_all = self.view_name_select_all;
         let view_name_cursor_visible = self.view_name_cursor_visible;
         let can_refresh = self.sources.sources().next().is_some();
@@ -113,24 +116,24 @@ impl ViewerApp {
                                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                     this.finish_rename_analysis_view(true, cx);
                                 }))
-                                .child(
+                                .children(view_name_select_all.then(|| {
                                     div()
                                         .min_w(px(0.))
                                         .overflow_hidden()
                                         .whitespace_nowrap()
                                         .rounded(px(2.))
-                                        .when(view_name_select_all, |value| {
-                                            value.bg(theme.colors.element_active)
-                                        })
-                                        .debug_selector(move || {
-                                            if view_name_select_all {
-                                                "rename-view-selection".to_owned()
-                                            } else {
-                                                "rename-view-value".to_owned()
-                                            }
-                                        })
-                                        .child(view_name_draft.clone()),
-                                )
+                                        .bg(theme.colors.element_active)
+                                        .debug_selector(|| "rename-view-selection".to_owned())
+                                        .child(view_name_draft.clone())
+                                }))
+                                .children((!view_name_select_all).then(|| {
+                                    div()
+                                        .min_w(px(0.))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .debug_selector(|| "rename-view-prefix".to_owned())
+                                        .child(view_name_prefix.clone())
+                                }))
                                 .children(view_name_cursor_visible.then(|| {
                                     div()
                                         .id("rename-view-caret")
@@ -140,6 +143,14 @@ impl ViewerApp {
                                         .h(px(14.))
                                         .flex_none()
                                         .bg(theme.colors.text)
+                                }))
+                                .children((!view_name_select_all).then(|| {
+                                    div()
+                                        .min_w(px(0.))
+                                        .overflow_hidden()
+                                        .whitespace_nowrap()
+                                        .debug_selector(|| "rename-view-suffix".to_owned())
+                                        .child(view_name_suffix.clone())
                                 }))
                         } else {
                             div()
@@ -217,7 +228,8 @@ impl ViewerApp {
                             "toggle-bottom-inspector",
                             theme,
                             self.bottom_inspector_visible,
-                            self.views.active().selected_panel_id.is_none(),
+                            !self.bottom_inspector_visible
+                                && self.views.active().selected_panel_id.is_none(),
                         )
                         .debug_selector(|| "toggle-bottom-inspector".to_owned())
                         .tooltip(components::label_tooltip(
@@ -228,17 +240,21 @@ impl ViewerApp {
                             },
                             theme,
                         ))
-                        .when(self.views.active().selected_panel_id.is_some(), |button| {
-                            button
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.on_toggle_bottom_inspector(
-                                        &ToggleBottomInspector,
-                                        window,
-                                        cx,
-                                    );
-                                }))
-                        })
+                        .when(
+                            self.bottom_inspector_visible
+                                || self.views.active().selected_panel_id.is_some(),
+                            |button| {
+                                button.cursor_pointer().on_click(cx.listener(
+                                    |this, _, window, cx| {
+                                        this.on_toggle_bottom_inspector(
+                                            &ToggleBottomInspector,
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                            },
+                        )
                         .child(components::icon(
                             if self.bottom_inspector_visible {
                                 IconName::PanelBottomClose
