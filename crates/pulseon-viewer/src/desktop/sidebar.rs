@@ -73,6 +73,9 @@ impl ViewerApp {
             .unwrap_or(RUN_PAGE_SIZE);
         let archived_limit = self.archived_run_limit;
         let query = self.run_filter.trim().to_lowercase();
+        let (filter_prefix, filter_suffix) = self.run_filter.split_at(self.run_filter_cursor);
+        let filter_prefix = filter_prefix.to_owned();
+        let filter_suffix = filter_suffix.to_owned();
         let filter_focus = self.filter_focus.clone();
         let click_filter_focus = filter_focus.clone();
         let filter_focused = filter_focus.is_focused(window);
@@ -268,6 +271,7 @@ impl ViewerApp {
                             .border_color(theme.colors.border)
                             .on_key_down(cx.listener(Self::on_filter_key))
                             .on_click(cx.listener(move |this, _, window, cx| {
+                                this.run_filter_cursor = this.run_filter.len();
                                 click_filter_focus.focus(window);
                                 this.start_filter_cursor_blink(cx);
                             }))
@@ -280,10 +284,10 @@ impl ViewerApp {
                             }))
                             .children((!self.run_filter.is_empty()).then(|| {
                                 div()
-                                    .id("project-run-filter-value")
+                                    .id("project-run-filter-prefix")
                                     .debug_selector(|| "project-run-filter-value".to_owned())
                                     .text_color(theme.colors.text)
-                                    .child(self.run_filter.clone())
+                                    .child(filter_prefix)
                             }))
                             .children((filter_focused && self.filter_cursor_visible).then(|| {
                                 div()
@@ -293,6 +297,13 @@ impl ViewerApp {
                                     .w(px(1.))
                                     .h(px(14.))
                                     .bg(theme.colors.text)
+                            }))
+                            .children((!self.run_filter.is_empty()).then(|| {
+                                div()
+                                    .id("project-run-filter-suffix")
+                                    .debug_selector(|| "project-run-filter-suffix".to_owned())
+                                    .text_color(theme.colors.text)
+                                    .child(filter_suffix)
                             })),
                     ),
             )

@@ -136,6 +136,20 @@ fn update_brush_drag(brush: &mut BrushState, gesture: &mut DragGesture, axis: f6
     }
 }
 
+fn previous_text_cursor(text: &str, cursor: usize) -> usize {
+    text[..cursor]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(index, _)| index)
+}
+
+fn next_text_cursor(text: &str, cursor: usize) -> usize {
+    text[cursor..]
+        .chars()
+        .next()
+        .map_or(cursor, |character| cursor + character.len_utf8())
+}
+
 actions!(
     pulseon_viewer,
     [
@@ -255,6 +269,7 @@ struct ViewerApp {
     metric_filter_focus: FocusHandle,
     view_name_focus: FocusHandle,
     run_filter: String,
+    run_filter_cursor: usize,
     filter_cursor_visible: bool,
     filter_cursor_epoch: u64,
     metric_filter: String,
@@ -320,6 +335,7 @@ impl ViewerApp {
             metric_filter_focus: cx.focus_handle().tab_stop(true),
             view_name_focus: cx.focus_handle().tab_stop(true),
             run_filter: String::new(),
+            run_filter_cursor: 0,
             filter_cursor_visible: false,
             filter_cursor_epoch: 0,
             metric_filter: String::new(),
@@ -1174,11 +1190,9 @@ impl ViewerApp {
             "left" => {
                 if self.view_name_select_all {
                     self.view_name_cursor = 0;
-                } else if let Some((cursor, _)) = self.view_name_draft[..self.view_name_cursor]
-                    .char_indices()
-                    .next_back()
-                {
-                    self.view_name_cursor = cursor;
+                } else {
+                    self.view_name_cursor =
+                        previous_text_cursor(&self.view_name_draft, self.view_name_cursor);
                 }
                 self.view_name_select_all = false;
                 self.start_view_name_cursor_blink(cx);
@@ -1186,10 +1200,9 @@ impl ViewerApp {
             "right" => {
                 if self.view_name_select_all {
                     self.view_name_cursor = self.view_name_draft.len();
-                } else if let Some(character) =
-                    self.view_name_draft[self.view_name_cursor..].chars().next()
-                {
-                    self.view_name_cursor += character.len_utf8();
+                } else {
+                    self.view_name_cursor =
+                        next_text_cursor(&self.view_name_draft, self.view_name_cursor);
                 }
                 self.view_name_select_all = false;
                 self.start_view_name_cursor_blink(cx);
@@ -1198,10 +1211,9 @@ impl ViewerApp {
                 if self.view_name_select_all {
                     self.view_name_draft.clear();
                     self.view_name_cursor = 0;
-                } else if let Some((previous, _)) = self.view_name_draft[..self.view_name_cursor]
-                    .char_indices()
-                    .next_back()
-                {
+                } else {
+                    let previous =
+                        previous_text_cursor(&self.view_name_draft, self.view_name_cursor);
                     self.view_name_draft
                         .replace_range(previous..self.view_name_cursor, "");
                     self.view_name_cursor = previous;
@@ -1755,15 +1767,29 @@ impl ViewerApp {
 
     fn on_filter_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         match event.keystroke.key.as_str() {
-            "backspace" => {
-                self.run_filter.pop();
+            "left" => {
+                self.run_filter_cursor =
+                    previous_text_cursor(&self.run_filter, self.run_filter_cursor);
             }
-            "escape" => self.run_filter.clear(),
+            "right" => {
+                self.run_filter_cursor = next_text_cursor(&self.run_filter, self.run_filter_cursor);
+            }
+            "backspace" => {
+                let previous = previous_text_cursor(&self.run_filter, self.run_filter_cursor);
+                self.run_filter
+                    .replace_range(previous..self.run_filter_cursor, "");
+                self.run_filter_cursor = previous;
+            }
+            "escape" => {
+                self.run_filter.clear();
+                self.run_filter_cursor = 0;
+            }
             _ if !event.keystroke.modifiers.platform && !event.keystroke.modifiers.control => {
                 if let Some(text) = event.keystroke.key_char.as_deref()
                     && !text.chars().any(char::is_control)
                 {
-                    self.run_filter.push_str(text);
+                    self.run_filter.insert_str(self.run_filter_cursor, text);
+                    self.run_filter_cursor += text.len();
                 }
             }
             _ => return,
@@ -4078,6 +4104,16 @@ mod tests {
     }
 
     #[test]
+    fn text_cursor_moves_between_utf8_character_boundaries() {
+        let text = "a界b";
+
+        assert_eq!(previous_text_cursor(text, text.len()), "a界".len());
+        assert_eq!(previous_text_cursor(text, "a界".len()), "a".len());
+        assert_eq!(next_text_cursor(text, "a".len()), "a界".len());
+        assert_eq!(next_text_cursor(text, text.len()), text.len());
+    }
+
+    #[test]
     fn duplicate_project_names_are_qualified_by_source_identity() {
         assert_eq!(
             project_tree_label("viewer", &DataSourceId::from_string("source-b"), true),
@@ -4748,14 +4784,21 @@ mod tests {
                     .read_with(&cx, |viewer, _| viewer.filter_cursor_visible)
                     .expect("viewer should remain open")
             );
-            cx.simulate_keystrokes("viewer");
+            cx.simulate_keystrokes("viewer left left right x");
             assert_eq!(
                 window
                     .read_with(&cx, |viewer, _| viewer.run_filter.clone())
                     .expect("viewer should remain open"),
-                "viewer"
+                "viewexr"
             );
-            assert!(cx.debug_bounds("project-run-filter-value").is_some());
+            let prefix = cx
+                .debug_bounds("project-run-filter-value")
+                .expect("filter value before the cursor should render");
+            let caret = cx
+                .debug_bounds("project-run-filter-caret")
+                .expect("typing should reveal the filter caret");
+            assert_eq!(caret.origin.x, prefix.right() + px(1.));
+            assert!(cx.debug_bounds("project-run-filter-suffix").is_some());
         }
 
         #[gpui::test]
