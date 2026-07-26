@@ -3248,6 +3248,10 @@ impl ViewerApp {
         let zoom_panel = panel_id.clone();
         let leave_panel = panel_id.clone();
         let baseline = self.views.active().baseline.clone();
+        let emphasized_run = self
+            .hovered_run
+            .clone()
+            .filter(|run| visible_runs.contains(run));
         let chart = if let Some(chart) = self.track_charts.get(&panel_id).cloned() {
             chart.update(cx, |chart, cx| {
                 if chart.update(
@@ -3255,6 +3259,7 @@ impl ViewerApp {
                     panel.detail_revision,
                     viewport,
                     baseline.clone(),
+                    emphasized_run.clone(),
                     Rc::clone(&visible_runs),
                 ) {
                     cx.notify();
@@ -3269,35 +3274,208 @@ impl ViewerApp {
                     panel.detail_revision,
                     viewport,
                     baseline.clone(),
+                    emphasized_run.clone(),
                     Rc::clone(&visible_runs),
                 )
             });
             self.track_charts.insert(panel_id.clone(), chart.clone());
             chart
         };
-        let hover = self.track_hovers.get(&panel_id).cloned();
-        let mut callouts = hover.map_or_else(
-            || {
-                self.ruler_hover.map_or_else(Vec::new, |axis| {
+        let callout_axis = self.curve_axis();
+        let locked_sidebar_callout =
+            emphasized_run
+                .as_ref()
+                .zip(self.locked_cursor)
+                .and_then(|(run, axis)| {
                     adapter
                         .borrow()
                         .points_at_axis(&snapshot, viewport, axis, &visible_runs)
-                })
-            },
-            |hover| vec![hover],
-        );
-        adapter.borrow().spread_callouts(&mut callouts);
-        let callouts = callouts
+                        .into_iter()
+                        .find(|hover| &hover.run_ref == run)
+                });
+        let sidebar_locked = locked_sidebar_callout.is_some();
+        let hover = self.track_hovers.get(&panel_id).cloned();
+        let mut callouts = locked_sidebar_callout
+            .map_or_else(
+                || {
+                    if emphasized_run.is_some() {
+                        Vec::new()
+                    } else {
+                        hover.map_or_else(
+                            || {
+                                self.ruler_hover.map_or_else(Vec::new, |axis| {
+                                    adapter.borrow().points_at_axis(
+                                        &snapshot,
+                                        viewport,
+                                        axis,
+                                        &visible_runs,
+                                    )
+                                })
+                            },
+                            |hover| vec![hover],
+                        )
+                    }
+                },
+                |hover| vec![hover],
+            )
             .into_iter()
             .map(|hover| {
-                let delta = baseline
-                    .as_ref()
-                    .and_then(|baseline| baseline_delta(panel, baseline, &hover));
+                let delta = baseline.as_ref().and_then(|baseline| {
+                    if baseline == &hover.run_ref && sidebar_locked {
+                        Some(0.)
+                    } else {
+                        baseline_delta(panel, baseline, &hover)
+                    }
+                });
                 (hover, delta)
             })
             .collect::<Vec<_>>();
+        if !sidebar_locked {
+            let pinned = &self.views.active().pinned_runs;
+            callouts.sort_by(|(left, left_delta), (right, right_delta)| {
+                let priority = |hover: &HoverPoint| {
+                    if baseline.as_ref() == Some(&hover.run_ref) {
+                        0
+                    } else if pinned.contains(&hover.run_ref) {
+                        1
+                    } else {
+                        2
+                    }
+                };
+                priority(left).cmp(&priority(right)).then_with(|| {
+                    right_delta
+                        .unwrap_or(0.)
+                        .abs()
+                        .total_cmp(&left_delta.unwrap_or(0.).abs())
+                })
+            });
+        }
+        let tooltip_anchor = callouts.first().map(|(hover, _)| {
+            (
+                hover.canvas_position.x,
+                px(METRIC_TRACK_VERTICAL_PADDING) + hover.canvas_position.y,
+                hover.align_left,
+            )
+        });
+        let row_limit = if sidebar_locked {
+            1
+        } else {
+            track_tooltip_row_limit(panel.row_height)
+        };
+        let tooltip_rows = if sidebar_locked {
+            callouts
+                .first()
+                .map(|(hover, delta)| {
+                    vec![(
+                        Some(
+                            theme
+                                .colors
+                                .series_color(renderer::series_color_index(&hover.run_ref)),
+                        ),
+                        locked_hover_value_label(callout_axis, hover, *delta),
+                    )]
+                })
+                .unwrap_or_default()
+        } else if callouts.len() > row_limit && row_limit == 1 {
+            let (minimum, maximum) = callouts.iter().map(|(hover, _)| hover.value).fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
+            );
+            let label = if (maximum - minimum).abs() < 0.005 {
+                format!("{} runs · {minimum:.2}", callouts.len())
+            } else {
+                format!("{} runs · {minimum:.2}–{maximum:.2}", callouts.len())
+            };
+            vec![(None, label)]
+        } else {
+            let visible_count = if callouts.len() > row_limit {
+                row_limit.saturating_sub(1)
+            } else {
+                callouts.len()
+            };
+            let mut rows = callouts
+                .iter()
+                .take(visible_count)
+                .map(|(hover, delta)| {
+                    (
+                        Some(
+                            theme
+                                .colors
+                                .series_color(renderer::series_color_index(&hover.run_ref)),
+                        ),
+                        hover_value_label(hover, *delta),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if callouts.len() > visible_count {
+                rows.push((None, format!("+{} more", callouts.len() - visible_count)));
+            }
+            rows
+        };
         let callout_panel = panel_id.clone();
-        let callout_axis = self.curve_axis();
+        let tooltip = tooltip_anchor
+            .zip((!tooltip_rows.is_empty()).then_some(tooltip_rows))
+            .map(move |((x, y, align_left), rows)| {
+                let height = px(8. + rows.len() as f32 * 20.);
+                let top = (y - height / 2.)
+                    .max(px(0.))
+                    .min((px(panel.row_height) - height).max(px(0.)));
+                let left = if align_left {
+                    (x - px(168.)).max(px(0.))
+                } else {
+                    x + px(8.)
+                };
+                let pointer_top = (y - top - px(6.))
+                    .max(px(2.))
+                    .min((height - px(14.)).max(px(2.)));
+                components::tooltip(theme)
+                    .id(SharedString::from(format!(
+                        "track-hover-callout:{}",
+                        callout_panel.as_str()
+                    )))
+                    .debug_selector(|| "track-hover-callout".to_owned())
+                    .absolute()
+                    .left(left)
+                    .top(top)
+                    .w(px(160.))
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        renderer::callout_pointer(align_left)
+                            .absolute()
+                            .top(pointer_top)
+                            .when(align_left, |pointer| pointer.right(px(-8.)))
+                            .when(!align_left, |pointer| pointer.left(px(-8.))),
+                    )
+                    .children(rows.into_iter().map(|(color, label)| {
+                        div()
+                            .h(px(20.))
+                            .min_w(px(0.))
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .child(
+                                div()
+                                    .debug_selector(|| "track-tooltip-color".to_owned())
+                                    .size(px(7.))
+                                    .flex_none()
+                                    .rounded(px(3.5))
+                                    .bg(color.unwrap_or(theme.colors.transparent)),
+                            )
+                            .child(
+                                div()
+                                    .debug_selector(|| "track-tooltip-label".to_owned())
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .whitespace_nowrap()
+                                    .child(label),
+                            )
+                    }))
+            });
         div()
             .relative()
             .size_full()
@@ -3337,39 +3515,7 @@ impl ViewerApp {
                         }
                     })),
             )
-            .children(callouts.into_iter().map(move |(hover, delta)| {
-                let x = hover.canvas_position.x;
-                let y = px(METRIC_TRACK_VERTICAL_PADDING) + hover.canvas_position.y;
-                let left = if hover.align_left {
-                    (x - px(112.)).max(px(0.))
-                } else {
-                    x + px(8.)
-                };
-                let description = hover_value_description(callout_axis, &hover, delta);
-                components::tooltip(theme)
-                    .id(SharedString::from(format!(
-                        "track-hover-callout:{}:{}",
-                        callout_panel.as_str(),
-                        hover.run_ref.cache_key()
-                    )))
-                    .debug_selector(|| "track-hover-callout".to_owned())
-                    .tooltip(components::label_tooltip(description, theme))
-                    .absolute()
-                    .left(left)
-                    .top((y - px(12.)).max(px(0.)))
-                    .w(px(104.))
-                    .px_2()
-                    .py_1()
-                    .whitespace_nowrap()
-                    .child(
-                        renderer::callout_pointer(hover.align_left)
-                            .absolute()
-                            .top(px(6.))
-                            .when(hover.align_left, |pointer| pointer.right(px(-8.)))
-                            .when(!hover.align_left, |pointer| pointer.left(px(-8.))),
-                    )
-                    .child(hover_value_label(&hover, delta))
-            }))
+            .children(tooltip)
     }
 
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
@@ -3388,6 +3534,10 @@ impl ViewerApp {
             });
         let adapter = Rc::clone(&self.chart_adapter);
         let visible_runs: Rc<[RunRef]> = self.active_visible_runs().into();
+        let emphasized_run = self
+            .hovered_run
+            .clone()
+            .filter(|run| visible_runs.contains(run));
         div().h_full().child(
             div()
                 .id("overview-chart")
@@ -3399,8 +3549,15 @@ impl ViewerApp {
                 .cursor_pointer()
                 .bg(theme.colors.surface)
                 .child(
-                    renderer::timeline_canvas(adapter, brush, snapshot, revision, visible_runs)
-                        .size_full(),
+                    renderer::timeline_canvas(
+                        adapter,
+                        brush,
+                        snapshot,
+                        revision,
+                        emphasized_run,
+                        visible_runs,
+                    )
+                    .size_full(),
                 )
                 .on_mouse_down(
                     MouseButton::Left,
@@ -4148,28 +4305,20 @@ fn format_utc_clock(value: f64) -> String {
 fn hover_value_label(hover: &HoverPoint, delta: Option<f64>) -> String {
     delta.map_or_else(
         || format!("{:.2}", hover.value),
-        |delta| format!("{:.2}({})", hover.value, format_signed_delta(delta, 2)),
+        |delta| format!("{:.2} ({})", hover.value, format_signed_delta(delta, 2)),
     )
 }
 
-fn hover_value_description(axis: CurveAxis, hover: &HoverPoint, delta: Option<f64>) -> String {
-    let coordinate = match axis {
-        CurveAxis::Step => format!("Step {}", hover.axis_value),
-        CurveAxis::AbsoluteTime => format!(
-            "Time {} UTC",
-            format_axis_tick(CurveAxis::AbsoluteTime, hover.axis_value as f64)
-        ),
-    };
-    let delta = delta.map_or_else(String::new, |delta| {
-        format!("; {} from baseline", format_signed_delta(delta, 2))
-    });
+fn locked_hover_value_label(axis: CurveAxis, hover: &HoverPoint, delta: Option<f64>) -> String {
     format!(
-        "{} ({}) · {} · {coordinate} · {:.2}{delta}",
-        hover.run_name,
-        hover.run_ref.run_id.as_str(),
-        hover.metric_key,
-        hover.value,
+        "{}: {}",
+        format_cursor_coordinate(axis, hover.axis_value as f64),
+        hover_value_label(hover, delta)
     )
+}
+
+fn track_tooltip_row_limit(row_height: f32) -> usize {
+    (((row_height - 8.).max(0.) / 24.).floor() as usize).clamp(1, 5)
 }
 
 fn format_signed_delta(delta: f64, precision: usize) -> String {
@@ -4260,20 +4409,19 @@ mod tests {
                 ProjectId::from_string("project"),
                 RunId::from_string("run"),
             ),
-            run_name: "run".to_owned(),
-            metric_key: "loss".to_owned(),
             axis_value: 2_904,
             value: 0.506,
             canvas_position: point(px(10.), px(20.)),
             align_left: false,
         };
 
-        assert_eq!(hover_value_label(&hover, Some(0.55)), "0.51(+0.55)");
-        assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51(−0.55)");
+        assert_eq!(hover_value_label(&hover, Some(0.55)), "0.51 (+0.55)");
+        assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51 (−0.55)");
         assert_eq!(
-            hover_value_description(CurveAxis::Step, &hover, Some(-0.55)),
-            "run (run) · loss · Step 2904 · 0.51; −0.55 from baseline"
+            locked_hover_value_label(CurveAxis::Step, &hover, Some(0.55)),
+            "3k: 0.51 (+0.55)"
         );
+        assert_eq!([52., 92., 180.].map(track_tooltip_row_limit), [1, 3, 5]);
         assert_eq!(format_cursor_coordinate(CurveAxis::Step, 496_000.), "496k");
         assert_eq!(
             format_cursor_coordinate(CurveAxis::AbsoluteTime, 34_920_000.),
@@ -6402,6 +6550,26 @@ mod tests {
                     assert!(viewer.ruler_hover.is_some());
                 })
                 .expect("viewer should remain open");
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.locked_cursor = Some(locked);
+                    viewer.ruler_hover = None;
+                    viewer.track_hovers.clear();
+                    viewer.hovered_run = viewer.active_visible_runs().into_iter().next();
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            let callout = cx
+                .debug_bounds("track-hover-callout")
+                .expect("Sidebar hover should show one locked-cursor tooltip");
+            let track = cx
+                .debug_bounds("metric-track:loss")
+                .expect("Metric track should render");
+            assert!(callout.size.height < track.size.height);
+            assert!(cx.debug_bounds("track-tooltip-color").is_some());
+            assert!(cx.debug_bounds("track-tooltip-label").is_some());
         }
 
         #[gpui::test]

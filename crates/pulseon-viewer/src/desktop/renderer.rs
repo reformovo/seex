@@ -21,8 +21,6 @@ use super::theme::ViewerTheme;
 #[derive(Clone, Debug)]
 pub struct HoverPoint {
     pub run_ref: RunRef,
-    pub run_name: String,
-    pub metric_key: String,
     pub axis_value: i64,
     pub value: f64,
     pub canvas_position: Point<Pixels>,
@@ -70,6 +68,7 @@ pub struct DetailChart {
     revision: u64,
     viewport: Viewport,
     baseline: Option<RunRef>,
+    emphasized_run: Option<RunRef>,
     visible_runs: std::rc::Rc<[RunRef]>,
 }
 
@@ -80,6 +79,7 @@ impl DetailChart {
         revision: u64,
         viewport: Viewport,
         baseline: Option<RunRef>,
+        emphasized_run: Option<RunRef>,
         visible_runs: std::rc::Rc<[RunRef]>,
     ) -> Self {
         Self {
@@ -88,6 +88,7 @@ impl DetailChart {
             revision,
             viewport,
             baseline,
+            emphasized_run,
             visible_runs,
         }
     }
@@ -98,12 +99,14 @@ impl DetailChart {
         revision: u64,
         viewport: Viewport,
         baseline: Option<RunRef>,
+        emphasized_run: Option<RunRef>,
         visible_runs: std::rc::Rc<[RunRef]>,
     ) -> bool {
         if Arc::ptr_eq(&self.snapshot, &snapshot)
             && self.revision == revision
             && self.viewport == viewport
             && self.baseline == baseline
+            && self.emphasized_run == emphasized_run
             && self.visible_runs == visible_runs
         {
             return false;
@@ -112,6 +115,7 @@ impl DetailChart {
         self.revision = revision;
         self.viewport = viewport;
         self.baseline = baseline;
+        self.emphasized_run = emphasized_run;
         self.visible_runs = visible_runs;
         true
     }
@@ -125,6 +129,7 @@ impl Render for DetailChart {
             self.revision,
             self.viewport,
             self.baseline.clone(),
+            self.emphasized_run.clone(),
             std::rc::Rc::clone(&self.visible_runs),
         )
         .size_full()
@@ -138,6 +143,7 @@ pub fn cached_detail_chart(chart: Entity<DetailChart>) -> AnyView {
 #[derive(Clone, Copy)]
 struct RenderRuns<'a> {
     baseline: Option<&'a RunRef>,
+    emphasized: Option<&'a RunRef>,
     visible: Option<&'a [RunRef]>,
 }
 
@@ -204,7 +210,9 @@ impl ChartAdapter {
                 continue;
             };
             let partial = curve.evidence.completeness == EvidenceCompleteness::Partial;
-            let highlighted = runs.baseline == Some(&curve.run_ref);
+            let baseline = runs.baseline == Some(&curve.run_ref);
+            let emphasized = runs.emphasized == Some(&curve.run_ref);
+            let highlighted = baseline || emphasized;
             let key = GpuiPathKey {
                 revision,
                 viewport: [
@@ -262,12 +270,17 @@ impl ChartAdapter {
                 gpui_paths.insert(cache_id.to_owned(), (key, path.clone()));
                 path
             };
-            paths.push((
-                path,
-                theme
-                    .colors
-                    .series_color(series_color_index(&curve.run_ref)),
-            ));
+            let mut color = theme
+                .colors
+                .series_color(series_color_index(&curve.run_ref));
+            color.a *= if runs.emphasized.is_none() || emphasized {
+                1.
+            } else if baseline {
+                0.5
+            } else {
+                0.18
+            };
+            paths.push((path, color));
         }
         PreparedChart { paths, theme }
     }
@@ -308,8 +321,6 @@ impl ChartAdapter {
                 hit.distance,
                 HoverPoint {
                     run_ref: curve.run_ref.clone(),
-                    run_name: curve.run.name.clone(),
-                    metric_key: aligned.point.metric_key.as_str().to_owned(),
                     axis_value: aligned.axis_value,
                     value: aligned.point.value_f64,
                     canvas_position: point(px(hit.position.x as f32), px(hit.position.y as f32)),
@@ -357,8 +368,6 @@ impl ChartAdapter {
                 let aligned = curve.evidence.points.get(point_index)?;
                 Some(HoverPoint {
                     run_ref: curve.run_ref.clone(),
-                    run_name: curve.run.name.clone(),
-                    metric_key: aligned.point.metric_key.as_str().to_owned(),
                     axis_value: aligned.axis_value,
                     value: aligned.point.value_f64,
                     canvas_position: point(
@@ -369,13 +378,6 @@ impl ChartAdapter {
                 })
             })
             .collect()
-    }
-
-    pub fn spread_callouts(&self, callouts: &mut [HoverPoint]) {
-        let Some(bounds) = self.detail_bounds else {
-            return;
-        };
-        spread_callouts(callouts, bounds.size.height);
     }
 
     pub fn detail_axis_at(&self, range: AxisRange, cursor: Point<Pixels>) -> Option<f64> {
@@ -453,39 +455,6 @@ impl ChartAdapter {
             f32::from(bounds.size.width),
             physical_width(Some(bounds), scale_factor)?,
         ))
-    }
-}
-
-fn spread_callouts(callouts: &mut [HoverPoint], height: Pixels) {
-    if callouts.len() < 2 {
-        return;
-    }
-    let height = f32::from(height);
-    let half_height = 12_f32.min(height / 2.);
-    let available = (height - half_height * 2.).max(0.);
-    let spacing = 24_f32.min(available / (callouts.len() - 1) as f32);
-    let mut order = (0..callouts.len()).collect::<Vec<_>>();
-    order.sort_by(|left, right| {
-        f32::from(callouts[*left].canvas_position.y)
-            .total_cmp(&f32::from(callouts[*right].canvas_position.y))
-    });
-    let mut positions = order
-        .iter()
-        .map(|index| {
-            f32::from(callouts[*index].canvas_position.y).clamp(half_height, height - half_height)
-        })
-        .collect::<Vec<_>>();
-    for index in 1..positions.len() {
-        positions[index] = positions[index].max(positions[index - 1] + spacing);
-    }
-    if let Some(last) = positions.last_mut() {
-        *last = (*last).min(height - half_height);
-    }
-    for index in (0..positions.len() - 1).rev() {
-        positions[index] = positions[index].min(positions[index + 1] - spacing);
-    }
-    for (index, y) in order.into_iter().zip(positions) {
-        callouts[index].canvas_position.y = px(y);
     }
 }
 
@@ -623,6 +592,7 @@ pub fn detail_canvas(
     revision: u64,
     viewport: Viewport,
     baseline: Option<RunRef>,
+    emphasized_run: Option<RunRef>,
     visible_runs: std::rc::Rc<[RunRef]>,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
@@ -636,6 +606,7 @@ pub fn detail_canvas(
                 window.appearance(),
                 RenderRuns {
                     baseline: baseline.as_ref(),
+                    emphasized: emphasized_run.as_ref(),
                     visible: Some(&visible_runs),
                 },
             );
@@ -752,6 +723,7 @@ pub fn timeline_canvas(
     brush: BrushState,
     snapshot: Option<Arc<CurveSnapshot>>,
     revision: u64,
+    emphasized_run: Option<RunRef>,
     visible_runs: std::rc::Rc<[RunRef]>,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
@@ -783,6 +755,7 @@ pub fn timeline_canvas(
                 window.appearance(),
                 RenderRuns {
                     baseline: None,
+                    emphasized: emphasized_run.as_ref(),
                     visible: Some(&visible_runs),
                 },
             );
@@ -979,37 +952,36 @@ mod tests {
     }
 
     #[test]
-    fn ruler_callouts_separate_close_values_within_the_track() {
-        let source_id = DataSourceId::from_string("source");
-        let project_id = ProjectId::from_string("project");
-        let mut callouts = (0..3)
-            .map(|index| HoverPoint {
-                run_ref: RunRef::new(
-                    source_id.clone(),
-                    project_id.clone(),
-                    RunId::from_string(format!("run-{index}")),
-                ),
-                run_name: format!("Run {index}"),
-                metric_key: "loss".to_owned(),
-                axis_value: 10,
-                value: f64::from(index),
-                canvas_position: point(px(50.), px(40. + index as f32 * 2.)),
-                align_left: false,
-            })
-            .collect::<Vec<_>>();
-
-        spread_callouts(&mut callouts, px(100.));
-
-        let positions = callouts
+    fn emphasized_runs_dim_other_curves_without_hiding_the_baseline() {
+        let snapshot = synthetic_snapshot(3, 10);
+        let visible = snapshot
+            .series
             .iter()
-            .map(|callout| f32::from(callout.canvas_position.y))
+            .map(|curve| curve.run_ref.clone())
             .collect::<Vec<_>>();
-        assert!(positions.windows(2).all(|pair| pair[1] - pair[0] >= 24.));
-        assert!(
-            positions
-                .iter()
-                .all(|position| (12. ..=88.).contains(position))
+        let viewport = detail_viewport(&snapshot, None, Some(&visible)).expect("viewport");
+        let prepared = ChartAdapter::default().prepare(
+            &snapshot,
+            1,
+            viewport,
+            Bounds::new(point(px(0.), px(0.)), size(px(100.), px(100.))),
+            WindowAppearance::Dark,
+            RenderRuns {
+                baseline: Some(&visible[1]),
+                emphasized: Some(&visible[0]),
+                visible: Some(&visible),
+            },
         );
+
+        assert_eq!(prepared.paths.len(), 3);
+        for (actual, expected) in prepared
+            .paths
+            .iter()
+            .map(|(_, color)| color.a)
+            .zip([1., 0.5, 0.18])
+        {
+            assert!((actual - expected).abs() < f32::EPSILON);
+        }
     }
 
     #[test]
@@ -1086,14 +1058,8 @@ mod tests {
             .ok_or("stored point should be hit")?;
 
         assert_eq!(
-            (
-                hover.run_name.as_str(),
-                hover.metric_key.as_str(),
-                hover.axis_value,
-                hover.value,
-                hover.run_ref,
-            ),
-            ("baseline", "loss", 7, 1.25, run_ref)
+            (hover.axis_value, hover.value, hover.run_ref),
+            (7, 1.25, run_ref)
         );
         Ok(())
     }
@@ -1281,6 +1247,7 @@ mod tests {
             WindowAppearance::Light,
             RenderRuns {
                 baseline: None,
+                emphasized: None,
                 visible: None,
             },
         ));
@@ -1293,6 +1260,7 @@ mod tests {
                 WindowAppearance::Light,
                 RenderRuns {
                     baseline: None,
+                    emphasized: None,
                     visible: None,
                 },
             ));
@@ -1307,6 +1275,7 @@ mod tests {
                 WindowAppearance::Light,
                 RenderRuns {
                     baseline: None,
+                    emphasized: None,
                     visible: None,
                 },
             ));
