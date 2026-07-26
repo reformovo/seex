@@ -48,7 +48,8 @@ use theme::ViewerTheme;
 
 const METRIC_TRACK_VERTICAL_PADDING: f32 = 4.;
 const METRIC_TRACK_SEPARATOR_WIDTH: f32 = 1.;
-const BRUSH_ROW_HEIGHT: f32 = 40.;
+const BRUSH_CONTENT_HEIGHT: f32 = 28.;
+const BRUSH_CONTENT_TOP_PADDING: f32 = 6.;
 
 #[derive(Clone, Debug)]
 enum DragGesture {
@@ -1945,9 +1946,9 @@ impl ViewerApp {
                             .id("brush-controls")
                             .debug_selector(|| "brush-controls".to_owned())
                             .w(metric_sidebar_width)
-                            .h(px(BRUSH_ROW_HEIGHT))
                             .flex_shrink_0()
                             .px_1()
+                            .pt(px(BRUSH_CONTENT_TOP_PADDING))
                             .bg(theme.colors.panel)
                             .border_r_1()
                             .border_color(theme.colors.border)
@@ -1958,7 +1959,12 @@ impl ViewerApp {
                             .child(axis_picker)
                             .child(metric_picker),
                     )
-                    .child(div().flex_1().child(timeline)),
+                    .child(
+                        div()
+                            .flex_1()
+                            .pt(px(BRUSH_CONTENT_TOP_PADDING))
+                            .child(timeline),
+                    ),
             )
             .child(
                 div()
@@ -2024,7 +2030,7 @@ impl ViewerApp {
             .collect::<Vec<_>>();
         let filter_focus = self.metric_filter_focus.clone();
         let picker_open = self.metric_picker_open;
-        let mut picker = div().relative().h_full().flex().items_center().child(
+        let mut picker = div().relative().flex().items_center().child(
             components::top_bar_icon_button("add-metric", theme, self.metric_picker_open, false)
                 .size(theme.spacing.control_height)
                 .debug_selector(|| "add-metric".to_owned())
@@ -2050,7 +2056,7 @@ impl ViewerApp {
                     anchored()
                         .anchor(Corner::TopLeft)
                         .snap_to_window_with_margin(px(8.))
-                        .offset(point(px(0.), px(BRUSH_ROW_HEIGHT + 4.)))
+                        .offset(point(px(0.), theme.spacing.control_height + px(4.)))
                         .child(
                             components::popover(theme)
                                 .id("metric-picker")
@@ -2153,7 +2159,7 @@ impl ViewerApp {
         let theme = self.theme;
         let absolute = self.curve_axis() == CurveAxis::AbsoluteTime;
         let picker_open = self.axis_picker_open;
-        let mut picker = div().relative().h_full().flex().items_center().child(
+        let mut picker = div().relative().flex().items_center().child(
             components::top_bar_icon_button("axis-picker", theme, self.axis_picker_open, false)
                 .size(theme.spacing.control_height)
                 .debug_selector(|| "axis-picker".to_owned())
@@ -2189,7 +2195,7 @@ impl ViewerApp {
                     anchored()
                         .anchor(Corner::TopLeft)
                         .snap_to_window_with_margin(px(8.))
-                        .offset(point(px(0.), px(BRUSH_ROW_HEIGHT + 4.)))
+                        .offset(point(px(0.), theme.spacing.control_height + px(4.)))
                         .child(
                             components::popover(theme)
                                 .id("axis-menu")
@@ -3256,7 +3262,7 @@ impl ViewerApp {
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
         let Some(brush) = self.core.brush() else {
-            return div().h(px(BRUSH_ROW_HEIGHT));
+            return div().h(px(BRUSH_CONTENT_HEIGHT));
         };
         let (snapshot, revision) = self
             .views
@@ -3269,7 +3275,7 @@ impl ViewerApp {
             });
         let adapter = Rc::clone(&self.chart_adapter);
         let visible_runs: Rc<[RunRef]> = self.active_visible_runs().into();
-        div().h(px(BRUSH_ROW_HEIGHT)).child(
+        div().h(px(BRUSH_CONTENT_HEIGHT)).child(
             div()
                 .id("overview-chart")
                 .debug_selector(|| "overview-chart".to_owned())
@@ -4906,7 +4912,7 @@ mod tests {
                 assert_eq!(sidebar_header.origin.y, tab_bar.origin.y);
                 assert_eq!(sidebar_header.size.height, tab_bar.size.height);
                 assert_eq!(filter_row.origin.y, brush_controls.origin.y);
-                assert_eq!(filter_row.size.height, brush_controls.size.height);
+                assert_eq!(filter.bottom(), brush_controls.bottom());
                 assert_eq!(filter.origin.y, axis_picker.origin.y);
                 assert_eq!(axis_picker.size.height, filter.size.height);
                 assert_eq!(axis_picker.size.width, filter.size.height);
@@ -5689,9 +5695,9 @@ mod tests {
                 let overview = cx
                     .debug_bounds("overview-chart")
                     .expect("Overview chart should render");
-                assert_eq!(controls.size.height, px(40.));
-                assert_eq!(overview.size.height, px(40.));
-                assert_eq!(controls.origin.y, overview.origin.y);
+                assert_eq!(controls.size.height, px(34.));
+                assert_eq!(overview.size.height, px(28.));
+                assert_eq!(controls.origin.y + px(6.), overview.origin.y);
                 assert_eq!(controls.bottom(), overview.bottom());
             }
         }
