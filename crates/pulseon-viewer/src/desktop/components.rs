@@ -16,6 +16,7 @@ pub enum IconName {
     Archive,
     ArrowUp,
     Baseline,
+    ChevronUp,
     CirclePlay,
     Clock,
     Close,
@@ -41,6 +42,7 @@ impl IconName {
             Self::Archive => "icons/archive.svg",
             Self::ArrowUp => "icons/arrow-up.svg",
             Self::Baseline => "icons/baseline.svg",
+            Self::ChevronUp => "icons/chevron-up.svg",
             Self::CirclePlay => "icons/circle-play.svg",
             Self::Clock => "icons/clock.svg",
             Self::Close => "icons/close.svg",
@@ -155,17 +157,6 @@ pub fn toolbar_button(
         .when(disabled, |button| {
             button.text_color(theme.colors.disabled).cursor_default()
         })
-}
-
-pub fn icon_button(
-    id: impl Into<ElementId>,
-    theme: ViewerTheme,
-    selected: bool,
-    disabled: bool,
-) -> Stateful<Div> {
-    toolbar_button(id, theme, selected, disabled)
-        .w(theme.spacing.control_height)
-        .px_0()
 }
 
 pub fn top_bar_icon_button(

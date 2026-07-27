@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use pulseon_model::alignment::AlignmentViewport;
-use pulseon_model::comparison::ObjectiveDirection;
 use pulseon_model::metric::MetricKey;
 
 use crate::core::{DataSourceId, RunRef};
@@ -83,7 +82,6 @@ pub enum PanelReadRequest {
     Inspector {
         runs: Vec<RunRef>,
         metric_key: MetricKey,
-        ranking_direction: Option<ObjectiveDirection>,
     },
 }
 
@@ -136,15 +134,10 @@ impl PanelReadRequest {
                 viewport: *viewport,
                 physical_width: *physical_width,
             }),
-            Self::Inspector {
-                metric_key,
-                ranking_direction,
-                ..
-            } => ReadRequest::Inspector(InspectorRequest {
+            Self::Inspector { metric_key, .. } => ReadRequest::Inspector(InspectorRequest {
                 source_id,
                 runs,
                 metric_key: metric_key.clone(),
-                ranking_direction: *ranking_direction,
             }),
         }
     }
@@ -325,7 +318,7 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
     let mut series = HashMap::<RunRef, CurveSeriesSnapshot>::new();
     let mut inspector_runs = HashMap::<RunRef, InspectorRunSnapshot>::new();
     let mut shape = None;
-    let mut inspector_direction = None;
+    let mut has_inspector = false;
     let mut real_range: Option<AlignmentViewport> = None;
     let mut source_errors = Vec::new();
     for source_id in &pending.source_order {
@@ -341,7 +334,7 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
                 );
             }
             Some(Ok(SourcePanelSnapshot::Inspector(snapshot))) => {
-                inspector_direction.get_or_insert(snapshot.ranking_direction);
+                has_inspector = true;
                 inspector_runs.extend(
                     snapshot
                         .runs
@@ -366,8 +359,7 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
             .filter_map(|run_ref| series.remove(run_ref))
             .collect(),
     });
-    let inspector = inspector_direction.map(|ranking_direction| InspectorSnapshot {
-        ranking_direction,
+    let inspector = has_inspector.then(|| InspectorSnapshot {
         runs: pending
             .run_order
             .iter()

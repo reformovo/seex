@@ -1,19 +1,21 @@
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 
 use gpui::{
     App, Application, Bounds, Context, Corner, FocusHandle, KeyBinding, KeyDownEvent,
     ListAlignment, ListState, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PathPromptOptions, Render, ScrollWheelEvent, SharedString, SystemMenuType, Task,
-    Window, WindowBounds, WindowOptions, actions, anchored, deferred, div, list, point, prelude::*,
-    px, size,
+    MouseUpEvent, PathPromptOptions, Render, ScrollHandle, ScrollWheelEvent, SharedString,
+    SystemMenuType, Task, Transformation, Window, WindowBounds, WindowOptions, actions, anchored,
+    deferred, div, list, point, prelude::*, px, size,
 };
-use pulseon_chart_core::{BrushState, CanvasSize};
+use pulseon_chart_core::{AxisRange, BrushState, CanvasSize, Viewport};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
-use pulseon_model::comparison::{EvidenceReason, ObjectiveDirection};
+use pulseon_model::comparison::{EvidenceCompleteness, EvidenceReason};
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunStatus};
 use pulseon_model::types::{Project, ProjectId};
@@ -22,13 +24,13 @@ use pulseon_viewer::coordination::{
     MetricPanelId, PanelReadCoordinator, PanelReadMode, PanelReadOutcome, PanelReadRequest,
     PanelReadTag,
 };
-use pulseon_viewer::core::{ApplyOutcome, DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewerCore};
+use pulseon_viewer::core::{DataSourceId, MAX_SELECTED_RUNS, RunRef, ViewNavigation};
 use pulseon_viewer::model::DiscoveryRequest;
-use pulseon_viewer::query::{CurveAxis, InspectorSnapshot};
+use pulseon_viewer::query::{CurveAxis, CurveSnapshot, InspectorRunSnapshot, InspectorSnapshot};
 use pulseon_viewer::registry::SourceRegistry;
 #[cfg(test)]
 use pulseon_viewer::registry::SourceStatus;
-use pulseon_viewer::workbench::{AnalysisViews, InspectorTab, MetricPanel, ProjectRef};
+use pulseon_viewer::workbench::{AnalysisViews, MetricPanel, ProjectRef};
 use pulseon_viewer::workbench_document::{
     SavedAnalysisView, SavedProjectRef, SavedRunRef, WorkbenchDocument,
 };
@@ -50,6 +52,8 @@ const METRIC_TRACK_VERTICAL_PADDING: f32 = 4.;
 const METRIC_TRACK_SEPARATOR_WIDTH: f32 = 1.;
 const BRUSH_ROW_HEIGHT: f32 = 40.;
 const BRUSH_CONTENT_TOP_PADDING: f32 = 6.;
+const INITIAL_VISIBLE_TRACKS: usize = 4;
+const INITIAL_OVERSCAN_TRACKS: usize = 8;
 
 #[derive(Clone, Debug)]
 enum DragGesture {
@@ -75,6 +79,89 @@ enum DragGesture {
 struct InspectorResize {
     start_y: gpui::Pixels,
     start_height: gpui::Pixels,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SidebarResize {
+    start_x: gpui::Pixels,
+    start_width: gpui::Pixels,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct InspectorColumnResize {
+    column: InspectorColumn,
+    start_x: gpui::Pixels,
+    start_width: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InspectorColumn {
+    Run,
+    LastValue,
+    Minimum,
+    Maximum,
+    Locked,
+    Hover,
+    Count,
+    LastStep,
+    Status,
+    Evidence,
+    Project,
+}
+
+const INSPECTOR_COLUMNS: [InspectorColumn; 11] = [
+    InspectorColumn::Run,
+    InspectorColumn::LastValue,
+    InspectorColumn::Minimum,
+    InspectorColumn::Maximum,
+    InspectorColumn::Locked,
+    InspectorColumn::Hover,
+    InspectorColumn::Count,
+    InspectorColumn::LastStep,
+    InspectorColumn::Status,
+    InspectorColumn::Evidence,
+    InspectorColumn::Project,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InspectorSortDirection {
+    Ascending,
+    Descending,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InspectorSort {
+    column: InspectorColumn,
+    direction: InspectorSortDirection,
+}
+
+#[derive(Clone)]
+struct InspectorRow {
+    run_ref: RunRef,
+    run_label: String,
+    project_label: String,
+    status: RunStatus,
+    evidence: EvidenceCompleteness,
+    evidence_label: String,
+    count: Option<u64>,
+    last_step: Option<i64>,
+    last_value: Option<f64>,
+    minimum: Option<f64>,
+    maximum: Option<f64>,
+    locked: Option<(i64, f64)>,
+    hover: Option<(i64, f64)>,
+    baseline: bool,
+    pinned: bool,
+    original_order: usize,
+}
+
+struct InspectorRowsContext<'a> {
+    visible_runs: &'a [RunRef],
+    baseline: Option<&'a RunRef>,
+    pinned: &'a [RunRef],
+    locked_axis: Option<f64>,
+    hover_axis: Option<f64>,
+    sort: Option<InspectorSort>,
 }
 
 #[derive(Clone, Debug)]
@@ -136,6 +223,33 @@ fn update_brush_drag(brush: &mut BrushState, gesture: &mut DragGesture, axis: f6
         | DragGesture::Ruler { .. }
         | DragGesture::Detail { .. } => {}
     }
+}
+
+fn track_chart_frame(
+    panel: &MetricPanel,
+    selected: Option<AxisRange>,
+    visible_runs: &[RunRef],
+) -> Option<(Arc<CurveSnapshot>, u64, Viewport)> {
+    let detail = panel.detail.as_ref()?;
+    let detail_viewport = renderer::detail_viewport(detail, selected, Some(visible_runs));
+    if detail_viewport
+        .is_none_or(|viewport| selected.is_some_and(|selected| viewport.x != selected))
+        && let Some(overview) = panel.overview.as_ref()
+        && let Some(viewport) = renderer::detail_viewport(overview, selected, Some(visible_runs))
+        && selected.is_none_or(|selected| viewport.x == selected)
+    {
+        return Some((
+            Arc::clone(overview),
+            panel.overview_revision.saturating_mul(2).saturating_add(1),
+            viewport,
+        ));
+    }
+    let detail_viewport = detail_viewport?;
+    Some((
+        Arc::clone(detail),
+        panel.detail_revision.saturating_mul(2),
+        detail_viewport,
+    ))
 }
 
 fn previous_text_cursor(text: &str, cursor: usize) -> usize {
@@ -297,13 +411,19 @@ struct ViewerApp {
     axis_picker_open: bool,
     project_sidebar_visible: bool,
     project_sidebar_width: gpui::Pixels,
+    sidebar_resize: Option<SidebarResize>,
     metric_sidebar_compact: bool,
     bottom_inspector_visible: bool,
     bottom_inspector_height: gpui::Pixels,
     inspector_resize: Option<InspectorResize>,
+    inspector_sort: Option<InspectorSort>,
+    inspector_column_widths: [f32; INSPECTOR_COLUMNS.len()],
+    inspector_column_resize: Option<InspectorColumnResize>,
+    inspector_horizontal_scroll: ScrollHandle,
+    inspector_vertical_scroll: ScrollHandle,
     sources: SourceRegistry,
     event_tasks: HashMap<DataSourceId, Task<()>>,
-    core: ViewerCore,
+    navigation: ViewNavigation,
     next_generation: u64,
     local_error: Option<String>,
     chart_adapter: Rc<RefCell<ChartAdapter>>,
@@ -320,6 +440,7 @@ struct ViewerApp {
     locked_cursor: Option<f64>,
     drag: Option<DragGesture>,
     zoom_task: Option<Task<()>>,
+    metric_repaint_pending: bool,
     detail_refresh_token: u64,
     detail_refresh_pending: bool,
     workbench_path: Option<PathBuf>,
@@ -363,13 +484,19 @@ impl ViewerApp {
             axis_picker_open: false,
             project_sidebar_visible: true,
             project_sidebar_width: px(190.),
+            sidebar_resize: None,
             metric_sidebar_compact: false,
             bottom_inspector_visible: false,
             bottom_inspector_height: px(220.),
             inspector_resize: None,
+            inspector_sort: None,
+            inspector_column_widths: INSPECTOR_COLUMNS.map(InspectorColumn::default_width),
+            inspector_column_resize: None,
+            inspector_horizontal_scroll: ScrollHandle::new(),
+            inspector_vertical_scroll: ScrollHandle::new(),
             sources: SourceRegistry::default(),
             event_tasks: HashMap::new(),
-            core: ViewerCore::default(),
+            navigation: ViewNavigation::default(),
             next_generation: 1,
             local_error: None,
             chart_adapter: Rc::new(RefCell::new(ChartAdapter::default())),
@@ -386,6 +513,7 @@ impl ViewerApp {
             locked_cursor: None,
             drag: None,
             zoom_task: None,
+            metric_repaint_pending: false,
             detail_refresh_token: 0,
             detail_refresh_pending: false,
             workbench_path: default_workbench_path(),
@@ -421,9 +549,9 @@ impl ViewerApp {
 
     fn restore_workbench(&mut self, document: WorkbenchDocument, cx: &mut Context<Self>) {
         self.project_sidebar_visible = document.project_sidebar_visible;
-        self.project_sidebar_width = px(document.project_sidebar_width.clamp(180., 600.));
+        self.project_sidebar_width = px(document.project_sidebar_width.clamp(160., 600.));
         self.metric_sidebar_compact = document.metric_sidebar_compact;
-        self.bottom_inspector_height = px(document.bottom_inspector_height.clamp(120., 600.));
+        self.bottom_inspector_height = px(document.bottom_inspector_height.clamp(56., 2_000.));
         let mut source_paths = document.sources.clone();
         let referenced_paths = document
             .pinned_projects
@@ -468,103 +596,58 @@ impl ViewerApp {
             .map(|source| source.source_id.clone())
             .collect::<Vec<_>>();
         for source_id in source_ids {
-            let track_in_core = self.core.selection().source_id.as_ref() == Some(&source_id);
-            let request = self.discovery_request_for_source(&source_id, track_in_core);
-            self.submit_to_source(source_id, ReadRequest::Discover(request), track_in_core, cx);
+            let request = self.discovery_request_for_source(&source_id);
+            self.submit_to_source(source_id, ReadRequest::Discover(request), cx);
         }
     }
 
     fn open_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let source_id = self.sources.import(path);
         self.local_error = None;
-        if self.core.selection().source_id.is_some() {
-            self.submit_to_source(
-                source_id,
-                ReadRequest::Discover(DiscoveryRequest {
-                    project_id: None,
-                    selected_run_ids: Vec::new(),
-                    metric_runs: Vec::new(),
-                }),
-                false,
-                cx,
-            );
-            return;
-        }
-        self.core.reset_source(source_id);
-        self.chart_adapter.borrow_mut().clear();
-        self.track_adapters.clear();
-        self.track_charts.clear();
-        self.track_hovers.clear();
-        self.metric_scroll = ListState::new(0, ListAlignment::Top, px(480.));
-        *self.track_viewport.borrow_mut() = TrackViewport::default();
-        self.ruler_hover = None;
-        self.track_pointer_hover = None;
-        self.locked_cursor = None;
-        self.drag = None;
-        self.cancel_detail_refresh();
-        self.refresh_catalog(cx);
+        let request = self.discovery_request_for_source(&source_id);
+        self.submit_to_source(source_id, ReadRequest::Discover(request), cx);
     }
 
     fn refresh_catalog(&mut self, cx: &mut Context<Self>) {
-        let Some(active_source) = self.core.selection().source_id.clone() else {
-            return;
-        };
         let mut source_ids = self
             .active_visible_runs()
             .into_iter()
             .map(|run| run.source_id)
             .collect::<HashSet<_>>();
-        source_ids.insert(active_source.clone());
-        let requests = source_ids
-            .into_iter()
-            .map(|source_id| {
-                let track_in_core = source_id == active_source;
-                let request = self.discovery_request_for_source(&source_id, track_in_core);
-                (source_id, request, track_in_core)
-            })
-            .collect::<Vec<_>>();
-        for (source_id, request, track_in_core) in requests {
-            self.submit_to_source(source_id, ReadRequest::Discover(request), track_in_core, cx);
+        if source_ids.is_empty() {
+            source_ids.extend(
+                self.sources
+                    .sources()
+                    .map(|source| source.source_id.clone()),
+            );
+        }
+        for source_id in source_ids {
+            let request = self.discovery_request_for_source(&source_id);
+            self.submit_to_source(source_id, ReadRequest::Discover(request), cx);
         }
     }
 
     fn refresh_all_sources(&mut self, cx: &mut Context<Self>) {
-        let active_source = self.core.selection().source_id.clone();
         let source_ids = self
             .sources
             .sources()
             .map(|source| source.source_id.clone())
             .collect::<Vec<_>>();
         for source_id in source_ids {
-            let track_in_core = active_source.as_ref() == Some(&source_id);
-            let request = self.discovery_request_for_source(&source_id, track_in_core);
-            self.submit_to_source(source_id, ReadRequest::Discover(request), track_in_core, cx);
+            let request = self.discovery_request_for_source(&source_id);
+            self.submit_to_source(source_id, ReadRequest::Discover(request), cx);
         }
     }
 
-    fn discovery_request_for_source(
-        &self,
-        source_id: &DataSourceId,
-        include_project: bool,
-    ) -> DiscoveryRequest {
-        let project_id = include_project
-            .then(|| self.core.selection().project_id.clone())
-            .flatten();
+    fn discovery_request_for_source(&self, source_id: &DataSourceId) -> DiscoveryRequest {
         let visible = self
             .active_visible_runs()
             .into_iter()
             .filter(|run| &run.source_id == source_id)
             .collect::<Vec<_>>();
-        let selected_run_ids = project_id.as_ref().map_or_else(Vec::new, |project_id| {
-            visible
-                .iter()
-                .filter(|run| &run.project_id == project_id)
-                .map(|run| run.run_id.clone())
-                .collect()
-        });
         DiscoveryRequest {
-            project_id,
-            selected_run_ids,
+            project_id: None,
+            selected_run_ids: Vec::new(),
             metric_runs: visible
                 .into_iter()
                 .map(|run| (run.project_id, run.run_id))
@@ -576,12 +659,11 @@ impl ViewerApp {
         &mut self,
         source_id: DataSourceId,
         request: ReadRequest,
-        track_in_core: bool,
         cx: &mut Context<Self>,
     ) {
         let generation = Generation(self.next_generation);
         self.next_generation = self.next_generation.saturating_add(1);
-        self.submit_source_generation(source_id, generation, request, track_in_core, cx);
+        self.submit_source_generation(source_id, generation, request, cx);
     }
 
     fn submit_source_generation(
@@ -589,7 +671,6 @@ impl ViewerApp {
         source_id: DataSourceId,
         generation: Generation,
         request: ReadRequest,
-        track_in_core: bool,
         cx: &mut Context<Self>,
     ) {
         match self.sources.activate(&source_id) {
@@ -600,8 +681,7 @@ impl ViewerApp {
                 return;
             }
         }
-        match self.sources.submit(&source_id, generation, request.clone()) {
-            Ok(()) if track_in_core => self.core.begin(generation, source_id, &request),
+        match self.sources.submit(&source_id, generation, request) {
             Ok(()) => {}
             Err(error) => self.local_error = Some(error.to_string()),
         }
@@ -630,24 +710,15 @@ impl ViewerApp {
     }
 
     fn apply_event(&mut self, event: ReadEvent, cx: &mut Context<Self>) {
-        let catalog_project = self.sources.apply_event(&event);
-        if let (Some(project_id), Ok(pulseon_viewer::worker::ReadSnapshot::Catalog(snapshot))) =
-            (catalog_project, &event.result)
-        {
+        if let Ok(pulseon_viewer::worker::ReadSnapshot::Catalog(snapshot)) = &event.result {
             let available_runs = snapshot
                 .runs
                 .iter()
-                .filter(|run| run.project_id == project_id)
-                .map(|run| run.run_id.clone())
+                .map(|run| (run.project_id.clone(), run.run_id.clone()))
                 .collect::<Vec<_>>();
-            let removed =
-                self.views
-                    .reconcile_source_project(&event.source_id, &project_id, &available_runs);
-            for run in &removed {
-                if self.core.selection().runs.contains(run) {
-                    let _ = self.core.toggle_run(run.clone());
-                }
-            }
+            let removed = self
+                .views
+                .reconcile_source_runs(&event.source_id, &available_runs);
             if !removed.is_empty() {
                 self.local_error = Some(format!(
                     "{} persisted Run selection(s) are no longer available",
@@ -655,6 +726,7 @@ impl ViewerApp {
                 ));
             }
         }
+        self.sources.apply_event(&event);
         let kind = event.kind;
         if matches!(
             kind,
@@ -706,9 +778,9 @@ impl ViewerApp {
                         && let Some(home) =
                             self.views.record_active_metric_extent(metric_key, extent)
                     {
-                        self.core.set_timeline_home(home);
+                        self.navigation.set_timeline_home(home);
                     }
-                    if let Some(viewport) = self.core.selected_viewport()
+                    if let Some(viewport) = self.navigation.selected_viewport()
                         && self.panel_is_scheduled(&panel_id)
                     {
                         let physical_width = self.track_viewport.borrow().physical_width.max(1);
@@ -717,11 +789,13 @@ impl ViewerApp {
                         }
                     }
                 }
+                if accepted && matches!(kind, ReadKind::Overview | ReadKind::Detail) {
+                    self.defer_metric_repaint(cx);
+                }
             }
             return;
         }
-        let succeeded = event.result.is_ok();
-        if self.core.apply(event) != ApplyOutcome::Applied || !succeeded {
+        if event.result.is_err() {
             return;
         }
         match kind {
@@ -753,7 +827,7 @@ impl ViewerApp {
     }
 
     fn curve_axis(&self) -> CurveAxis {
-        match self.core.axis() {
+        match self.navigation.axis() {
             AlignmentAxis::Step => CurveAxis::Step,
             AlignmentAxis::ElapsedTime => CurveAxis::AbsoluteTime,
         }
@@ -812,12 +886,12 @@ impl ViewerApp {
         self.views
             .begin_active_panel_read(panel_id, ReadKind::Overview, generation);
         for read in planned {
-            self.submit_source_generation(read.source_id, read.generation, read.request, false, cx);
+            self.submit_source_generation(read.source_id, read.generation, read.request, cx);
         }
     }
 
     fn request_detail(&mut self, cx: &mut Context<Self>) {
-        let Some(viewport) = self.core.selected_viewport() else {
+        let Some(viewport) = self.navigation.selected_viewport() else {
             return;
         };
         let viewport_state = self.track_viewport.borrow().clone();
@@ -861,14 +935,10 @@ impl ViewerApp {
             generation,
             mode: PanelReadMode::Replace,
         };
-        let planned = match self.panel_reads.begin(
-            tag,
-            PanelReadRequest::Inspector {
-                runs,
-                metric_key,
-                ranking_direction: self.views.active().ranking_direction,
-            },
-        ) {
+        let planned = match self
+            .panel_reads
+            .begin(tag, PanelReadRequest::Inspector { runs, metric_key })
+        {
             Ok(planned) => planned,
             Err(error) => {
                 self.local_error = Some(error.to_string());
@@ -878,7 +948,7 @@ impl ViewerApp {
         self.views
             .begin_active_panel_read(&panel_id, ReadKind::Inspector, generation);
         for read in planned {
-            self.submit_source_generation(read.source_id, read.generation, read.request, false, cx);
+            self.submit_source_generation(read.source_id, read.generation, read.request, cx);
         }
     }
 
@@ -946,7 +1016,7 @@ impl ViewerApp {
         self.views
             .begin_active_panel_detail(panel_id, generation, viewport, physical_width);
         for read in planned {
-            self.submit_source_generation(read.source_id, read.generation, read.request, false, cx);
+            self.submit_source_generation(read.source_id, read.generation, read.request, cx);
         }
     }
 
@@ -976,9 +1046,7 @@ impl ViewerApp {
     }
 
     fn error(&self) -> Option<&str> {
-        self.local_error
-            .as_deref()
-            .or_else(|| self.core.last_error())
+        self.local_error.as_deref()
     }
 
     fn dismiss_popovers(&mut self) -> bool {
@@ -1134,16 +1202,15 @@ impl ViewerApp {
     fn store_active_view_state(&mut self) {
         let view_id = self.views.active().view_id.clone();
         self.panel_reads.deactivate_view(&view_id);
-        self.core.cancel_pending();
         self.views.cancel_active_panel_reads();
         let view = self.views.active_mut();
-        view.core = std::mem::take(&mut self.core);
+        view.navigation = std::mem::take(&mut self.navigation);
         view.local_error = self.local_error.take();
     }
 
     fn restore_active_view_state(&mut self) {
         let view = self.views.active_mut();
-        self.core = std::mem::take(&mut view.core);
+        self.navigation = std::mem::take(&mut view.navigation);
         self.local_error = view.local_error.take();
         self.chart_adapter.borrow_mut().clear();
         self.track_adapters.clear();
@@ -1286,7 +1353,8 @@ impl ViewerApp {
 
     fn on_reset(&mut self, _: &ResetView, _: &mut Window, cx: &mut Context<Self>) {
         self.cancel_detail_refresh();
-        if self.core.reset_view() {
+        if self.navigation.reset_view() {
+            self.sync_track_charts(cx);
             self.request_detail(cx);
         }
         cx.notify();
@@ -1312,25 +1380,25 @@ impl ViewerApp {
     }
 
     fn zoom_from_keyboard(&mut self, factor: f64, cx: &mut Context<Self>) {
-        let Some(selected) = self.core.brush().map(|brush| brush.selected()) else {
+        let Some(selected) = self.navigation.brush().map(|brush| brush.selected()) else {
             return;
         };
         let anchor = selected.start() + selected.span() / 2.;
         if self
-            .core
+            .navigation
             .brush_mut()
             .is_none_or(|brush| brush.zoom_at(anchor, factor).is_err())
         {
             return;
         }
+        self.defer_metric_repaint(cx);
         self.schedule_detail_refresh(cx);
-        cx.notify();
     }
 
     fn on_step(&mut self, _: &UseStep, _: &mut Window, cx: &mut Context<Self>) {
         self.axis_picker_open = false;
         self.views.clear_active_timeline_extents();
-        self.core.select_axis(AlignmentAxis::Step);
+        self.navigation.select_axis(AlignmentAxis::Step);
         self.request_overview(cx);
         cx.notify();
     }
@@ -1338,14 +1406,8 @@ impl ViewerApp {
     fn on_elapsed(&mut self, _: &UseElapsed, _: &mut Window, cx: &mut Context<Self>) {
         self.axis_picker_open = false;
         self.views.clear_active_timeline_extents();
-        self.core.select_axis(AlignmentAxis::ElapsedTime);
+        self.navigation.select_axis(AlignmentAxis::ElapsedTime);
         self.request_overview(cx);
-        cx.notify();
-    }
-
-    fn select_project(&mut self, project_id: ProjectId, cx: &mut Context<Self>) {
-        self.core.select_project(Some(project_id));
-        self.refresh_catalog(cx);
         cx.notify();
     }
 
@@ -1355,24 +1417,14 @@ impl ViewerApp {
         project_id: ProjectId,
         cx: &mut Context<Self>,
     ) {
-        let key = (source_id.clone(), project_id.clone());
+        let key = (source_id, project_id);
         if !self.expanded_projects.insert(key.clone()) {
             self.expanded_projects.remove(&key);
         }
-        if self.core.selection().source_id.as_ref() != Some(&source_id) {
-            self.core.reset_source(source_id);
-            self.chart_adapter.borrow_mut().clear();
-        }
-        self.select_project(project_id, cx);
+        cx.notify();
     }
 
     fn toggle_tree_run(&mut self, run_ref: RunRef, cx: &mut Context<Self>) {
-        if self.core.selection().source_id.as_ref() != Some(&run_ref.source_id) {
-            self.core.reset_source(run_ref.source_id.clone());
-        }
-        if self.core.selection().project_id.as_ref() != Some(&run_ref.project_id) {
-            self.core.select_project(Some(run_ref.project_id.clone()));
-        }
         self.toggle_run(run_ref, cx);
     }
 
@@ -1395,7 +1447,7 @@ impl ViewerApp {
 
     fn request_missing_panel_curves(&mut self, cx: &mut Context<Self>) {
         let runs = self.active_visible_runs();
-        let viewport = self.core.selected_viewport();
+        let viewport = self.navigation.selected_viewport();
         let viewport_state = self.track_viewport.borrow().clone();
         let panels = self.views.active().panels.clone();
         for (index, panel) in panels.into_iter().enumerate() {
@@ -1470,24 +1522,8 @@ impl ViewerApp {
             .collect()
     }
 
-    fn sync_core_runs(&mut self) {
-        let desired = self.active_visible_runs();
-        let current = self.core.selection().runs.clone();
-        for run in current {
-            if !desired.contains(&run) {
-                let _ = self.core.toggle_run(run);
-            }
-        }
-        for run in desired {
-            if !self.core.selection().runs.contains(&run) {
-                let _ = self.core.toggle_run(run);
-            }
-        }
-    }
-
     fn set_run_baseline(&mut self, run: RunRef, cx: &mut Context<Self>) {
         let was_visible = self.active_visible_runs().contains(&run);
-        let was_selected = self.views.active().runs.contains(&run);
         if self.views.archived_runs().contains(&run) {
             self.views.restore_run(&run);
         }
@@ -1496,9 +1532,6 @@ impl ViewerApp {
             self.local_error = Some(error.to_string());
         } else {
             if !was_visible {
-                if !was_selected {
-                    self.refresh_catalog(cx);
-                }
                 self.request_missing_panel_curves(cx);
             }
             if self.bottom_inspector_visible {
@@ -1510,16 +1543,12 @@ impl ViewerApp {
 
     fn toggle_pinned_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
         let was_visible = self.active_visible_runs().contains(&run);
-        let was_selected = self.views.active().runs.contains(&run);
         if self.views.archived_runs().contains(&run) {
             self.views.restore_run(&run);
         }
         if let Err(error) = self.views.toggle_active_pinned_run(run) {
             self.local_error = Some(error.to_string());
         } else if !was_visible {
-            if !was_selected {
-                self.refresh_catalog(cx);
-            }
             self.request_missing_panel_curves(cx);
         }
         cx.notify();
@@ -1559,12 +1588,6 @@ impl ViewerApp {
             run.source_id != project.source_id || run.project_id != project.project_id
         });
         self.views.remove_project(project.clone());
-        if self.core.selection().source_id.as_ref() == Some(&project.source_id)
-            && self.core.selection().project_id.as_ref() == Some(&project.project_id)
-        {
-            self.core.select_project(None);
-        }
-        self.sync_core_runs();
         self.project_menu = None;
         self.refresh_catalog(cx);
         self.request_overview(cx);
@@ -1618,9 +1641,8 @@ impl ViewerApp {
     fn select_metric(&mut self, metric_key: MetricKey, cx: &mut Context<Self>) {
         self.metric_picker_open = false;
         self.metric_filter.clear();
-        let panel_id = self.views.select_active_metric(metric_key.clone());
-        self.metric_scroll.reset(self.views.active().panels.len());
-        self.core.select_metric(Some(metric_key));
+        let panel_id = self.views.select_active_metric(metric_key);
+        self.reset_metric_track_schedule();
         self.request_panel_overview(&panel_id, cx);
         if self.bottom_inspector_visible {
             self.request_inspector(cx);
@@ -1628,41 +1650,84 @@ impl ViewerApp {
         cx.notify();
     }
 
+    fn reset_metric_track_schedule(&mut self) {
+        let panel_count = self.views.active().panels.len();
+        self.metric_scroll.reset(panel_count);
+        *self.track_viewport.borrow_mut() = if panel_count == 0 {
+            TrackViewport::default()
+        } else {
+            TrackViewport {
+                visible: 0..panel_count.min(INITIAL_VISIBLE_TRACKS),
+                overscan: 0..panel_count.min(INITIAL_OVERSCAN_TRACKS),
+                logical_width_bits: self.overview_logical_width.max(1.).to_bits(),
+                physical_width: self.overview_width.max(1),
+            }
+        };
+    }
+
     fn show_metric_inspector(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
         if !self.views.select_active_panel(panel_id) {
             return;
         }
-        let metric_key = self
-            .views
-            .active_panel(panel_id)
-            .map(|panel| panel.metric_key.clone());
-        self.core.select_metric(metric_key);
         self.bottom_inspector_visible = true;
         self.request_inspector(cx);
         cx.notify();
     }
 
-    fn select_inspector_tab(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
-        self.views.set_active_inspector_tab(tab);
-        let inspector_missing = self
-            .views
-            .active()
-            .selected_panel_id
-            .as_ref()
-            .and_then(|panel_id| self.views.active_panel(panel_id))
-            .is_none_or(|panel| panel.inspector.is_none());
-        if inspector_missing
-            || (tab == InspectorTab::Ranking && self.views.active().ranking_direction.is_some())
-        {
-            self.request_inspector(cx);
-        }
+    fn toggle_inspector_sort(&mut self, column: InspectorColumn, cx: &mut Context<Self>) {
+        self.inspector_sort = match self.inspector_sort {
+            Some(InspectorSort {
+                column: active,
+                direction: InspectorSortDirection::Ascending,
+            }) if active == column => Some(InspectorSort {
+                column,
+                direction: InspectorSortDirection::Descending,
+            }),
+            Some(InspectorSort {
+                column: active,
+                direction: InspectorSortDirection::Descending,
+            }) if active == column => None,
+            _ => Some(InspectorSort {
+                column,
+                direction: InspectorSortDirection::Ascending,
+            }),
+        };
         cx.notify();
     }
 
-    fn select_ranking_direction(&mut self, direction: ObjectiveDirection, cx: &mut Context<Self>) {
-        self.views.set_active_ranking_direction(direction);
-        self.request_inspector(cx);
+    fn inspector_column_width(&self, column: InspectorColumn) -> f32 {
+        self.inspector_column_widths[column.index()]
+    }
+
+    fn begin_inspector_column_resize(
+        &mut self,
+        column: InspectorColumn,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        self.inspector_column_resize = Some(InspectorColumnResize {
+            column,
+            start_x: event.position.x,
+            start_width: self.inspector_column_width(column),
+        });
+        cx.stop_propagation();
         cx.notify();
+    }
+
+    fn move_inspector_column_resize(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let Some(resize) = self.inspector_column_resize else {
+            return;
+        };
+        let width = (resize.start_width + f32::from(event.position.x - resize.start_x))
+            .clamp(resize.column.minimum_width(), 600.);
+        self.inspector_column_widths[resize.column.index()] = width;
+        cx.notify();
+    }
+
+    fn finish_inspector_column_resize(&mut self, cx: &mut Context<Self>) {
+        if self.inspector_column_resize.take().is_some() {
+            cx.notify();
+        }
     }
 
     fn begin_inspector_resize(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
@@ -1670,21 +1735,57 @@ impl ViewerApp {
             start_y: event.position.y,
             start_height: self.bottom_inspector_height,
         });
+        cx.stop_propagation();
         cx.notify();
     }
 
-    fn move_inspector_resize(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+    fn move_inspector_resize(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(resize) = self.inspector_resize else {
             return;
         };
-        self.bottom_inspector_height = (resize.start_height + resize.start_y - event.position.y)
-            .max(px(120.))
-            .min(px(600.));
+        let maximum = (window.viewport_size().height - px(120.)).max(px(56.));
+        self.bottom_inspector_height =
+            (resize.start_height + resize.start_y - event.position.y).clamp(px(56.), maximum);
         cx.notify();
     }
 
     fn finish_inspector_resize(&mut self, cx: &mut Context<Self>) {
         if self.inspector_resize.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn begin_sidebar_resize(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
+        self.sidebar_resize = Some(SidebarResize {
+            start_x: event.position.x,
+            start_width: self.project_sidebar_width,
+        });
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn move_sidebar_resize(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(resize) = self.sidebar_resize else {
+            return;
+        };
+        let maximum = (window.viewport_size().width - px(320.)).max(px(160.));
+        self.project_sidebar_width = (resize.start_width + event.position.x - resize.start_x)
+            .clamp(px(160.), maximum.min(px(600.)));
+        cx.notify();
+    }
+
+    fn finish_sidebar_resize(&mut self, cx: &mut Context<Self>) {
+        if self.sidebar_resize.take().is_some() {
             cx.notify();
         }
     }
@@ -1733,18 +1834,10 @@ impl ViewerApp {
 
     fn remove_metric_panel(&mut self, panel_id: &MetricPanelId, cx: &mut Context<Self>) {
         if self.views.remove_active_panel(panel_id) {
-            self.metric_scroll.reset(self.views.active().panels.len());
+            self.reset_metric_track_schedule();
             self.track_adapters.remove(panel_id);
             self.track_charts.remove(panel_id);
             self.track_hovers.remove(panel_id);
-            let selected_metric = self
-                .views
-                .active()
-                .selected_panel_id
-                .as_ref()
-                .and_then(|selected| self.views.active_panel(selected))
-                .map(|panel| panel.metric_key.clone());
-            self.core.select_metric(selected_metric);
             if let Some(home) = self
                 .views
                 .active()
@@ -1759,9 +1852,9 @@ impl ViewerApp {
                     .expect("valid panel extents must have a valid union")
                 })
             {
-                self.core.set_timeline_home(home);
+                self.navigation.set_timeline_home(home);
             } else {
-                self.core.clear_timeline();
+                self.navigation.clear_timeline();
             }
             cx.notify();
         }
@@ -1871,6 +1964,7 @@ impl ViewerApp {
     }
     fn render_metric_workspace(&mut self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
         self.reconcile_track_schedule(cx);
+        self.sync_track_charts(cx);
         let theme = self.theme;
         let panels: Rc<[MetricPanel]> = self.views.active().panels.clone().into();
         let selected = panels
@@ -1883,7 +1977,7 @@ impl ViewerApp {
         let metric_sidebar_width = self.metric_sidebar_width();
         let timeline = self.render_overview(cx);
         let ruler = self.render_ruler(window, cx);
-        let cursor_layer = self.core.brush().map(|brush| {
+        let cursor_layer = self.navigation.brush().map(|brush| {
             div()
                 .id("metric-cursor-overlay")
                 .debug_selector(|| "metric-cursor-overlay".to_owned())
@@ -1913,9 +2007,9 @@ impl ViewerApp {
         let physical_width = self.overview_width.max(1);
         let logical_width = self.overview_logical_width.max(1.);
         if self.track_viewport.borrow().overscan.is_empty() && panel_count > 0 {
-            let visible = 0..panel_count.min(4);
+            let visible = 0..panel_count.min(INITIAL_VISIBLE_TRACKS);
             *self.track_viewport.borrow_mut() = TrackViewport {
-                overscan: 0..panel_count.min(8),
+                overscan: 0..panel_count.min(INITIAL_OVERSCAN_TRACKS),
                 visible,
                 logical_width_bits: logical_width.to_bits(),
                 physical_width,
@@ -2243,7 +2337,7 @@ impl ViewerApp {
                                         |this, _, _, cx| {
                                             this.axis_picker_open = false;
                                             this.views.clear_active_timeline_extents();
-                                            this.core.select_axis(AlignmentAxis::Step);
+                                            this.navigation.select_axis(AlignmentAxis::Step);
                                             this.request_overview(cx);
                                             cx.notify();
                                         },
@@ -2262,7 +2356,7 @@ impl ViewerApp {
                                         |this, _, _, cx| {
                                             this.axis_picker_open = false;
                                             this.views.clear_active_timeline_extents();
-                                            this.core.select_axis(AlignmentAxis::ElapsedTime);
+                                            this.navigation.select_axis(AlignmentAxis::ElapsedTime);
                                             this.request_overview(cx);
                                             cx.notify();
                                         },
@@ -2281,7 +2375,7 @@ impl ViewerApp {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
-        let (selected, home) = self.core.brush().map_or((None, None), |brush| {
+        let (selected, home) = self.navigation.brush().map_or((None, None), |brush| {
             (Some(brush.selected()), Some(brush.home()))
         });
         let mut ticks = selected
@@ -2482,8 +2576,8 @@ impl ViewerApp {
             }))
             .children(selected.zip(hover_axis).map(|(range, value)| {
                 let ratio = ((value - range.start()) / range.span()).clamp(0., 1.) as f32;
-                let label = format_cursor_coordinate(axis, value);
-                let width = px((label.chars().count() as f32 * 7. + 14.).clamp(36., 96.));
+                let label = format_ruler_coordinate(axis, value);
+                let width = px((label.chars().count() as f32 * 7. + 14.).clamp(36., 160.));
                 let offset = if ratio < 0.08 {
                     px(0.)
                 } else if ratio > 0.92 {
@@ -2515,7 +2609,7 @@ impl ViewerApp {
     }
 
     fn ruler_axis_at(&self, position: gpui::Point<gpui::Pixels>, window: &Window) -> Option<f64> {
-        let range = self.core.brush()?.selected();
+        let range = self.navigation.brush()?.selected();
         let (left, width) = self.ruler_plot_geometry(window);
         let ratio = (f64::from(position.x - left) / f64::from(width)).clamp(0., 1.);
         Some(range.start() + range.span() * ratio)
@@ -2538,12 +2632,13 @@ impl ViewerApp {
         } else {
             f32::from(delta.y)
         };
-        let Some(before) = self.core.brush().map(|brush| brush.selected()) else {
+        let Some(before) = self.navigation.brush().map(|brush| brush.selected()) else {
             return;
         };
-        let transformed = if event.modifiers.platform || event.modifiers.control {
+        let zooming = event.modifiers.platform || event.modifiers.control;
+        let transformed = if zooming {
             self.ruler_axis_at(event.position, window)
-                .zip(self.core.brush_mut())
+                .zip(self.navigation.brush_mut())
                 .is_some_and(|(anchor, brush)| {
                     let factor = f64::from((-delta * 0.002).exp().clamp(0.5, 2.));
                     brush.zoom_at(anchor, factor).is_ok()
@@ -2551,19 +2646,24 @@ impl ViewerApp {
         } else {
             let (_, width) = self.ruler_plot_geometry(window);
             let axis_delta = -f64::from(delta) * before.span() / f64::from(width);
-            self.core
+            self.navigation
                 .brush_mut()
                 .is_some_and(|brush| brush.pan_by(axis_delta).is_ok())
         };
         if transformed
             && self
-                .core
+                .navigation
                 .brush()
                 .is_some_and(|brush| brush.selected() != before)
         {
+            if zooming {
+                self.defer_metric_repaint(cx);
+            } else {
+                self.sync_track_charts(cx);
+                cx.notify();
+            }
             self.schedule_detail_refresh(cx);
             cx.stop_propagation();
-            cx.notify();
         }
     }
 
@@ -2597,10 +2697,11 @@ impl ViewerApp {
             .zip(self.ruler_axis_at(event.position, window))
             .map(|(previous, current)| previous - current);
         if let Some(delta) = delta
-            && let Some(brush) = self.core.brush_mut()
+            && let Some(brush) = self.navigation.brush_mut()
         {
             let _ = brush.pan_by(delta);
         }
+        self.sync_track_charts(cx);
         self.drag = Some(DragGesture::Ruler {
             origin_x,
             last_x: current_x,
@@ -2628,7 +2729,6 @@ impl ViewerApp {
 
     fn render_bottom_inspector(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
         let theme = self.theme;
-        let active_tab = self.views.active().inspector_tab;
         let panel = self
             .views
             .active()
@@ -2636,172 +2736,36 @@ impl ViewerApp {
             .as_ref()
             .and_then(|panel_id| self.views.active_panel(panel_id))
             .cloned();
-        let metric_name = panel.as_ref().map_or_else(
-            || "No Metric selected".to_owned(),
-            |panel| panel.metric_key.as_str().to_owned(),
-        );
-        let cursor_coordinate = self.locked_cursor.or(self.hover_cursor_axis()).map_or_else(
-            || "—".to_owned(),
-            |value| format_cursor_coordinate(self.curve_axis(), value),
-        );
-        let inspector_context = format!("Selected: {metric_name} · cursor {cursor_coordinate}");
+        let hover_cursor = self.hover_cursor_axis();
         let snapshot = panel.as_ref().and_then(|panel| panel.inspector.as_deref());
         let baseline = self.views.active().baseline.clone();
+        let pinned = self.views.active().pinned_runs.clone();
+        let visible_runs = self.active_visible_runs();
         let body = if panel
             .as_ref()
             .is_some_and(|panel| panel.is_pending(ReadKind::Inspector))
+            && snapshot.is_none()
         {
             div().child("Loading metric summaries and objective evidence…")
         } else {
-            match active_tab {
-                InspectorTab::Summary => {
-                    let rows = snapshot
-                        .into_iter()
-                        .flat_map(|snapshot| {
-                            snapshot.runs.iter().map(|run| {
-                                let Some(stats) = &run.summary else {
-                                    return vec![
-                                        run.run.name.clone(),
-                                        "—".to_owned(),
-                                        "—".to_owned(),
-                                        "—".to_owned(),
-                                        "—".to_owned(),
-                                        "—".to_owned(),
-                                    ];
-                                };
-                                vec![
-                                    run.run.name.clone(),
-                                    stats.effective_count.to_string(),
-                                    stats.last_step.value().to_string(),
-                                    format!("{:.6}", stats.last_value_f64),
-                                    format!("{:.6}", stats.min_value_f64),
-                                    format!("{:.6}", stats.max_value_f64),
-                                ]
-                            })
-                        })
-                        .collect();
-                    inspector_table(
-                        &[
-                            ("Run", 180., false),
-                            ("Count", 90., true),
-                            ("Last step", 100., true),
-                            ("Last value", 150., true),
-                            ("Min", 110., true),
-                            ("Max", 110., true),
-                        ],
-                        rows,
-                        theme,
+            let rows = panel
+                .as_ref()
+                .zip(snapshot)
+                .map_or_else(Vec::new, |(panel, snapshot)| {
+                    inspector_rows(
+                        panel,
+                        snapshot,
+                        InspectorRowsContext {
+                            visible_runs: &visible_runs,
+                            baseline: baseline.as_ref(),
+                            pinned: &pinned,
+                            locked_axis: self.locked_cursor,
+                            hover_axis: hover_cursor,
+                            sort: self.inspector_sort,
+                        },
                     )
-                }
-                InspectorTab::Ranking => {
-                    let direction = self.views.active().ranking_direction;
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .gap_1()
-                                .child(
-                                    components::toolbar_button(
-                                        "ranking-minimize",
-                                        theme,
-                                        direction == Some(ObjectiveDirection::Minimize),
-                                        false,
-                                    )
-                                    .debug_selector(|| "ranking-minimize".to_owned())
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.select_ranking_direction(
-                                            ObjectiveDirection::Minimize,
-                                            cx,
-                                        );
-                                    }))
-                                    .child("Minimize"),
-                                )
-                                .debug_selector(|| "axis-time".to_owned())
-                                .child(
-                                    components::toolbar_button(
-                                        "ranking-maximize",
-                                        theme,
-                                        direction == Some(ObjectiveDirection::Maximize),
-                                        false,
-                                    )
-                                    .debug_selector(|| "ranking-maximize".to_owned())
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.select_ranking_direction(
-                                            ObjectiveDirection::Maximize,
-                                            cx,
-                                        );
-                                    }))
-                                    .child("Maximize"),
-                                ),
-                        )
-                        .child(inspector_table(
-                            &[
-                                ("Rank", 60., true),
-                                ("Run", 180., false),
-                                ("Role", 90., false),
-                                ("Status", 90., false),
-                                ("Objective", 120., true),
-                                ("Δ vs baseline", 130., true),
-                                ("Evidence", 140., false),
-                                ("Project · Source", 240., false),
-                            ],
-                            direction
-                                .zip(snapshot)
-                                .map_or_else(Vec::new, |(_, snapshot)| {
-                                    ranking_table_rows(snapshot, baseline.as_ref())
-                                }),
-                            theme,
-                        ))
-                }
-                InspectorTab::Evidence => {
-                    let rows = snapshot
-                        .into_iter()
-                        .flat_map(|snapshot| {
-                            snapshot.runs.iter().map(|run| {
-                                vec![
-                                    run.run.name.clone(),
-                                    run_status(run.evidence.run_status).to_owned(),
-                                    run.evidence.last_step.map_or_else(
-                                        || "—".to_owned(),
-                                        |step| step.value().to_string(),
-                                    ),
-                                    run.evidence.last_value_f64.map_or_else(
-                                        || "—".to_owned(),
-                                        |value| format!("{value:.6}"),
-                                    ),
-                                    format!(
-                                        "{:?}{}",
-                                        run.evidence.completeness,
-                                        reasons_label(&run.evidence.reasons)
-                                    ),
-                                    format!(
-                                        "{} · {}",
-                                        run.run_ref.project_id.as_str(),
-                                        run.run_ref.source_id
-                                    ),
-                                ]
-                            })
-                        })
-                        .collect();
-                    inspector_table(
-                        &[
-                            ("Run", 180., false),
-                            ("Status", 90., false),
-                            ("Last step", 100., true),
-                            ("Last value", 150., true),
-                            ("Completeness", 180., false),
-                            ("Project · Source", 260., false),
-                        ],
-                        rows,
-                        theme,
-                    )
-                }
-            }
+                });
+            self.render_inspector_table(rows, cx)
         };
 
         div()
@@ -2811,135 +2775,235 @@ impl ViewerApp {
             .flex_shrink_0()
             .flex()
             .flex_col()
+            .relative()
+            .overflow_hidden()
             .bg(theme.colors.surface)
             .border_t_1()
             .border_color(theme.colors.border)
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if event.dragging() {
-                    this.move_inspector_resize(event, cx);
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.finish_inspector_resize(cx);
-                }),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    this.finish_inspector_resize(cx);
-                }),
-            )
-            .child(
-                div()
-                    .id("bottom-inspector-resize")
-                    .debug_selector(|| "bottom-inspector-resize".to_owned())
-                    .h(px(5.))
-                    .flex_shrink_0()
-                    .cursor(gpui::CursorStyle::ResizeUpDown)
-                    .hover(|style| style.bg(theme.colors.focus))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, event: &MouseDownEvent, _, cx| {
-                            this.begin_inspector_resize(event, cx);
-                        }),
-                    ),
-            )
-            .child(
-                div()
-                    .id("bottom-inspector-header")
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .h(theme.spacing.tab_height)
-                    .flex_shrink_0()
-                    .overflow_hidden()
-                    .px(theme.spacing.panel_padding)
-                    .border_b_1()
-                    .border_color(theme.colors.border)
-                    .child(
-                        components::toolbar_button(
-                            "inspector-summary",
-                            theme,
-                            active_tab == InspectorTab::Summary,
-                            false,
-                        )
-                        .debug_selector(|| "inspector-summary".to_owned())
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.select_inspector_tab(InspectorTab::Summary, cx);
-                        }))
-                        .child("Summary"),
-                    )
-                    .child(
-                        components::toolbar_button(
-                            "inspector-ranking",
-                            theme,
-                            active_tab == InspectorTab::Ranking,
-                            false,
-                        )
-                        .debug_selector(|| "inspector-ranking".to_owned())
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.select_inspector_tab(InspectorTab::Ranking, cx);
-                        }))
-                        .child("Ranking"),
-                    )
-                    .child(
-                        components::toolbar_button(
-                            "inspector-evidence",
-                            theme,
-                            active_tab == InspectorTab::Evidence,
-                            false,
-                        )
-                        .debug_selector(|| "inspector-evidence".to_owned())
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.select_inspector_tab(InspectorTab::Evidence, cx);
-                        }))
-                        .child("Evidence"),
-                    )
-                    .child(
-                        div()
-                            .id("inspector-context")
-                            .debug_selector(|| "inspector-context".to_owned())
-                            .flex_1()
-                            .min_w(px(0.))
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_right()
-                            .text_xs()
-                            .text_color(theme.colors.text_muted)
-                            .child(inspector_context),
-                    )
-                    .child(
-                        components::icon_button("close-inspector", theme, false, false)
-                            .debug_selector(|| "close-inspector".to_owned())
-                            .tooltip(components::label_tooltip("Hide inspector", theme))
-                            .flex_none()
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.bottom_inspector_visible = false;
-                                this.focus.focus(window);
-                                cx.stop_propagation();
-                                cx.notify();
-                            }))
-                            .child(components::icon(IconName::Close, theme)),
-                    ),
-            )
             .child(
                 body.id("bottom-inspector-scroll")
                     .debug_selector(|| "bottom-inspector-scroll".to_owned())
                     .flex_1()
                     .min_h(px(0.))
-                    .overflow_x_scroll()
-                    .overflow_y_scroll()
                     .whitespace_nowrap()
-                    .p(theme.spacing.content_padding)
-                    .text_sm()
+                    .text_xs()
                     .text_color(theme.colors.text_muted),
             )
+            .child(
+                horizontal_resize_handle(
+                    SharedString::from("bottom-inspector-resize"),
+                    theme,
+                    self.inspector_resize.is_some(),
+                    true,
+                )
+                .debug_selector(|| "bottom-inspector-resize".to_owned())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        this.begin_inspector_resize(event, cx);
+                    }),
+                ),
+            )
+    }
+
+    fn render_inspector_table(
+        &mut self,
+        rows: Vec<InspectorRow>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let theme = self.theme;
+        let sort = self.inspector_sort;
+        let mut column_widths = self.inspector_column_widths;
+        column_widths[InspectorColumn::Project.index()] = inspector_project_width(&rows);
+        let resizing_column = self.inspector_column_resize.map(|resize| resize.column);
+        let run_width = column_widths[InspectorColumn::Run.index()];
+        let baseline = rows.iter().find(|row| row.baseline).cloned();
+        let content_width = INSPECTOR_COLUMNS
+            .into_iter()
+            .skip(1)
+            .map(|column| column_widths[column.index()])
+            .sum::<f32>();
+        let body_height = px(f32::from(theme.spacing.control_height) * rows.len() as f32);
+        let run_header_direction = sort
+            .filter(|sort| sort.column == InspectorColumn::Run)
+            .map(|sort| sort.direction);
+        let run_header = inspector_header_cell(
+            InspectorColumn::Run,
+            run_width,
+            run_header_direction,
+            resizing_column == Some(InspectorColumn::Run),
+            theme,
+            cx,
+        )
+        .bg(theme.colors.surface)
+        .border_r_1()
+        .border_color(theme.colors.border);
+        let header_content = div()
+            .min_w(px(content_width))
+            .h(theme.spacing.control_height)
+            .flex_none()
+            .flex()
+            .items_center()
+            .children(INSPECTOR_COLUMNS.into_iter().skip(1).map(|column| {
+                let active_direction = sort
+                    .filter(|sort| sort.column == column)
+                    .map(|sort| sort.direction);
+                inspector_header_cell(
+                    column,
+                    column_widths[column.index()],
+                    active_direction,
+                    resizing_column == Some(column),
+                    theme,
+                    cx,
+                )
+            }));
+        let header_scroll = div()
+            .id("inspector-header-scroll")
+            .debug_selector(|| "inspector-header-scroll".to_owned())
+            .flex_1()
+            .min_w(px(0.))
+            .h(theme.spacing.control_height)
+            .overflow_x_scroll()
+            .track_scroll(&self.inspector_horizontal_scroll)
+            .map(|mut viewport| {
+                viewport.style().restrict_scroll_to_axis = Some(true);
+                viewport
+            })
+            .child(header_content);
+        let header = div()
+            .id("inspector-table-header")
+            .debug_selector(|| "inspector-table-header".to_owned())
+            .h(theme.spacing.control_height)
+            .flex_none()
+            .flex()
+            .child(run_header)
+            .child(header_scroll);
+        let run_column = div()
+            .id("inspector-sticky-run-column")
+            .debug_selector(|| "inspector-sticky-run-column".to_owned())
+            .w(px(run_width))
+            .h(body_height)
+            .flex_none()
+            .flex()
+            .flex_col()
+            .children(rows.iter().map(|row| {
+                let run_ref = row.run_ref.clone();
+                let color = theme
+                    .colors
+                    .series_color(renderer::series_color_index(&run_ref));
+                let highlighted = self.hovered_run.as_ref() == Some(&run_ref);
+                inspector_run_cell(row, run_width, color, theme)
+                    .id(SharedString::from(format!(
+                        "inspector-sticky-run:{}",
+                        run_ref.cache_key()
+                    )))
+                    .debug_selector({
+                        let run_id = run_ref.run_id.as_str().to_owned();
+                        move || format!("inspector-sticky-run:{run_id}")
+                    })
+                    .h(theme.spacing.control_height)
+                    .flex_none()
+                    .bg(if highlighted {
+                        theme.colors.element_hover
+                    } else {
+                        theme.colors.surface
+                    })
+                    .border_r_1()
+                    .border_b_1()
+                    .border_color(theme.colors.border)
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        if *hovered {
+                            this.hovered_run = Some(run_ref.clone());
+                        } else if this.hovered_run.as_ref() == Some(&run_ref) {
+                            this.hovered_run = None;
+                        }
+                        cx.notify();
+                    }))
+            }));
+        let table = div()
+            .id("inspector-table")
+            .debug_selector(|| "inspector-table".to_owned())
+            .min_w(px(content_width))
+            .h(body_height)
+            .flex_none()
+            .flex()
+            .flex_col()
+            .children(rows.iter().map(|row| {
+                let run_ref = row.run_ref.clone();
+                let row_id = run_ref.cache_key();
+                let row_run_id = run_ref.run_id.as_str().to_owned();
+                let values = INSPECTOR_COLUMNS
+                    .into_iter()
+                    .skip(1)
+                    .map(|column| (column, inspector_cell_text(column, row, baseline.as_ref())));
+                let highlighted = self.hovered_run.as_ref() == Some(&run_ref);
+                div()
+                    .id(SharedString::from(format!("inspector-row:{row_id}")))
+                    .debug_selector(move || format!("inspector-row:{row_run_id}"))
+                    .h(theme.spacing.control_height)
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(theme.colors.border)
+                    .when(highlighted, |item| item.bg(theme.colors.element_hover))
+                    .on_hover(cx.listener(move |this, hovered, _, cx| {
+                        if *hovered {
+                            this.hovered_run = Some(run_ref.clone());
+                        } else if this.hovered_run.as_ref() == Some(&run_ref) {
+                            this.hovered_run = None;
+                        }
+                        cx.notify();
+                    }))
+                    .children(values.map(|(column, value)| {
+                        div()
+                            .w(px(column_widths[column.index()]))
+                            .h_full()
+                            .flex_none()
+                            .px_2()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .when(column.right_aligned(), |cell| cell.justify_end())
+                            .child(value)
+                    }))
+            }));
+        let horizontal_body = div()
+            .id("inspector-body-horizontal-scroll")
+            .debug_selector(|| "inspector-body-horizontal-scroll".to_owned())
+            .flex_1()
+            .min_w(px(0.))
+            .h(body_height)
+            .overflow_x_scroll()
+            .track_scroll(&self.inspector_horizontal_scroll)
+            .map(|mut viewport| {
+                viewport.style().restrict_scroll_to_axis = Some(true);
+                viewport
+            })
+            .child(table);
+        let body = div()
+            .h(body_height)
+            .flex_none()
+            .flex()
+            .child(run_column)
+            .child(horizontal_body);
+        let vertical_body = div()
+            .id("inspector-body-vertical-scroll")
+            .debug_selector(|| "inspector-body-vertical-scroll".to_owned())
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .track_scroll(&self.inspector_vertical_scroll)
+            .child(body);
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(vertical_body)
     }
 
     fn panel_is_scheduled(&self, panel_id: &MetricPanelId) -> bool {
@@ -2971,7 +3035,7 @@ impl ViewerApp {
         if state.overscan.is_empty() || state.logical_width_bits == 0 {
             return;
         }
-        let Some(detail_viewport) = self.core.selected_viewport() else {
+        let Some(detail_viewport) = self.navigation.selected_viewport() else {
             return;
         };
         let panel_count = self.views.active().panels.len();
@@ -2993,25 +3057,17 @@ impl ViewerApp {
             let canvas_height = f64::from(panel.row_height)
                 - f64::from(METRIC_TRACK_VERTICAL_PADDING * 2. + METRIC_TRACK_SEPARATOR_WIDTH);
             let canvas = CanvasSize::new(logical_width, canvas_height.max(1.)).ok();
-            if let Some(snapshot) = panel.detail.as_deref()
-                && let Some(viewport) = renderer::detail_viewport(
-                    snapshot,
-                    self.core.brush().map(|brush| brush.selected()),
-                    Some(&visible_runs),
-                )
-                && let Some(canvas) = canvas
+            if let Some((snapshot, revision, viewport)) = track_chart_frame(
+                &panel,
+                self.navigation.brush().map(|brush| brush.selected()),
+                &visible_runs,
+            ) && let Some(canvas) = canvas
             {
                 self.track_adapters
                     .entry(panel.panel_id.clone())
                     .or_insert_with(|| Rc::new(RefCell::new(ChartAdapter::default())))
                     .borrow_mut()
-                    .warm_projection(
-                        snapshot,
-                        panel.detail_revision,
-                        viewport,
-                        canvas,
-                        &visible_runs,
-                    );
+                    .warm_projection(&snapshot, revision, viewport, canvas, &visible_runs);
             }
             if self.should_schedule_panel_detail(
                 &panel.panel_id,
@@ -3041,6 +3097,10 @@ impl ViewerApp {
         let drag_id = panel_id.clone();
         let finish_id = panel_id.clone();
         let resize_id = panel_id.clone();
+        let resizing = self
+            .metric_resize
+            .as_ref()
+            .is_some_and(|resize| resize.panel_id == panel_id);
         let selected = self.views.active().selected_panel_id.as_ref() == Some(&panel_id);
         let visible_run_count = self.active_visible_runs().len();
         let error_count = panel.source_errors.len();
@@ -3193,28 +3253,22 @@ impl ViewerApp {
                     .child(track),
             )
             .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "metric-resize:{}",
-                        resize_id.as_str()
-                    )))
-                    .debug_selector({
-                        let resize_id = resize_id.clone();
-                        move || format!("metric-resize:{}", resize_id.as_str())
-                    })
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .w_full()
-                    .h(px(5.))
-                    .cursor(gpui::CursorStyle::ResizeUpDown)
-                    .hover(|style| style.bg(theme.colors.focus))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                            this.begin_metric_resize(resize_id.clone(), event, cx);
-                        }),
-                    ),
+                horizontal_resize_handle(
+                    SharedString::from(format!("metric-resize:{}", resize_id.as_str())),
+                    theme,
+                    resizing,
+                    false,
+                )
+                .debug_selector({
+                    let resize_id = resize_id.clone();
+                    move || format!("metric-resize:{}", resize_id.as_str())
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.begin_metric_resize(resize_id.clone(), event, cx);
+                    }),
+                ),
             )
     }
 
@@ -3226,7 +3280,7 @@ impl ViewerApp {
                 .entry(panel_id.clone())
                 .or_insert_with(|| Rc::new(RefCell::new(ChartAdapter::default()))),
         );
-        let Some(snapshot) = panel.detail.clone() else {
+        if panel.detail.is_none() {
             let message = if panel.is_pending(ReadKind::Detail) {
                 "Loading viewport…"
             } else if panel.overview.is_some() {
@@ -3241,10 +3295,11 @@ impl ViewerApp {
                 .justify_center()
                 .text_color(theme.colors.text_muted)
                 .child(message);
-        };
+        }
         let visible_runs: Rc<[RunRef]> = self.active_visible_runs().into();
-        let selected = self.core.brush().map(|brush| brush.selected());
-        let Some(viewport) = renderer::detail_viewport(&snapshot, selected, Some(&visible_runs))
+        let selected = self.navigation.brush().map(|brush| brush.selected());
+        let Some((snapshot, revision, viewport)) =
+            track_chart_frame(panel, selected, &visible_runs)
         else {
             return div()
                 .size_full()
@@ -3266,7 +3321,7 @@ impl ViewerApp {
             chart.update(cx, |chart, cx| {
                 if chart.update(
                     snapshot.clone(),
-                    panel.detail_revision,
+                    revision,
                     viewport,
                     baseline.clone(),
                     emphasized_run.clone(),
@@ -3281,7 +3336,7 @@ impl ViewerApp {
                 renderer::DetailChart::new(
                     Rc::clone(&paint_adapter),
                     snapshot.clone(),
-                    panel.detail_revision,
+                    revision,
                     viewport,
                     baseline.clone(),
                     emphasized_run.clone(),
@@ -3330,36 +3385,25 @@ impl ViewerApp {
             )
             .into_iter()
             .map(|hover| {
-                let delta = baseline.as_ref().and_then(|baseline| {
-                    if baseline == &hover.run_ref && sidebar_locked {
-                        Some(0.)
-                    } else {
-                        baseline_delta(panel, baseline, &hover)
-                    }
-                });
+                let delta = baseline
+                    .as_ref()
+                    .and_then(|baseline| baseline_delta(panel, baseline, &hover));
                 (hover, delta)
             })
             .collect::<Vec<_>>();
         if !sidebar_locked {
             let pinned = &self.views.active().pinned_runs;
-            callouts.sort_by(|(left, left_delta), (right, right_delta)| {
-                let priority = |hover: &HoverPoint| {
-                    if baseline.as_ref() == Some(&hover.run_ref) {
-                        0
-                    } else if pinned.contains(&hover.run_ref) {
-                        1
-                    } else {
-                        2
-                    }
-                };
-                priority(left).cmp(&priority(right)).then_with(|| {
-                    right_delta
-                        .unwrap_or(0.)
-                        .abs()
-                        .total_cmp(&left_delta.unwrap_or(0.).abs())
-                })
+            callouts.sort_by_key(|(hover, _)| {
+                if baseline.as_ref() == Some(&hover.run_ref) {
+                    0
+                } else if pinned.contains(&hover.run_ref) {
+                    1
+                } else {
+                    2
+                }
             });
         }
+        callouts.truncate(1);
         let tooltip_anchor = callouts.first().map(|(hover, _)| {
             (
                 hover.canvas_position.x,
@@ -3367,81 +3411,38 @@ impl ViewerApp {
                 hover.align_left,
             )
         });
-        let row_limit = if sidebar_locked {
-            1
-        } else {
-            track_tooltip_row_limit(panel.row_height)
-        };
-        let tooltip_rows = if sidebar_locked {
-            callouts
-                .first()
-                .map(|(hover, delta)| {
-                    vec![(
-                        Some(
-                            theme
-                                .colors
-                                .series_color(renderer::series_color_index(&hover.run_ref)),
-                        ),
-                        locked_hover_value_label(callout_axis, hover, *delta),
-                    )]
-                })
-                .unwrap_or_default()
-        } else if callouts.len() > row_limit && row_limit == 1 {
-            let (minimum, maximum) = callouts.iter().map(|(hover, _)| hover.value).fold(
-                (f64::INFINITY, f64::NEG_INFINITY),
-                |(minimum, maximum), value| (minimum.min(value), maximum.max(value)),
-            );
-            let label = if (maximum - minimum).abs() < 0.005 {
-                format!("{} runs · {minimum:.2}", callouts.len())
-            } else {
-                format!("{} runs · {minimum:.2}–{maximum:.2}", callouts.len())
-            };
-            vec![(None, label)]
-        } else {
-            let visible_count = if callouts.len() > row_limit {
-                row_limit.saturating_sub(1)
-            } else {
-                callouts.len()
-            };
-            let mut rows = callouts
-                .iter()
-                .take(visible_count)
-                .map(|(hover, delta)| {
-                    (
-                        Some(
-                            theme
-                                .colors
-                                .series_color(renderer::series_color_index(&hover.run_ref)),
-                        ),
-                        hover_value_label(hover, *delta),
-                    )
-                })
-                .collect::<Vec<_>>();
-            if callouts.len() > visible_count {
-                rows.push((None, format!("+{} more", callouts.len() - visible_count)));
-            }
-            rows
-        };
+        let tooltip_rows = callouts
+            .first()
+            .map(|(hover, delta)| {
+                vec![(
+                    Some(
+                        theme
+                            .colors
+                            .series_color(renderer::series_color_index(&hover.run_ref)),
+                    ),
+                    hover_value_label(callout_axis, hover, *delta),
+                )]
+            })
+            .unwrap_or_default();
         let callout_panel = panel_id.clone();
         let tooltip = tooltip_anchor
             .zip((!tooltip_rows.is_empty()).then_some(tooltip_rows))
             .map(move |((x, y, align_left), rows)| {
-                let height = px(8. + rows.len() as f32 * 20.);
+                let height = px(22.);
                 let width = px(track_tooltip_width(
                     rows.iter().map(|(_, label)| label.as_str()),
                 ));
+                let arrow_width = px(9.);
+                let total_width = width + arrow_width;
                 let top = (y - height / 2.)
                     .max(px(0.))
                     .min((px(panel.row_height) - height).max(px(0.)));
                 let left = if align_left {
-                    (x - width - px(10.)).max(px(0.))
+                    (x - total_width).max(px(0.))
                 } else {
-                    x + px(10.)
+                    x
                 };
-                let pointer_top = (y - top - px(6.))
-                    .max(px(2.))
-                    .min((height - px(14.)).max(px(2.)));
-                components::tooltip(theme)
+                div()
                     .id(SharedString::from(format!(
                         "track-hover-callout:{}",
                         callout_panel.as_str()
@@ -3450,52 +3451,54 @@ impl ViewerApp {
                     .absolute()
                     .left(left)
                     .top(top)
-                    .w(width)
-                    .rounded(px(2.))
-                    .border_color(theme.colors.text_muted)
-                    .bg(theme.colors.surface)
+                    .w(total_width)
+                    .h(height)
                     .text_color(theme.colors.text)
-                    .px_2()
-                    .py_1()
-                    .flex()
-                    .flex_col()
                     .child(
-                        renderer::callout_pointer(
+                        renderer::callout_shell(
                             align_left,
+                            y - top,
                             theme.colors.surface,
                             theme.colors.text_muted,
                         )
                         .absolute()
-                        .top(pointer_top)
-                        .when(align_left, |pointer| pointer.right(px(-10.)))
-                        .when(!align_left, |pointer| pointer.left(px(-10.))),
+                        .inset_0(),
                     )
-                    .children(rows.into_iter().map(|(color, label)| {
+                    .child(
                         div()
-                            .h(px(20.))
-                            .min_w(px(0.))
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .text_xs()
-                            .child(
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .when(align_left, |content| content.left_0().right(arrow_width))
+                            .when(!align_left, |content| content.left(arrow_width).right_0())
+                            .px_2()
+                            .children(rows.into_iter().map(|(color, label)| {
                                 div()
-                                    .debug_selector(|| "track-tooltip-color".to_owned())
-                                    .size(px(7.))
-                                    .flex_none()
-                                    .rounded(px(3.5))
-                                    .bg(color.unwrap_or(theme.colors.transparent)),
-                            )
-                            .child(
-                                div()
-                                    .debug_selector(|| "track-tooltip-label".to_owned())
-                                    .flex_1()
+                                    .h_full()
                                     .min_w(px(0.))
-                                    .overflow_hidden()
-                                    .whitespace_nowrap()
-                                    .child(label),
-                            )
-                    }))
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_xs()
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "track-tooltip-color".to_owned())
+                                            .size(px(7.))
+                                            .flex_none()
+                                            .rounded(px(3.5))
+                                            .bg(color.unwrap_or(theme.colors.transparent)),
+                                    )
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "track-tooltip-label".to_owned())
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .overflow_hidden()
+                                            .whitespace_nowrap()
+                                            .child(label),
+                                    )
+                            })),
+                    )
             });
         div()
             .relative()
@@ -3539,9 +3542,60 @@ impl ViewerApp {
             .children(tooltip)
     }
 
+    fn sync_track_charts(&mut self, cx: &mut Context<Self>) {
+        let visible_runs: Rc<[RunRef]> = self.active_visible_runs().into();
+        let selected = self.navigation.brush().map(|brush| brush.selected());
+        let baseline = self.views.active().baseline.clone();
+        let emphasized_run = self
+            .hovered_run
+            .clone()
+            .filter(|run| visible_runs.contains(run));
+        let panels = self.views.active().panels.clone();
+        for panel in panels {
+            let Some(chart) = self.track_charts.get(&panel.panel_id).cloned() else {
+                continue;
+            };
+            let Some((snapshot, revision, viewport)) =
+                track_chart_frame(&panel, selected, &visible_runs)
+            else {
+                continue;
+            };
+            chart.update(cx, |chart, cx| {
+                let changed = chart.update(
+                    snapshot,
+                    revision,
+                    viewport,
+                    baseline.clone(),
+                    emphasized_run.clone(),
+                    Rc::clone(&visible_runs),
+                );
+                if changed {
+                    cx.notify();
+                }
+            });
+        }
+    }
+
+    fn defer_metric_repaint(&mut self, cx: &mut Context<Self>) {
+        if self.metric_repaint_pending {
+            return;
+        }
+        self.metric_repaint_pending = true;
+        // CONTEXT: The next foreground turn mirrors the repaint caused by a later input event,
+        // after GPUI has finished dispatching the viewport-changing event.
+        cx.spawn(async move |this, cx| {
+            let _ = this.update(cx, |this, cx| {
+                this.metric_repaint_pending = false;
+                this.sync_track_charts(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let theme = self.theme;
-        let Some(brush) = self.core.brush() else {
+        let Some(brush) = self.navigation.brush() else {
             return div().h_full();
         };
         let (snapshot, revision) = self
@@ -3603,7 +3657,7 @@ impl ViewerApp {
     }
 
     fn begin_brush_drag(&mut self, event: &MouseDownEvent, cx: &mut Context<Self>) {
-        let Some(brush) = self.core.brush() else {
+        let Some(brush) = self.navigation.brush() else {
             return;
         };
         let adapter = self.chart_adapter.borrow();
@@ -3622,7 +3676,7 @@ impl ViewerApp {
         let Some(mut gesture) = self.drag.clone() else {
             return;
         };
-        let Some(brush) = self.core.brush() else {
+        let Some(brush) = self.navigation.brush() else {
             return;
         };
         let Some(axis) = self
@@ -3632,10 +3686,11 @@ impl ViewerApp {
         else {
             return;
         };
-        if let Some(brush) = self.core.brush_mut() {
+        if let Some(brush) = self.navigation.brush_mut() {
             update_brush_drag(brush, &mut gesture, axis);
         }
         self.drag = Some(gesture);
+        self.sync_track_charts(cx);
         cx.notify();
     }
 
@@ -3669,7 +3724,7 @@ impl ViewerApp {
             return;
         }
         moved = true;
-        let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
+        let Some(range) = self.navigation.brush().map(|brush| brush.selected()) else {
             self.drag = Some(DragGesture::Detail {
                 panel_id,
                 origin_x,
@@ -3684,7 +3739,7 @@ impl ViewerApp {
                 .detail_pan_delta(range, last_x, event.position)
         });
         if let Some(delta) = delta
-            && let Some(brush) = self.core.brush_mut()
+            && let Some(brush) = self.navigation.brush_mut()
         {
             let _ = brush.pan_by(delta);
         }
@@ -3695,6 +3750,7 @@ impl ViewerApp {
             last_x,
             moved,
         });
+        self.sync_track_charts(cx);
         cx.notify();
     }
 
@@ -3714,7 +3770,7 @@ impl ViewerApp {
         };
         if let Some(position) = click_position {
             self.drag = None;
-            let range = self.core.brush().map(|brush| brush.selected());
+            let range = self.navigation.brush().map(|brush| brush.selected());
             self.locked_cursor = range.and_then(|range| {
                 self.track_adapters
                     .get(panel_id)
@@ -3755,7 +3811,7 @@ impl ViewerApp {
         event: &ScrollWheelEvent,
         cx: &mut Context<Self>,
     ) {
-        let Some(range) = self.core.brush().map(|brush| brush.selected()) else {
+        let Some(range) = self.navigation.brush().map(|brush| brush.selected()) else {
             return;
         };
         let Some(anchor) = self
@@ -3768,15 +3824,15 @@ impl ViewerApp {
         let delta = f32::from(event.delta.pixel_delta(px(16.)).y);
         let factor = f64::from((-delta / 240.).exp().clamp(0.5, 2.));
         if self
-            .core
+            .navigation
             .brush_mut()
             .is_none_or(|brush| brush.zoom_at(anchor, factor).is_err())
         {
             return;
         }
+        self.defer_metric_repaint(cx);
         self.schedule_detail_refresh(cx);
         cx.stop_propagation();
-        cx.notify();
     }
 
     fn update_track_hover(
@@ -3797,7 +3853,7 @@ impl ViewerApp {
         let visible_runs = self.active_visible_runs();
         let Some(viewport) = renderer::detail_viewport(
             &snapshot,
-            self.core.brush().map(|brush| brush.selected()),
+            self.navigation.brush().map(|brush| brush.selected()),
             Some(&visible_runs),
         ) else {
             return;
@@ -3870,10 +3926,10 @@ impl ViewerApp {
             .iter()
             .enumerate()
             .map(|(index, view)| {
-                let core = if index == active_index {
-                    &self.core
+                let navigation = if index == active_index {
+                    &self.navigation
                 } else {
-                    &view.core
+                    &view.navigation
                 };
                 SavedAnalysisView {
                     name: view.name.clone(),
@@ -3897,11 +3953,9 @@ impl ViewerApp {
                             view.panels.iter().find(|panel| &panel.panel_id == panel_id)
                         })
                         .map(|panel| panel.metric_key.as_str().to_owned()),
-                    inspector_tab: view.inspector_tab,
-                    ranking_direction: view.ranking_direction,
-                    axis: core.axis(),
+                    axis: navigation.axis(),
                     track_density: view.track_density,
-                    viewport: core.brush().map(|brush| brush.selected()),
+                    viewport: navigation.brush().map(|brush| brush.selected()),
                 }
             })
             .collect();
@@ -3988,21 +4042,30 @@ impl Render for ViewerApp {
         div()
             .track_focus(&self.focus)
             .tab_group()
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if event.dragging() && this.metric_resize.is_some() {
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if event.dragging() {
                     this.move_metric_resize(event, cx);
+                    this.move_inspector_resize(event, window, cx);
+                    this.move_inspector_column_resize(event, cx);
+                    this.move_sidebar_resize(event, window, cx);
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| {
                     this.finish_metric_resize(cx);
+                    this.finish_inspector_resize(cx);
+                    this.finish_inspector_column_resize(cx);
+                    this.finish_sidebar_resize(cx);
                 }),
             )
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _, cx| {
                     this.finish_metric_resize(cx);
+                    this.finish_inspector_resize(cx);
+                    this.finish_inspector_column_resize(cx);
+                    this.finish_sidebar_resize(cx);
                 }),
             )
             .on_action(cx.listener(Self::on_open))
@@ -4093,160 +4156,552 @@ fn axis_menu_item(
     })
 }
 
-fn inspector_table(
-    columns: &[(&str, f32, bool)],
-    rows: Vec<Vec<String>>,
+fn horizontal_resize_handle(
+    id: SharedString,
     theme: ViewerTheme,
-) -> gpui::Div {
-    let width = columns.iter().map(|(_, width, _)| width).sum::<f32>();
-    div().child(
-        div()
-            .id("inspector-table")
-            .debug_selector(|| "inspector-table".to_owned())
-            .min_w(px(width))
-            .flex()
-            .flex_col()
-            .child(inspector_table_row(
-                columns,
-                columns
-                    .iter()
-                    .map(|(label, _, _)| (*label).to_owned())
-                    .collect(),
-                theme,
-                true,
-            ))
-            .children(
-                rows.into_iter()
-                    .map(|row| inspector_table_row(columns, row, theme, false)),
-            ),
-    )
-}
-
-fn inspector_table_row(
-    columns: &[(&str, f32, bool)],
-    cells: Vec<String>,
-    theme: ViewerTheme,
-    header: bool,
-) -> gpui::Div {
+    active: bool,
+    top_edge: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let group = SharedString::from(format!("resize-boundary:{id}"));
     div()
-        .h(theme.spacing.control_height)
-        .flex_none()
-        .flex()
-        .items_center()
-        .when(header, |row| {
-            row.border_b_1()
-                .border_color(theme.colors.border)
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(theme.colors.text)
-        })
-        .children(
-            columns
-                .iter()
-                .zip(cells)
-                .map(|((_, width, right_aligned), value)| {
-                    div()
-                        .w(px(*width))
-                        .flex_none()
-                        .px_2()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .flex()
-                        .items_center()
-                        .when(*right_aligned, |cell| cell.justify_end())
-                        .child(value)
-                }),
+        .id(id)
+        .group(group.clone())
+        .absolute()
+        .left_0()
+        .right_0()
+        .h(px(5.))
+        .when(top_edge, |handle| handle.top_0())
+        .when(!top_edge, |handle| handle.bottom_0())
+        .cursor(gpui::CursorStyle::ResizeUpDown)
+        .child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .h(px(1.))
+                .when(top_edge, |line| line.top_0())
+                .when(!top_edge, |line| line.bottom_0())
+                .bg(if active {
+                    theme.colors.focus
+                } else {
+                    theme.colors.transparent
+                })
+                .group_hover(group, |line| line.bg(theme.colors.focus)),
         )
 }
 
-fn ranking_table_rows(snapshot: &InspectorSnapshot, baseline: Option<&RunRef>) -> Vec<Vec<String>> {
-    let baseline_value = baseline_evidence_value(Some(snapshot), baseline);
-    let mut runs = snapshot.runs.iter().collect::<Vec<_>>();
-    runs.sort_by(|left, right| {
-        left.run_ref
-            .source_id
-            .as_str()
-            .cmp(right.run_ref.source_id.as_str())
-            .then_with(|| {
-                left.run_ref
-                    .project_id
-                    .as_str()
-                    .cmp(right.run_ref.project_id.as_str())
-            })
-            .then_with(|| {
-                left.ranking
-                    .map(|ranking| ranking.order)
-                    .unwrap_or(usize::MAX)
-                    .cmp(
-                        &right
-                            .ranking
-                            .map(|ranking| ranking.order)
-                            .unwrap_or(usize::MAX),
-                    )
-            })
-    });
-    runs.into_iter()
-        .map(|run| {
-            let value = run.evidence.last_value_f64;
-            vec![
-                run.ranking
-                    .and_then(|ranking| ranking.rank)
-                    .map_or_else(|| "—".to_owned(), |rank| format!("#{rank}")),
-                run.run.name.clone(),
-                if baseline == Some(&run.run_ref) {
-                    "Baseline".to_owned()
+fn vertical_resize_handle(
+    id: SharedString,
+    theme: ViewerTheme,
+    active: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let group = SharedString::from(format!("resize-boundary:{id}"));
+    div()
+        .id(id)
+        .group(group.clone())
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right_0()
+        .w(px(5.))
+        .cursor(gpui::CursorStyle::ResizeLeftRight)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(1.))
+                .bg(if active {
+                    theme.colors.focus
                 } else {
-                    "Candidate".to_owned()
-                },
-                run_status(run.evidence.run_status).to_owned(),
-                value.map_or_else(|| "—".to_owned(), |value| format!("{value:.6}")),
-                inspector_delta(value, &run.run_ref, baseline, baseline_value),
-                format!(
-                    "{:?}{}",
-                    run.evidence.completeness,
-                    reasons_label(&run.evidence.reasons)
-                ),
-                format!(
-                    "{} · {}",
-                    run.run_ref.project_id.as_str(),
-                    run.run_ref.source_id
-                ),
-            ]
-        })
-        .collect()
+                    theme.colors.transparent
+                })
+                .group_hover(group, |line| line.bg(theme.colors.focus)),
+        )
 }
 
-fn baseline_evidence_value(
-    snapshot: Option<&InspectorSnapshot>,
-    baseline: Option<&RunRef>,
-) -> Option<f64> {
-    let baseline = baseline?;
-    snapshot?
+fn inspector_header_cell(
+    column: InspectorColumn,
+    width: f32,
+    direction: Option<InspectorSortDirection>,
+    resizing: bool,
+    theme: ViewerTheme,
+    cx: &mut Context<ViewerApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let indicator = direction.map(|direction| {
+        let icon = components::icon(IconName::ChevronUp, theme).size(px(12.));
+        match direction {
+            InspectorSortDirection::Ascending => icon,
+            InspectorSortDirection::Descending => {
+                icon.with_transformation(Transformation::rotate(gpui::percentage(0.5)))
+            }
+        }
+    });
+    let resize_id = SharedString::from(format!("inspector-column-resize:{}", column.key()));
+    div()
+        .id(SharedString::from(format!(
+            "inspector-header:{}",
+            column.key()
+        )))
+        .debug_selector(move || format!("inspector-header:{}", column.key()))
+        .w(px(width))
+        .h(theme.spacing.control_height)
+        .flex_none()
+        .relative()
+        .px_2()
+        .when(column.has_left_border(), |cell| cell.border_l_1())
+        .border_b_1()
+        .border_color(theme.colors.border)
+        .flex()
+        .items_center()
+        .gap_1()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(theme.colors.text)
+        .cursor_pointer()
+        .hover(|style| style.bg(theme.colors.element_hover))
+        .when(column.right_aligned(), |cell| cell.justify_end())
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.toggle_inspector_sort(column, cx);
+        }))
+        .child(column.label())
+        .children(indicator)
+        .children((column != InspectorColumn::Project).then(|| {
+            vertical_resize_handle(resize_id, theme, resizing)
+                .debug_selector(move || format!("inspector-column-resize:{}", column.key()))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                        this.begin_inspector_column_resize(column, event, cx);
+                    }),
+                )
+                .on_click(|_, _, cx| cx.stop_propagation())
+        }))
+}
+
+fn inspector_run_cell(
+    row: &InspectorRow,
+    width: f32,
+    color: gpui::Rgba,
+    theme: ViewerTheme,
+) -> gpui::Div {
+    div()
+        .w(px(width))
+        .h_full()
+        .flex_none()
+        .px_2()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(div().size(px(7.)).flex_none().rounded(px(3.5)).bg(color))
+        .child(row.run_label.clone())
+        .children(
+            row.baseline
+                .then(|| components::icon(IconName::Baseline, theme).size(px(12.))),
+        )
+        .children(
+            (row.pinned && !row.baseline)
+                .then(|| components::icon(IconName::Pin, theme).size(px(12.))),
+        )
+}
+
+fn inspector_project_width(rows: &[InspectorRow]) -> f32 {
+    rows.iter()
+        .map(|row| row.project_label.chars().count() as f32 * 7. + 24.)
+        .fold(InspectorColumn::Project.default_width(), f32::max)
+}
+
+impl InspectorColumn {
+    const fn key(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::LastValue => "last-value",
+            Self::Minimum => "min",
+            Self::Maximum => "max",
+            Self::Locked => "locked",
+            Self::Hover => "hover",
+            Self::Count => "count",
+            Self::LastStep => "last-step",
+            Self::Status => "status",
+            Self::Evidence => "evidence",
+            Self::Project => "project",
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Run => "Run",
+            Self::LastValue => "Last value",
+            Self::Minimum => "Min",
+            Self::Maximum => "Max",
+            Self::Locked => "Locked",
+            Self::Hover => "Hover",
+            Self::Count => "Count",
+            Self::LastStep => "Last step",
+            Self::Status => "Status",
+            Self::Evidence => "Evidence",
+            Self::Project => "Project",
+        }
+    }
+
+    const fn default_width(self) -> f32 {
+        match self {
+            Self::Run => 220.,
+            Self::LastValue => 160.,
+            Self::Minimum | Self::Maximum => 140.,
+            Self::Locked | Self::Hover => 210.,
+            Self::Count => 130.,
+            Self::LastStep => 150.,
+            Self::Status => 100.,
+            Self::Evidence => 220.,
+            Self::Project => 260.,
+        }
+    }
+
+    const fn minimum_width(self) -> f32 {
+        match self {
+            Self::Run | Self::Project => 140.,
+            Self::Evidence => 120.,
+            Self::LastValue | Self::Minimum | Self::Maximum | Self::Locked | Self::Hover => 100.,
+            Self::Count | Self::LastStep | Self::Status => 80.,
+        }
+    }
+
+    const fn index(self) -> usize {
+        match self {
+            Self::Run => 0,
+            Self::LastValue => 1,
+            Self::Minimum => 2,
+            Self::Maximum => 3,
+            Self::Locked => 4,
+            Self::Hover => 5,
+            Self::Count => 6,
+            Self::LastStep => 7,
+            Self::Status => 8,
+            Self::Evidence => 9,
+            Self::Project => 10,
+        }
+    }
+
+    const fn right_aligned(self) -> bool {
+        matches!(
+            self,
+            Self::LastValue
+                | Self::Minimum
+                | Self::Maximum
+                | Self::Locked
+                | Self::Hover
+                | Self::Count
+                | Self::LastStep
+        )
+    }
+
+    const fn has_left_border(self) -> bool {
+        !matches!(self, Self::Run | Self::LastValue)
+    }
+}
+
+impl InspectorSortDirection {
+    const fn apply(self, ordering: Ordering) -> Ordering {
+        match self {
+            Self::Ascending => ordering,
+            Self::Descending => ordering.reverse(),
+        }
+    }
+}
+
+fn inspector_rows(
+    panel: &MetricPanel,
+    snapshot: &InspectorSnapshot,
+    context: InspectorRowsContext<'_>,
+) -> Vec<InspectorRow> {
+    let mut rows = snapshot
         .runs
         .iter()
-        .find(|run| &run.run_ref == baseline)?
-        .evidence
-        .last_value_f64
+        .filter(|run| context.visible_runs.contains(&run.run_ref))
+        .enumerate()
+        .map(|(original_order, run)| {
+            inspector_row(
+                panel,
+                run,
+                context.baseline,
+                context.pinned,
+                context.locked_axis,
+                context.hover_axis,
+                original_order,
+            )
+        })
+        .collect::<Vec<_>>();
+    sort_inspector_rows(&mut rows, context.sort);
+    rows
 }
 
-fn inspector_delta(
-    value: Option<f64>,
-    run_ref: &RunRef,
+fn sort_inspector_rows(rows: &mut [InspectorRow], sort: Option<InspectorSort>) {
+    rows.sort_by(|left, right| {
+        inspector_row_group(left)
+            .cmp(&inspector_row_group(right))
+            .then_with(|| {
+                sort.map_or_else(
+                    || left.original_order.cmp(&right.original_order),
+                    |sort| {
+                        compare_inspector_rows(sort, left, right)
+                            .then_with(|| left.original_order.cmp(&right.original_order))
+                    },
+                )
+            })
+    });
+}
+
+fn inspector_row(
+    panel: &MetricPanel,
+    run: &InspectorRunSnapshot,
     baseline: Option<&RunRef>,
-    baseline_value: Option<f64>,
+    pinned: &[RunRef],
+    locked_axis: Option<f64>,
+    hover_axis: Option<f64>,
+    original_order: usize,
+) -> InspectorRow {
+    let summary = run.summary.as_ref();
+    InspectorRow {
+        run_ref: run.run_ref.clone(),
+        run_label: run.run.run_id.as_str().to_owned(),
+        project_label: format!(
+            "{} · {}",
+            run.run_ref.project_id.as_str(),
+            run.run_ref.source_id
+        ),
+        status: run.evidence.run_status,
+        evidence: run.evidence.completeness,
+        evidence_label: format!(
+            "{:?}{}",
+            run.evidence.completeness,
+            reasons_label(&run.evidence.reasons)
+        ),
+        count: summary.map(|summary| summary.effective_count),
+        last_step: summary.map(|summary| summary.last_step.value()),
+        last_value: summary.map(|summary| summary.last_value_f64),
+        minimum: summary.map(|summary| summary.min_value_f64),
+        maximum: summary.map(|summary| summary.max_value_f64),
+        locked: locked_axis.and_then(|axis| inspector_cursor_point(panel, &run.run_ref, axis)),
+        hover: hover_axis.and_then(|axis| inspector_cursor_point(panel, &run.run_ref, axis)),
+        baseline: baseline == Some(&run.run_ref),
+        pinned: pinned.contains(&run.run_ref),
+        original_order,
+    }
+}
+
+fn inspector_cursor_point(panel: &MetricPanel, run_ref: &RunRef, axis: f64) -> Option<(i64, f64)> {
+    panel
+        .detail
+        .as_ref()?
+        .series
+        .iter()
+        .find(|series| &series.run_ref == run_ref)?
+        .evidence
+        .points
+        .iter()
+        .min_by(|left, right| {
+            (left.axis_value as f64 - axis)
+                .abs()
+                .total_cmp(&(right.axis_value as f64 - axis).abs())
+        })
+        .map(|point| (point.axis_value, point.point.value_f64))
+}
+
+const fn inspector_row_group(row: &InspectorRow) -> u8 {
+    if row.baseline {
+        0
+    } else if row.pinned {
+        1
+    } else {
+        2
+    }
+}
+
+fn compare_inspector_rows(
+    sort: InspectorSort,
+    left: &InspectorRow,
+    right: &InspectorRow,
+) -> Ordering {
+    let direction = sort.direction;
+    match sort.column {
+        InspectorColumn::Run => direction.apply(left.run_label.cmp(&right.run_label)),
+        InspectorColumn::LastValue => {
+            compare_optional(left.last_value, right.last_value, direction, f64::total_cmp)
+        }
+        InspectorColumn::Minimum => {
+            compare_optional(left.minimum, right.minimum, direction, f64::total_cmp)
+        }
+        InspectorColumn::Maximum => {
+            compare_optional(left.maximum, right.maximum, direction, f64::total_cmp)
+        }
+        InspectorColumn::Locked => compare_optional(
+            left.locked.map(|(_, value)| value),
+            right.locked.map(|(_, value)| value),
+            direction,
+            f64::total_cmp,
+        ),
+        InspectorColumn::Hover => compare_optional(
+            left.hover.map(|(_, value)| value),
+            right.hover.map(|(_, value)| value),
+            direction,
+            f64::total_cmp,
+        ),
+        InspectorColumn::Count => compare_optional(left.count, right.count, direction, u64::cmp),
+        InspectorColumn::LastStep => {
+            compare_optional(left.last_step, right.last_step, direction, i64::cmp)
+        }
+        InspectorColumn::Status => direction
+            .apply(inspector_status_order(left.status).cmp(&inspector_status_order(right.status))),
+        InspectorColumn::Evidence => direction.apply(
+            inspector_evidence_order(left.evidence).cmp(&inspector_evidence_order(right.evidence)),
+        ),
+        InspectorColumn::Project => direction.apply(left.project_label.cmp(&right.project_label)),
+    }
+}
+
+fn compare_optional<T: Copy>(
+    left: Option<T>,
+    right: Option<T>,
+    direction: InspectorSortDirection,
+    compare: impl FnOnce(&T, &T) -> Ordering,
+) -> Ordering {
+    match (left, right) {
+        (Some(left), Some(right)) => direction.apply(compare(&left, &right)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+const fn inspector_status_order(status: RunStatus) -> u8 {
+    match status {
+        RunStatus::Running => 0,
+        RunStatus::Finished => 1,
+        RunStatus::Failed => 2,
+    }
+}
+
+const fn inspector_evidence_order(evidence: EvidenceCompleteness) -> u8 {
+    match evidence {
+        EvidenceCompleteness::Complete => 0,
+        EvidenceCompleteness::Partial => 1,
+        EvidenceCompleteness::Unavailable => 2,
+        EvidenceCompleteness::Invalid => 3,
+    }
+}
+
+fn inspector_cell_text(
+    column: InspectorColumn,
+    row: &InspectorRow,
+    baseline: Option<&InspectorRow>,
 ) -> String {
-    if baseline == Some(run_ref) {
-        return "—".to_owned();
+    match column {
+        InspectorColumn::Run => row.run_label.clone(),
+        InspectorColumn::LastValue => inspector_float(
+            row.last_value,
+            baseline.and_then(|baseline| baseline.last_value),
+            row.baseline,
+        ),
+        InspectorColumn::Minimum => inspector_float(
+            row.minimum,
+            baseline.and_then(|baseline| baseline.minimum),
+            row.baseline,
+        ),
+        InspectorColumn::Maximum => inspector_float(
+            row.maximum,
+            baseline.and_then(|baseline| baseline.maximum),
+            row.baseline,
+        ),
+        InspectorColumn::Locked => inspector_cursor_cell(
+            row.locked,
+            baseline.and_then(|baseline| baseline.locked),
+            row.baseline,
+        ),
+        InspectorColumn::Hover => inspector_cursor_cell(
+            row.hover,
+            baseline.and_then(|baseline| baseline.hover),
+            row.baseline,
+        ),
+        InspectorColumn::Count => inspector_integer(row.count.map(i128::from), None, true),
+        InspectorColumn::LastStep => inspector_integer(row.last_step.map(i128::from), None, true),
+        InspectorColumn::Status => run_status(row.status).to_owned(),
+        InspectorColumn::Evidence => row.evidence_label.clone(),
+        InspectorColumn::Project => row.project_label.clone(),
     }
-    let Some(baseline) = baseline else {
-        return "—".to_owned();
-    };
-    if run_ref.source_id != baseline.source_id || run_ref.project_id != baseline.project_id {
-        return "—".to_owned();
+}
+
+fn inspector_float(value: Option<f64>, baseline: Option<f64>, is_baseline: bool) -> String {
+    value.map_or_else(String::new, |value| {
+        let value_label = format!("{value:.6}");
+        if is_baseline {
+            value_label
+        } else {
+            baseline.map_or(value_label.clone(), |baseline| {
+                format!(
+                    "{value_label} ({})",
+                    format_signed_delta(value - baseline, 6)
+                )
+            })
+        }
+    })
+}
+
+fn inspector_integer(value: Option<i128>, baseline: Option<i128>, is_baseline: bool) -> String {
+    value.map_or_else(String::new, |value| {
+        let value_label = format_grouped_integer(value);
+        if is_baseline {
+            value_label
+        } else {
+            baseline.map_or(value_label.clone(), |baseline| {
+                format!(
+                    "{value_label} ({})",
+                    format_signed_integer(value - baseline)
+                )
+            })
+        }
+    })
+}
+
+fn inspector_cursor_cell(
+    point: Option<(i64, f64)>,
+    baseline: Option<(i64, f64)>,
+    is_baseline: bool,
+) -> String {
+    point.map_or_else(String::new, |(_, value)| {
+        inspector_float(
+            Some(value),
+            baseline.map(|(_, baseline)| baseline),
+            is_baseline,
+        )
+    })
+}
+
+fn format_signed_integer(value: i128) -> String {
+    if value.is_negative() {
+        format!("−{}", format_grouped_integer(value.saturating_abs()))
+    } else {
+        format!("+{}", format_grouped_integer(value))
     }
-    value.zip(baseline_value).map_or_else(
-        || "—".to_owned(),
-        |(value, baseline)| format_signed_delta(value - baseline, 6),
-    )
+}
+
+fn format_grouped_integer(value: i128) -> String {
+    let negative = value.is_negative();
+    let digits = value.saturating_abs().to_string();
+    let mut grouped =
+        String::with_capacity(digits.len() + digits.len() / 3 + usize::from(negative));
+    for (index, character) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(character);
+    }
+    if negative {
+        grouped.insert(0, '−');
+    }
+    grouped
 }
 
 fn error_banner(message: String, theme: ViewerTheme) -> gpui::Div {
@@ -4295,11 +4750,10 @@ fn format_axis_tick(axis: CurveAxis, value: f64) -> String {
     }
 }
 
-fn format_cursor_coordinate(axis: CurveAxis, value: f64) -> String {
+fn format_ruler_coordinate(axis: CurveAxis, value: f64) -> String {
     match axis {
-        CurveAxis::Step if value.abs() >= 1_000_000. => format!("{:.1}M", value / 1_000_000.),
-        CurveAxis::Step if value.abs() >= 1_000. => format!("{:.0}k", value / 1_000.),
-        CurveAxis::Step => format_tick(value),
+        CurveAxis::Step if value.is_finite() => format!("{value:.0}"),
+        CurveAxis::Step => "—".to_owned(),
         CurveAxis::AbsoluteTime => format_utc_clock(value),
     }
 }
@@ -4323,23 +4777,16 @@ fn format_utc_clock(value: f64) -> String {
     }
 }
 
-fn hover_value_label(hover: &HoverPoint, delta: Option<f64>) -> String {
-    delta.map_or_else(
+fn hover_value_label(axis: CurveAxis, hover: &HoverPoint, delta: Option<f64>) -> String {
+    let value = delta.map_or_else(
         || format!("{:.2}", hover.value),
         |delta| format!("{:.2} ({})", hover.value, format_signed_delta(delta, 2)),
-    )
-}
-
-fn locked_hover_value_label(axis: CurveAxis, hover: &HoverPoint, delta: Option<f64>) -> String {
-    format!(
-        "{}: {}",
-        format_cursor_coordinate(axis, hover.axis_value as f64),
-        hover_value_label(hover, delta)
-    )
-}
-
-fn track_tooltip_row_limit(row_height: f32) -> usize {
-    (((row_height - 8.).max(0.) / 24.).floor() as usize).clamp(1, 5)
+    );
+    let coordinate = match axis {
+        CurveAxis::Step => hover.axis_value.to_string(),
+        CurveAxis::AbsoluteTime => format_utc_clock(hover.axis_value as f64),
+    };
+    format!("{coordinate}: {value} {}", hover.run_ref.run_id.as_str())
 }
 
 fn track_tooltip_width<'a>(labels: impl IntoIterator<Item = &'a str>) -> f32 {
@@ -4348,7 +4795,7 @@ fn track_tooltip_width<'a>(labels: impl IntoIterator<Item = &'a str>) -> f32 {
         .map(|label| label.chars().count())
         .max()
         .unwrap_or_default();
-    (characters as f32 * 7. + 32.).clamp(72., 180.)
+    (characters as f32 * 6.5 + 28.).clamp(104., 248.)
 }
 
 fn format_signed_delta(delta: f64, precision: usize) -> String {
@@ -4445,21 +4892,23 @@ mod tests {
             align_left: false,
         };
 
-        assert_eq!(hover_value_label(&hover, Some(0.55)), "0.51 (+0.55)");
-        assert_eq!(hover_value_label(&hover, Some(-0.55)), "0.51 (−0.55)");
         assert_eq!(
-            locked_hover_value_label(CurveAxis::Step, &hover, Some(0.55)),
-            "3k: 0.51 (+0.55)"
+            hover_value_label(CurveAxis::Step, &hover, Some(0.55)),
+            "2904: 0.51 (+0.55) run"
         );
-        assert_eq!([52., 92., 180.].map(track_tooltip_row_limit), [1, 3, 5]);
-        assert_eq!(track_tooltip_width(["0.28"]), 72.);
+        assert_eq!(
+            hover_value_label(CurveAxis::Step, &hover, Some(-0.55)),
+            "2904: 0.51 (−0.55) run"
+        );
+        assert_eq!(
+            hover_value_label(CurveAxis::Step, &hover, None),
+            "2904: 0.51 run"
+        );
+        assert_eq!(format_ruler_coordinate(CurveAxis::Step, 26_432.4), "26432");
+        assert_eq!(track_tooltip_width(["0.28"]), 104.);
+        assert_eq!(track_tooltip_width(["19433: 0.44 run-8"]), 138.5);
         let long_label = "x".repeat(40);
-        assert_eq!(track_tooltip_width([long_label.as_str()]), 180.);
-        assert_eq!(format_cursor_coordinate(CurveAxis::Step, 496_000.), "496k");
-        assert_eq!(
-            format_cursor_coordinate(CurveAxis::AbsoluteTime, 34_920_000.),
-            "09:42"
-        );
+        assert_eq!(track_tooltip_width([long_label.as_str()]), 248.);
     }
 
     #[test]
@@ -4478,88 +4927,101 @@ mod tests {
     }
 
     #[test]
-    fn rankings_restart_within_each_project() {
-        let timestamp = "2026-01-01T00:00:00Z"
-            .parse()
-            .expect("fixed timestamp should parse");
-        let make_run = |project: &str, run_id: &str, value: f64| {
-            let project_id = ProjectId::from_string(project);
-            let run_id = RunId::from_string(run_id);
-            pulseon_viewer::query::InspectorRunSnapshot {
+    fn inspector_sort_preserves_roles_and_cycles_numeric_order() {
+        assert!(!InspectorColumn::Run.has_left_border());
+        assert!(!InspectorColumn::LastValue.has_left_border());
+        assert!(InspectorColumn::Minimum.has_left_border());
+
+        let make_row =
+            |run: &str, value: Option<f64>, baseline: bool, pinned: bool, order| InspectorRow {
                 run_ref: RunRef::new(
                     DataSourceId::from_string("source"),
-                    project_id.clone(),
-                    run_id.clone(),
+                    ProjectId::from_string("project"),
+                    RunId::from_string(run),
                 ),
-                run: Run {
-                    run_id: run_id.clone(),
-                    project_id,
-                    name: format!("Run {value}"),
-                    status: RunStatus::Finished,
-                    created_at: timestamp,
-                    started_at: timestamp,
-                    finished_at: Some(timestamp),
-                },
-                summary: Some(pulseon_model::metric::MetricAggregate {
-                    run_id: run_id.clone(),
-                    metric_key: MetricKey::from_string("loss"),
-                    effective_count: 1,
-                    last_step: pulseon_model::metric::Step::new(1),
-                    last_value_f64: value,
-                    min_value_f64: value,
-                    max_value_f64: value,
-                }),
-                evidence: pulseon_model::comparison::ObjectiveEvidence {
-                    run_id,
-                    run_status: RunStatus::Finished,
-                    last_step: Some(pulseon_model::metric::Step::new(1)),
-                    last_value_f64: Some(value),
-                    completeness: EvidenceCompleteness::Complete,
-                    reasons: Vec::new(),
-                },
-                ranking: Some(pulseon_viewer::query::InspectorRanking {
-                    rank: Some(if project == "alpha" && value == 2. {
-                        2
-                    } else {
-                        1
-                    }),
-                    order: usize::from(project == "alpha" && value == 2.),
-                }),
-            }
-        };
-        let snapshot = InspectorSnapshot {
-            ranking_direction: Some(ObjectiveDirection::Minimize),
-            runs: vec![
-                make_run("alpha", "a-slow", 2.),
-                make_run("alpha", "a-fast", 1.),
-                make_run("beta", "b-only", 3.),
-            ],
-        };
-
-        let rows = ranking_table_rows(&snapshot, None);
-        assert_eq!(
-            rows.iter()
-                .map(|row| [row[0].as_str(), row[1].as_str()])
-                .collect::<Vec<_>>(),
-            [["#1", "Run 1"], ["#2", "Run 2"], ["#1", "Run 3"],]
+                run_label: run.to_owned(),
+                project_label: "project · source".to_owned(),
+                status: RunStatus::Finished,
+                evidence: EvidenceCompleteness::Complete,
+                evidence_label: "Complete".to_owned(),
+                count: Some(1),
+                last_step: Some(1),
+                last_value: value,
+                minimum: value,
+                maximum: value,
+                locked: value.map(|value| (1, value)),
+                hover: value.map(|value| (1, value)),
+                baseline,
+                pinned,
+                original_order: order,
+            };
+        let mut long_project = make_row("path", Some(1.), false, false, 0);
+        long_project.project_label =
+            "viewer · /tmp/a/very/long/project/path/that/needs/content/sizing".to_owned();
+        assert!(
+            inspector_project_width(&[long_project]) > InspectorColumn::Project.default_width()
         );
+        let mut rows = vec![
+            make_row("run-3", Some(3.), false, false, 0),
+            make_row("baseline", Some(2.), true, false, 1),
+            make_row("pinned", Some(4.), false, true, 2),
+            make_row("run-1", Some(1.), false, false, 3),
+            make_row("missing", None, false, false, 4),
+        ];
 
-        let baseline = snapshot.runs[0].run_ref.clone();
-        let rows = ranking_table_rows(&snapshot, Some(&baseline));
+        sort_inspector_rows(
+            &mut rows,
+            Some(InspectorSort {
+                column: InspectorColumn::Minimum,
+                direction: InspectorSortDirection::Ascending,
+            }),
+        );
         assert_eq!(
             rows.iter()
-                .map(|row| [
-                    row[0].as_str(),
-                    row[1].as_str(),
-                    row[2].as_str(),
-                    row[5].as_str()
-                ])
+                .map(|row| row.run_label.as_str())
                 .collect::<Vec<_>>(),
-            [
-                ["#1", "Run 1", "Candidate", "−1.000000"],
-                ["#2", "Run 2", "Baseline", "—"],
-                ["#1", "Run 3", "Candidate", "—"],
-            ]
+            ["baseline", "pinned", "run-1", "run-3", "missing"]
+        );
+        sort_inspector_rows(
+            &mut rows,
+            Some(InspectorSort {
+                column: InspectorColumn::Minimum,
+                direction: InspectorSortDirection::Descending,
+            }),
+        );
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.run_label.as_str())
+                .collect::<Vec<_>>(),
+            ["baseline", "pinned", "run-3", "run-1", "missing"]
+        );
+        assert_eq!(inspector_float(Some(2.), Some(2.), true), "2.000000");
+        assert_eq!(
+            inspector_float(Some(3.), Some(2.), false),
+            "3.000000 (+1.000000)"
+        );
+        assert_eq!(inspector_float(None, Some(2.), false), "");
+        assert_eq!(
+            inspector_integer(Some(20_512), Some(20_741), false),
+            "20,512 (−229)"
+        );
+        assert_eq!(
+            inspector_cursor_cell(Some((20_799, 0.62)), Some((20_800, 0.58)), false,),
+            "0.620000 (+0.040000)"
+        );
+        assert_eq!(inspector_cursor_cell(None, Some((20_800, 0.58)), false), "");
+        let baseline = rows.iter().find(|row| row.baseline).expect("baseline row");
+        let candidate = rows
+            .iter()
+            .find(|row| !row.baseline)
+            .expect("candidate row");
+        assert_eq!(
+            inspector_cell_text(InspectorColumn::Count, candidate, Some(baseline)),
+            "1"
+        );
+        assert_eq!(
+            inspector_cell_text(InspectorColumn::LastStep, candidate, Some(baseline)),
+            "1"
         );
     }
 
@@ -4719,8 +5181,6 @@ mod tests {
                     metrics: vec![metric.to_owned()],
                     metric_heights: Vec::new(),
                     selected_metric: Some(metric.to_owned()),
-                    inspector_tab: InspectorTab::Evidence,
-                    ranking_direction: Some(ObjectiveDirection::Minimize),
                     axis: AlignmentAxis::Step,
                     track_density: TrackDensity::Compact,
                     viewport: Some(
@@ -4779,7 +5239,7 @@ mod tests {
 
         fn first_panel_detail_is_settled(viewer: &ViewerApp) -> bool {
             let schedule = viewer.track_viewport.borrow();
-            let Some(viewport) = viewer.core.selected_viewport() else {
+            let Some(viewport) = viewer.navigation.selected_viewport() else {
                 return false;
             };
             !schedule.overscan.is_empty()
@@ -4792,6 +5252,23 @@ mod tests {
                 })
         }
 
+        fn source_catalog_loaded(viewer: &ViewerApp) -> bool {
+            viewer
+                .sources
+                .sources()
+                .any(|source| !source.catalog.projects.is_empty())
+        }
+
+        fn first_source_id(viewer: &ViewerApp) -> DataSourceId {
+            viewer
+                .sources
+                .sources()
+                .next()
+                .expect("fixture source should be imported")
+                .source_id
+                .clone()
+        }
+
         fn select_fixture_run(
             window: WindowHandle<ViewerApp>,
             cx: &mut VisualTestContext,
@@ -4799,33 +5276,15 @@ mod tests {
             run_id: RunId,
             metric_count: usize,
         ) {
+            wait_for_viewer(window, cx, source_catalog_loaded);
             window
                 .update(cx, |viewer, _, cx| {
-                    viewer.select_project(project_id.clone(), cx)
-                })
-                .expect("viewer should remain open");
-            wait_for_viewer(window, cx, |viewer| {
-                viewer
-                    .core
-                    .catalog()
-                    .is_some_and(|catalog| !catalog.runs.is_empty())
-            });
-            window
-                .update(cx, |viewer, _, cx| {
-                    let source_id = viewer
-                        .core
-                        .selection()
-                        .source_id
-                        .clone()
-                        .expect("fixture source should be selected");
+                    let source_id = first_source_id(viewer);
                     viewer.toggle_run(RunRef::new(source_id, project_id, run_id), cx)
                 })
                 .expect("viewer should remain open");
             wait_for_viewer(window, cx, |viewer| {
-                viewer
-                    .core
-                    .catalog()
-                    .is_some_and(|catalog| catalog.metric_keys.len() == metric_count)
+                viewer.available_metric_keys().len() == metric_count
             });
         }
 
@@ -4837,7 +5296,7 @@ mod tests {
 
             assert_eq!(
                 window
-                    .read_with(&cx, |viewer, _| viewer.core.axis())
+                    .read_with(&cx, |viewer, _| viewer.navigation.axis())
                     .expect("viewer should remain open"),
                 AlignmentAxis::ElapsedTime
             );
@@ -4922,7 +5381,7 @@ mod tests {
 
         #[gpui::test]
         fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppContext) {
-            let (root, project_id, run_id) = fixture_with_extent(100);
+            let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
             let document = saved_workbench(
                 root.path().to_path_buf(),
                 project_id,
@@ -5066,14 +5525,48 @@ mod tests {
         }
 
         #[gpui::test]
+        fn project_sidebar_width_resizes_from_its_boundary(cx: &mut TestAppContext) {
+            let (window, mut cx) = open_viewer(cx, None);
+            let sidebar_width = cx
+                .debug_bounds("project-sidebar")
+                .expect("Project sidebar should render")
+                .size
+                .width;
+            let sidebar_resize = cx
+                .debug_bounds("project-sidebar-resize")
+                .expect("Project sidebar resize boundary should render");
+            let resize_target = point(
+                sidebar_resize.center().x + px(48.),
+                sidebar_resize.center().y,
+            );
+            cx.simulate_mouse_down(
+                sidebar_resize.center(),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            cx.simulate_mouse_move(resize_target, Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_up(resize_target, MouseButton::Left, Modifiers::default());
+
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.project_sidebar_width)
+                    .expect("viewer should remain open"),
+                sidebar_width + px(48.)
+            );
+        }
+
+        #[gpui::test]
         fn project_filter_uses_placeholder_and_blinking_caret_states(cx: &mut TestAppContext) {
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, None);
-            assert!(cx.debug_bounds("project-run-filter-placeholder").is_some());
+            let placeholder = cx
+                .debug_bounds("project-run-filter-placeholder")
+                .expect("Project filter placeholder should render");
 
             let filter = cx
                 .debug_bounds("project-run-filter")
                 .expect("Project filter should render");
+            assert!(placeholder.right() <= filter.right());
             cx.simulate_mouse_move(filter.center(), None, Modifiers::default());
             cx.simulate_click(filter.center(), Modifiers::default());
             assert!(
@@ -5226,7 +5719,7 @@ mod tests {
             let (root, _, _) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
 
             for window_size in [(600., 520.), (800., 600.), (1_440., 900.)] {
                 cx.simulate_resize(size(px(window_size.0), px(window_size.1)));
@@ -5405,7 +5898,7 @@ mod tests {
             let (window, mut cx) = open_viewer(cx, None);
             let original_view = window
                 .update(&mut cx, |viewer, _, _| {
-                    viewer.core.select_axis(AlignmentAxis::ElapsedTime);
+                    viewer.navigation.select_axis(AlignmentAxis::ElapsedTime);
                     viewer.views.active().view_id.clone()
                 })
                 .expect("viewer should remain open");
@@ -5420,7 +5913,7 @@ mod tests {
             cx.simulate_click(new_view.center(), Modifiers::default());
             assert_eq!(
                 window
-                    .read_with(&cx, |viewer, _| viewer.core.axis())
+                    .read_with(&cx, |viewer, _| viewer.navigation.axis())
                     .expect("viewer should remain open"),
                 AlignmentAxis::Step
             );
@@ -5533,7 +6026,7 @@ mod tests {
                 .expect("viewer should remain open");
             assert_eq!(
                 window
-                    .read_with(&cx, |viewer, _| viewer.core.axis())
+                    .read_with(&cx, |viewer, _| viewer.navigation.axis())
                     .expect("viewer should remain open"),
                 AlignmentAxis::ElapsedTime
             );
@@ -5574,7 +6067,7 @@ mod tests {
             cx.executor().allow_parking();
             let (window, cx) = open_viewer(cx, Some(root.path().to_path_buf()));
 
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
         }
 
         #[gpui::test]
@@ -5582,7 +6075,7 @@ mod tests {
             let (root, project_id, _) = fixture_with_runs(0, 12);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             let folder = cx
                 .debug_bounds("project-folder-0-0")
                 .expect("first Project folder should be rendered");
@@ -5621,7 +6114,11 @@ mod tests {
             assert!(cx.debug_bounds("run-status-0").is_some());
             assert!(cx.debug_bounds("run-actions-0").is_none());
 
-            cx.simulate_mouse_move(first_row.center(), None, Modifiers::default());
+            cx.simulate_mouse_move(
+                point(first_row.origin.x + px(40.), first_row.center().y),
+                None,
+                Modifiers::default(),
+            );
 
             assert!(cx.debug_bounds("run-status-0").is_none());
             assert!(cx.debug_bounds("run-actions-0").is_some());
@@ -5686,7 +6183,7 @@ mod tests {
             let (root, _, _) = fixture_with_runs(0, 12);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.run_filter = "baseline 11".to_owned();
@@ -5795,8 +6292,8 @@ mod tests {
         }
 
         #[gpui::test]
-        fn project_row_click_toggles_runs(cx: &mut TestAppContext) {
-            let (root, _, _) = fixture(1);
+        fn project_row_click_toggles_runs_without_changing_analysis(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_complete_runs(1, 1);
             cx.executor().allow_parking();
             cx.update(|cx| {
                 cx.bind_keys([KeyBinding::new(
@@ -5806,13 +6303,58 @@ mod tests {
                 )]);
             });
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
+            select_fixture_run(window, &mut cx, project_id, run_id, 1);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+            let before = window
+                .read_with(&cx, |viewer, _| {
+                    let panel = &viewer.views.active().panels[0];
+                    (
+                        viewer
+                            .navigation
+                            .brush()
+                            .expect("timeline should be loaded"),
+                        viewer.next_generation,
+                        panel.overview.clone().expect("overview should be loaded"),
+                        panel.detail.clone().expect("detail should be loaded"),
+                        panel.overview_revision,
+                        panel.detail_revision,
+                    )
+                })
+                .expect("viewer should remain open");
             let project = cx
                 .debug_bounds("project-tree-row-0-0")
                 .expect("first Project row should be rendered");
             cx.simulate_click(project.center(), Modifiers::default());
             cx.run_until_parked();
             assert!(cx.debug_bounds("project-tree-run-0-0-0").is_some());
+            window
+                .read_with(&cx, |viewer, _| {
+                    let panel = &viewer.views.active().panels[0];
+                    assert_eq!(viewer.navigation.brush(), Some(before.0));
+                    assert_eq!(viewer.next_generation, before.1);
+                    assert!(Arc::ptr_eq(
+                        panel
+                            .overview
+                            .as_ref()
+                            .expect("overview should remain loaded"),
+                        &before.2,
+                    ));
+                    assert!(Arc::ptr_eq(
+                        panel.detail.as_ref().expect("detail should remain loaded"),
+                        &before.3,
+                    ));
+                    assert_eq!(panel.overview_revision, before.4);
+                    assert_eq!(panel.detail_revision, before.5);
+                })
+                .expect("viewer should remain open");
+            assert!(cx.debug_bounds("overview-chart").is_some());
+            assert!(cx.debug_bounds("ruler-major-tick-0").is_some());
             assert!(cx.debug_bounds("project-information-project").is_none());
             cx.simulate_mouse_move(project.center(), None, Modifiers::default());
             assert!(cx.debug_bounds("project-information-project").is_some());
@@ -5825,6 +6367,12 @@ mod tests {
                     .expect("viewer should remain open"),
                 0,
             );
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert_eq!(viewer.navigation.brush(), Some(before.0));
+                    assert_eq!(viewer.next_generation, before.1);
+                })
+                .expect("viewer should remain open");
         }
 
         #[gpui::test]
@@ -5906,7 +6454,7 @@ mod tests {
             let (second, _, _) = fixture_with_metric("accuracy");
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(first.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.open_source(second.path().to_path_buf(), cx);
@@ -5916,7 +6464,7 @@ mod tests {
             let before = window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.create_analysis_view(cx);
-                    assert!(viewer.core.selection().source_id.is_none());
+                    assert!(viewer.views.active().runs.is_empty());
                     viewer.next_generation
                 })
                 .expect("viewer should remain open");
@@ -5944,7 +6492,7 @@ mod tests {
             let (second, second_project, second_run) = fixture_with_extent(20);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(first.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.open_source(second.path().to_path_buf(), cx);
@@ -5982,10 +6530,7 @@ mod tests {
                     .expect("viewer should remain open");
             }
             wait_for_viewer(window, &cx, |viewer| {
-                viewer
-                    .core
-                    .catalog()
-                    .is_some_and(|catalog| catalog.metric_keys.len() == 1)
+                viewer.available_metric_keys().len() == 1
             });
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -6005,7 +6550,7 @@ mod tests {
             assert_eq!(
                 window
                     .read_with(&cx, |viewer, _| {
-                        viewer.core.brush().map(|brush| brush.home().end())
+                        viewer.navigation.brush().map(|brush| brush.home().end())
                     })
                     .expect("viewer should remain open"),
                 Some(20.)
@@ -6018,7 +6563,7 @@ mod tests {
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             cx.simulate_resize(size(px(1_000.), px(1_000.)));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 2);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -6036,7 +6581,7 @@ mod tests {
                         .all(|panel| panel.detail.is_some())
             });
             let brush = window
-                .read_with(&cx, |viewer, _| viewer.core.brush())
+                .read_with(&cx, |viewer, _| viewer.navigation.brush())
                 .expect("viewer should remain open")
                 .expect("loaded metrics should create a shared brush");
 
@@ -6067,7 +6612,7 @@ mod tests {
 
                 window
                     .read_with(&cx, |viewer, _| {
-                        assert_eq!(viewer.core.brush(), Some(brush));
+                        assert_eq!(viewer.navigation.brush(), Some(brush));
                         assert_eq!(
                             viewer
                                 .views
@@ -6100,7 +6645,7 @@ mod tests {
             let (root, project_id, first_run_id) = fixture_with_complete_runs(2, 2);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 2);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -6130,12 +6675,7 @@ mod tests {
             let second_run = window
                 .read_with(&cx, |viewer, _| {
                     RunRef::new(
-                        viewer
-                            .core
-                            .selection()
-                            .source_id
-                            .clone()
-                            .expect("fixture source should be selected"),
+                        first_source_id(viewer),
                         project_id.clone(),
                         RunId::from_string(
                             "run-1-with-a-very-long-identifier-that-requires-horizontal-scrolling",
@@ -6186,6 +6726,14 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
                 .expect("viewer should remain open");
+            let timeline_before = window
+                .read_with(&cx, |viewer, _| {
+                    viewer
+                        .navigation
+                        .brush()
+                        .expect("timeline should be loaded")
+                })
+                .expect("viewer should remain open");
             window
                 .update(&mut cx, |viewer, _, cx| {
                     let hidden = viewer.views.active().runs[1].clone();
@@ -6217,6 +6765,7 @@ mod tests {
             cx.run_until_parked();
             window
                 .read_with(&cx, |viewer, _| {
+                    assert_eq!(viewer.navigation.brush(), Some(timeline_before));
                     for (panel, (snapshot, revision)) in
                         viewer.views.active().panels.iter().zip(&before)
                     {
@@ -6228,6 +6777,8 @@ mod tests {
                     }
                 })
                 .expect("viewer should remain open");
+            assert!(cx.debug_bounds("overview-chart").is_some());
+            assert!(cx.debug_bounds("ruler-major-tick-0").is_some());
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.archive_run(second_run.clone(), cx);
@@ -6273,7 +6824,7 @@ mod tests {
             let (root, project_id, run_id) = fixture(20);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 20);
             cx.simulate_resize(size(px(600.), px(520.)));
             cx.run_until_parked();
@@ -6299,11 +6850,48 @@ mod tests {
         }
 
         #[gpui::test]
+        fn metrics_appended_after_initial_layout_all_receive_detail(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, source_catalog_loaded);
+            select_fixture_run(window, &mut cx, project_id, run_id, 2);
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-1"), cx);
+                    assert!(viewer.track_viewport.borrow().overscan.contains(&1));
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                let Some(viewport) = viewer.navigation.selected_viewport() else {
+                    return false;
+                };
+                viewer.views.active().panels.len() == 2
+                    && viewer.views.active().panels.iter().all(|panel| {
+                        panel
+                            .detail
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.series.len() == 1)
+                            && !panel.is_pending(ReadKind::Detail)
+                            && panel.requested_detail_viewport == Some(viewport)
+                    })
+            });
+        }
+
+        #[gpui::test]
         fn popovers_close_after_clicking_outside_their_controls(cx: &mut TestAppContext) {
             let (root, project_id, run_id) = fixture(2);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 2);
 
             let outside = cx
@@ -6390,7 +6978,7 @@ mod tests {
             let (root, project_id, run_id) = fixture(20);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 20);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -6495,7 +7083,7 @@ mod tests {
             let (root, project_id, run_id) = fixture(1);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -6511,7 +7099,7 @@ mod tests {
                 .expect("axis menu should offer Absolute time");
             cx.simulate_click(time.center(), Modifiers::default());
             wait_for_viewer(window, &cx, |viewer| {
-                viewer.core.axis() == AlignmentAxis::ElapsedTime
+                viewer.navigation.axis() == AlignmentAxis::ElapsedTime
                     && viewer
                         .views
                         .active()
@@ -6529,7 +7117,7 @@ mod tests {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -6612,16 +7200,11 @@ mod tests {
             let (root, project_id, first_run_id) = fixture_with_complete_runs(3, 2);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 3);
             window
                 .update(&mut cx, |viewer, _, cx| {
-                    let source_id = viewer
-                        .core
-                        .selection()
-                        .source_id
-                        .clone()
-                        .expect("fixture source should be selected");
+                    let source_id = first_source_id(viewer);
                     viewer.toggle_run(
                         RunRef::new(
                             source_id,
@@ -6674,6 +7257,10 @@ mod tests {
                 );
                 cx.simulate_mouse_move(position, None, Modifiers::default());
             }
+            let tooltip = cx
+                .debug_bounds("track-hover-callout")
+                .expect("Ruler hover should render one value per Metric");
+            assert_eq!(tooltip.size.height, px(22.));
             let after = window
                 .read_with(&cx, |viewer, _| preparation_counts(viewer))
                 .expect("viewer should remain open");
@@ -6688,7 +7275,7 @@ mod tests {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -6727,21 +7314,206 @@ mod tests {
         }
 
         #[gpui::test]
+        fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppContext) {
+            let (root, project_id, run_id) = fixture_with_complete_runs(3, 1);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, source_catalog_loaded);
+            select_fixture_run(window, &mut cx, project_id, run_id, 3);
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                    viewer.select_metric(MetricKey::from_string("metric-1"), cx);
+                    viewer.select_metric(MetricKey::from_string("metric-2"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                let Some(viewport) = viewer.navigation.selected_viewport() else {
+                    return false;
+                };
+                viewer.views.active().panels.len() == 3
+                    && viewer.views.active().panels.iter().all(|panel| {
+                        panel.detail.is_some()
+                            && !panel.is_pending(ReadKind::Detail)
+                            && panel.requested_detail_viewport == Some(viewport)
+                    })
+                    && viewer.track_charts.len() == 3
+            });
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let brush = viewer.navigation.brush_mut().expect("brush should exist");
+                    let center = brush.home().start() + brush.home().span() / 2.;
+                    brush.zoom_at(center, 2.).expect("brush should zoom in");
+                    viewer.request_detail(cx);
+                    cx.notify();
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                let Some(viewport) = viewer.navigation.selected_viewport() else {
+                    return false;
+                };
+                viewer.views.active().panels.iter().all(|panel| {
+                    panel.detail.is_some()
+                        && !panel.is_pending(ReadKind::Detail)
+                        && panel.requested_detail_viewport == Some(viewport)
+                })
+            });
+            let charts = window
+                .read_with(&cx, |viewer, _| {
+                    ["metric-0", "metric-1", "metric-2"]
+                        .into_iter()
+                        .map(|metric| {
+                            viewer
+                                .track_charts
+                                .get(&MetricPanelId::from_string(metric))
+                                .cloned()
+                                .expect("Metric chart should be cached")
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .expect("viewer should remain open");
+            let before = charts
+                .iter()
+                .map(|chart| chart.read_with(&cx, |chart, _| chart.viewport()))
+                .collect::<Vec<_>>();
+            let prepare_counts = |viewer: &ViewerApp| {
+                ["metric-0", "metric-1", "metric-2"]
+                    .into_iter()
+                    .map(|metric| {
+                        let panel_id = MetricPanelId::from_string(metric);
+                        (
+                            metric,
+                            viewer
+                                .track_adapters
+                                .get(&panel_id)
+                                .expect("Metric adapter should be cached")
+                                .borrow()
+                                .detail_prepare_count(),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            };
+            let prepares_before = window
+                .read_with(&cx, |viewer, _| prepare_counts(viewer))
+                .expect("viewer should remain open");
+            let narrow = window
+                .read_with(&cx, |viewer, _| {
+                    viewer
+                        .navigation
+                        .brush()
+                        .expect("brush should exist")
+                        .selected()
+                })
+                .expect("viewer should remain open");
+            assert!(before.iter().all(|viewport| viewport.x == narrow));
+
+            let canvas = cx
+                .debug_bounds("metric-canvas:metric-0")
+                .expect("Metric chart should render");
+            cx.simulate_event(ScrollWheelEvent {
+                position: canvas.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(1_000.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+
+            let selected = window
+                .read_with(&cx, |viewer, _| {
+                    viewer
+                        .navigation
+                        .brush()
+                        .expect("brush should exist")
+                        .selected()
+                })
+                .expect("viewer should remain open");
+            let after = charts
+                .iter()
+                .map(|chart| chart.read_with(&cx, |chart, _| chart.viewport()))
+                .collect::<Vec<_>>();
+            assert_ne!(selected, narrow);
+            for (before, after) in before.iter().zip(&after) {
+                assert_ne!(after.x, before.x);
+                assert_eq!(after.x, selected);
+            }
+            let prepares_after = window
+                .read_with(&cx, |viewer, _| prepare_counts(viewer))
+                .expect("viewer should remain open");
+            for metric in ["metric-0", "metric-1", "metric-2"] {
+                assert!(
+                    prepares_after[metric] > prepares_before[metric],
+                    "{metric} should prepare its expanded viewport immediately"
+                );
+            }
+
+            cx.simulate_event(ScrollWheelEvent {
+                position: canvas.center(),
+                delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+
+            let contracted = window
+                .read_with(&cx, |viewer, _| {
+                    viewer
+                        .navigation
+                        .brush()
+                        .expect("brush should exist")
+                        .selected()
+                })
+                .expect("viewer should remain open");
+            let after_zoom_in = charts
+                .iter()
+                .map(|chart| chart.read_with(&cx, |chart, _| chart.viewport()))
+                .collect::<Vec<_>>();
+            assert!(contracted.span() < selected.span());
+            assert!(
+                after_zoom_in
+                    .iter()
+                    .all(|viewport| viewport.x == contracted)
+            );
+            let prepares_after_zoom_in = window
+                .read_with(&cx, |viewer, _| prepare_counts(viewer))
+                .expect("viewer should remain open");
+            for metric in ["metric-0", "metric-1", "metric-2"] {
+                assert!(
+                    prepares_after_zoom_in[metric] > prepares_after[metric],
+                    "{metric} should prepare its contracted viewport immediately"
+                );
+            }
+
+            cx.executor().advance_clock(Duration::from_millis(101));
+            cx.run_until_parked();
+            wait_for_viewer(window, &cx, |viewer| {
+                let Some(detail_viewport) = viewer.navigation.selected_viewport() else {
+                    return false;
+                };
+                !viewer.metric_repaint_pending
+                    && viewer.views.active().panels.iter().all(|panel| {
+                        panel.detail.is_some()
+                            && !panel.is_pending(ReadKind::Detail)
+                            && panel.requested_detail_viewport == Some(detail_viewport)
+                    })
+            });
+        }
+
+        #[gpui::test]
         fn ruler_drag_pans_the_shared_viewport_within_home(cx: &mut TestAppContext) {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.select_metric(MetricKey::from_string("loss"), cx);
                 })
                 .expect("viewer should remain open");
-            wait_for_viewer(window, &cx, |viewer| viewer.core.brush().is_some());
+            wait_for_viewer(window, &cx, |viewer| viewer.navigation.brush().is_some());
             window
                 .update(&mut cx, |viewer, _, _| {
-                    let brush = viewer.core.brush_mut().expect("brush should exist");
+                    let brush = viewer.navigation.brush_mut().expect("brush should exist");
                     let center = brush.home().start() + brush.home().span() / 2.;
                     brush.zoom_at(center, 2.).expect("zoom should succeed");
                 })
@@ -6749,7 +7521,7 @@ mod tests {
             wait_for_viewer(window, &cx, first_panel_detail_is_settled);
             let before = window
                 .read_with(&cx, |viewer, _| {
-                    viewer.core.brush().map(|brush| brush.selected())
+                    viewer.navigation.brush().map(|brush| brush.selected())
                 })
                 .expect("viewer should remain open")
                 .expect("selected viewport should exist");
@@ -6765,7 +7537,10 @@ mod tests {
 
             window
                 .read_with(&cx, |viewer, _| {
-                    let brush = viewer.core.brush().expect("brush should remain available");
+                    let brush = viewer
+                        .navigation
+                        .brush()
+                        .expect("brush should remain available");
                     assert_ne!(brush.selected(), before);
                     assert!(
                         (brush.selected().span() - before.span()).abs()
@@ -6783,24 +7558,24 @@ mod tests {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.select_metric(MetricKey::from_string("loss"), cx);
                 })
                 .expect("viewer should remain open");
-            wait_for_viewer(window, &cx, |viewer| viewer.core.brush().is_some());
+            wait_for_viewer(window, &cx, |viewer| viewer.navigation.brush().is_some());
             window
                 .update(&mut cx, |viewer, _, _| {
-                    let brush = viewer.core.brush_mut().expect("brush should exist");
+                    let brush = viewer.navigation.brush_mut().expect("brush should exist");
                     let center = brush.home().start() + brush.home().span() / 2.;
                     brush.zoom_at(center, 2.).expect("zoom should succeed");
                 })
                 .expect("viewer should remain open");
             let before = window
                 .read_with(&cx, |viewer, _| {
-                    viewer.core.brush().expect("brush").selected()
+                    viewer.navigation.brush().expect("brush").selected()
                 })
                 .expect("viewer should remain open");
             let ruler = cx
@@ -6823,7 +7598,10 @@ mod tests {
 
             window
                 .read_with(&cx, |viewer, _| {
-                    let brush = viewer.core.brush().expect("brush should remain available");
+                    let brush = viewer
+                        .navigation
+                        .brush()
+                        .expect("brush should remain available");
                     assert!(
                         (brush.selected().span() - before.span()).abs()
                             <= f64::EPSILON * before.span().abs().max(1.)
@@ -6840,24 +7618,24 @@ mod tests {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.select_metric(MetricKey::from_string("loss"), cx);
                 })
                 .expect("viewer should remain open");
-            wait_for_viewer(window, &cx, |viewer| viewer.core.brush().is_some());
+            wait_for_viewer(window, &cx, |viewer| viewer.navigation.brush().is_some());
             window
                 .update(&mut cx, |viewer, _, _| {
-                    let brush = viewer.core.brush_mut().expect("brush should exist");
+                    let brush = viewer.navigation.brush_mut().expect("brush should exist");
                     let center = brush.home().start() + brush.home().span() / 2.;
                     brush.zoom_at(center, 2.).expect("zoom should succeed");
                 })
                 .expect("viewer should remain open");
             let before = window
                 .read_with(&cx, |viewer, _| {
-                    viewer.core.brush().expect("brush").selected()
+                    viewer.navigation.brush().expect("brush").selected()
                 })
                 .expect("viewer should remain open");
             let plot = cx
@@ -6886,7 +7664,7 @@ mod tests {
 
             window
                 .read_with(&cx, |viewer, _| {
-                    let selected = viewer.core.brush().expect("brush").selected();
+                    let selected = viewer.navigation.brush().expect("brush").selected();
                     let anchored = selected.start() + selected.span() * f64::from(anchor_ratio);
                     assert!(selected.span() < before.span());
                     assert!((anchored - anchor).abs() < 1e-9);
@@ -6900,16 +7678,11 @@ mod tests {
             let (root, project_id, first_run_id) = fixture_with_complete_runs(2, 2);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 2);
             window
                 .update(&mut cx, |viewer, _, cx| {
-                    let source_id = viewer
-                        .core
-                        .selection()
-                        .source_id
-                        .clone()
-                        .expect("fixture source should be selected");
+                    let source_id = first_source_id(viewer);
                     viewer.toggle_run(
                         RunRef::new(
                             source_id,
@@ -6923,10 +7696,7 @@ mod tests {
                 })
                 .expect("viewer should remain open");
             wait_for_viewer(window, &cx, |viewer| {
-                viewer
-                    .core
-                    .catalog()
-                    .is_some_and(|catalog| catalog.metric_keys.len() == 2)
+                viewer.available_metric_keys().len() == 2
             });
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -6976,7 +7746,7 @@ mod tests {
             let plot_width = f64::from(overview.size.width);
             window
                 .update(&mut cx, |viewer, _, cx| {
-                    let brush = viewer.core.brush_mut().expect("brush should exist");
+                    let brush = viewer.navigation.brush_mut().expect("brush should exist");
                     let center = brush.home().start() + brush.home().span() / 2.;
                     brush.zoom_at(center, 2.).expect("zoom should succeed");
                     let selected = brush.selected();
@@ -7051,7 +7821,7 @@ mod tests {
             }
             let (ranges, unavailable) = window
                 .read_with(&cx, |viewer, _| {
-                    let selected = viewer.core.brush().map(|brush| brush.selected());
+                    let selected = viewer.navigation.brush().map(|brush| brush.selected());
                     let ranges = viewer
                         .views
                         .active()
@@ -7130,7 +7900,7 @@ mod tests {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -7150,8 +7920,9 @@ mod tests {
             let scroll = cx
                 .debug_bounds("bottom-inspector-scroll")
                 .expect("Inspector content should own a scroll viewport");
-            assert!(cx.debug_bounds("inspector-context").is_some());
-            assert!(cx.debug_bounds("close-inspector").is_some());
+            assert!(cx.debug_bounds("bottom-inspector-header").is_none());
+            assert!(cx.debug_bounds("inspector-context").is_none());
+            assert!(cx.debug_bounds("close-inspector").is_none());
             assert_eq!(scroll.origin.x, inspector.origin.x);
             assert_eq!(scroll.size.width, inspector.size.width);
             assert!(scroll.size.height < inspector.size.height);
@@ -7229,58 +8000,129 @@ mod tests {
                 })
                 .expect("viewer should remain open");
 
-            let ranking = cx
-                .debug_bounds("inspector-ranking")
-                .expect("Ranking inspector tab should render");
-            cx.simulate_click(ranking.center(), Modifiers::default());
+            assert!(cx.debug_bounds("inspector-summary").is_none());
+            assert!(cx.debug_bounds("inspector-ranking").is_none());
+            assert!(cx.debug_bounds("inspector-evidence").is_none());
+            for selector in [
+                "inspector-header:run",
+                "inspector-header:last-value",
+                "inspector-header:min",
+                "inspector-header:max",
+                "inspector-header:locked",
+                "inspector-header:hover",
+                "inspector-header:count",
+                "inspector-header:last-step",
+                "inspector-header:status",
+                "inspector-header:evidence",
+                "inspector-header:project",
+            ] {
+                assert!(
+                    cx.debug_bounds(selector).is_some(),
+                    "every inspector header should be sortable: {selector}",
+                );
+            }
+            assert!(cx.debug_bounds("inspector-column-resize:project").is_none());
+            let resized_header = cx
+                .debug_bounds("inspector-header:last-value")
+                .expect("Last value header should render");
+            let column_resize = cx
+                .debug_bounds("inspector-column-resize:last-value")
+                .expect("Last value column resize boundary should render");
+            let resize_target = point(column_resize.center().x + px(36.), column_resize.center().y);
+            cx.simulate_mouse_down(
+                column_resize.center(),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
             assert_eq!(
                 window
-                    .read_with(&cx, |viewer, _| viewer.views.active().inspector_tab)
+                    .read_with(&cx, |viewer, _| {
+                        viewer.inspector_column_resize.map(|resize| resize.column)
+                    })
                     .expect("viewer should remain open"),
-                InspectorTab::Ranking
+                Some(InspectorColumn::LastValue)
             );
-            let maximize = cx
-                .debug_bounds("ranking-maximize")
-                .expect("Ranking direction should require an explicit choice");
-            cx.simulate_click(maximize.center(), Modifiers::default());
-            wait_for_viewer(window, &cx, |viewer| {
-                viewer.views.active().ranking_direction == Some(ObjectiveDirection::Maximize)
-                    && viewer.views.active().panels[0]
-                        .inspector_generation
-                        .is_none()
-            });
+            cx.simulate_mouse_move(resize_target, Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_up(resize_target, MouseButton::Left, Modifiers::default());
+            assert_eq!(
+                cx.debug_bounds("inspector-header:last-value")
+                    .expect("resized Last value header should remain rendered")
+                    .size
+                    .width,
+                resized_header.size.width + px(36.)
+            );
+            let minimum = cx
+                .debug_bounds("inspector-header:min")
+                .expect("Min header should be sortable");
+            cx.simulate_click(minimum.center(), Modifiers::default());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.inspector_sort)
+                    .expect("viewer should remain open"),
+                Some(InspectorSort {
+                    column: InspectorColumn::Minimum,
+                    direction: InspectorSortDirection::Ascending,
+                })
+            );
+            let maximum = cx
+                .debug_bounds("inspector-header:max")
+                .expect("Max header should be sortable");
+            cx.simulate_click(maximum.center(), Modifiers::default());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.inspector_sort)
+                    .expect("viewer should remain open"),
+                Some(InspectorSort {
+                    column: InspectorColumn::Maximum,
+                    direction: InspectorSortDirection::Ascending,
+                })
+            );
+            cx.simulate_click(maximum.center(), Modifiers::default());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.inspector_sort)
+                    .expect("viewer should remain open"),
+                Some(InspectorSort {
+                    column: InspectorColumn::Maximum,
+                    direction: InspectorSortDirection::Descending,
+                })
+            );
+            cx.simulate_click(maximum.center(), Modifiers::default());
+            assert_eq!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.inspector_sort)
+                    .expect("viewer should remain open"),
+                None
+            );
 
             let previous_height = window
                 .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
                 .expect("viewer should remain open");
-            window
-                .update(&mut cx, |viewer, _, cx| {
-                    viewer.begin_inspector_resize(
-                        &MouseDownEvent {
-                            position: point(px(0.), px(300.)),
-                            modifiers: Modifiers::default(),
-                            button: MouseButton::Left,
-                            click_count: 1,
-                            first_mouse: false,
-                        },
-                        cx,
-                    );
-                    viewer.move_inspector_resize(
-                        &MouseMoveEvent {
-                            position: point(px(0.), px(340.)),
-                            modifiers: Modifiers::default(),
-                            pressed_button: Some(MouseButton::Left),
-                        },
-                        cx,
-                    );
-                    viewer.finish_inspector_resize(cx);
-                })
-                .expect("viewer should remain open");
+            let inspector_resize = cx
+                .debug_bounds("bottom-inspector-resize")
+                .expect("Bottom inspector resize boundary should render");
+            let resize_target = point(
+                inspector_resize.center().x,
+                inspector_resize.center().y + px(140.),
+            );
+            cx.simulate_mouse_down(
+                inspector_resize.center(),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+            cx.simulate_mouse_move(resize_target, Some(MouseButton::Left), Modifiers::default());
+            cx.simulate_mouse_up(resize_target, MouseButton::Left, Modifiers::default());
             assert!(
                 window
                     .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
                     .expect("viewer should remain open")
                     < previous_height
+            );
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
+                    .expect("viewer should remain open")
+                    < px(120.)
             );
             let retained_height = window
                 .read_with(&cx, |viewer, _| viewer.bottom_inspector_height)
@@ -7288,10 +8130,7 @@ mod tests {
             window
                 .update(&mut cx, |viewer, window, _| viewer.focus.focus(window))
                 .expect("viewer should remain open");
-            let close = cx
-                .debug_bounds("close-inspector")
-                .expect("Inspector header should expose a close control");
-            cx.simulate_click(close.center(), Modifiers::default());
+            cx.dispatch_action(ToggleBottomInspector);
             assert!(
                 !window
                     .read_with(&cx, |viewer, _| viewer.bottom_inspector_visible)
@@ -7376,12 +8215,181 @@ mod tests {
         }
 
         #[gpui::test]
+        fn inspector_table_contains_only_visible_runs(cx: &mut TestAppContext) {
+            let (root, project_id, first_run_id) = fixture_with_complete_runs(1, 4);
+            cx.executor().allow_parking();
+            let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+            wait_for_viewer(window, &cx, source_catalog_loaded);
+            select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 1);
+            let second = window
+                .update(&mut cx, |viewer, _, cx| {
+                    let source_id = first_source_id(viewer);
+                    let additional = (1..4)
+                        .map(|index| {
+                            RunRef::new(
+                                source_id.clone(),
+                                project_id.clone(),
+                                RunId::from_string(format!(
+                                    "run-{index}-with-a-very-long-identifier-that-requires-horizontal-scrolling"
+                                )),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    for run in &additional {
+                        viewer.toggle_run(run.clone(), cx);
+                    }
+                    viewer.select_metric(MetricKey::from_string("metric-0"), cx);
+                    additional[0].clone()
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels[0]
+                    .detail
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.series.len() == 4)
+            });
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.bottom_inspector_height = px(120.);
+                    viewer.show_metric_inspector(&MetricPanelId::from_string("metric-0"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels[0]
+                    .inspector
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.runs.len() == 4)
+            });
+            let first_row = cx
+                .debug_bounds("inspector-row:run-0-with-a-very-long-identifier-that-requires-horizontal-scrolling")
+                .expect("first visible Run should have an inspector row");
+            assert!(
+                cx.debug_bounds("inspector-row:run-1-with-a-very-long-identifier-that-requires-horizontal-scrolling")
+                    .is_some()
+            );
+            let scroll = cx
+                .debug_bounds("bottom-inspector-scroll")
+                .expect("inspector scroll viewport should render");
+            cx.simulate_mouse_move(
+                point(scroll.origin.x + px(40.), first_row.center().y),
+                None,
+                Modifiers::default(),
+            );
+            cx.run_until_parked();
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| {
+                        viewer.hovered_run.as_ref().is_some_and(|run| {
+                            run.run_id.as_str()
+                                == "run-0-with-a-very-long-identifier-that-requires-horizontal-scrolling"
+                        })
+                    })
+                    .expect("viewer should remain open")
+            );
+            let sticky_run = cx
+                .debug_bounds("inspector-sticky-run:run-0-with-a-very-long-identifier-that-requires-horizontal-scrolling")
+                .expect("Run cell should render in the fixed column");
+            let sticky_x = sticky_run.origin.x;
+            let sticky_y = sticky_run.origin.y;
+            let row_y = first_row.origin.y;
+            let header_y = cx
+                .debug_bounds("inspector-table-header")
+                .expect("fixed inspector header should render")
+                .origin
+                .y;
+            let scroll_position = point(scroll.origin.x + px(300.), first_row.center().y);
+            cx.simulate_event(ScrollWheelEvent {
+                position: scroll_position,
+                delta: ScrollDelta::Pixels(point(px(-500.), px(0.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| {
+                        viewer.inspector_horizontal_scroll.offset().x < px(0.)
+                    })
+                    .expect("viewer should remain open")
+            );
+            assert_eq!(
+                cx.debug_bounds("inspector-sticky-run:run-0-with-a-very-long-identifier-that-requires-horizontal-scrolling")
+                    .expect("fixed Run cell should remain rendered")
+                    .origin
+                    .x,
+                sticky_x
+            );
+            cx.simulate_event(ScrollWheelEvent {
+                position: scroll_position,
+                delta: ScrollDelta::Pixels(point(px(0.), px(-500.))),
+                modifiers: Modifiers::default(),
+                touch_phase: TouchPhase::Moved,
+            });
+            cx.run_until_parked();
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| {
+                        viewer.inspector_vertical_scroll.offset().y < px(0.)
+                    })
+                    .expect("viewer should remain open")
+            );
+            let scrolled_sticky = cx
+                .debug_bounds("inspector-sticky-run:run-0-with-a-very-long-identifier-that-requires-horizontal-scrolling")
+                .expect("Run cell should remain rendered after vertical scrolling");
+            let scrolled_row = cx
+                .debug_bounds("inspector-row:run-0-with-a-very-long-identifier-that-requires-horizontal-scrolling")
+                .expect("data row should remain rendered after vertical scrolling");
+            assert_eq!(
+                scrolled_sticky.origin.y - sticky_y,
+                scrolled_row.origin.y - row_y
+            );
+            assert_eq!(
+                cx.debug_bounds("inspector-table-header")
+                    .expect("header should remain rendered after vertical scrolling")
+                    .origin
+                    .y,
+                header_y
+            );
+
+            window
+                .update(&mut cx, |viewer, _, cx| viewer.toggle_run(second, cx))
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.active_visible_runs().len() == 3
+                    && viewer.views.active().panels[0]
+                        .inspector
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.runs.len() == 3)
+            });
+
+            assert!(
+                cx.debug_bounds("inspector-row:run-0-with-a-very-long-identifier-that-requires-horizontal-scrolling")
+                    .is_some()
+            );
+            window
+                .read_with(&cx, |viewer, _| {
+                    let visible = viewer.active_visible_runs();
+                    let inspector = viewer.views.active().panels[0]
+                        .inspector
+                        .as_ref()
+                        .expect("inspector should remain available");
+                    assert!(
+                        inspector
+                            .runs
+                            .iter()
+                            .all(|run| visible.contains(&run.run_ref))
+                    );
+                })
+                .expect("viewer should remain open");
+        }
+
+        #[gpui::test]
         fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppContext) {
             let (root, project_id, run_id) = fixture(10);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             cx.simulate_resize(size(px(600.), px(420.)));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 10);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -7470,6 +8478,45 @@ mod tests {
                         .is_some_and(|panel| panel.detail.is_some())
             });
             assert!(cx.debug_bounds("metric-track:metric-9").is_some());
+
+            let revisions_before_zoom = window
+                .read_with(&cx, |viewer, _| {
+                    let schedule = viewer.track_viewport.borrow();
+                    viewer.views.active().panels[schedule.overscan.clone()]
+                        .iter()
+                        .map(|panel| (panel.panel_id.clone(), panel.detail_revision))
+                        .collect::<HashMap<_, _>>()
+                })
+                .expect("viewer should remain open");
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    let brush = viewer
+                        .navigation
+                        .brush_mut()
+                        .expect("timeline brush should be available");
+                    let anchor = brush.selected().start() + brush.selected().span() / 2.;
+                    brush.zoom_at(anchor, 1.25).expect("zoom should succeed");
+                    viewer.schedule_detail_refresh(cx);
+                })
+                .expect("viewer should remain open");
+            cx.executor().advance_clock(Duration::from_millis(101));
+            cx.run_until_parked();
+            wait_for_viewer(window, &cx, |viewer| {
+                let Some(viewport) = viewer.navigation.selected_viewport() else {
+                    return false;
+                };
+                let schedule = viewer.track_viewport.borrow();
+                viewer.views.active().panels[schedule.overscan.clone()]
+                    .iter()
+                    .all(|panel| {
+                        panel.detail.is_some()
+                            && !panel.is_pending(ReadKind::Detail)
+                            && panel.requested_detail_viewport == Some(viewport)
+                            && revisions_before_zoom
+                                .get(&panel.panel_id)
+                                .is_some_and(|revision| panel.detail_revision > *revision)
+                    })
+            });
         }
 
         #[gpui::test]
@@ -7486,16 +8533,11 @@ mod tests {
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
             cx.simulate_resize(size(px(2_560.), px(1_800.)));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 6);
             window
                 .update(&mut cx, |viewer, _, cx| {
-                    let source_id = viewer
-                        .core
-                        .selection()
-                        .source_id
-                        .clone()
-                        .expect("fixture source should be selected");
+                    let source_id = first_source_id(viewer);
                     for run_index in 1..10 {
                         viewer.toggle_run(
                             RunRef::new(
@@ -7544,7 +8586,7 @@ mod tests {
 
             let before = window
                 .read_with(&cx, |viewer, _| {
-                    viewer.core.brush().map(|brush| brush.selected())
+                    viewer.navigation.brush().map(|brush| brush.selected())
                 })
                 .expect("viewer should remain open")
                 .expect("representative View should have a shared viewport");
@@ -7565,7 +8607,7 @@ mod tests {
             let (after, run_count, panel_count) = window
                 .read_with(&cx, |viewer, _| {
                     (
-                        viewer.core.brush().map(|brush| brush.selected()),
+                        viewer.navigation.brush().map(|brush| brush.selected()),
                         viewer.views.active().runs.len(),
                         viewer.views.active().panels.len(),
                     )
@@ -7588,7 +8630,7 @@ mod tests {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -7625,14 +8667,14 @@ mod tests {
             window
                 .update(&mut cx, |viewer, _, cx| {
                     let brush = viewer
-                        .core
+                        .navigation
                         .brush_mut()
                         .expect("timeline brush should exist");
                     let anchor = brush.selected().start() + brush.selected().span() / 2.;
                     brush.zoom_at(anchor, 1.25).expect("zoom should succeed");
                     viewer.schedule_detail_refresh(cx);
                     let brush = viewer
-                        .core
+                        .navigation
                         .brush_mut()
                         .expect("timeline brush should exist");
                     let anchor = brush.selected().start() + brush.selected().span() / 2.;
@@ -7649,7 +8691,7 @@ mod tests {
                 })
                 .expect("viewer should remain open");
             let final_viewport = window
-                .read_with(&cx, |viewer, _| viewer.core.selected_viewport())
+                .read_with(&cx, |viewer, _| viewer.navigation.selected_viewport())
                 .expect("viewer should remain open");
             let immediate = window
                 .read_with(&cx, |viewer, _| {
@@ -7693,7 +8735,7 @@ mod tests {
             let (root, project_id, run_id) = fixture_with_extent(100);
             cx.executor().allow_parking();
             let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
-            wait_for_viewer(window, &cx, |viewer| viewer.core.catalog().is_some());
+            wait_for_viewer(window, &cx, source_catalog_loaded);
             select_fixture_run(window, &mut cx, project_id, run_id, 1);
             window
                 .update(&mut cx, |viewer, _, cx| {
@@ -7725,7 +8767,7 @@ mod tests {
                         panel.detail_revision,
                         panel.requested_detail_viewport,
                         viewer
-                            .core
+                            .navigation
                             .brush()
                             .expect("timeline brush should exist")
                             .selected()
@@ -7749,7 +8791,7 @@ mod tests {
                         panel.detail_revision,
                         panel.requested_detail_viewport,
                         viewer
-                            .core
+                            .navigation
                             .brush()
                             .expect("timeline brush should exist")
                             .selected()
@@ -7762,7 +8804,7 @@ mod tests {
             assert_eq!(immediate.2, before_viewport);
             assert!(immediate.3 < before_span);
             let final_viewport = window
-                .read_with(&cx, |viewer, _| viewer.core.selected_viewport())
+                .read_with(&cx, |viewer, _| viewer.navigation.selected_viewport())
                 .expect("viewer should remain open");
 
             cx.executor().advance_clock(Duration::from_millis(101));

@@ -3,13 +3,12 @@ use std::path::{Path, PathBuf};
 
 use pulseon_chart_core::AxisRange;
 use pulseon_model::alignment::AlignmentAxis;
-use pulseon_model::comparison::ObjectiveDirection;
 use pulseon_model::run::RunId;
 use pulseon_model::types::ProjectId;
 
-use crate::workbench::{InspectorTab, TrackDensity};
+use crate::workbench::TrackDensity;
 
-const HEADER: &str = "pulseon-workbench 1";
+const HEADER: &str = "pulseon-workbench 2";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchDocument {
@@ -36,8 +35,6 @@ pub struct SavedAnalysisView {
     pub metrics: Vec<String>,
     pub metric_heights: Vec<(String, f32)>,
     pub selected_metric: Option<String>,
-    pub inspector_tab: InspectorTab,
-    pub ranking_direction: Option<ObjectiveDirection>,
     pub axis: AlignmentAxis,
     pub track_density: TrackDensity,
     pub viewport: Option<AxisRange>,
@@ -144,12 +141,10 @@ impl WorkbenchDocument {
                 |range| format!("{} {}", range.start().to_bits(), range.end().to_bits()),
             );
             output.push_str(&format!(
-                "view {} {} {} {} {} {} {viewport}\n",
+                "view {} {} {} {} {viewport}\n",
                 encode(&view.name),
                 axis_name(view.axis),
                 density_name(view.track_density),
-                tab_name(view.inspector_tab),
-                direction_name(view.ranking_direction),
                 view.selected_metric
                     .as_deref()
                     .map_or_else(|| "-".to_owned(), encode),
@@ -229,17 +224,7 @@ impl WorkbenchDocument {
                 ["source", path] => document
                     .sources
                     .push(PathBuf::from(decode(path, line_number)?)),
-                [
-                    "view",
-                    name,
-                    axis,
-                    density,
-                    tab,
-                    direction,
-                    selected,
-                    start,
-                    end,
-                ] => {
+                ["view", name, axis, density, selected, start, end] => {
                     if let Some(view) = current.take() {
                         document.views.push(view);
                     }
@@ -253,8 +238,6 @@ impl WorkbenchDocument {
                         selected_metric: (*selected != "-")
                             .then(|| decode(selected, line_number))
                             .transpose()?,
-                        inspector_tab: parse_tab(tab, line_number)?,
-                        ranking_direction: parse_direction(direction, line_number)?,
                         axis: parse_axis(axis, line_number)?,
                         track_density: parse_density(density, line_number)?,
                         viewport: if *start == "-" && *end == "-" {
@@ -420,28 +403,6 @@ macro_rules! named_enum {
 
 named_enum!(axis_name, parse_axis, AlignmentAxis, {"step" => AlignmentAxis::Step, "elapsed" => AlignmentAxis::ElapsedTime});
 named_enum!(density_name, parse_density, TrackDensity, {"compact" => TrackDensity::Compact, "comfortable" => TrackDensity::Comfortable, "spacious" => TrackDensity::Spacious});
-named_enum!(tab_name, parse_tab, InspectorTab, {"summary" => InspectorTab::Summary, "ranking" => InspectorTab::Ranking, "evidence" => InspectorTab::Evidence});
-
-fn direction_name(direction: Option<ObjectiveDirection>) -> &'static str {
-    match direction {
-        None => "none",
-        Some(ObjectiveDirection::Minimize) => "minimize",
-        Some(ObjectiveDirection::Maximize) => "maximize",
-    }
-}
-
-fn parse_direction(
-    value: &str,
-    line: usize,
-) -> Result<Option<ObjectiveDirection>, WorkbenchDocumentError> {
-    match value {
-        "none" => Ok(None),
-        "minimize" => Ok(Some(ObjectiveDirection::Minimize)),
-        "maximize" => Ok(Some(ObjectiveDirection::Maximize)),
-        _ => Err(invalid_value(line, "invalid ranking direction")),
-    }
-}
-
 fn invalid_value(line: usize, message: &str) -> WorkbenchDocumentError {
     WorkbenchDocumentError::Invalid {
         line,
@@ -484,8 +445,6 @@ mod tests {
                 metrics: vec!["loss".to_owned()],
                 metric_heights: vec![("loss".to_owned(), 128.)],
                 selected_metric: Some("loss".to_owned()),
-                inspector_tab: InspectorTab::Evidence,
-                ranking_direction: Some(ObjectiveDirection::Minimize),
                 axis: AlignmentAxis::ElapsedTime,
                 track_density: TrackDensity::Compact,
                 viewport: Some(AxisRange::new(10., 20.).expect("test viewport should be valid")),
@@ -530,24 +489,15 @@ mod tests {
     }
 
     #[test]
-    fn original_v1_records_default_new_organization_state() {
+    fn obsolete_v1_documents_are_rejected() {
         let raw = "pulseon-workbench 1\n\
                    dock 1 1134559232 0 0 1130102784\n\
                    active 0\n\
                    view 566965772031 step comfortable summary none - - -\n\
                    end\n";
-
-        let document = WorkbenchDocument::decode(raw).expect("original v1 document should load");
-
-        assert!(document.pinned_projects.is_empty());
-        assert!(document.archived_projects.is_empty());
-        assert!(document.removed_projects.is_empty());
-        assert!(document.archived_runs.is_empty());
-        assert!(document.views[0].baseline.is_none());
-        assert!(document.views[0].pinned_runs.is_empty());
-
-        let without_dock = WorkbenchDocument::decode("pulseon-workbench 1\n")
-            .expect("v1 document without dock state should load");
-        assert_eq!(without_dock.project_sidebar_width, 190.);
+        assert!(matches!(
+            WorkbenchDocument::decode(raw),
+            Err(WorkbenchDocumentError::UnsupportedVersion(_))
+        ));
     }
 }

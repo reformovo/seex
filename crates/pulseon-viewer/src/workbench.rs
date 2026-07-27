@@ -2,13 +2,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use pulseon_model::alignment::AlignmentViewport;
-use pulseon_model::comparison::ObjectiveDirection;
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::RunId;
 use pulseon_model::types::ProjectId;
 
 use crate::coordination::{AnalysisViewId, MetricPanelId, PanelReadMode, SourceReadFailure};
-use crate::core::{DataSourceId, RunRef, SelectionError, ViewerCore, ViewerSelection};
+use crate::core::{DataSourceId, RunRef, SelectionError, ViewNavigation};
 use crate::query::{CurveSnapshot, InspectorSnapshot};
 use crate::workbench_document::WorkbenchDocument;
 use crate::worker::{Generation, ReadKind};
@@ -22,14 +21,6 @@ pub enum TrackDensity {
     #[default]
     Comfortable,
     Spacious,
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum InspectorTab {
-    #[default]
-    Summary,
-    Ranking,
-    Evidence,
 }
 
 /// Collision-free viewer-local identity for a Project in an imported source.
@@ -118,10 +109,8 @@ pub struct AnalysisView {
     pub pinned_runs: Vec<RunRef>,
     pub panels: Vec<MetricPanel>,
     pub selected_panel_id: Option<MetricPanelId>,
-    pub inspector_tab: InspectorTab,
-    pub ranking_direction: Option<ObjectiveDirection>,
     pub track_density: TrackDensity,
-    pub core: ViewerCore,
+    pub navigation: ViewNavigation,
     pub local_error: Option<String>,
     pub timeline_extents: HashMap<MetricKey, AlignmentViewport>,
 }
@@ -146,10 +135,8 @@ impl Default for AnalysisViews {
             pinned_runs: Vec::new(),
             panels: Vec::new(),
             selected_panel_id: None,
-            inspector_tab: InspectorTab::default(),
-            ranking_direction: None,
             track_density: TrackDensity::default(),
-            core: ViewerCore::default(),
+            navigation: ViewNavigation::default(),
             local_error: None,
             timeline_extents: HashMap::new(),
         };
@@ -240,34 +227,15 @@ impl AnalysisViews {
                     saved.name
                 ));
             }
-            let archived_runs = document
-                .archived_runs
-                .iter()
-                .map(saved_run_ref)
-                .collect::<Vec<_>>();
-            let mut core = ViewerCore::new(ViewerSelection {
-                source_id: runs.first().map(|run| run.source_id.clone()),
-                project_id: runs.first().map(|run| run.project_id.clone()),
-                runs: runs
-                    .iter()
-                    .filter(|run| !archived_runs.contains(run))
-                    .cloned()
-                    .collect(),
-                metric_key: selected_panel_id.as_ref().and_then(|panel_id| {
-                    panels
-                        .iter()
-                        .find(|panel| &panel.panel_id == panel_id)
-                        .map(|panel| panel.metric_key.clone())
-                }),
-            });
-            core.select_axis(saved.axis);
+            let mut navigation = ViewNavigation::default();
+            navigation.select_axis(saved.axis);
             if let Some(viewport) = saved.viewport
                 && let Ok(viewport) = AlignmentViewport::new(
                     viewport.start().floor() as i64,
                     viewport.end().ceil() as i64,
                 )
             {
-                core.set_timeline_home(viewport);
+                navigation.set_timeline_home(viewport);
             }
             views.push(AnalysisView {
                 view_id: AnalysisViewId::from_string(format!("view-{}", index + 1)),
@@ -277,10 +245,8 @@ impl AnalysisViews {
                 pinned_runs,
                 panels,
                 selected_panel_id,
-                inspector_tab: saved.inspector_tab,
-                ranking_direction: saved.ranking_direction,
                 track_density: saved.track_density,
-                core,
+                navigation,
                 local_error: None,
                 timeline_extents: HashMap::new(),
             });
@@ -381,10 +347,8 @@ impl AnalysisViews {
             pinned_runs: Vec::new(),
             panels: Vec::new(),
             selected_panel_id: None,
-            inspector_tab: InspectorTab::default(),
-            ranking_direction: None,
             track_density: TrackDensity::default(),
-            core: ViewerCore::default(),
+            navigation: ViewNavigation::default(),
             local_error: None,
             timeline_extents: HashMap::new(),
         });
@@ -403,10 +367,8 @@ impl AnalysisViews {
             pinned_runs: active.pinned_runs,
             panels: active.panels,
             selected_panel_id: active.selected_panel_id,
-            inspector_tab: active.inspector_tab,
-            ranking_direction: active.ranking_direction,
             track_density: active.track_density,
-            core: active.core,
+            navigation: active.navigation,
             local_error: active.local_error,
             timeline_extents: active.timeline_extents,
         });
@@ -537,11 +499,6 @@ impl AnalysisViews {
                 .filter(|run| project.contains_run(run))
                 .cloned()
                 .collect::<Vec<_>>();
-            for run in &removed {
-                if view.core.selection().runs.contains(run) {
-                    let _ = view.core.toggle_run(run.clone());
-                }
-            }
             view.runs.retain(|run| !project.contains_run(run));
             view.pinned_runs.retain(|run| !project.contains_run(run));
             if view
@@ -644,10 +601,6 @@ impl AnalysisViews {
         true
     }
 
-    pub fn set_active_inspector_tab(&mut self, tab: InspectorTab) {
-        self.active_mut().inspector_tab = tab;
-    }
-
     pub fn cancel_active_panel_reads(&mut self) {
         for panel in &mut self.active_mut().panels {
             panel.overview_generation = None;
@@ -657,15 +610,10 @@ impl AnalysisViews {
         }
     }
 
-    pub fn set_active_ranking_direction(&mut self, direction: ObjectiveDirection) {
-        self.active_mut().ranking_direction = Some(direction);
-    }
-
-    pub fn reconcile_source_project(
+    pub fn reconcile_source_runs(
         &mut self,
         source_id: &DataSourceId,
-        project_id: &ProjectId,
-        available_runs: &[RunId],
+        available_runs: &[(ProjectId, RunId)],
     ) -> Vec<RunRef> {
         let mut removed = Vec::new();
         for view in &mut self.views {
@@ -674,19 +622,32 @@ impl AnalysisViews {
                 .iter()
                 .filter(|run| {
                     &run.source_id == source_id
-                        && &run.project_id == project_id
-                        && !available_runs.contains(&run.run_id)
+                        && !available_runs.iter().any(|(project_id, run_id)| {
+                            project_id == &run.project_id && run_id == &run.run_id
+                        })
                 })
                 .cloned()
                 .collect::<Vec<_>>();
-            for run in &stale {
-                if view.core.selection().runs.contains(run) {
-                    let _ = view.core.toggle_run(run.clone());
-                }
-            }
             view.runs.retain(|run| !stale.contains(run));
+            view.pinned_runs.retain(|run| !stale.contains(run));
+            if view
+                .baseline
+                .as_ref()
+                .is_some_and(|run| stale.contains(run))
+            {
+                view.baseline = None;
+            }
+            if !stale.is_empty() {
+                invalidate_view_panels(view);
+            }
             removed.extend(stale);
         }
+        self.archived_runs.retain(|run| {
+            &run.source_id != source_id
+                || available_runs.iter().any(|(project_id, run_id)| {
+                    project_id == &run.project_id && run_id == &run.run_id
+                })
+        });
         removed
     }
 
@@ -1063,7 +1024,7 @@ mod tests {
         views.select_active_metric(MetricKey::from_string("loss"));
         views
             .active_mut()
-            .core
+            .navigation
             .select_axis(pulseon_model::alignment::AlignmentAxis::ElapsedTime);
 
         let duplicate = views.duplicate_active();
@@ -1073,7 +1034,7 @@ mod tests {
         views.active_mut().panels.clear();
         views
             .active_mut()
-            .core
+            .navigation
             .select_axis(pulseon_model::alignment::AlignmentAxis::Step);
         assert!(views.activate(&AnalysisViewId::from_string("view-1")));
 
@@ -1090,7 +1051,7 @@ mod tests {
             [MetricKey::from_string("loss")]
         );
         assert_eq!(
-            views.active().core.axis(),
+            views.active().navigation.axis(),
             pulseon_model::alignment::AlignmentAxis::ElapsedTime
         );
         assert!(views.activate(&duplicate));
@@ -1099,29 +1060,25 @@ mod tests {
         assert!(views.active().pinned_runs.is_empty());
         assert!(views.active().panels.is_empty());
         assert_eq!(
-            views.active().core.axis(),
+            views.active().navigation.axis(),
             pulseon_model::alignment::AlignmentAxis::Step
         );
     }
 
     #[test]
-    fn metric_selection_and_inspector_tab_are_isolated_per_view() {
+    fn metric_selection_is_isolated_per_view() {
         let mut views = AnalysisViews::default();
         let first_view = views.active().view_id.clone();
         let loss = views.select_active_metric(MetricKey::from_string("loss"));
-        views.set_active_inspector_tab(InspectorTab::Evidence);
 
         let second_view = views.create_empty();
         let accuracy = views.select_active_metric(MetricKey::from_string("accuracy"));
-        views.set_active_inspector_tab(InspectorTab::Ranking);
         assert!(views.select_active_panel(&accuracy));
         assert!(views.activate(&first_view));
 
         assert_eq!(views.active().selected_panel_id.as_ref(), Some(&loss));
-        assert_eq!(views.active().inspector_tab, InspectorTab::Evidence);
         assert!(views.activate(&second_view));
         assert_eq!(views.active().selected_panel_id.as_ref(), Some(&accuracy));
-        assert_eq!(views.active().inspector_tab, InspectorTab::Ranking);
     }
 
     #[test]
@@ -1160,8 +1117,6 @@ mod tests {
                 metrics: vec!["loss".to_owned(), "loss".to_owned()],
                 metric_heights: Vec::new(),
                 selected_metric: Some("unknown".to_owned()),
-                inspector_tab: InspectorTab::Summary,
-                ranking_direction: None,
                 axis: AlignmentAxis::Step,
                 track_density: TrackDensity::Comfortable,
                 viewport: Some(AxisRange::new(0., 1.).expect("viewport should be valid")),

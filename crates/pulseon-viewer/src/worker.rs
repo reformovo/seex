@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::future::poll_fn;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
@@ -18,7 +19,7 @@ use crate::source::{ReadSession, SourceError};
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Generation(pub u64);
 
-/// Independent result streams maintained by the viewer Core.
+/// Independent result streams routed by source and panel coordinators.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ReadKind {
     Catalog,
@@ -217,14 +218,36 @@ struct TaggedRequest {
     source_id: DataSourceId,
     generation: Generation,
     request: ReadRequest,
+    _ticket: RequestTicket,
 }
 
-/// Handle for one background thread that exclusively owns its read session.
+#[derive(Default)]
+struct RequestTicket(Option<Arc<AtomicUsize>>);
+
+impl RequestTicket {
+    fn tracked(outstanding: Arc<AtomicUsize>) -> Self {
+        outstanding.fetch_add(1, Ordering::Relaxed);
+        Self(Some(outstanding))
+    }
+}
+
+impl Drop for RequestTicket {
+    fn drop(&mut self) {
+        if let Some(outstanding) = &self.0 {
+            outstanding.fetch_sub(1, Ordering::Release);
+        }
+    }
+}
+
+/// Handle for a bounded set of background readers with thread-owned sessions.
 pub struct ReadWorker {
     requests: Option<Sender<TaggedRequest>>,
     events: Option<ReadEventReceiver>,
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
+    outstanding: Arc<AtomicUsize>,
 }
+
+const MAX_WORKERS_PER_SOURCE: usize = 4;
 
 impl ReadWorker {
     /// Starts a worker for one local native source.
@@ -243,13 +266,30 @@ impl ReadWorker {
         let root_path = root_path.to_path_buf();
         let (request_tx, request_rx) = mpsc::channel();
         let (event_tx, event_rx) = read_event_channel();
-        let thread = thread::Builder::new()
-            .name("pulseon-native-reader".to_owned())
-            .spawn(move || worker_loop(root_path, request_rx, event_tx, gate))?;
+        let worker_count = gate.limit.min(MAX_WORKERS_PER_SOURCE);
+        let requests = Arc::new(Mutex::new(RequestQueue {
+            receiver: request_rx,
+            pending: PendingRequests::default(),
+        }));
+        let events = Arc::new(event_tx);
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let mut threads = Vec::with_capacity(worker_count);
+        for index in 0..worker_count {
+            let root_path = root_path.clone();
+            let requests = Arc::clone(&requests);
+            let events = Arc::clone(&events);
+            let gate = Arc::clone(&gate);
+            threads.push(
+                thread::Builder::new()
+                    .name(format!("pulseon-native-reader-{index}"))
+                    .spawn(move || worker_loop(root_path, requests, events, gate))?,
+            );
+        }
         Ok(Self {
             requests: Some(request_tx),
             events: Some(event_rx),
-            thread: Some(thread),
+            threads,
+            outstanding,
         })
     }
 
@@ -264,6 +304,7 @@ impl ReadWorker {
         generation: Generation,
         request: ReadRequest,
     ) -> Result<(), WorkerClosed> {
+        let ticket = RequestTicket::tracked(Arc::clone(&self.outstanding));
         self.requests
             .as_ref()
             .ok_or(WorkerClosed)?
@@ -271,6 +312,7 @@ impl ReadWorker {
                 source_id,
                 generation,
                 request,
+                _ticket: ticket,
             })
             .map_err(|_| WorkerClosed)
     }
@@ -350,7 +392,13 @@ impl Drop for ReadWorker {
         self.requests.take();
         // A native query cannot currently be cancelled. Detach it so dropping
         // viewer state never blocks the UI thread while the query finishes.
-        drop(self.thread.take());
+        if self.outstanding.load(Ordering::Acquire) == 0 {
+            for thread in self.threads.drain(..) {
+                let _ = thread.join();
+            }
+        } else {
+            self.threads.clear();
+        }
     }
 }
 
@@ -413,28 +461,37 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) {
     }
 }
 
+struct RequestQueue {
+    receiver: Receiver<TaggedRequest>,
+    pending: PendingRequests,
+}
+
+fn next_request(queue: &Mutex<RequestQueue>) -> Option<TaggedRequest> {
+    let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
+    loop {
+        while let Ok(request) = queue.receiver.try_recv() {
+            queue.pending.push(request);
+        }
+        if let Some(request) = queue.pending.take_next() {
+            return Some(request);
+        }
+        let request = queue.receiver.recv().ok()?;
+        queue.pending.push(request);
+    }
+}
+
 fn worker_loop(
     root_path: PathBuf,
-    requests: Receiver<TaggedRequest>,
-    events: ReadEventSender,
+    requests: Arc<Mutex<RequestQueue>>,
+    events: Arc<ReadEventSender>,
     gate: Arc<ReadConcurrencyGate>,
 ) {
     let mut session = None;
-    while let Ok(first) = requests.recv() {
-        let mut pending = PendingRequests::default();
-        pending.push(first);
-        loop {
-            for request in requests.try_iter() {
-                pending.push(request);
-            }
-            let Some(request) = pending.take_next() else {
-                break;
-            };
-            let _permit = gate.acquire();
-            let event = execute(&root_path, &mut session, request);
-            if !events.send(event) {
-                return;
-            }
+    while let Some(request) = next_request(&requests) {
+        let _permit = gate.acquire();
+        let event = execute(&root_path, &mut session, request);
+        if !events.send(event) {
+            return;
         }
     }
 }
@@ -444,13 +501,19 @@ fn execute(
     session: &mut Option<ReadSession>,
     tagged: TaggedRequest,
 ) -> ReadEvent {
-    let kind = tagged.request.kind();
+    let TaggedRequest {
+        source_id,
+        generation,
+        request,
+        _ticket,
+    } = tagged;
+    let kind = request.kind();
     let result = (|| {
         if session.is_none() {
             *session = Some(ReadSession::open_existing(root_path)?);
         }
         let session = session.as_ref().ok_or(WorkerError::SessionUnavailable)?;
-        Ok(match tagged.request {
+        Ok(match request {
             ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(&request)?),
             ReadRequest::Overview(request) => {
                 ReadSnapshot::Overview(session.query_overview(&request)?)
@@ -462,8 +525,8 @@ fn execute(
         })
     })();
     ReadEvent {
-        source_id: tagged.source_id,
-        generation: tagged.generation,
+        source_id,
+        generation,
         kind,
         result,
     }
@@ -502,7 +565,8 @@ mod tests {
         let worker = ReadWorker {
             requests: Some(request_tx),
             events: Some(event_rx),
-            thread: Some(thread),
+            threads: vec![thread],
+            outstanding: Arc::new(AtomicUsize::new(1)),
         };
         let (dropped_tx, dropped_rx) = mpsc::channel();
         let dropper = thread::spawn(move || {
@@ -528,6 +592,7 @@ mod tests {
                 source_id: DataSourceId::from_string("source"),
                 generation: Generation(generation),
                 request: ReadRequest::Discover(DiscoveryRequest::default()),
+                _ticket: RequestTicket::default(),
             });
         }
 
@@ -545,6 +610,7 @@ mod tests {
                 source_id: DataSourceId::from_string("source"),
                 generation: Generation(generation),
                 request: overview_request(metric),
+                _ticket: RequestTicket::default(),
             });
         }
 
@@ -559,13 +625,67 @@ mod tests {
     }
 
     #[test]
+    fn request_queue_serves_distinct_metrics_to_parallel_consumers() {
+        let (request_tx, request_rx) = mpsc::channel();
+        for (generation, metric) in [(1, "loss"), (2, "accuracy")] {
+            request_tx
+                .send(TaggedRequest {
+                    source_id: DataSourceId::from_string("source"),
+                    generation: Generation(generation),
+                    request: overview_request(metric),
+                    _ticket: RequestTicket::default(),
+                })
+                .expect("test request queue should remain open");
+        }
+        let queue = Arc::new(Mutex::new(RequestQueue {
+            receiver: request_rx,
+            pending: PendingRequests::default(),
+        }));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let consumers = (0..2)
+            .map(|_| {
+                let queue = Arc::clone(&queue);
+                let release = Arc::clone(&release);
+                let acquired_tx = acquired_tx.clone();
+                thread::spawn(move || {
+                    let request = next_request(&queue).expect("queued metric should be available");
+                    acquired_tx
+                        .send(request.generation)
+                        .expect("test receiver should remain open");
+                    let (released, available) = &*release;
+                    let released = released.lock().unwrap_or_else(|error| error.into_inner());
+                    drop(
+                        available
+                            .wait_while(released, |released| !*released)
+                            .unwrap_or_else(|error| error.into_inner()),
+                    );
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(acquired_tx);
+        let mut acquired = (0..2)
+            .map(|_| acquired_rx.recv_timeout(Duration::from_secs(1)))
+            .collect::<Vec<_>>();
+        let (released, available) = &*release;
+        *released.lock().unwrap_or_else(|error| error.into_inner()) = true;
+        available.notify_all();
+        for consumer in consumers {
+            consumer.join().expect("request consumer should not panic");
+        }
+        acquired.sort_unstable_by_key(|result| result.as_ref().copied().ok());
+        assert_eq!(acquired, [Ok(Generation(1)), Ok(Generation(2))]);
+    }
+
+    #[test]
     fn event_receiver_can_only_be_taken_once() {
         let (request_tx, _request_rx) = mpsc::channel();
         let (_event_tx, event_rx) = read_event_channel();
         let mut worker = ReadWorker {
             requests: Some(request_tx),
             events: Some(event_rx),
-            thread: None,
+            threads: Vec::new(),
+            outstanding: Arc::new(AtomicUsize::new(0)),
         };
 
         assert!(worker.take_event_receiver().is_some());

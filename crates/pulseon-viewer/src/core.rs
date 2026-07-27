@@ -1,16 +1,10 @@
 use std::fmt;
 use std::path::Path;
-use std::sync::Arc;
 
 use pulseon_chart_core::{AxisRange, BrushState};
 use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
-use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunId, RunStatus};
 use pulseon_model::types::ProjectId;
-
-use crate::model::CatalogSnapshot;
-use crate::query::CurveSnapshot;
-use crate::worker::{Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot};
 
 pub const MAX_SELECTED_RUNS: usize = 10;
 
@@ -92,23 +86,6 @@ fn run_fields_match_filter(name: &str, run_id: &str, status: &str, query: &str) 
         || status.contains(&query)
 }
 
-/// Stable identities selected by the viewer independently of rendered widgets.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ViewerSelection {
-    pub source_id: Option<DataSourceId>,
-    pub project_id: Option<ProjectId>,
-    pub runs: Vec<RunRef>,
-    pub metric_key: Option<MetricKey>,
-}
-
-/// Whether a worker event changed the current viewer state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ApplyOutcome {
-    Applied,
-    IgnoredStale,
-    IgnoredMismatched,
-}
-
 /// Invalid user selection transitions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SelectionError {
@@ -116,52 +93,23 @@ pub enum SelectionError {
     RunLimit,
 }
 
-/// GPUI-independent state reconciler for native read snapshots.
+/// Per-View navigation state shared by the brush, ruler, and Metric tracks.
 #[derive(Clone)]
-pub struct ViewerCore {
-    selection: ViewerSelection,
+pub struct ViewNavigation {
     axis: AlignmentAxis,
     brush: Option<BrushState>,
-    catalog: Option<CatalogSnapshot>,
-    overview: Option<Arc<CurveSnapshot>>,
-    detail: Option<Arc<CurveSnapshot>>,
-    expected: [Option<ExpectedRequest>; 4],
-    last_error: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ExpectedRequest {
-    generation: Generation,
-    source_id: DataSourceId,
-}
-
-impl Default for ViewerCore {
+impl Default for ViewNavigation {
     fn default() -> Self {
         Self {
-            selection: ViewerSelection::default(),
             axis: AlignmentAxis::Step,
             brush: None,
-            catalog: None,
-            overview: None,
-            detail: None,
-            expected: [const { None }; 4],
-            last_error: None,
         }
     }
 }
 
-impl ViewerCore {
-    pub fn new(selection: ViewerSelection) -> Self {
-        Self {
-            selection,
-            ..Self::default()
-        }
-    }
-
-    pub const fn selection(&self) -> &ViewerSelection {
-        &self.selection
-    }
-
+impl ViewNavigation {
     pub const fn axis(&self) -> AlignmentAxis {
         self.axis
     }
@@ -183,74 +131,10 @@ impl ViewerCore {
         .ok()
     }
 
-    pub const fn catalog(&self) -> Option<&CatalogSnapshot> {
-        self.catalog.as_ref()
-    }
-
-    pub fn overview(&self) -> Option<&CurveSnapshot> {
-        self.overview.as_deref()
-    }
-
-    pub fn detail(&self) -> Option<&CurveSnapshot> {
-        self.detail.as_deref()
-    }
-
-    pub fn overview_shared(&self) -> Option<Arc<CurveSnapshot>> {
-        self.overview.as_ref().map(Arc::clone)
-    }
-
-    pub fn detail_shared(&self) -> Option<Arc<CurveSnapshot>> {
-        self.detail.as_ref().map(Arc::clone)
-    }
-
-    pub fn last_error(&self) -> Option<&str> {
-        self.last_error.as_deref()
-    }
-
-    /// Clears all state associated with the currently open source.
-    pub fn reset_source(&mut self, source_id: DataSourceId) {
-        *self = Self::default();
-        self.selection.source_id = Some(source_id);
-    }
-
-    pub fn select_project(&mut self, project_id: Option<ProjectId>) {
-        if self.selection.project_id == project_id {
-            return;
-        }
-        self.selection = ViewerSelection {
-            source_id: self.selection.source_id.clone(),
-            project_id,
-            ..ViewerSelection::default()
-        };
-        if let Some(catalog) = self.catalog.as_mut() {
-            catalog.runs.clear();
-            catalog.metric_keys.clear();
-        }
-        self.clear_curves();
-    }
-
-    /// Toggles one Run while enforcing the product's comparison limit.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SelectionError::RunLimit`] when adding an eleventh Run.
-    pub fn toggle_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
-        let selected = toggle_run_selection(&mut self.selection.runs, run)?;
-        self.clear_curves();
-        Ok(selected)
-    }
-
-    pub fn select_metric(&mut self, metric_key: Option<MetricKey>) {
-        if self.selection.metric_key != metric_key {
-            self.selection.metric_key = metric_key;
-            self.clear_curve_snapshots();
-        }
-    }
-
     pub fn select_axis(&mut self, axis: AlignmentAxis) {
         if self.axis != axis {
             self.axis = axis;
-            self.clear_curves();
+            self.brush = None;
         }
     }
 
@@ -281,129 +165,8 @@ impl ViewerCore {
         self.brush = Some(brush);
     }
 
-    pub fn install_overview(&mut self, snapshot: CurveSnapshot) {
-        self.apply_overview(snapshot);
-    }
-
     pub fn clear_timeline(&mut self) {
         self.brush = None;
-    }
-
-    /// Marks one request stream pending without clearing its current snapshot.
-    pub fn begin(
-        &mut self,
-        generation: Generation,
-        source_id: DataSourceId,
-        request: &ReadRequest,
-    ) {
-        self.expected[kind_index(request.kind())] = Some(ExpectedRequest {
-            generation,
-            source_id,
-        });
-        self.last_error = None;
-    }
-
-    pub fn is_pending(&self, kind: ReadKind) -> bool {
-        self.expected[kind_index(kind)].is_some()
-    }
-
-    /// Cancels ownership of in-flight results without clearing snapshots.
-    pub fn cancel_pending(&mut self) {
-        self.expected.fill(None);
-    }
-
-    /// Applies only the result currently expected for its independent stream.
-    pub fn apply(&mut self, event: ReadEvent) -> ApplyOutcome {
-        let index = kind_index(event.kind);
-        let Some(expected) = self.expected[index].as_ref() else {
-            return ApplyOutcome::IgnoredStale;
-        };
-        if expected.generation != event.generation || expected.source_id != event.source_id {
-            return ApplyOutcome::IgnoredStale;
-        }
-        if event
-            .result
-            .as_ref()
-            .is_ok_and(|snapshot| snapshot.kind() != event.kind)
-        {
-            return ApplyOutcome::IgnoredMismatched;
-        }
-        self.expected[index] = None;
-        match event.result {
-            Ok(ReadSnapshot::Catalog(snapshot)) => self.apply_catalog(snapshot),
-            Ok(ReadSnapshot::Overview(snapshot)) => self.apply_overview(snapshot),
-            Ok(ReadSnapshot::Detail(snapshot)) => self.detail = Some(Arc::new(snapshot)),
-            Ok(ReadSnapshot::Inspector(_)) => {}
-            Err(error) => self.last_error = Some(error.to_string()),
-        }
-        ApplyOutcome::Applied
-    }
-
-    fn apply_catalog(&mut self, snapshot: CatalogSnapshot) {
-        let project_exists = self
-            .selection
-            .project_id
-            .as_ref()
-            .is_some_and(|project_id| {
-                snapshot
-                    .projects
-                    .iter()
-                    .any(|project| &project.project_id == project_id)
-            });
-        let previous = self.selection.clone();
-        if !project_exists {
-            self.selection = ViewerSelection {
-                source_id: self.selection.source_id.clone(),
-                ..ViewerSelection::default()
-            };
-        } else {
-            self.selection.runs.retain(|selected| {
-                snapshot.runs.iter().any(|run| {
-                    run.project_id == selected.project_id && run.run_id == selected.run_id
-                })
-            });
-            if self
-                .selection
-                .metric_key
-                .as_ref()
-                .is_some_and(|metric_key| !snapshot.metric_keys.iter().any(|key| key == metric_key))
-            {
-                self.selection.metric_key = None;
-            }
-        }
-        if self.selection != previous {
-            self.overview = None;
-            self.detail = None;
-            self.expected[kind_index(ReadKind::Overview)] = None;
-            self.expected[kind_index(ReadKind::Detail)] = None;
-        }
-        self.catalog = Some(snapshot);
-    }
-
-    fn apply_overview(&mut self, snapshot: CurveSnapshot) {
-        if let Some(range) = snapshot.real_range {
-            self.set_timeline_home(range);
-        } else {
-            self.brush = None;
-        }
-        if self.brush.is_none() {
-            self.detail = None;
-            self.expected[kind_index(ReadKind::Detail)] = None;
-        }
-        self.overview = Some(Arc::new(snapshot));
-    }
-
-    fn clear_curves(&mut self) {
-        self.brush = None;
-        self.clear_curve_snapshots();
-    }
-
-    fn clear_curve_snapshots(&mut self) {
-        self.overview = None;
-        self.detail = None;
-        self.expected[kind_index(ReadKind::Overview)] = None;
-        self.expected[kind_index(ReadKind::Detail)] = None;
-        self.last_error = None;
     }
 }
 
@@ -424,19 +187,8 @@ pub fn toggle_run_selection(runs: &mut Vec<RunRef>, run: RunRef) -> Result<bool,
     Ok(true)
 }
 
-const fn kind_index(kind: ReadKind) -> usize {
-    match kind {
-        ReadKind::Catalog => 0,
-        ReadKind::Overview => 1,
-        ReadKind::Detail => 2,
-        ReadKind::Inspector => 3,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use pulseon_model::alignment::AlignmentViewport;
-
     use super::*;
 
     fn source_id(value: &str) -> DataSourceId {
@@ -449,143 +201,6 @@ mod tests {
             ProjectId::from_string(project),
             RunId::from_string(run),
         )
-    }
-
-    fn curves() -> CurveSnapshot {
-        CurveSnapshot {
-            viewport: AlignmentViewport::new(0, 1).expect("test viewport should be valid"),
-            point_budget: 2_000,
-            real_range: None,
-            series: Vec::new(),
-        }
-    }
-
-    fn detail_event(source: &str, generation: u64) -> ReadEvent {
-        ReadEvent {
-            source_id: source_id(source),
-            generation: Generation(generation),
-            kind: ReadKind::Detail,
-            result: Ok(ReadSnapshot::Detail(curves())),
-        }
-    }
-
-    #[test]
-    fn detail_stays_visible_while_pending_and_stale_results_are_ignored() {
-        let mut core = ViewerCore::default();
-        let request = ReadRequest::Detail(crate::query::DetailRequest {
-            selection: crate::query::CurveSelection {
-                source_id: source_id("source-a"),
-                runs: Vec::new(),
-                metric_key: MetricKey::from_string("loss"),
-                axis: crate::query::CurveAxis::Step,
-            },
-            viewport: AlignmentViewport::new(0, 1).expect("test viewport should be valid"),
-            physical_width: 1_000,
-        });
-        core.begin(Generation(1), source_id("source-a"), &request);
-        assert_eq!(
-            core.apply(detail_event("source-a", 1)),
-            ApplyOutcome::Applied
-        );
-        core.begin(Generation(2), source_id("source-a"), &request);
-
-        assert!(core.detail().is_some() && core.is_pending(ReadKind::Detail));
-        assert_eq!(
-            core.apply(detail_event("source-b", 2)),
-            ApplyOutcome::IgnoredStale
-        );
-        assert_eq!(
-            core.apply(detail_event("source-a", 1)),
-            ApplyOutcome::IgnoredStale
-        );
-        assert!(core.detail().is_some() && core.is_pending(ReadKind::Detail));
-    }
-
-    #[test]
-    fn shared_detail_handles_reuse_the_snapshot_allocation() {
-        let core = ViewerCore {
-            detail: Some(Arc::new(curves())),
-            ..ViewerCore::default()
-        };
-
-        let first = core
-            .detail_shared()
-            .expect("detail snapshot should be available");
-        let second = core
-            .detail_shared()
-            .expect("detail snapshot should be available");
-
-        assert!(Arc::ptr_eq(&first, &second));
-    }
-
-    #[test]
-    fn refresh_removes_missing_selection_and_curve_snapshots() {
-        let source_id = source_id("source-a");
-        let mut core = ViewerCore::new(ViewerSelection {
-            source_id: Some(source_id.clone()),
-            project_id: Some(ProjectId::from_string("removed")),
-            runs: vec![run_ref("source-a", "removed", "run-1")],
-            metric_key: Some(MetricKey::from_string("loss")),
-        });
-        core.detail = Some(Arc::new(curves()));
-        let request = ReadRequest::Discover(crate::model::DiscoveryRequest::default());
-        core.begin(Generation(1), source_id.clone(), &request);
-        let event = ReadEvent {
-            source_id: source_id.clone(),
-            generation: Generation(1),
-            kind: ReadKind::Catalog,
-            result: Ok(ReadSnapshot::Catalog(CatalogSnapshot {
-                projects: Vec::new(),
-                runs: Vec::new(),
-                metric_keys: Vec::new(),
-            })),
-        };
-
-        assert_eq!(core.apply(event), ApplyOutcome::Applied);
-        assert_eq!(
-            core.selection(),
-            &ViewerSelection {
-                source_id: Some(source_id),
-                ..ViewerSelection::default()
-            }
-        );
-        assert!(core.detail().is_none());
-    }
-
-    #[test]
-    fn selection_transitions_clear_only_dependent_state() {
-        let mut core = ViewerCore::default();
-        core.select_project(Some(ProjectId::from_string("project-1")));
-        assert!(
-            core.toggle_run(run_ref("source-a", "project-1", "run-1"))
-                .expect("first Run should be selectable")
-        );
-        core.select_metric(Some(MetricKey::from_string("loss")));
-
-        core.select_axis(AlignmentAxis::ElapsedTime);
-
-        assert_eq!(core.axis(), AlignmentAxis::ElapsedTime);
-        assert_eq!(core.selection().runs.len(), 1);
-        assert_eq!(
-            core.selection().metric_key.as_ref().map(MetricKey::as_str),
-            Some("loss")
-        );
-        assert!(core.overview().is_none() && core.detail().is_none());
-    }
-
-    #[test]
-    fn run_selection_enforces_the_ten_run_limit() {
-        let mut core = ViewerCore::default();
-        for index in 0..MAX_SELECTED_RUNS {
-            core.toggle_run(run_ref("source-a", "project-1", &format!("run-{index}")))
-                .expect("first ten Runs should be selectable");
-        }
-
-        assert_eq!(
-            core.toggle_run(run_ref("source-a", "project-1", "run-10")),
-            Err(SelectionError::RunLimit)
-        );
-        assert_eq!(core.selection().runs.len(), MAX_SELECTED_RUNS);
     }
 
     #[test]
@@ -628,75 +243,31 @@ mod tests {
     }
 
     #[test]
-    fn overview_without_a_real_range_removes_stale_detail() {
-        let mut core = ViewerCore {
-            detail: Some(Arc::new(curves())),
-            ..ViewerCore::default()
-        };
-
-        core.apply_overview(curves());
-
-        assert!(core.brush().is_none());
-        assert!(core.detail().is_none());
-    }
-
-    #[test]
-    fn metric_selection_preserves_the_shared_timeline() {
-        let mut core = ViewerCore::default();
-        let mut overview = curves();
-        overview.real_range =
-            Some(AlignmentViewport::new(0, 10).expect("test overview range should be valid"));
-        core.apply_overview(overview);
-        core.detail = Some(Arc::new(curves()));
-        let brush = core
-            .brush()
-            .expect("overview should initialize the timeline");
-
-        core.select_metric(Some(MetricKey::from_string("accuracy")));
-
-        assert_eq!(core.brush(), Some(brush));
-        assert!(core.overview().is_none());
-        assert!(core.detail().is_none());
-
-        let mut replacement = curves();
-        replacement.real_range =
-            Some(AlignmentViewport::new(20, 30).expect("test overview range should be valid"));
-        core.apply_overview(replacement);
-
-        let brush = core
-            .brush()
-            .expect("replacement overview should retain a brush");
-        assert_eq!((brush.home().start(), brush.home().end()), (20., 30.));
-    }
-
-    #[test]
     fn view_commands_switch_axis_and_reset_the_brush() {
-        let mut core = ViewerCore::default();
-        let mut overview = curves();
-        overview.real_range =
-            Some(AlignmentViewport::new(0, 10).expect("test overview range should be valid"));
-        core.apply_overview(overview);
-        core.brush_mut()
-            .expect("overview should initialize brush")
+        let mut navigation = ViewNavigation::default();
+        navigation.set_timeline_home(
+            AlignmentViewport::new(0, 10).expect("test viewport should be valid"),
+        );
+        navigation
+            .brush_mut()
+            .expect("timeline should initialize brush")
             .resize_start(4.)
             .expect("test brush should resize");
 
-        core.select_axis(AlignmentAxis::ElapsedTime);
-        assert_eq!(core.axis(), AlignmentAxis::ElapsedTime);
-        assert!(core.brush().is_none());
+        navigation.select_axis(AlignmentAxis::ElapsedTime);
+        assert_eq!(navigation.axis(), AlignmentAxis::ElapsedTime);
+        assert!(navigation.brush().is_none());
 
-        core.apply_overview({
-            let mut snapshot = curves();
-            snapshot.real_range =
-                Some(AlignmentViewport::new(0, 10).expect("test overview range should be valid"));
-            snapshot
-        });
-        core.brush_mut()
-            .expect("overview should initialize brush")
+        navigation.set_timeline_home(
+            AlignmentViewport::new(0, 10).expect("test viewport should be valid"),
+        );
+        navigation
+            .brush_mut()
+            .expect("timeline should initialize brush")
             .resize_start(4.)
             .expect("test brush should resize");
-        assert!(core.reset_view());
-        let brush = core.brush().expect("reset should retain brush");
+        assert!(navigation.reset_view());
+        let brush = navigation.brush().expect("reset should retain brush");
         assert_eq!(brush.selected(), brush.home());
     }
 }

@@ -12,13 +12,11 @@ use pulseon_model::types::ProjectId;
 use pulseon_storage::StorageError;
 use pulseon_storage::bootstrap::CatalogBackend;
 use pulseon_viewer::SourceError;
-use pulseon_viewer::core::{ApplyOutcome, DataSourceId, RunRef, ViewerCore, ViewerSelection};
-use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
+use pulseon_viewer::core::{DataSourceId, RunRef};
+use pulseon_viewer::model::DiscoveryRequest;
 use pulseon_viewer::query::{CurveAxis, CurveSelection, DetailRequest, OverviewRequest};
 use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
-use pulseon_viewer::worker::{
-    Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
-};
+use pulseon_viewer::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker, WorkerError};
 
 const SOURCE_POINTS: i64 = 2_100;
 const EVENT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -168,7 +166,7 @@ fn read(
     Ok(event.result?)
 }
 
-fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(), Box<dyn Error>> {
+fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
     let worker = ReadWorker::spawn(fixture.root_path())?;
     let source_id = fixture.source_id();
     let selection = fixture.selection();
@@ -306,83 +304,15 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
         Some(1_501)
     );
 
-    if exercise_core {
-        assert_core_contract(fixture, catalog, detail_request, detail)?;
-    }
-    Ok(())
-}
-
-fn assert_core_contract(
-    fixture: &Fixture,
-    catalog: CatalogSnapshot,
-    detail_request: DetailRequest,
-    detail: pulseon_viewer::query::CurveSnapshot,
-) -> Result<(), Box<dyn Error>> {
-    let source_id = fixture.source_id();
-    let selection = ViewerSelection {
-        source_id: Some(source_id.clone()),
-        project_id: Some(fixture.project_id.clone()),
-        runs: vec![fixture.run_ref(&fixture.complete_run_id)],
-        metric_key: Some(MetricKey::from_string("loss")),
-    };
-    let mut core = ViewerCore::new(selection.clone());
-    let discovery = ReadRequest::Discover(DiscoveryRequest {
-        project_id: selection.project_id.clone(),
-        selected_run_ids: selection
-            .runs
-            .iter()
-            .map(|run| run.run_id.clone())
-            .collect(),
-        metric_runs: Vec::new(),
-    });
-    core.begin(Generation(10), source_id.clone(), &discovery);
-    assert_eq!(
-        core.apply(ReadEvent {
-            source_id: source_id.clone(),
-            generation: Generation(10),
-            kind: ReadKind::Catalog,
-            result: Ok(ReadSnapshot::Catalog(catalog)),
-        }),
-        ApplyOutcome::Applied
-    );
-    assert_eq!(core.selection(), &selection);
-
-    let detail_read = ReadRequest::Detail(detail_request);
-    core.begin(Generation(11), source_id.clone(), &detail_read);
-    assert_eq!(
-        core.apply(ReadEvent {
-            source_id: source_id.clone(),
-            generation: Generation(11),
-            kind: ReadKind::Detail,
-            result: Ok(ReadSnapshot::Detail(detail)),
-        }),
-        ApplyOutcome::Applied
-    );
-    core.begin(Generation(12), source_id.clone(), &detail_read);
-    assert!(core.detail().is_some() && core.is_pending(ReadKind::Detail));
-    assert_eq!(
-        core.apply(ReadEvent {
-            source_id,
-            generation: Generation(12),
-            kind: ReadKind::Detail,
-            result: Err(WorkerError::Source(SourceError::UnsupportedS3)),
-        }),
-        ApplyOutcome::Applied
-    );
-    assert!(core.detail().is_some() && !core.is_pending(ReadKind::Detail));
-    assert_eq!(
-        core.last_error(),
-        Some("S3 data paths are unsupported by pulseon-viewer")
-    );
     Ok(())
 }
 
 #[test]
 fn both_catalog_backends_preserve_query_and_refresh_contracts() -> Result<(), Box<dyn Error>> {
     let duckdb = fixture(CatalogBackend::DuckDb, false)?;
-    assert_backend_contract(&duckdb, true)?;
+    assert_backend_contract(&duckdb)?;
     let sqlite = fixture(CatalogBackend::Sqlite, true)?;
-    assert_backend_contract(&sqlite, false)?;
+    assert_backend_contract(&sqlite)?;
     Ok(())
 }
 

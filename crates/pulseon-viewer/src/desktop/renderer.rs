@@ -61,6 +61,8 @@ struct PreparedChart {
 
 const RENDER_BUCKET_WIDTH: f64 = 2.;
 const BRUSH_HANDLE_WIDTH: f32 = 2.;
+const CURVE_STROKE_WIDTH: f32 = 1.;
+const HIGHLIGHTED_CURVE_STROKE_WIDTH: f32 = 1.5;
 
 pub struct DetailChart {
     adapter: std::rc::Rc<std::cell::RefCell<ChartAdapter>>,
@@ -118,6 +120,11 @@ impl DetailChart {
         self.emphasized_run = emphasized_run;
         self.visible_runs = visible_runs;
         true
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    pub(super) const fn viewport(&self) -> Viewport {
+        self.viewport
     }
 }
 
@@ -246,7 +253,11 @@ impl ChartAdapter {
                     continue;
                 };
                 let points = compact_render_points(&points, RENDER_BUCKET_WIDTH);
-                let width = if highlighted { px(3.) } else { px(2.) };
+                let width = px(if highlighted {
+                    HIGHLIGHTED_CURVE_STROKE_WIDTH
+                } else {
+                    CURVE_STROKE_WIDTH
+                });
                 let path = if partial {
                     let mut builder = PathBuilder::stroke(width).dash_array(&[px(7.), px(4.)]);
                     for (point_index, projected) in points.iter().enumerate() {
@@ -693,40 +704,71 @@ pub fn cursor_canvas(
     )
 }
 
-pub fn callout_pointer(
+pub fn callout_shell(
     points_right: bool,
+    pointer_center: Pixels,
     background: Rgba,
     border: Rgba,
 ) -> impl gpui::Styled + gpui::IntoElement {
     canvas(
-        move |_, _, _| (background, border),
-        move |bounds, colors, window, _| {
-            for (inset, color) in [(0., colors.1), (1., colors.0)] {
+        move |_, _, _| (points_right, pointer_center, background, border),
+        move |bounds, (points_right, pointer_center, background, border), window, _| {
+            for (inset, color) in [(0., border), (1., background)] {
                 let inset = px(inset);
                 let left = bounds.origin.x + inset;
                 let right = bounds.right() - inset;
                 let top = bounds.origin.y + inset;
                 let bottom = bounds.bottom() - inset;
-                let middle = bounds.origin.y + bounds.size.height / 2.;
-                let mut triangle = PathBuilder::fill();
-                if points_right {
-                    triangle.move_to(point(left, top));
-                    triangle.line_to(point(left, bottom));
-                    triangle.line_to(point(right, middle));
+                let arrow_width = px(9.);
+                let corner_radius = px(2.) - inset / 2.;
+                let middle = (bounds.origin.y + pointer_center)
+                    .max(top + corner_radius)
+                    .min(bottom - corner_radius);
+                let (rectangle_left, rectangle_right) = if points_right {
+                    (left, right - arrow_width)
                 } else {
-                    triangle.move_to(point(right, top));
-                    triangle.line_to(point(right, bottom));
-                    triangle.line_to(point(left, middle));
+                    (left + arrow_width, right)
+                };
+                let mut shell = PathBuilder::fill();
+                if points_right {
+                    shell.move_to(point(rectangle_left + corner_radius, top));
+                    shell.line_to(point(rectangle_right, top));
+                    shell.line_to(point(right, middle));
+                    shell.line_to(point(rectangle_right, bottom));
+                    shell.line_to(point(rectangle_left + corner_radius, bottom));
+                    shell.curve_to(
+                        point(rectangle_left, bottom - corner_radius),
+                        point(rectangle_left, bottom),
+                    );
+                    shell.line_to(point(rectangle_left, top + corner_radius));
+                    shell.curve_to(
+                        point(rectangle_left + corner_radius, top),
+                        point(rectangle_left, top),
+                    );
+                } else {
+                    shell.move_to(point(rectangle_left, top));
+                    shell.line_to(point(rectangle_right - corner_radius, top));
+                    shell.curve_to(
+                        point(rectangle_right, top + corner_radius),
+                        point(rectangle_right, top),
+                    );
+                    shell.line_to(point(rectangle_right, bottom - corner_radius));
+                    shell.curve_to(
+                        point(rectangle_right - corner_radius, bottom),
+                        point(rectangle_right, bottom),
+                    );
+                    shell.line_to(point(rectangle_left, bottom));
+                    shell.line_to(point(left, middle));
+                    shell.line_to(point(rectangle_left, top));
                 }
-                triangle.close();
-                if let Ok(path) = triangle.build() {
+                shell.close();
+                if let Ok(path) = shell.build() {
                     window.paint_path(path, color);
                 }
             }
         },
     )
-    .w(px(10.))
-    .h(px(14.))
+    .size_full()
 }
 
 pub fn timeline_canvas(

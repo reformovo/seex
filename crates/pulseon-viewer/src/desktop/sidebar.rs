@@ -199,6 +199,7 @@ impl ViewerApp {
             .flex_shrink_0()
             .flex()
             .flex_col()
+            .relative()
             .text_xs()
             .bg(theme.colors.panel)
             .border_r_1()
@@ -283,6 +284,7 @@ impl ViewerApp {
                             .w_full()
                             .flex()
                             .items_center()
+                            .overflow_hidden()
                             .text_xs()
                             .rounded(theme.spacing.corner_radius)
                             .border_1()
@@ -297,6 +299,8 @@ impl ViewerApp {
                                 div()
                                     .id("project-run-filter-placeholder")
                                     .debug_selector(|| "project-run-filter-placeholder".to_owned())
+                                    .flex_1()
+                                    .truncate()
                                     .text_color(theme.colors.disabled)
                                     .child("Filter Projects and Runs")
                             }))
@@ -327,6 +331,20 @@ impl ViewerApp {
             )
             .child(resources)
             .child(archived_resources)
+            .child(
+                vertical_resize_handle(
+                    SharedString::from("project-sidebar-resize"),
+                    theme,
+                    self.sidebar_resize.is_some(),
+                )
+                .debug_selector(|| "project-sidebar-resize".to_owned())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, event: &MouseDownEvent, _, cx| {
+                        this.begin_sidebar_resize(event, cx);
+                    }),
+                ),
+            )
     }
 
     fn render_sidebar_project(

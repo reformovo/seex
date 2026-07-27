@@ -5,7 +5,6 @@ use crate::source::ReadSession;
 use pulseon_chart_core::{DataPoint, Series, SeriesId};
 use pulseon_core::engine::EngineError;
 use pulseon_core::engine::query::NativeQueryStore;
-use pulseon_core::engine::ranking::rank_run_evidence;
 use pulseon_model::alignment::{
     AlignedMetricResult, AlignmentAxis, AlignmentQuery, AlignmentQueryError, AlignmentReduction,
     AlignmentViewport,
@@ -53,13 +52,6 @@ pub struct InspectorRequest {
     pub source_id: DataSourceId,
     pub runs: Vec<RunRef>,
     pub metric_key: MetricKey,
-    pub ranking_direction: Option<ObjectiveDirection>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct InspectorRanking {
-    pub rank: Option<u64>,
-    pub order: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,12 +60,10 @@ pub struct InspectorRunSnapshot {
     pub run: Run,
     pub summary: Option<MetricAggregate>,
     pub evidence: ObjectiveEvidence,
-    pub ranking: Option<InspectorRanking>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InspectorSnapshot {
-    pub ranking_direction: Option<ObjectiveDirection>,
     pub runs: Vec<InspectorRunSnapshot>,
 }
 
@@ -165,12 +155,10 @@ impl ReadSession {
             .collect::<HashMap<_, _>>();
         let objective = ObjectiveMetric {
             metric_key: request.metric_key.clone(),
-            direction: request
-                .ranking_direction
-                .unwrap_or(ObjectiveDirection::Minimize),
+            direction: ObjectiveDirection::Minimize,
         };
         let evidence = store.objective_evidence_for_runs(&runs, &objective)?;
-        let mut snapshots = runs
+        let snapshots = runs
             .into_iter()
             .zip(evidence)
             .filter_map(|(run, evidence)| {
@@ -185,56 +173,10 @@ impl ReadSession {
                     run,
                     summary,
                     evidence,
-                    ranking: None,
                 })
             })
             .collect::<Vec<_>>();
-        if request.ranking_direction.is_some() {
-            apply_project_rankings(&mut snapshots, &objective);
-        }
-        Ok(InspectorSnapshot {
-            ranking_direction: request.ranking_direction,
-            runs: snapshots,
-        })
-    }
-}
-
-fn apply_project_rankings(snapshots: &mut [InspectorRunSnapshot], objective: &ObjectiveMetric) {
-    let mut projects = Vec::<Vec<usize>>::new();
-    for (index, snapshot) in snapshots.iter().enumerate() {
-        if let Some(indices) = projects.iter_mut().find(|indices| {
-            indices
-                .first()
-                .is_some_and(|first| snapshots[*first].run.project_id == snapshot.run.project_id)
-        }) {
-            indices.push(index);
-        } else {
-            projects.push(vec![index]);
-        }
-    }
-    for indices in projects {
-        let project_id = snapshots[indices[0]].run.project_id.clone();
-        let ranked = rank_run_evidence(
-            objective,
-            indices
-                .iter()
-                .map(|index| {
-                    let snapshot = &snapshots[*index];
-                    (snapshot.run.clone(), snapshot.evidence.clone())
-                })
-                .collect(),
-        );
-        for (order, entry) in ranked.entries.into_iter().enumerate() {
-            if let Some(snapshot) = snapshots.iter_mut().find(|snapshot| {
-                snapshot.run.project_id == project_id
-                    && snapshot.run.run_id == entry.evidence.run_id
-            }) {
-                snapshot.ranking = Some(InspectorRanking {
-                    rank: entry.rank,
-                    order,
-                });
-            }
-        }
+        Ok(InspectorSnapshot { runs: snapshots })
     }
 }
 

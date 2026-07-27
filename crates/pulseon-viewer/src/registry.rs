@@ -164,9 +164,9 @@ impl SourceRegistry {
     }
 
     /// Reconciles one worker event into its source-specific health state.
-    pub fn apply_event(&mut self, event: &ReadEvent) -> Option<ProjectId> {
+    pub fn apply_event(&mut self, event: &ReadEvent) {
         let Ok(entry) = self.entry_mut(&event.source_id) else {
-            return None;
+            return;
         };
         let catalog_project = entry.catalog_requests.remove(&event.generation).flatten();
         if let Ok(crate::worker::ReadSnapshot::Catalog(snapshot)) = &event.result {
@@ -180,7 +180,6 @@ impl SourceRegistry {
             Ok(_) => SourceStatus::Ready,
             Err(error) => SourceStatus::Failed(error.to_string()),
         };
-        catalog_project
     }
 
     fn entry(&self, source_id: &DataSourceId) -> Option<&SourceEntry> {
