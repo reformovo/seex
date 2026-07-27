@@ -441,6 +441,7 @@ struct ViewerApp {
     drag: Option<DragGesture>,
     zoom_task: Option<Task<()>>,
     metric_repaint_pending: bool,
+    sidebar_repaint_pending: Option<bool>,
     detail_refresh_token: u64,
     detail_refresh_pending: bool,
     workbench_path: Option<PathBuf>,
@@ -514,6 +515,7 @@ impl ViewerApp {
             drag: None,
             zoom_task: None,
             metric_repaint_pending: false,
+            sidebar_repaint_pending: None,
             detail_refresh_token: 0,
             detail_refresh_pending: false,
             workbench_path: default_workbench_path(),
@@ -2912,12 +2914,7 @@ impl ViewerApp {
                     .border_b_1()
                     .border_color(theme.colors.border)
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
-                        if *hovered {
-                            this.hovered_run = Some(run_ref.clone());
-                        } else if this.hovered_run.as_ref() == Some(&run_ref) {
-                            this.hovered_run = None;
-                        }
-                        cx.notify();
+                        this.set_hovered_run(&run_ref, *hovered, cx);
                     }))
             }));
         let table = div()
@@ -2948,12 +2945,7 @@ impl ViewerApp {
                     .border_color(theme.colors.border)
                     .when(highlighted, |item| item.bg(theme.colors.element_hover))
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
-                        if *hovered {
-                            this.hovered_run = Some(run_ref.clone());
-                        } else if this.hovered_run.as_ref() == Some(&run_ref) {
-                            this.hovered_run = None;
-                        }
-                        cx.notify();
+                        this.set_hovered_run(&run_ref, *hovered, cx);
                     }))
                     .children(values.map(|(column, value)| {
                         div()
@@ -3587,6 +3579,45 @@ impl ViewerApp {
             let _ = this.update(cx, |this, cx| {
                 this.metric_repaint_pending = false;
                 this.sync_track_charts(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn set_hovered_project(&mut self, project: &ProjectRef, hovered: bool, cx: &mut Context<Self>) {
+        let next = hovered.then(|| project.clone());
+        if hovered || self.hovered_project.as_ref() == Some(project) {
+            if self.hovered_project == next {
+                return;
+            }
+            self.hovered_project = next;
+            self.defer_sidebar_repaint(false, cx);
+        }
+    }
+
+    fn set_hovered_run(&mut self, run: &RunRef, hovered: bool, cx: &mut Context<Self>) {
+        let next = hovered.then(|| run.clone());
+        if hovered || self.hovered_run.as_ref() == Some(run) {
+            if self.hovered_run == next {
+                return;
+            }
+            self.hovered_run = next;
+            self.defer_sidebar_repaint(true, cx);
+        }
+    }
+
+    fn defer_sidebar_repaint(&mut self, sync_charts: bool, cx: &mut Context<Self>) {
+        if let Some(pending) = &mut self.sidebar_repaint_pending {
+            *pending |= sync_charts;
+            return;
+        }
+        self.sidebar_repaint_pending = Some(sync_charts);
+        cx.spawn(async move |this, cx| {
+            let _ = this.update(cx, |this, cx| {
+                if this.sidebar_repaint_pending.take().unwrap_or(false) {
+                    this.sync_track_charts(cx);
+                }
                 cx.notify();
             });
         })
@@ -5804,19 +5835,11 @@ mod tests {
                 assert_eq!(new_view.size.height, px(20.));
             }
 
-            window
-                .update(&mut cx, |viewer, _, cx| {
-                    viewer.hovered_project = Some(ProjectRef::new(
-                        DataSourceId::from_path(root.path()),
-                        ProjectId::from_string("project"),
-                    ));
-                    cx.notify();
-                })
-                .expect("viewer should remain open");
-            cx.run_until_parked();
             let wide_project = cx
                 .debug_bounds("project-tree-row-0-0")
                 .expect("Project row should render");
+            cx.simulate_mouse_move(wide_project.center(), None, Modifiers::default());
+            cx.run_until_parked();
             let wide_information = cx
                 .debug_bounds("project-information-project")
                 .expect("Project information should render on hover");
@@ -5869,27 +5892,19 @@ mod tests {
                     .read_with(&cx, |viewer, _| !viewer.views.pinned_projects().is_empty())
                     .expect("viewer should remain open")
             );
-            window
-                .update(&mut cx, |viewer, _, cx| {
-                    viewer.hovered_project = Some(ProjectRef::new(
-                        DataSourceId::from_path(root.path()),
-                        ProjectId::from_string("project"),
-                    ));
-                    cx.notify();
-                })
-                .expect("viewer should remain open");
+            let pinned_project = cx
+                .debug_bounds("project-tree-row-0-0")
+                .expect("Pinned Project row should render");
+            cx.simulate_mouse_move(pinned_project.center(), None, Modifiers::default());
             cx.run_until_parked();
             assert!(
                 cx.debug_bounds("project-information-placement-icon")
                     .is_some()
             );
-            window
-                .update(&mut cx, |viewer, _, cx| {
-                    viewer.hovered_project = None;
-                    viewer.project_menu = None;
-                    cx.notify();
-                })
-                .expect("viewer should remain open");
+            let analysis_tab = cx
+                .debug_bounds("analysis-tab")
+                .expect("Analysis tab should render");
+            cx.simulate_mouse_move(analysis_tab.center(), None, Modifiers::default());
             cx.run_until_parked();
         }
 
@@ -6112,7 +6127,9 @@ mod tests {
                 .size
                 .width;
             assert!(cx.debug_bounds("run-status-0").is_some());
-            assert!(cx.debug_bounds("run-actions-0").is_none());
+            let action_bounds = cx
+                .debug_bounds("run-actions-0")
+                .expect("Run actions should keep a stable layout slot");
 
             cx.simulate_mouse_move(
                 point(first_row.origin.x + px(40.), first_row.center().y),
@@ -6120,8 +6137,16 @@ mod tests {
                 Modifiers::default(),
             );
 
-            assert!(cx.debug_bounds("run-status-0").is_none());
-            assert!(cx.debug_bounds("run-actions-0").is_some());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.hovered_run.is_some())
+                    .expect("viewer should remain open")
+            );
+            assert_eq!(
+                cx.debug_bounds("run-actions-0")
+                    .expect("Run actions should remain laid out"),
+                action_bounds
+            );
             assert_eq!(
                 cx.debug_bounds("run-eye-0")
                     .expect("Run visibility control should keep its width")
@@ -6133,7 +6158,11 @@ mod tests {
                 .debug_bounds("analysis-tab")
                 .expect("Analysis tab should render");
             cx.simulate_mouse_move(analysis_tab.center(), None, Modifiers::default());
-            assert!(cx.debug_bounds("run-status-0").is_some());
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| viewer.hovered_run.is_none())
+                    .expect("viewer should remain open")
+            );
             window
                 .update(&mut cx, |viewer, window, cx| {
                     let source = viewer.sources.sources().next().expect("source");
@@ -6151,8 +6180,6 @@ mod tests {
                     cx.notify();
                 })
                 .expect("viewer should remain open");
-            assert!(cx.debug_bounds("run-status-0").is_none());
-            assert!(cx.debug_bounds("run-actions-0").is_some());
             assert_eq!(
                 cx.debug_bounds("run-eye-0")
                     .expect("focused Run eye should keep its width")
@@ -7231,6 +7258,14 @@ mod tests {
                         })
                     })
             });
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.show_metric_inspector(&MetricPanelId::from_string("metric-0"), cx);
+                })
+                .expect("viewer should remain open");
+            wait_for_viewer(window, &cx, |viewer| {
+                viewer.views.active().panels[0].inspector.is_some()
+            });
             cx.run_until_parked();
             let preparation_counts = |viewer: &ViewerApp| {
                 viewer
@@ -7244,12 +7279,41 @@ mod tests {
                     })
                     .collect::<BTreeMap<_, _>>()
             };
-            let before = window
-                .read_with(&cx, |viewer, _| preparation_counts(viewer))
+            let query_state = window
+                .read_with(&cx, |viewer, _| {
+                    (
+                        viewer.next_generation,
+                        viewer.navigation.selected_viewport(),
+                    )
+                })
                 .expect("viewer should remain open");
+            let project = cx
+                .debug_bounds("project-tree-row-0-0")
+                .expect("Project row should render");
+            cx.simulate_mouse_move(project.center(), None, Modifiers::default());
+            cx.run_until_parked();
+            assert!(cx.debug_bounds("project-information-project").is_some());
+            cx.simulate_click(project.center(), Modifiers::default());
+            let run = cx
+                .debug_bounds("project-tree-run-0-0-0")
+                .expect("expanded Project should render Runs");
+            cx.simulate_mouse_move(run.center(), None, Modifiers::default());
+            cx.run_until_parked();
+            assert!(
+                window
+                    .read_with(&cx, |viewer, _| {
+                        viewer.hovered_run.is_some() && viewer.sidebar_repaint_pending.is_none()
+                    })
+                    .expect("viewer should remain open")
+            );
             let ruler = cx
                 .debug_bounds("ruler-hit-area")
                 .expect("shared ruler should render");
+            cx.simulate_mouse_move(ruler.center(), None, Modifiers::default());
+            cx.run_until_parked();
+            let before_ruler_hover = window
+                .read_with(&cx, |viewer, _| preparation_counts(viewer))
+                .expect("viewer should remain open");
             for index in 1..10 {
                 let position = point(
                     ruler.origin.x + ruler.size.width * (index as f32 / 10.),
@@ -7265,7 +7329,15 @@ mod tests {
                 .read_with(&cx, |viewer, _| preparation_counts(viewer))
                 .expect("viewer should remain open");
 
-            assert_eq!(after, before);
+            assert_eq!(after, before_ruler_hover);
+            window
+                .read_with(&cx, |viewer, _| {
+                    assert!(viewer.hovered_project.is_none());
+                    assert!(viewer.hovered_run.is_none());
+                    assert_eq!(viewer.next_generation, query_state.0);
+                    assert_eq!(viewer.navigation.selected_viewport(), query_state.1);
+                })
+                .expect("viewer should remain open");
         }
 
         #[gpui::test]

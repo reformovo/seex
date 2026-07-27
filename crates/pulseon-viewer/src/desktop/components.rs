@@ -200,6 +200,20 @@ pub fn sidebar_icon_button(
         .hover(|style| style.opacity(1.))
 }
 
+pub fn sidebar_hover_icon_button(
+    id: impl Into<ElementId>,
+    theme: ViewerTheme,
+    active: bool,
+    hover_group: SharedString,
+    force_visible: bool,
+) -> Stateful<Div> {
+    sidebar_icon_button(id, theme, active)
+        .invisible()
+        .opacity(0.)
+        .group_hover(hover_group, |style| style.visible().opacity(1.))
+        .when(force_visible, |button| button.visible().opacity(1.))
+}
+
 pub fn popover(theme: ViewerTheme) -> Div {
     div()
         .occlude()

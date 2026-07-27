@@ -440,6 +440,7 @@ impl ViewerApp {
             &project.project_ref.source_id,
             duplicate_name,
         );
+        let hover_group = SharedString::from(format!("project-hover:{row_id}"));
 
         let selected = false;
         let mut row =
@@ -453,6 +454,7 @@ impl ViewerApp {
                 .key_context(SELECTABLE_CONTEXT)
                 .track_focus(&project_focus)
                 .tab_index(0)
+                .group(hover_group.clone())
                 .gap_1()
                 .text_xs()
                 .cursor_pointer()
@@ -467,12 +469,7 @@ impl ViewerApp {
                     );
                 }))
                 .on_hover(cx.listener(move |this, is_hovered, _, cx| {
-                    if *is_hovered {
-                        this.hovered_project = Some(hover_ref.clone());
-                    } else if this.hovered_project.as_ref() == Some(&hover_ref) {
-                        this.hovered_project = None;
-                    }
-                    cx.notify();
+                    this.set_hovered_project(&hover_ref, *is_hovered, cx);
                 }))
                 .child(
                     div()
@@ -511,14 +508,16 @@ impl ViewerApp {
                         .whitespace_nowrap()
                         .child(project_label),
                 )
-                .children((hovered || focused || menu_open).then(|| {
-                    components::sidebar_icon_button(
+                .child({
+                    components::sidebar_hover_icon_button(
                         SharedString::from(format!(
                             "project-menu:{}",
                             project_ref.project_id.as_str()
                         )),
                         theme,
                         menu_open,
+                        hover_group,
+                        hovered || focused || menu_open,
                     )
                     .tooltip(components::label_tooltip("Project actions", theme))
                     .debug_selector({
@@ -543,7 +542,7 @@ impl ViewerApp {
                         cx.notify();
                     }))
                     .child(components::icon(IconName::Ellipsis, theme))
-                }));
+                });
 
         if menu_open {
             row = row.child(
@@ -669,6 +668,7 @@ impl ViewerApp {
         let run_color = theme
             .colors
             .series_color(renderer::series_color_index(&run_ref));
+        let hover_group = SharedString::from(format!("run-hover:{}", run_ref.cache_key()));
 
         components::sidebar_tree_row(
             SharedString::from(format!("run:{}:{index}", run_ref.cache_key())),
@@ -682,6 +682,7 @@ impl ViewerApp {
         })
         .track_focus(&run_focus)
         .tab_index(0)
+        .group(hover_group.clone())
         .gap_1()
         .text_xs()
         .when(
@@ -694,12 +695,7 @@ impl ViewerApp {
             },
         )
         .on_hover(cx.listener(move |this, is_hovered, _, cx| {
-            if *is_hovered {
-                this.hovered_run = Some(hover_run.clone());
-            } else if this.hovered_run.as_ref() == Some(&hover_run) {
-                this.hovered_run = None;
-            }
-            cx.notify();
+            this.set_hovered_run(&hover_run, *is_hovered, cx);
         }))
         .children((placement == RunPlacement::Projects).then(|| {
             components::sidebar_icon_button(
@@ -746,76 +742,99 @@ impl ViewerApp {
                 .whitespace_nowrap()
                 .child(name),
         )
-        .children((!active).then(|| {
+        .child(
             div()
-                .debug_selector(move || format!("run-status-{index}"))
+                .w(px(84.))
+                .h_full()
                 .flex_none()
-                .text_xs()
-                .text_color(theme.colors.text_muted)
-                .child(status)
-        }))
-        .children(active.then(|| {
-            div()
-                .debug_selector(move || format!("run-actions-{index}"))
-                .flex_none()
-                .flex()
+                .relative()
                 .child(
-                    components::sidebar_icon_button(
-                        SharedString::from(format!("run-baseline:{}", baseline_run.cache_key())),
-                        theme,
-                        is_baseline,
-                    )
-                    .tooltip(components::label_tooltip(
-                        if is_baseline {
-                            "Clear Baseline"
-                        } else {
-                            "Set Baseline"
-                        },
-                        theme,
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.set_run_baseline(baseline_run.clone(), cx);
-                        cx.stop_propagation();
-                    }))
-                    .child(components::icon(IconName::Baseline, theme)),
+                    div()
+                        .debug_selector(move || format!("run-status-{index}"))
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .text_xs()
+                        .text_color(theme.colors.text_muted)
+                        .group_hover(hover_group.clone(), |style| style.invisible())
+                        .when(active, |status| status.invisible())
+                        .child(status),
                 )
                 .child(
-                    components::sidebar_icon_button(
-                        SharedString::from(format!("run-pin:{}", pin_run.cache_key())),
-                        theme,
-                        is_pinned,
-                    )
-                    .tooltip(components::label_tooltip(
-                        if is_pinned { "Unpin Run" } else { "Pin Run" },
-                        theme,
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.toggle_pinned_run(pin_run.clone(), cx);
-                        cx.stop_propagation();
-                    }))
-                    .child(components::icon(IconName::Pin, theme)),
-                )
-                .child(
-                    components::sidebar_icon_button(
-                        SharedString::from(format!("run-archive:{}", archive_run.cache_key())),
-                        theme,
-                        is_archived,
-                    )
-                    .tooltip(components::label_tooltip(
-                        if is_archived {
-                            "Restore Run"
-                        } else {
-                            "Archive Run"
-                        },
-                        theme,
-                    ))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.archive_run(archive_run.clone(), cx);
-                        cx.stop_propagation();
-                    }))
-                    .child(components::icon(IconName::Archive, theme)),
-                )
-        }))
+                    div()
+                        .debug_selector(move || format!("run-actions-{index}"))
+                        .absolute()
+                        .top_0()
+                        .right_0()
+                        .flex()
+                        .invisible()
+                        .group_hover(hover_group, |style| style.visible())
+                        .when(active, |actions| actions.visible())
+                        .child(
+                            components::sidebar_icon_button(
+                                SharedString::from(format!(
+                                    "run-baseline:{}",
+                                    baseline_run.cache_key()
+                                )),
+                                theme,
+                                is_baseline,
+                            )
+                            .tooltip(components::label_tooltip(
+                                if is_baseline {
+                                    "Clear Baseline"
+                                } else {
+                                    "Set Baseline"
+                                },
+                                theme,
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.set_run_baseline(baseline_run.clone(), cx);
+                                cx.stop_propagation();
+                            }))
+                            .child(components::icon(IconName::Baseline, theme)),
+                        )
+                        .child(
+                            components::sidebar_icon_button(
+                                SharedString::from(format!("run-pin:{}", pin_run.cache_key())),
+                                theme,
+                                is_pinned,
+                            )
+                            .tooltip(components::label_tooltip(
+                                if is_pinned { "Unpin Run" } else { "Pin Run" },
+                                theme,
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_pinned_run(pin_run.clone(), cx);
+                                cx.stop_propagation();
+                            }))
+                            .child(components::icon(IconName::Pin, theme)),
+                        )
+                        .child(
+                            components::sidebar_icon_button(
+                                SharedString::from(format!(
+                                    "run-archive:{}",
+                                    archive_run.cache_key()
+                                )),
+                                theme,
+                                is_archived,
+                            )
+                            .tooltip(components::label_tooltip(
+                                if is_archived {
+                                    "Restore Run"
+                                } else {
+                                    "Archive Run"
+                                },
+                                theme,
+                            ))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.archive_run(archive_run.clone(), cx);
+                                cx.stop_propagation();
+                            }))
+                            .child(components::icon(IconName::Archive, theme)),
+                        ),
+                ),
+        )
     }
 
     fn render_project_menu(
