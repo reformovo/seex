@@ -52,6 +52,7 @@ impl Default for SourceRegistry {
 }
 
 impl SourceRegistry {
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
     pub(crate) fn snapshot(&self) -> Arc<[ImportedSource]> {
         self.entries
             .iter()

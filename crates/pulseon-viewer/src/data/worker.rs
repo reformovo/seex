@@ -6,7 +6,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
 use std::thread::{self, JoinHandle};
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop", target_os = "macos"))]
 use std::time::{Duration, Instant};
 
 use crate::data::query::{
@@ -183,7 +183,7 @@ impl ReadEventReceiver {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "desktop", target_os = "macos"))]
 pub(crate) fn recv_event_for_test(
     receiver: &ReadEventReceiver,
     timeout: Duration,

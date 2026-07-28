@@ -14,7 +14,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_REPORTS = 100_000
 DEFAULT_QUEUE_CAPACITY = 1_048_576
 
@@ -44,10 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--queue-capacity",
         type=positive_int,
         default=DEFAULT_QUEUE_CAPACITY,
-        help=(
-            "metric queue capacity to use "
-            f"(default: {DEFAULT_QUEUE_CAPACITY})"
-        ),
+        help=(f"metric queue capacity to use (default: {DEFAULT_QUEUE_CAPACITY})"),
     )
     parser.add_argument(
         "--path",

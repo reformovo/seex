@@ -16,17 +16,14 @@ def test_trace_metrics_measure_bytes_and_read_amplification() -> None:
         {
             "api": "s3.GetObject",
             "path": (
-                "/bucket/prefix/main/metric_points/run_id%3Drun-1/"
-                "metric_key_encoded%3Dmetric%25252Floss/data.parquet"
+                "/bucket/prefix/main/metric_points/run_id%3Drun-1/metric_key_encoded%3Dmetric%25252Floss/data.parquet"
             ),
             "callStats": {"tx": 480},
         },
         {"api": "s3.HeadObject", "path": "/bucket/prefix", "callStats": {"tx": 20}},
     ]
 
-    measured = bench_minio_metric_query._trace_metrics(
-        events, "run-1", "metric/loss", points_per_query=2, repeats=2
-    )
+    measured = bench_minio_metric_query._trace_metrics(events, "run-1", "metric/loss", points_per_query=2, repeats=2)
 
     assert measured["response_bytes"] == 500
     assert measured["parquet_response_bytes"] == 480
@@ -36,13 +33,13 @@ def test_trace_metrics_measure_bytes_and_read_amplification() -> None:
 
 
 def test_trace_metrics_reject_unrelated_partitions() -> None:
-    events = [{
-        "api": "s3.GetObject",
-        "path": "/bucket/run_id=other/metric_key_encoded=metric%252Floss/data.parquet",
-        "callStats": {"tx": 1},
-    }]
+    events = [
+        {
+            "api": "s3.GetObject",
+            "path": "/bucket/run_id=other/metric_key_encoded=metric%252Floss/data.parquet",
+            "callStats": {"tx": 1},
+        }
+    ]
 
     with pytest.raises(RuntimeError, match="unrelated run or metric-key"):
-        bench_minio_metric_query._trace_metrics(
-            events, "run-1", "metric/loss", points_per_query=1, repeats=1
-        )
+        bench_minio_metric_query._trace_metrics(events, "run-1", "metric/loss", points_per_query=1, repeats=1)

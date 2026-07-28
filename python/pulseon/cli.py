@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Generator, Sequence
 import contextlib
 import io
 import json
@@ -11,6 +10,7 @@ import math
 import os
 import pathlib
 import sys
+from collections.abc import Generator, Sequence
 
 from pulseon import _pulseon
 
@@ -100,9 +100,7 @@ def _build_parser() -> argparse.ArgumentParser:
     metrics_compare.add_argument("metric_key")
     metrics_compare.add_argument("run_ids", nargs="+")
     metrics_compare.add_argument("--baseline", required=True)
-    metrics_compare.add_argument(
-        "--direction", choices=("minimize", "maximize"), required=True
-    )
+    metrics_compare.add_argument("--direction", choices=("minimize", "maximize"), required=True)
     metrics_compare.add_argument("--secondary", action="append", default=[])
 
     autoresearch = resources.add_parser("autoresearch")
@@ -110,9 +108,7 @@ def _build_parser() -> argparse.ArgumentParser:
     autoresearch_compare = autoresearch_actions.add_parser("compare")
     autoresearch_compare.add_argument("candidate_run_id")
     autoresearch_compare.add_argument("--metric", required=True)
-    autoresearch_compare.add_argument(
-        "--direction", choices=("minimize", "maximize"), required=True
-    )
+    autoresearch_compare.add_argument("--direction", choices=("minimize", "maximize"), required=True)
     reference = autoresearch_compare.add_mutually_exclusive_group(required=True)
     reference.add_argument("--against")
     reference.add_argument("--comparator", action="append")
@@ -120,9 +116,7 @@ def _build_parser() -> argparse.ArgumentParser:
     leaderboard = autoresearch_actions.add_parser("leaderboard")
     leaderboard.add_argument("project_id")
     leaderboard.add_argument("--metric", required=True)
-    leaderboard.add_argument(
-        "--direction", choices=("minimize", "maximize"), required=True
-    )
+    leaderboard.add_argument("--direction", choices=("minimize", "maximize"), required=True)
     leaderboard.add_argument("--run", dest="run_ids", action="append", default=[])
     page_size = leaderboard.add_mutually_exclusive_group()
     page_size.add_argument("--limit", type=_non_negative_int, default=50)
@@ -131,9 +125,7 @@ def _build_parser() -> argparse.ArgumentParser:
     best = autoresearch_actions.add_parser("best")
     best.add_argument("project_id")
     best.add_argument("--metric", required=True)
-    best.add_argument(
-        "--direction", choices=("minimize", "maximize"), required=True
-    )
+    best.add_argument("--direction", choices=("minimize", "maximize"), required=True)
     best.add_argument("--run", dest="run_ids", action="append", default=[])
     return parser
 
@@ -157,9 +149,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         raise
 
 
-def _validate_args(
-    parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> None:
+def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.resource == "autoresearch" and args.action in ("leaderboard", "best"):
         if len(set(args.run_ids)) != len(args.run_ids):
             parser.error("autoresearch Run IDs must be unique")
@@ -178,9 +168,7 @@ def _validate_args(
         parser.error("autoresearch candidate must not be a comparator")
 
 
-def _validate_metrics_compare(
-    parser: argparse.ArgumentParser, args: argparse.Namespace
-) -> None:
+def _validate_metrics_compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if len(set(args.run_ids)) != len(args.run_ids):
         parser.error("metrics compare Run IDs must be unique")
     if args.baseline not in args.run_ids:
@@ -220,9 +208,7 @@ def _render_error(
 def _operation_error_details(
     error: _pulseon.PulseOnError,
 ) -> tuple[str, list[dict[str, str]] | None]:
-    if isinstance(error, _pulseon.StorageError) and str(error).startswith(
-        _LTTB_ERROR_PREFIX
-    ):
+    if isinstance(error, _pulseon.StorageError) and str(error).startswith(_LTTB_ERROR_PREFIX):
         return (
             "lttb_extension_unavailable",
             [
@@ -267,10 +253,7 @@ def _json_value(value: object) -> object:
 
 def _render_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
     text_rows = [[str(value) for value in row] for row in rows]
-    widths = [
-        max(len(header), *(len(row[index]) for row in text_rows))
-        for index, header in enumerate(headers)
-    ]
+    widths = [max(len(header), *(len(row[index]) for row in text_rows)) for index, header in enumerate(headers)]
 
     def render(row: Sequence[str]) -> str:
         return "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip()
@@ -291,13 +274,7 @@ def _render(
     if output_format == "table":
         return _render_table(headers, rows)
     keys = [header.lower() for header in headers]
-    data = [
-        {
-            key: _json_scalar(value)
-            for key, value in zip(keys, row, strict=True)
-        }
-        for row in rows
-    ]
+    data = [{key: _json_scalar(value) for key, value in zip(keys, row, strict=True)} for row in rows]
     document = {
         "schema_version": _JSON_SCHEMA_VERSION,
         "kind": kind,
@@ -330,10 +307,7 @@ def _run(client: _pulseon.Client, args: argparse.Namespace) -> str:
             runs = runs[: args.limit]
         return _render(
             ("RUN_ID", "PROJECT_ID", "NAME", "STATUS", "CREATED_AT"),
-            [
-                (item.run_id, item.project_id, item.name, item.status, item.created_at)
-                for item in runs
-            ],
+            [(item.run_id, item.project_id, item.name, item.status, item.created_at) for item in runs],
             args.format,
             kind="runs",
             page={
@@ -362,14 +336,12 @@ def _run(client: _pulseon.Client, args: argparse.Namespace) -> str:
         meta = None
         with _enable_lttb_auto_install():
             if args.format == "json":
-                points, source_row_count, downsampled = (
-                    client._query_metric_with_metadata(
-                        args.run_id,
-                        args.metric_key,
-                        start_step=args.start_step,
-                        end_step=args.end_step,
-                        max_points=max_points,
-                    )
+                points, source_row_count, downsampled = client._query_metric_with_metadata(
+                    args.run_id,
+                    args.metric_key,
+                    start_step=args.start_step,
+                    end_step=args.end_step,
+                    max_points=max_points,
                 )
                 meta = {
                     "source_row_count": source_row_count,
@@ -391,9 +363,7 @@ def _run(client: _pulseon.Client, args: argparse.Namespace) -> str:
             kind="metric_points",
             meta=meta,
         )
-    candidate_run_ids = [
-        run_id for run_id in args.run_ids if run_id != args.baseline
-    ]
+    candidate_run_ids = [run_id for run_id in args.run_ids if run_id != args.baseline]
     reports = client._comparison_reports(
         candidate_run_ids,
         args.baseline,
@@ -404,9 +374,7 @@ def _run(client: _pulseon.Client, args: argparse.Namespace) -> str:
     return _render_comparison_reports(reports, args.format, reference_role="baseline")
 
 
-def _ranking_run_ids(
-    client: _pulseon.Client, project_id: str, requested_run_ids: Sequence[str]
-) -> list[str]:
+def _ranking_run_ids(client: _pulseon.Client, project_id: str, requested_run_ids: Sequence[str]) -> list[str]:
     if not requested_run_ids:
         return [run.run_id for run in client.list_runs(project_id)]
     client.get_project(project_id)
@@ -426,9 +394,7 @@ def _ranking_entry_document(entry: _pulseon.RankingEntry) -> dict[str, object]:
     return {"rank": entry.rank, "evidence": _evidence_document(entry.evidence)}
 
 
-def _ranking_meta(
-    project_id: str, result: _pulseon.RankingResult
-) -> dict[str, object]:
+def _ranking_meta(project_id: str, result: _pulseon.RankingResult) -> dict[str, object]:
     return {
         "project_id": project_id,
         "objective": {
@@ -457,19 +423,23 @@ def _ranking_rows(
     ]
 
 
-def _run_autoresearch_leaderboard(
-    client: _pulseon.Client, args: argparse.Namespace
-) -> str:
+def _run_autoresearch_leaderboard(client: _pulseon.Client, args: argparse.Namespace) -> str:
     run_ids = _ranking_run_ids(client, args.project_id, args.run_ids)
-    result = client.rank_runs(
-        run_ids, metric_key=args.metric, direction=args.direction
-    )
+    result = client.rank_runs(run_ids, metric_key=args.metric, direction=args.direction)
     limit = None if args.all else args.limit
     stop = None if limit is None else args.offset + limit
-    entries = result.entries[args.offset:stop]
+    entries = result.entries[args.offset : stop]
     if args.format == "table":
         return _render_table(
-            ("RANK", "RUN_ID", "STATUS", "LAST_STEP", "LAST_VALUE", "EVIDENCE", "REASONS"),
+            (
+                "RANK",
+                "RUN_ID",
+                "STATUS",
+                "LAST_STEP",
+                "LAST_VALUE",
+                "EVIDENCE",
+                "REASONS",
+            ),
             _ranking_rows(entries),
         )
     return _dump_json(
@@ -488,21 +458,22 @@ def _run_autoresearch_leaderboard(
     )
 
 
-def _run_autoresearch_best(
-    client: _pulseon.Client, args: argparse.Namespace
-) -> str:
+def _run_autoresearch_best(client: _pulseon.Client, args: argparse.Namespace) -> str:
     run_ids = _ranking_run_ids(client, args.project_id, args.run_ids)
-    result = client.rank_runs(
-        run_ids, metric_key=args.metric, direction=args.direction
-    )
+    result = client.rank_runs(run_ids, metric_key=args.metric, direction=args.direction)
     best = next((entry for entry in result.entries if entry.rank == 1), None)
     if args.format == "table":
         if best is None:
             return "No eligible Run."
         return _render_table(
             (
-                "RANK", "RUN_ID", "STATUS", "LAST_STEP", "LAST_VALUE",
-                "EVIDENCE", "REASONS",
+                "RANK",
+                "RUN_ID",
+                "STATUS",
+                "LAST_STEP",
+                "LAST_VALUE",
+                "EVIDENCE",
+                "REASONS",
             ),
             _ranking_rows([best]),
         )
@@ -510,18 +481,14 @@ def _run_autoresearch_best(
         {
             "schema_version": _JSON_SCHEMA_VERSION,
             "kind": "autoresearch_best",
-            "data": {
-                "best": None if best is None else _ranking_entry_document(best)
-            },
+            "data": {"best": None if best is None else _ranking_entry_document(best)},
             "page": None,
             "meta": _ranking_meta(args.project_id, result),
         }
     )
 
 
-def _run_autoresearch_compare(
-    client: _pulseon.Client, args: argparse.Namespace
-) -> str:
+def _run_autoresearch_compare(client: _pulseon.Client, args: argparse.Namespace) -> str:
     incumbent = args.against
     if incumbent is None:
         client.get_run(args.candidate_run_id)
@@ -533,7 +500,10 @@ def _run_autoresearch_compare(
         if incumbent is None:
             primary = client._objective_evidence(args.candidate_run_id, args.metric)
             secondary = [
-                (metric_key, client._objective_evidence(args.candidate_run_id, metric_key))
+                (
+                    metric_key,
+                    client._objective_evidence(args.candidate_run_id, metric_key),
+                )
                 for metric_key in args.secondary
             ]
             return _render_insufficient_comparison(
@@ -550,9 +520,7 @@ def _run_autoresearch_compare(
         direction=args.direction,
         secondary_metric_keys=args.secondary,
     )
-    return _render_comparison_reports(
-        reports, args.format, reference_role="incumbent"
-    )
+    return _render_comparison_reports(reports, args.format, reference_role="incumbent")
 
 
 def _unresolved_metric_document(
@@ -639,10 +607,7 @@ def _render_insufficient_comparison(
                 {
                     "candidate_run_id": primary.run_id,
                     "primary": primary_document,
-                    "secondary": [
-                        _unresolved_metric_document(key, evidence)
-                        for key, evidence in secondary
-                    ],
+                    "secondary": [_unresolved_metric_document(key, evidence) for key, evidence in secondary],
                     "completeness": "unavailable",
                     "reasons": [reason],
                     "preference": "inconclusive",
@@ -697,9 +662,7 @@ def _comparison_rows(
     report: _pulseon._ComparisonReport,
 ) -> list[tuple[object, ...]]:
     primary = report.primary
-    primary_reasons = ",".join(
-        (*primary.candidate.reasons, *primary.reference.reasons)
-    )
+    primary_reasons = ",".join((*primary.candidate.reasons, *primary.reference.reasons))
     rows: list[tuple[object, ...]] = [
         (
             "primary",
@@ -769,9 +732,7 @@ def _render_comparison_reports(
             "data": [
                 {
                     "primary": _primary_document(report.primary),
-                    "secondary": [
-                        _secondary_document(item) for item in report.secondary
-                    ],
+                    "secondary": [_secondary_document(item) for item in report.secondary],
                 }
                 for report in reports
             ],
@@ -810,9 +771,7 @@ def _render_summaries(
     return _render(headers, rows, output_format, kind=kind)
 
 
-def _resolve_cli_path(
-    project_path: pathlib.Path, value: str | None
-) -> pathlib.Path | str | None:
+def _resolve_cli_path(project_path: pathlib.Path, value: str | None) -> pathlib.Path | str | None:
     if value is None or "://" in value:
         return value
     path = pathlib.Path(value)

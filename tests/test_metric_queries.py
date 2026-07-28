@@ -55,9 +55,7 @@ def test_table_queries_preserve_object_query_results(tmp_path: pathlib.Path) -> 
 
     points = client.query_metric(run.run_id, "train/loss")
     point_table = client.query_metric_table(run.run_id, "train/loss")
-    summary_table = client.query_metric_summaries_table(
-        [run.run_id], "train/loss"
-    )
+    summary_table = client.query_metric_summaries_table([run.run_id], "train/loss")
 
     assert [point.value_f64 for point in points] == [0.25]
     assert point_table.row_count == 1
@@ -75,9 +73,7 @@ def test_table_queries_preserve_object_query_results(tmp_path: pathlib.Path) -> 
     assert summary_table.source_row_count == 1
     assert summary_table.downsampled is False
     assert '"arrow_array_stream"' in repr(point_table.__arrow_c_stream__())
-    assert '"arrow_array_stream"' in repr(
-        point_table.__arrow_c_stream__(requested_schema=None)
-    )
+    assert '"arrow_array_stream"' in repr(point_table.__arrow_c_stream__(requested_schema=None))
     assert '"arrow_array_stream"' in repr(summary_table.__arrow_c_stream__())
 
 

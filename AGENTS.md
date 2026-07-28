@@ -36,6 +36,8 @@
 
 - Rust type-check: `cargo check`
 - Rust tests: `cargo test`
+- Python format: `uv run --group linting ruff format --check python scripts tests`
+- Python lint: `uv run --group linting ruff check python scripts tests`
 - Python type-check: `uv run pyright`
 - Python tests: `uv run pytest`
 - Develop install: `uv run maturin develop --uv`
