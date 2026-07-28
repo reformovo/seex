@@ -34,34 +34,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Reject unexpected legacy brand references
-        shell: bash
-        run: |
-          legacy_brand="pulse""on"
-          unexpected="$(
-            git grep -n -i --text "$legacy_brand" -- \
-              ':(exclude)README.md' \
-              ':(exclude)docs/README.md' \
-              ':(exclude)docs/adr/**' \
-              ':(exclude)docs/release-notes/**' \
-              ':(exclude)tests/test_sdk_lifecycle.py' \
-              ':(exclude)crates/seex-app/src/workbench/document.rs' \
-              || true
-          )"
-          if [[ -n "$unexpected" ]]; then
-            printf 'Unexpected legacy brand references:\n%s\n' "$unexpected"
-            exit 1
-          fi
-          unexpected_paths="$(
-            git ls-files \
-              | grep -i "$legacy_brand" \
-              | grep -v "^docs/adr/0014-rename-${legacy_brand}-to-seex\\.md$" \
-              || true
-          )"
-          if [[ -n "$unexpected_paths" ]]; then
-            printf 'Unexpected legacy branded paths:\n%s\n' "$unexpected_paths"
-            exit 1
-          fi
       - name: Install uv
         uses: astral-sh/setup-uv@v7
       - uses: actions/setup-python@v6

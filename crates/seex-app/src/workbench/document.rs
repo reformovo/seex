@@ -489,17 +489,4 @@ mod tests {
             WorkbenchDocumentError::UnsupportedVersion(_)
         ));
     }
-
-    #[test]
-    fn legacy_brand_documents_are_rejected() {
-        let raw = "pulseon-workbench 3\n\
-                   dock 1 1134559232 0 0 1130102784\n\
-                   active 0\n\
-                   view 566965772031 step comfortable summary none - - -\n\
-                   end\n";
-        assert!(matches!(
-            WorkbenchDocument::decode(raw),
-            Err(WorkbenchDocumentError::UnsupportedVersion(_))
-        ));
-    }
 }

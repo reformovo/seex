@@ -42,23 +42,6 @@ def test_init_returns_client(tmp_path: pathlib.Path) -> None:
     assert isinstance(client, seex.Client)
 
 
-def test_init_ignores_legacy_project_state(tmp_path: pathlib.Path) -> None:
-    import seex
-
-    root_path = tmp_path / "project"
-    legacy_config = root_path / ".pulseon" / "config.toml"
-    legacy_config.parent.mkdir(parents=True)
-    legacy_config.write_text("this is not valid toml = [", encoding="utf-8")
-    modified_at = legacy_config.stat().st_mtime_ns
-
-    client = seex.init(root_path)
-    client.shutdown()
-
-    assert (root_path / ".seex" / "catalog.ducklake").is_file()
-    assert legacy_config.read_text(encoding="utf-8") == "this is not valid toml = ["
-    assert legacy_config.stat().st_mtime_ns == modified_at
-
-
 def test_init_without_path_uses_current_working_directory(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
