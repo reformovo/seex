@@ -2,9 +2,6 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-#[cfg(target_os = "macos")]
-mod desktop;
-
 const USAGE: &str = "usage: pulseon-viewer [PROJECT_PATH]";
 
 fn project_path(args: impl IntoIterator<Item = OsString>) -> Result<Option<PathBuf>, ()> {
@@ -29,7 +26,7 @@ fn main() -> ExitCode {
 
 #[cfg(target_os = "macos")]
 fn run(project_path: Option<PathBuf>) -> ExitCode {
-    desktop::run(project_path);
+    pulseon_viewer::desktop::run(project_path);
     ExitCode::SUCCESS
 }
 
@@ -41,7 +38,10 @@ fn run(_project_path: Option<PathBuf>) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use super::project_path;
 
     #[test]
     fn cli_accepts_zero_or_one_project_path() {

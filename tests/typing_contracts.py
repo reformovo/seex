@@ -15,9 +15,7 @@ def check_arrow_table_queries(client: pulseon.Client) -> None:
         end_step=20,
         max_points=5,
     )
-    summaries = client.query_metric_summaries_table(
-        ["run-1", "run-2"], "train/loss"
-    )
+    summaries = client.query_metric_summaries_table(["run-1", "run-2"], "train/loss")
 
     assert_type(points, pulseon.ArrowTable)
     assert_type(summaries, pulseon.ArrowTable)

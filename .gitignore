@@ -8,6 +8,7 @@ wheels/
 python/pulseon/*.so
 target/
 .pytest_cache/
+.ruff_cache/
 
 # Virtual environments
 .venv/
@@ -19,6 +20,7 @@ target/
 
 # IDE and editor files
 .omo/
+.zed/
 
 # Deepwork progress files (local session state)
 .slim/deepwork/

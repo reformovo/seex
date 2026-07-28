@@ -15,7 +15,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_REPORTS = 1_000
 DEFAULT_REPEATS = 3
 DEFAULT_QUEUE_CAPACITY = 65_536
@@ -77,10 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--queue-capacity",
         type=positive_int,
         default=DEFAULT_QUEUE_CAPACITY,
-        help=(
-            "metric queue capacity to use "
-            f"(default: {DEFAULT_QUEUE_CAPACITY})"
-        ),
+        help=(f"metric queue capacity to use (default: {DEFAULT_QUEUE_CAPACITY})"),
     )
     parser.add_argument(
         "--metric-key",
@@ -91,19 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--drain-timeout",
         type=non_negative_float,
         default=DEFAULT_DRAIN_TIMEOUT_SECONDS,
-        help=(
-            "background drain timeout in seconds "
-            f"(default: {DEFAULT_DRAIN_TIMEOUT_SECONDS:g})"
-        ),
+        help=(f"background drain timeout in seconds (default: {DEFAULT_DRAIN_TIMEOUT_SECONDS:g})"),
     )
     parser.add_argument(
         "--drain-poll-seconds",
         type=positive_float,
         default=DEFAULT_DRAIN_POLL_SECONDS,
-        help=(
-            "seconds to sleep between diagnostics polls while draining "
-            f"(default: {DEFAULT_DRAIN_POLL_SECONDS})"
-        ),
+        help=(f"seconds to sleep between diagnostics polls while draining (default: {DEFAULT_DRAIN_POLL_SECONDS})"),
     )
     parser.add_argument(
         "--object-storage-config",
@@ -167,9 +157,7 @@ def run_benchmark(
         )
         for config_index, config in enumerate(object_storage_configs)
     )
-    repeat_results_by_target: list[list[dict[str, Any]]] = [
-        [] for _ in targets
-    ]
+    repeat_results_by_target: list[list[dict[str, Any]]] = [[] for _ in targets]
     for repeat_index in range(repeats):
         # Rotate the first target so process warmup does not always favor OSS.
         for target_offset in range(len(targets)):
@@ -198,9 +186,7 @@ def run_benchmark(
             metric_key=metric_key,
             repeat_results=repeat_results,
         )
-        for (target_root, storage, _), repeat_results in zip(
-            targets, repeat_results_by_target, strict=True
-        )
+        for (target_root, storage, _), repeat_results in zip(targets, repeat_results_by_target, strict=True)
     ]
     result = target_results[0]
     result["object_storage_results"] = target_results[1:]
@@ -325,15 +311,13 @@ def wait_for_drain(
         diagnostics = client.diagnostics()
         if diagnostics.writer_state == "failed":
             raise RuntimeError(
-                "background metric writer failed while draining; "
-                f"last_write_error={diagnostics.last_write_error!r}"
+                f"background metric writer failed while draining; last_write_error={diagnostics.last_write_error!r}"
             )
         if diagnostics.pending_reports == 0:
             return time.perf_counter() - started, diagnostics_to_dict(diagnostics)
         if deadline is not None and time.perf_counter() >= deadline:
             raise TimeoutError(
-                "timed out waiting for background metric writer drain; "
-                f"pending_reports={diagnostics.pending_reports}"
+                f"timed out waiting for background metric writer drain; pending_reports={diagnostics.pending_reports}"
             )
         time.sleep(poll_seconds)
 
@@ -347,10 +331,7 @@ def summarize(repeat_results: list[dict[str, Any]]) -> dict[str, Any]:
         "finalization_seconds",
         "shutdown_seconds",
     )
-    return {
-        field: summarize_values([repeat[field] for repeat in repeat_results])
-        for field in timing_fields
-    }
+    return {field: summarize_values([repeat[field] for repeat in repeat_results]) for field in timing_fields}
 
 
 def summarize_values(values: list[float]) -> dict[str, float]:
@@ -400,19 +381,13 @@ def object_storage_config(value: str) -> ObjectStorageConfig:
     try:
         config = tomllib.loads(path.read_text(encoding="utf-8"))
     except OSError as error:
-        raise argparse.ArgumentTypeError(
-            f"could not read object-storage config {value!r}: {error}"
-        ) from error
+        raise argparse.ArgumentTypeError(f"could not read object-storage config {value!r}: {error}") from error
     except tomllib.TOMLDecodeError as error:
-        raise argparse.ArgumentTypeError(
-            f"invalid TOML in object-storage config {value!r}: {error}"
-        ) from error
+        raise argparse.ArgumentTypeError(f"invalid TOML in object-storage config {value!r}: {error}") from error
 
     data_path = config.get("data_path")
     if not isinstance(data_path, str) or not data_path.startswith("s3://"):
-        raise argparse.ArgumentTypeError(
-            "object-storage config data_path must be an s3:// URI"
-        )
+        raise argparse.ArgumentTypeError("object-storage config data_path must be an s3:// URI")
     return ObjectStorageConfig(path=path, data_path=data_path)
 
 

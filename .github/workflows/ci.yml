@@ -41,6 +41,10 @@ jobs:
           python-version: "3.13"
       - name: Install PulseOn and test dependencies
         run: uv sync --group testing-extra --group linting
+      - name: Check Python formatting
+        run: uv run --group linting ruff format --check python scripts tests
+      - name: Lint Python
+        run: uv run --group linting ruff check python scripts tests
       - name: Type-check Python
         run: uv run pyright
       - name: Run Python tests

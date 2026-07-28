@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 import pathlib
 
+import pulseon
 import pytest
 
-import pulseon
 from tests import helpers
 
 
@@ -82,13 +82,9 @@ def test_aligned_metric_rejects_invalid_public_arguments(
             end=1,
         )
     with pytest.raises(ValueError, match="provided together"):
-        client.query_aligned_metric(
-            "run-1", "loss", axis="step", start=0, end=1, pixel_width=100
-        )
+        client.query_aligned_metric("run-1", "loss", axis="step", start=0, end=1, pixel_width=100)
     with pytest.raises(ValueError, match="non-decreasing"):
-        client.query_aligned_metric(
-            "run-1", "loss", axis="step", start=2, end=1
-        )
+        client.query_aligned_metric("run-1", "loss", axis="step", start=2, end=1)
 
 
 def test_aligned_metric_marks_non_finite_evidence_invalid(
@@ -119,18 +115,10 @@ def test_compare_runs_reports_complete_partial_and_unavailable_evidence(
 ) -> None:
     client = pulseon.init(tmp_path / "pulseon")
     project = client.create_project("comparison", project_id="project-1")
-    reference = _create_objective_run(
-        client, project.project_id, "reference", 0.0
-    )
-    candidate = _create_objective_run(
-        client, project.project_id, "candidate", 1.0
-    )
-    running = _create_objective_run(
-        client, project.project_id, "running", 2.0, terminal=None
-    )
-    missing = _create_objective_run(
-        client, project.project_id, "missing", None
-    )
+    reference = _create_objective_run(client, project.project_id, "reference", 0.0)
+    candidate = _create_objective_run(client, project.project_id, "candidate", 1.0)
+    running = _create_objective_run(client, project.project_id, "running", 2.0, terminal=None)
+    missing = _create_objective_run(client, project.project_id, "missing", None)
 
     complete = client.compare_runs(
         candidate.run_id,
@@ -171,9 +159,7 @@ def test_rank_runs_keeps_ineligible_entries_and_rejects_duplicates(
     tied_a = _create_objective_run(client, project.project_id, "tied-a", 1.0)
     tied_b = _create_objective_run(client, project.project_id, "tied-b", 1.0)
     worse = _create_objective_run(client, project.project_id, "worse", 2.0)
-    failed = _create_objective_run(
-        client, project.project_id, "failed", 0.5, terminal="failed"
-    )
+    failed = _create_objective_run(client, project.project_id, "failed", 0.5, terminal="failed")
 
     result = client.rank_runs(
         [worse.run_id, failed.run_id, tied_b.run_id, tied_a.run_id],

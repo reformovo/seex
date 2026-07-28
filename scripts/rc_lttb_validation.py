@@ -47,9 +47,7 @@ def _seed_store(project_root: pathlib.Path) -> None:
         client.finish_run(run.run_id)
 
 
-def _query_cli(
-    project_root: pathlib.Path, environment: dict[str, str]
-) -> dict[str, object]:
+def _query_cli(project_root: pathlib.Path, environment: dict[str, str]) -> dict[str, object]:
     completed = subprocess.run(
         [
             sys.executable,
@@ -76,7 +74,7 @@ def _assert_downsampled(document: dict[str, object]) -> None:
     meta = document.get("meta")
     data = document.get("data")
     if not isinstance(meta, dict) or not isinstance(data, list):
-        raise RuntimeError("LTTB query did not return structured metric points")
+        raise TypeError("LTTB query did not return structured metric points")
     steps = [row["step"] for row in data if isinstance(row, dict)]
     if (
         meta.get("source_row_count") != _POINT_COUNT

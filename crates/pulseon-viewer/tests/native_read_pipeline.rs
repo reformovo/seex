@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use pulseon_core::engine::client::NativeClient;
-use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
+use pulseon_model::alignment::AlignmentViewport;
 use pulseon_model::comparison::EvidenceCompleteness;
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::RunId;
@@ -12,12 +12,17 @@ use pulseon_model::types::ProjectId;
 use pulseon_storage::StorageError;
 use pulseon_storage::bootstrap::CatalogBackend;
 use pulseon_viewer::SourceError;
-use pulseon_viewer::core::{ApplyOutcome, ViewerCore, ViewerSelection};
-use pulseon_viewer::model::{CatalogSnapshot, DiscoveryRequest};
-use pulseon_viewer::query::{CurveSelection, DetailRequest, OverviewRequest};
-use pulseon_viewer::worker::{
-    Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
+use pulseon_viewer::data::DiscoveryRequest;
+use pulseon_viewer::data::query::{CurveAxis, CurveSelection, DetailRequest, OverviewRequest};
+use pulseon_viewer::data::registry::{SourceRegistry, SourceStatus};
+use pulseon_viewer::data::worker::{
+    Generation, ReadEventReceiver, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
 };
+use pulseon_viewer::domain::{DataSourceId, RunRef};
+
+mod support;
+
+use support::receive_event;
 
 const SOURCE_POINTS: i64 = 2_100;
 const EVENT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -37,16 +42,29 @@ impl Fixture {
     }
 
     fn selection(&self) -> CurveSelection {
+        let source_id = self.source_id();
         CurveSelection {
-            run_ids: vec![
-                self.complete_run_id.clone(),
-                self.running_run_id.clone(),
-                self.invalid_run_id.clone(),
-                self.unavailable_run_id.clone(),
-            ],
+            source_id: source_id.clone(),
+            runs: [
+                &self.complete_run_id,
+                &self.running_run_id,
+                &self.invalid_run_id,
+                &self.unavailable_run_id,
+            ]
+            .into_iter()
+            .map(|run_id| RunRef::new(source_id.clone(), self.project_id.clone(), run_id.clone()))
+            .collect(),
             metric_key: MetricKey::from_string("loss"),
-            axis: AlignmentAxis::Step,
+            axis: CurveAxis::Step,
         }
+    }
+
+    fn source_id(&self) -> DataSourceId {
+        DataSourceId::from_path(self.root_path())
+    }
+
+    fn run_ref(&self, run_id: &RunId) -> RunRef {
+        RunRef::new(self.source_id(), self.project_id.clone(), run_id.clone())
     }
 }
 
@@ -141,24 +159,43 @@ fn fixture(backend: CatalogBackend, absolute_paths: bool) -> Result<Fixture, Box
 
 fn read(
     worker: &ReadWorker,
+    events: &ReadEventReceiver,
+    source_id: DataSourceId,
     generation: u64,
     request: ReadRequest,
 ) -> Result<ReadSnapshot, Box<dyn Error>> {
     let expected_kind = request.kind();
-    worker.submit(Generation(generation), request)?;
-    let event = worker.recv_timeout(EVENT_TIMEOUT)?;
+    worker.submit(source_id.clone(), Generation(generation), request)?;
+    let event = receive_event(events, EVENT_TIMEOUT)?;
+    assert_eq!(event.source_id, source_id);
     assert_eq!(event.generation, Generation(generation));
     assert_eq!(event.kind, expected_kind);
     Ok(event.result?)
 }
 
-fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(), Box<dyn Error>> {
-    let worker = ReadWorker::spawn(fixture.root_path())?;
+fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
+    let mut worker = ReadWorker::spawn(fixture.root_path())?;
+    let events = worker
+        .take_event_receiver()
+        .ok_or("worker event receiver should be available")?;
+    let source_id = fixture.source_id();
+    let selection = fixture.selection();
     let discovery_request = DiscoveryRequest {
         project_id: Some(fixture.project_id.clone()),
-        selected_run_ids: fixture.selection().run_ids,
+        selected_run_ids: selection
+            .runs
+            .iter()
+            .map(|run| run.run_id.clone())
+            .collect(),
+        metric_runs: Vec::new(),
     };
-    let catalog = match read(&worker, 1, ReadRequest::Discover(discovery_request.clone()))? {
+    let catalog = match read(
+        &worker,
+        &events,
+        source_id.clone(),
+        1,
+        ReadRequest::Discover(discovery_request.clone()),
+    )? {
         ReadSnapshot::Catalog(snapshot) => snapshot,
         other => return Err(format!("unexpected discovery snapshot: {other:?}").into()),
     };
@@ -177,7 +214,13 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
         selection: fixture.selection(),
         physical_width: 1,
     };
-    let overview = match read(&worker, 2, ReadRequest::Overview(overview_request))? {
+    let overview = match read(
+        &worker,
+        &events,
+        source_id.clone(),
+        2,
+        ReadRequest::Overview(overview_request),
+    )? {
         ReadSnapshot::Overview(snapshot) => snapshot,
         other => return Err(format!("unexpected overview snapshot: {other:?}").into()),
     };
@@ -217,12 +260,15 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
     );
 
     let detail_selection = CurveSelection {
-        run_ids: vec![fixture.complete_run_id.clone()],
+        source_id: source_id.clone(),
+        runs: vec![fixture.run_ref(&fixture.complete_run_id)],
         metric_key: MetricKey::from_string("loss"),
-        axis: AlignmentAxis::Step,
+        axis: CurveAxis::Step,
     };
     let full_detail = match read(
         &worker,
+        &events,
+        source_id.clone(),
         3,
         ReadRequest::Detail(DetailRequest {
             selection: detail_selection.clone(),
@@ -242,7 +288,13 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
         viewport: AlignmentViewport::new(500, 1_500)?,
         physical_width: 1,
     };
-    let detail = match read(&worker, 4, ReadRequest::Detail(detail_request.clone()))? {
+    let detail = match read(
+        &worker,
+        &events,
+        source_id,
+        4,
+        ReadRequest::Detail(detail_request.clone()),
+    )? {
         ReadSnapshot::Detail(snapshot) => snapshot,
         other => return Err(format!("unexpected detail snapshot: {other:?}").into()),
     };
@@ -266,87 +318,83 @@ fn assert_backend_contract(fixture: &Fixture, exercise_core: bool) -> Result<(),
         Some(1_501)
     );
 
-    if exercise_core {
-        assert_core_contract(fixture, catalog, detail_request, detail)?;
-    }
-    Ok(())
-}
-
-fn assert_core_contract(
-    fixture: &Fixture,
-    catalog: CatalogSnapshot,
-    detail_request: DetailRequest,
-    detail: pulseon_viewer::query::CurveSnapshot,
-) -> Result<(), Box<dyn Error>> {
-    let selection = ViewerSelection {
-        project_id: Some(fixture.project_id.clone()),
-        run_ids: vec![fixture.complete_run_id.clone()],
-        metric_key: Some(MetricKey::from_string("loss")),
-    };
-    let mut core = ViewerCore::new(selection.clone());
-    let discovery = ReadRequest::Discover(DiscoveryRequest {
-        project_id: selection.project_id.clone(),
-        selected_run_ids: selection.run_ids.clone(),
-    });
-    core.begin(Generation(10), &discovery);
-    assert_eq!(
-        core.apply(ReadEvent {
-            generation: Generation(10),
-            kind: ReadKind::Catalog,
-            result: Ok(ReadSnapshot::Catalog(catalog)),
-        }),
-        ApplyOutcome::Applied
-    );
-    assert_eq!(core.selection(), &selection);
-
-    let detail_read = ReadRequest::Detail(detail_request);
-    core.begin(Generation(11), &detail_read);
-    assert_eq!(
-        core.apply(ReadEvent {
-            generation: Generation(11),
-            kind: ReadKind::Detail,
-            result: Ok(ReadSnapshot::Detail(detail)),
-        }),
-        ApplyOutcome::Applied
-    );
-    core.begin(Generation(12), &detail_read);
-    assert!(core.detail().is_some() && core.is_pending(ReadKind::Detail));
-    assert_eq!(
-        core.apply(ReadEvent {
-            generation: Generation(12),
-            kind: ReadKind::Detail,
-            result: Err(WorkerError::Source(SourceError::UnsupportedS3)),
-        }),
-        ApplyOutcome::Applied
-    );
-    assert!(core.detail().is_some() && !core.is_pending(ReadKind::Detail));
-    assert_eq!(
-        core.last_error(),
-        Some("S3 data paths are unsupported by pulseon-viewer")
-    );
     Ok(())
 }
 
 #[test]
 fn both_catalog_backends_preserve_query_and_refresh_contracts() -> Result<(), Box<dyn Error>> {
     let duckdb = fixture(CatalogBackend::DuckDb, false)?;
-    assert_backend_contract(&duckdb, true)?;
+    assert_backend_contract(&duckdb)?;
     let sqlite = fixture(CatalogBackend::Sqlite, true)?;
-    assert_backend_contract(&sqlite, false)?;
+    assert_backend_contract(&sqlite)?;
+    Ok(())
+}
+
+#[test]
+fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Error>> {
+    let duckdb = fixture(CatalogBackend::DuckDb, false)?;
+    let sqlite = fixture(CatalogBackend::Sqlite, true)?;
+    let mut registry = SourceRegistry::default();
+    let duckdb_id = registry.import(duckdb.root_path().to_path_buf());
+    let sqlite_id = registry.import(sqlite.root_path().to_path_buf());
+    let duckdb_events = registry
+        .activate(&duckdb_id)?
+        .ok_or("DuckDB source should return an event stream")?;
+    let sqlite_events = registry
+        .activate(&sqlite_id)?
+        .ok_or("SQLite source should return an event stream")?;
+
+    registry.submit(
+        &duckdb_id,
+        Generation(1),
+        ReadRequest::Discover(DiscoveryRequest::default()),
+    )?;
+    registry.submit(
+        &sqlite_id,
+        Generation(2),
+        ReadRequest::Discover(DiscoveryRequest::default()),
+    )?;
+    let duckdb_event = receive_event(&duckdb_events, EVENT_TIMEOUT)?;
+    let sqlite_event = receive_event(&sqlite_events, EVENT_TIMEOUT)?;
+    assert!(matches!(
+        &duckdb_event.result,
+        Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
+    ));
+    assert!(matches!(
+        &sqlite_event.result,
+        Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
+    ));
+    registry.apply_event(&duckdb_event);
+    registry.apply_event(&sqlite_event);
+
+    assert_eq!(
+        registry.source(&duckdb_id).map(|source| &source.status),
+        Some(&SourceStatus::Ready)
+    );
+    assert_eq!(
+        registry.source(&sqlite_id).map(|source| &source.status),
+        Some(&SourceStatus::Ready)
+    );
     Ok(())
 }
 
 #[test]
 fn worker_reports_a_missing_catalog_without_creating_it() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
-    let worker = ReadWorker::spawn(root.path())?;
+    let mut worker = ReadWorker::spawn(root.path())?;
+    let events = worker
+        .take_event_receiver()
+        .ok_or("worker event receiver should be available")?;
+    let source_id = DataSourceId::from_path(root.path());
     worker.submit(
+        source_id.clone(),
         Generation(1),
         ReadRequest::Discover(DiscoveryRequest::default()),
     )?;
 
-    let event = worker.recv_timeout(EVENT_TIMEOUT)?;
+    let event = receive_event(&events, EVENT_TIMEOUT)?;
 
+    assert_eq!(event.source_id, source_id);
     assert!(matches!(
         event.result,
         Err(WorkerError::Source(SourceError::Storage(

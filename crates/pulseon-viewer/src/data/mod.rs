@@ -2,11 +2,19 @@ use pulseon_model::metric::MetricKey;
 use pulseon_model::run::{Run, RunId};
 use pulseon_model::types::{Project, ProjectId};
 
+pub mod query;
+pub mod registry;
+mod source;
+pub mod worker;
+
+pub use source::{ReadSession, SourceError};
+
 /// Catalog state requested for one viewer selection.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiscoveryRequest {
     pub project_id: Option<ProjectId>,
     pub selected_run_ids: Vec<RunId>,
+    pub metric_runs: Vec<(ProjectId, RunId)>,
 }
 
 /// Immutable catalog metadata returned by a native read session.

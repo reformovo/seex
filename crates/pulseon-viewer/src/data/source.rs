@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use pulseon_storage::bootstrap::{
@@ -7,7 +7,7 @@ use pulseon_storage::bootstrap::{
 use pulseon_storage::config::{InitConfigError, resolve_storage_config};
 use pulseon_storage::{ProjectConnection, ProjectMetricReader, StorageError};
 
-use crate::model::{CatalogSnapshot, DiscoveryRequest};
+use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
 /// Failures while opening an existing viewer source.
 #[derive(Debug, thiserror::Error)]
@@ -60,26 +60,62 @@ impl ReadSession {
     /// Returns [`SourceError`] when a catalog query fails.
     pub fn discover(&self, request: &DiscoveryRequest) -> Result<CatalogSnapshot, SourceError> {
         let projects = self.connection.list_projects()?;
-        let Some(project_id) = request.project_id.as_ref().filter(|project_id| {
+        let project_id = request.project_id.as_ref().filter(|project_id| {
             projects
                 .iter()
                 .any(|project| &project.project_id == *project_id)
-        }) else {
-            return Ok(CatalogSnapshot {
-                projects,
-                runs: Vec::new(),
-                metric_keys: Vec::new(),
-            });
-        };
-        let mut runs = self.connection.list_runs(project_id, None, None, 0)?;
-        runs.reverse();
+        });
+        let projects_to_load = project_id.map_or_else(
+            || projects.iter().map(|project| &project.project_id).collect(),
+            |project_id| vec![project_id],
+        );
+        let mut runs = Vec::new();
+        for project_id in projects_to_load {
+            let mut project_runs = self.connection.list_runs(project_id, None, None, 0)?;
+            project_runs.reverse();
+            runs.extend(project_runs);
+        }
+        let mut requested = request.metric_runs.iter().cloned().collect::<HashSet<_>>();
+        if let Some(project_id) = project_id {
+            requested.extend(
+                request
+                    .selected_run_ids
+                    .iter()
+                    .cloned()
+                    .map(|run_id| (project_id.clone(), run_id)),
+            );
+        }
+        requested.retain(|(project_id, _)| {
+            projects
+                .iter()
+                .any(|project| &project.project_id == project_id)
+        });
+        let mut statuses = runs
+            .iter()
+            .map(|run| ((run.project_id.clone(), run.run_id.clone()), run.status))
+            .collect::<HashMap<_, _>>();
+        for requested_project in requested
+            .iter()
+            .map(|(project_id, _)| project_id)
+            .collect::<HashSet<_>>()
+        {
+            if project_id == Some(requested_project) {
+                continue;
+            }
+            statuses.extend(
+                self.connection
+                    .list_runs(requested_project, None, None, 0)?
+                    .into_iter()
+                    .map(|run| ((run.project_id, run.run_id), run.status)),
+            );
+        }
         let reader = ProjectMetricReader::new(&self.connection);
         let mut metric_keys = BTreeMap::new();
-        for run_id in &request.selected_run_ids {
-            let Some(run) = runs.iter().find(|run| &run.run_id == run_id) else {
+        for (project_id, run_id) in requested {
+            let Some(status) = statuses.get(&(project_id, run_id.clone())) else {
                 continue;
             };
-            for aggregate in reader.list_metrics(&run.run_id, run.status)? {
+            for aggregate in reader.list_metrics(&run_id, *status)? {
                 metric_keys.insert(
                     aggregate.metric_key.as_str().to_owned(),
                     aggregate.metric_key,
@@ -106,7 +142,7 @@ mod tests {
     use pulseon_model::run::RunId;
     use pulseon_model::types::ProjectId;
 
-    use super::*;
+    use super::{DiscoveryRequest, ReadSession, SourceError};
 
     #[test]
     fn s3_is_rejected_before_missing_credentials_are_resolved()
@@ -149,12 +185,24 @@ mod tests {
             .run_handle(second.clone())
             .log_metric_at_step("accuracy", 0, 0.5)?;
         client.finish_run(&second.run_id)?;
+        let other_project =
+            client.create_project("other", Some(ProjectId::from_string("project-2")))?;
+        let other = client.create_run(
+            &other_project.project_id,
+            "other",
+            Some(RunId::from_string("run-3")),
+        )?;
+        client
+            .run_handle(other.clone())
+            .log_metric_at_step("latency", 0, 2.)?;
+        client.finish_run(&other.run_id)?;
         client.shutdown(None)?;
 
         let session = ReadSession::open_existing(root.path())?;
         let snapshot = session.discover(&DiscoveryRequest {
             project_id: Some(project.project_id),
             selected_run_ids: vec![first.run_id, RunId::from_string("removed")],
+            metric_runs: vec![(other_project.project_id, other.run_id)],
         })?;
 
         assert_eq!(
@@ -171,7 +219,16 @@ mod tests {
                 .iter()
                 .map(|key| key.as_str())
                 .collect::<Vec<_>>(),
-            ["loss"]
+            ["latency", "loss"]
+        );
+        let all_runs = session.discover(&DiscoveryRequest::default())?;
+        assert_eq!(
+            all_runs
+                .runs
+                .iter()
+                .map(|run| run.run_id.as_str())
+                .collect::<Vec<_>>(),
+            ["run-2", "run-1", "run-3"]
         );
         Ok(())
     }

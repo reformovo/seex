@@ -75,14 +75,16 @@ def run_backend(
     try:
         with tempfile.TemporaryDirectory(prefix="pulseon-query-bench-") as root:
             latencies, observed_points, remote = _populate_and_query(
-                pathlib.Path(root), config, prefix, catalog_backend, args,
-                target_run_id, target_metric_key,
+                pathlib.Path(root),
+                config,
+                prefix,
+                catalog_backend,
+                args,
+                target_run_id,
+                target_metric_key,
             )
         parquet_keys = _list_parquet_keys(config, prefix)
-        target_partition = (
-            f"run_id={target_run_id}/"
-            f"metric_key_encoded=metric%252F{target_key_index}/"
-        )
+        target_partition = f"run_id={target_run_id}/metric_key_encoded=metric%252F{target_key_index}/"
         target_files = sum(target_partition in key for key in parquet_keys)
         expected_files = args.run_count * args.metric_key_count
         if len(parquet_keys) < expected_files or target_files == 0:
@@ -151,19 +153,20 @@ def _populate_and_query(
                 latencies.append(time.perf_counter() - started)
         finally:
             events = _stop_trace(trace)
-    remote = _trace_metrics(
-        events, target_run_id, target_metric_key, len(points), args.repeats
-    )
+    remote = _trace_metrics(events, target_run_id, target_metric_key, len(points), args.repeats)
     return latencies, len(points), remote
 
 
-def _start_trace(
-    config: MinioConfig, prefix: str
-) -> subprocess.Popen[str]:
+def _start_trace(config: MinioConfig, prefix: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
         [
-            "mc", "admin", "trace", "--json", "--path",
-            f"{config.bucket}/{prefix}/*", "pulseon",
+            "mc",
+            "admin",
+            "trace",
+            "--json",
+            "--path",
+            f"{config.bucket}/{prefix}/*",
+            "pulseon",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -189,26 +192,21 @@ def _trace_metrics(
     parquet_reads = [
         event
         for event in events
-        if event.get("api") == "s3.GetObject"
-        and str(event.get("path", "")).endswith(".parquet")
+        if event.get("api") == "s3.GetObject" and str(event.get("path", "")).endswith(".parquet")
     ]
     encoded_key = urllib.parse.quote(metric_key, safe="-_.~").replace("%", "%25")
     expected = (f"/run_id={run_id}/", f"/metric_key_encoded={encoded_key}/")
     unrelated = [
-        event for event in parquet_reads
-        if not all(
-            fragment in urllib.parse.unquote(str(event.get("path", "")))
-            for fragment in expected
-        )
+        event
+        for event in parquet_reads
+        if not all(fragment in urllib.parse.unquote(str(event.get("path", ""))) for fragment in expected)
     ]
     if not parquet_reads:
         raise RuntimeError("query trace captured no Parquet reads")
     if unrelated:
         raise RuntimeError("query read an unrelated run or metric-key partition")
     response_bytes = sum(int(event.get("callStats", {}).get("tx", 0)) for event in events)
-    parquet_bytes = sum(
-        int(event.get("callStats", {}).get("tx", 0)) for event in parquet_reads
-    )
+    parquet_bytes = sum(int(event.get("callStats", {}).get("tx", 0)) for event in parquet_reads)
     logical_bytes = points_per_query * repeats * _LOGICAL_POINT_BYTES
     return {
         "request_count": len(events),
@@ -233,7 +231,10 @@ def _remove_prefix(config: MinioConfig, prefix: str) -> None:
 
 def _run_mc(config: MinioConfig, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["mc", *arguments], check=True, text=True, capture_output=True,
+        ["mc", *arguments],
+        check=True,
+        text=True,
+        capture_output=True,
         env=_mc_environment(config),
     )
 

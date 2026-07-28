@@ -8,10 +8,10 @@ import hashlib
 import hmac
 import os
 import pathlib
-from typing import Literal
 import urllib.parse
 import urllib.request
 import uuid
+from typing import Literal
 
 import pytest
 
@@ -47,9 +47,7 @@ def test_minio_s3_data_path_round_trips_catalog_backend(
     config = _require_minio_config()
     root_path = tmp_path / catalog_backend / "pulseon"
     prefix = f"pulseon-acceptance/{uuid.uuid4().hex}/{catalog_backend}"
-    partition_prefix = (
-        prefix + "/main/metric_points/run_id=run-1/metric_key_encoded=train%252Floss/"
-    )
+    partition_prefix = prefix + "/main/metric_points/run_id=run-1/metric_key_encoded=train%252Floss/"
     client = _open_minio_client(root_path, config, prefix, catalog_backend)
     project = client.create_project("minio acceptance", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
@@ -57,9 +55,7 @@ def test_minio_s3_data_path_round_trips_catalog_backend(
     run.log("train/loss", 1, 0.125)
     run.log("eval/accuracy", 0, 0.8)
 
-    active_points = helpers.wait_for_metric_points(
-        client, run.run_id, "train/loss", expected_count=2
-    )
+    active_points = helpers.wait_for_metric_points(client, run.run_id, "train/loss", expected_count=2)
     helpers.wait_for_metric_points(
         client,
         run.run_id,
@@ -67,13 +63,9 @@ def test_minio_s3_data_path_round_trips_catalog_backend(
         expected_count=1,
     )
     discovered_projects = client.list_projects()
-    discovered_runs = client.list_runs(
-        project.project_id, status="running", limit=1, offset=0
-    )
+    discovered_runs = client.list_runs(project.project_id, status="running", limit=1, offset=0)
     active_metrics = client.list_metrics(run.run_id)
-    ranged_points = client.query_metric(
-        run.run_id, "train/loss", start_step=0, end_step=1
-    )
+    ranged_points = client.query_metric(run.run_id, "train/loss", start_step=0, end_step=1)
     finished = client.finish_run(run.run_id)
     terminal_points = client.query_metric(run.run_id, "train/loss")
     summaries = client.query_metric_summaries([run.run_id], "train/loss")

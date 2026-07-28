@@ -10,8 +10,8 @@ import typing
 from unittest import mock
 
 import pytest
-
 from pulseon import cli
+
 from tests import helpers
 
 
@@ -28,9 +28,7 @@ def test_cli_discovers_running_metric_points_through_all_read_commands(
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.5)
     run.log("train/loss", 1, 0.25)
-    helpers.wait_for_metric_points(
-        client, run.run_id, "train/loss", expected_count=2
-    )
+    helpers.wait_for_metric_points(client, run.run_id, "train/loss", expected_count=2)
     client.shutdown()
     monkeypatch.chdir(root_path)
 
@@ -109,10 +107,20 @@ def test_cli_comparison_reports_require_baseline_and_preserve_candidate_order(
     client.shutdown()
 
     command = [
-        "--path", str(root_path), "metrics", "compare", "loss",
-        "candidate-b", "baseline", "candidate-a",
-        "--baseline", "baseline", "--direction", "minimize",
-        "--secondary", "throughput",
+        "--path",
+        str(root_path),
+        "metrics",
+        "compare",
+        "loss",
+        "candidate-b",
+        "baseline",
+        "candidate-a",
+        "--baseline",
+        "baseline",
+        "--direction",
+        "minimize",
+        "--secondary",
+        "throughput",
     ]
     assert cli.main(command) == 0
     table = capsys.readouterr().out
@@ -125,9 +133,7 @@ def test_cli_comparison_reports_require_baseline_and_preserve_candidate_order(
     document = json.loads(capsys.readouterr().out)
     assert document["kind"] == "comparison_reports"
     assert document["meta"] == {"reference_role": "baseline"}
-    candidate_ids = [
-        item["primary"]["candidate"]["run_id"] for item in document["data"]
-    ]
+    candidate_ids = [item["primary"]["candidate"]["run_id"] for item in document["data"]]
     assert candidate_ids == ["candidate-b", "candidate-a"]
     preferences = [item["primary"]["preference"] for item in document["data"]]
     assert preferences == ["candidate", "candidate"]
@@ -179,10 +185,7 @@ def test_cli_autoresearch_compare_uses_explicit_or_best_incumbent(
     root_path = tmp_path / "project"
     client = pulseon.init(root_path)
     project = client.create_project("research", project_id="project-1")
-    runs = [
-        client.create_run(project.project_id, name, run_id=name)
-        for name in ("candidate", "best", "worse")
-    ]
+    runs = [client.create_run(project.project_id, name, run_id=name) for name in ("candidate", "best", "worse")]
     for run, value in zip(runs, (2.0, 1.0, 3.0), strict=True):
         run.log("loss", 0, value)
         client.finish_run(run.run_id)
@@ -190,16 +193,30 @@ def test_cli_autoresearch_compare_uses_explicit_or_best_incumbent(
     base = ["--path", str(root_path), "--format", "json", "autoresearch", "compare"]
 
     explicit = [
-        *base, "candidate", "--metric", "loss", "--direction", "minimize",
-        "--against", "worse",
+        *base,
+        "candidate",
+        "--metric",
+        "loss",
+        "--direction",
+        "minimize",
+        "--against",
+        "worse",
     ]
     assert cli.main(explicit) == 0
     document = json.loads(capsys.readouterr().out)
     assert document["data"][0]["primary"]["reference"]["run_id"] == "worse"
 
     pooled = [
-        *base, "candidate", "--metric", "loss", "--direction", "minimize",
-        "--comparator", "worse", "--comparator", "best",
+        *base,
+        "candidate",
+        "--metric",
+        "loss",
+        "--direction",
+        "minimize",
+        "--comparator",
+        "worse",
+        "--comparator",
+        "best",
     ]
     assert cli.main(pooled) == 0
     document = json.loads(capsys.readouterr().out)
@@ -231,9 +248,19 @@ def test_cli_autoresearch_compare_reports_no_eligible_incumbent(
     client.shutdown()
 
     command = [
-        "--path", str(root_path), "autoresearch", "compare", "candidate",
-        "--metric", "loss", "--direction", "minimize", "--comparator",
-        "running", "--secondary", "memory",
+        "--path",
+        str(root_path),
+        "autoresearch",
+        "compare",
+        "candidate",
+        "--metric",
+        "loss",
+        "--direction",
+        "minimize",
+        "--comparator",
+        "running",
+        "--secondary",
+        "memory",
     ]
     status = cli.main(["--format", "json", *command])
 
@@ -264,8 +291,15 @@ def test_cli_autoresearch_compare_rejects_candidate_in_pool(
     with pytest.raises(SystemExit) as error_info:
         cli.main(
             [
-                "autoresearch", "compare", "candidate", "--metric", "loss",
-                "--direction", "minimize", "--comparator", "candidate",
+                "autoresearch",
+                "compare",
+                "candidate",
+                "--metric",
+                "loss",
+                "--direction",
+                "minimize",
+                "--comparator",
+                "candidate",
             ]
         )
 
@@ -303,11 +337,28 @@ def test_cli_autoresearch_leaderboard_keeps_structured_ineligible_evidence(
     client.shutdown()
 
     command = [
-        "--path", str(root_path), "--format", "json", "autoresearch",
-        "leaderboard", "project-1", "--metric", "loss", "--direction",
-        "minimize", "--all",
+        "--path",
+        str(root_path),
+        "--format",
+        "json",
+        "autoresearch",
+        "leaderboard",
+        "project-1",
+        "--metric",
+        "loss",
+        "--direction",
+        "minimize",
+        "--all",
     ]
-    for run_id in ("worse", "failed", "tied-b", "tied-a", "running", "missing", "invalid"):
+    for run_id in (
+        "worse",
+        "failed",
+        "tied-b",
+        "tied-a",
+        "running",
+        "missing",
+        "invalid",
+    ):
         command.extend(("--run", run_id))
     assert cli.main(command) == 0
     document = json.loads(capsys.readouterr().out)
@@ -315,12 +366,29 @@ def test_cli_autoresearch_leaderboard_keeps_structured_ineligible_evidence(
     assert document["kind"] == "autoresearch_leaderboard"
     assert document["meta"]["eligible_entries"] == 3
     assert document["page"] == {
-        "offset": 0, "limit": None, "returned": 7, "has_more": False,
+        "offset": 0,
+        "limit": None,
+        "returned": 7,
+        "has_more": False,
     }
     assert [item["evidence"]["run_id"] for item in document["data"]] == [
-        "tied-a", "tied-b", "worse", "failed", "running", "missing", "invalid",
+        "tied-a",
+        "tied-b",
+        "worse",
+        "failed",
+        "running",
+        "missing",
+        "invalid",
     ]
-    assert [item["rank"] for item in document["data"]] == [1, 1, 3, None, None, None, None]
+    assert [item["rank"] for item in document["data"]] == [
+        1,
+        1,
+        3,
+        None,
+        None,
+        None,
+        None,
+    ]
     assert document["data"][-1]["evidence"]["last_value"] == "Infinity"
     assert document["data"][-1]["evidence"]["reasons"] == ["non_finite_value"]
 
@@ -340,8 +408,17 @@ def test_cli_autoresearch_leaderboard_paginates_after_ranking(
         client.finish_run(run.run_id)
     client.shutdown()
     base = [
-        "--path", str(root_path), "--format", "json", "autoresearch",
-        "leaderboard", "project-1", "--metric", "score", "--direction", "maximize",
+        "--path",
+        str(root_path),
+        "--format",
+        "json",
+        "autoresearch",
+        "leaderboard",
+        "project-1",
+        "--metric",
+        "score",
+        "--direction",
+        "maximize",
     ]
 
     assert cli.main([*base, "--limit", "1", "--offset", "2"]) == 0
@@ -349,7 +426,10 @@ def test_cli_autoresearch_leaderboard_paginates_after_ranking(
     assert document["data"][0]["rank"] == 3
     assert document["data"][0]["evidence"]["run_id"] == "run-2"
     assert document["page"] == {
-        "offset": 2, "limit": 1, "returned": 1, "has_more": True,
+        "offset": 2,
+        "limit": 1,
+        "returned": 1,
+        "has_more": True,
     }
 
     assert cli.main(base) == 0
@@ -378,8 +458,17 @@ def test_cli_autoresearch_best_uses_stable_tie_break_and_returns_null(
     client.create_project("empty", project_id="project-2")
     client.shutdown()
     base = [
-        "--path", str(root_path), "--format", "json", "autoresearch", "best",
-        "project-1", "--metric", "loss", "--direction", "minimize",
+        "--path",
+        str(root_path),
+        "--format",
+        "json",
+        "autoresearch",
+        "best",
+        "project-1",
+        "--metric",
+        "loss",
+        "--direction",
+        "minimize",
     ]
 
     assert cli.main(base) == 0
@@ -416,8 +505,17 @@ def test_cli_autoresearch_ranking_rejects_invalid_run_scopes(
     client.create_run(second.project_id, "foreign", run_id="foreign")
     client.shutdown()
     base = [
-        "--path", str(root_path), "--format", "json", "autoresearch",
-        "leaderboard", "project-1", "--metric", "loss", "--direction", "minimize",
+        "--path",
+        str(root_path),
+        "--format",
+        "json",
+        "autoresearch",
+        "leaderboard",
+        "project-1",
+        "--metric",
+        "loss",
+        "--direction",
+        "minimize",
     ]
 
     assert cli.main([*base, "--run", "foreign"]) == 1
@@ -447,10 +545,7 @@ def test_cli_comparison_reports_partial_and_per_metric_evidence(
     client = pulseon.init(root_path)
     project = client.create_project("evidence", project_id="project-1")
     run_ids = ("baseline", "running", "failed", "missing", "invalid-secondary")
-    runs = {
-        run_id: client.create_run(project.project_id, run_id, run_id)
-        for run_id in run_ids
-    }
+    runs = {run_id: client.create_run(project.project_id, run_id, run_id) for run_id in run_ids}
     runs["baseline"].log("loss", 0, 2.0)
     runs["baseline"].log("memory", 0, 10.0)
     client.finish_run("baseline")
@@ -467,9 +562,22 @@ def test_cli_comparison_reports_partial_and_per_metric_evidence(
     client.shutdown()
 
     command = [
-        "--path", str(root_path), "metrics", "compare", "loss", "running",
-        "baseline", "failed", "missing", "invalid-secondary", "--baseline",
-        "baseline", "--direction", "minimize", "--secondary", "memory",
+        "--path",
+        str(root_path),
+        "metrics",
+        "compare",
+        "loss",
+        "running",
+        "baseline",
+        "failed",
+        "missing",
+        "invalid-secondary",
+        "--baseline",
+        "baseline",
+        "--direction",
+        "minimize",
+        "--secondary",
+        "memory",
     ]
     status = cli.main(["--format", "json", *command])
 
@@ -492,9 +600,7 @@ def test_cli_comparison_reports_partial_and_per_metric_evidence(
     assert invalid["primary"]["preference"] == "reference"
     assert invalid["secondary"][0]["completeness"] == "invalid"
     assert invalid["secondary"][0]["candidate"]["last_value"] == "Infinity"
-    assert invalid["secondary"][0]["candidate"]["reasons"] == [
-        "non_finite_value"
-    ]
+    assert invalid["secondary"][0]["candidate"]["reasons"] == ["non_finite_value"]
 
     assert cli.main(command) == 0
     table = capsys.readouterr().out
@@ -518,9 +624,19 @@ def test_cli_comparison_reports_reject_unknown_run(
 
     status = cli.main(
         [
-            "--path", str(root_path), "--format", "json", "metrics", "compare",
-            "loss", "unknown", "baseline", "--baseline", "baseline",
-            "--direction", "minimize",
+            "--path",
+            str(root_path),
+            "--format",
+            "json",
+            "metrics",
+            "compare",
+            "loss",
+            "unknown",
+            "baseline",
+            "--baseline",
+            "baseline",
+            "--direction",
+            "minimize",
         ]
     )
 
@@ -553,9 +669,7 @@ def test_cli_json_operation_errors_are_structured(
     root_path = tmp_path / "missing"
     root_path.mkdir()
 
-    status = cli.main(
-        ["--path", str(root_path), "--format", "json", "projects", "list"]
-    )
+    status = cli.main(["--path", str(root_path), "--format", "json", "projects", "list"])
 
     assert status == 1
     captured = capsys.readouterr()
@@ -638,9 +752,7 @@ def test_cli_json_includes_pagination_and_metric_query_metadata(
     client.shutdown()
 
     global_args = ["--path", str(root_path), "--format", "json"]
-    assert cli.main(
-        [*global_args, "runs", "list", "project-1", "--limit", "1"]
-    ) == 0
+    assert cli.main([*global_args, "runs", "list", "project-1", "--limit", "1"]) == 0
     runs_document = json.loads(capsys.readouterr().out)
     assert runs_document["schema_version"] == 2
     assert runs_document["kind"] == "runs"
@@ -653,9 +765,7 @@ def test_cli_json_includes_pagination_and_metric_query_metadata(
     }
     assert runs_document["meta"] == {}
 
-    assert cli.main(
-        [*global_args, "metrics", "query", "run-1", "loss"]
-    ) == 0
+    assert cli.main([*global_args, "metrics", "query", "run-1", "loss"]) == 0
     query_document = json.loads(capsys.readouterr().out)
     assert query_document["schema_version"] == 2
     assert query_document["kind"] == "metric_points"
@@ -684,9 +794,7 @@ def test_cli_json_normalizes_non_finite_metric_values(
     client.shutdown()
 
     global_args = ["--path", str(root_path), "--format", "json"]
-    assert cli.main(
-        [*global_args, "metrics", "query", "run-1", "loss", "--all"]
-    ) == 0
+    assert cli.main([*global_args, "metrics", "query", "run-1", "loss", "--all"]) == 0
     query = json.loads(capsys.readouterr().out)
     assert [row["value"] for row in query["data"]] == [
         "NaN",
@@ -696,10 +804,7 @@ def test_cli_json_normalizes_non_finite_metric_values(
 
     assert cli.main([*global_args, "metrics", "list", "run-1"]) == 0
     summary = json.loads(capsys.readouterr().out)
-    assert all(
-        not isinstance(value, float) or math.isfinite(value)
-        for value in summary["data"][0].values()
-    )
+    assert all(not isinstance(value, float) or math.isfinite(value) for value in summary["data"][0].values())
 
 
 def test_cli_preserves_symlinked_project_path(
@@ -719,9 +824,7 @@ def test_cli_preserves_symlinked_project_path(
     client.create_project("linked", project_id="project-1")
     client.shutdown()
 
-    status = cli.main(
-        ["--path", str(linked_path), "projects", "list"]
-    )
+    status = cli.main(["--path", str(linked_path), "projects", "list"])
 
     assert status == 0
     captured = capsys.readouterr()
@@ -733,9 +836,7 @@ def test_cli_metric_query_point_limits_are_mutually_exclusive() -> None:
     parser = cli._build_parser()
 
     defaults = parser.parse_args(["metrics", "query", "run-1", "loss"])
-    all_points = parser.parse_args(
-        ["metrics", "query", "run-1", "loss", "--all"]
-    )
+    all_points = parser.parse_args(["metrics", "query", "run-1", "loss", "--all"])
 
     assert defaults.max_points == 200
     assert defaults.all is False
@@ -766,9 +867,7 @@ def test_cli_enables_lttb_auto_install_only_during_metric_query(
         if os.environ.get("PULSEON_LTTB_AUTO_INSTALL") == "1"
         else pytest.fail("CLI query did not enable LTTB auto-install")
     )
-    args = cli._build_parser().parse_args(
-        ["metrics", "query", "run-1", "loss"]
-    )
+    args = cli._build_parser().parse_args(["metrics", "query", "run-1", "loss"])
 
     cli._run(
         typing.cast(
@@ -795,9 +894,7 @@ def test_cli_enables_lttb_auto_install_only_during_metric_query(
     ),
     ids=("limit", "offset", "max-points"),
 )
-def test_cli_rejects_negative_unsigned_arguments(
-    argv: list[str], capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_cli_rejects_negative_unsigned_arguments(argv: list[str], capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as error_info:
         cli.main(argv)
 
@@ -854,10 +951,7 @@ def test_cli_json_output_is_deterministic() -> None:
     second = cli._dump_json(document)
 
     assert first == second
-    assert first == (
-        '{"data":[{"relative_delta":null,"run_id":"run-1"}],'
-        '"schema_version":2}'
-    )
+    assert first == ('{"data":[{"relative_delta":null,"run_id":"run-1"}],"schema_version":2}')
 
 
 def test_cli_keeps_s3_credentials_out_of_arguments() -> None:
@@ -925,9 +1019,7 @@ def test_cli_json_sanitizes_lttb_extension_path(
         run.log("loss", step, float(step))
     client.finish_run(run.run_id)
     client.shutdown()
-    private_extension = (
-        tmp_path / "private" / "tenant" / "missing-lttb.duckdb_extension"
-    )
+    private_extension = tmp_path / "private" / "tenant" / "missing-lttb.duckdb_extension"
     monkeypatch.setenv("PULSEON_LTTB_EXTENSION_PATH", str(private_extension))
 
     status = cli.main(
@@ -958,19 +1050,22 @@ def test_cli_json_sanitizes_lttb_extension_path(
     assert private_extension.name in error["message"]
     assert str(private_extension.parent) not in captured.err
 
-    assert cli.main(
-        [
-            "--path",
-            str(root_path),
-            "--format",
-            "json",
-            "metrics",
-            "query",
-            "run-1",
-            "loss",
-            "--all",
-        ]
-    ) == 0
+    assert (
+        cli.main(
+            [
+                "--path",
+                str(root_path),
+                "--format",
+                "json",
+                "metrics",
+                "query",
+                "run-1",
+                "loss",
+                "--all",
+            ]
+        )
+        == 0
+    )
     document = json.loads(capsys.readouterr().out)
     assert len(document["data"]) == 201
     assert document["meta"]["downsampled"] is False

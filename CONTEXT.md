@@ -8,6 +8,41 @@ context defines the product language used across native architecture decisions.
 **Project**:
 A lightweight namespace for related training runs.
 
+**Data source**:
+An imported reference that makes one local native project store available to
+the analysis workbench. One data source may contain multiple Projects.
+
+**Analysis View**:
+A named analysis workspace with its own selected Runs, metric panels, alignment,
+and horizontal viewport.
+
+**View baseline**:
+An optional single Run chosen as the comparison reference for an Analysis View.
+Choosing it does not change the Run's native data or lifecycle.
+
+**Pinned Run**:
+A Run placed exclusively in one Analysis View's viewer-only Pinned group instead
+of that View's normal Project listing.
+
+**Archived Run**:
+A Run placed in the workbench-wide viewer-only Archived group and hidden from
+normal Project listings in every Analysis View, without changing its native
+lifecycle.
+_Avoid_: Achieved Run, deleted Run
+
+**Pinned Project**:
+An imported Project placed in a workbench-only pinned Project location. This
+does not pin, select, or otherwise change any Run in that Project.
+
+**Archived Project**:
+An imported Project hidden from the normal Project listing by the workbench,
+without changing the Project or any of its Runs in native storage.
+_Avoid_: Achieved Project, deleted Project
+
+**Metric panel**:
+One aligned chart track for a metric key across the Runs selected in an
+Analysis View.
+
 **Run**:
 One training execution with a user-supplied or generated run identifier.
 _Avoid_: Experiment
@@ -66,6 +101,20 @@ The explicit transition of a run from running to a terminal lifecycle state.
 
 **Metric aggregate**:
 Derived index state over an effective metric series.
+
+**Metric summary**:
+The effective count, last point, minimum, and maximum for one complete effective
+metric series.
+_Avoid_: Viewport statistics
+
+**Objective evidence**:
+The last effective value of an objective metric for one Run, qualified by Run
+status, completeness, and structured reasons.
+
+**Ranking**:
+A direction-aware competition ordering of an explicit pool of Runs using
+eligible Objective evidence within one Project.
+_Avoid_: Cross-Project leaderboard
 
 **Catalog backend**:
 The database engine used for native storage metadata.

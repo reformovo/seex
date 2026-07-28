@@ -82,9 +82,7 @@ def test_init_uses_configured_data_path(tmp_path: pathlib.Path) -> None:
 
     root_path = tmp_path / "pulseon"
     configured_data_path = tmp_path / "configured-data"
-    _write_project_config(
-        root_path, f'data_path = "{configured_data_path.as_posix()}"\n'
-    )
+    _write_project_config(root_path, f'data_path = "{configured_data_path.as_posix()}"\n')
 
     client = pulseon.init(root_path)
     project = client.create_project("local training", project_id="project-1")
@@ -102,9 +100,7 @@ def test_init_data_path_keyword_overrides_config(
     root_path = tmp_path / "pulseon"
     explicit_data_path = tmp_path / "explicit-data"
     configured_data_path = tmp_path / "configured-data"
-    _write_project_config(
-        root_path, f'data_path = "{configured_data_path.as_posix()}"\n'
-    )
+    _write_project_config(root_path, f'data_path = "{configured_data_path.as_posix()}"\n')
 
     client = pulseon.init(root_path, data_path=explicit_data_path)
     project = client.create_project("local training", project_id="project-1")
@@ -123,8 +119,7 @@ def test_init_uses_configured_catalog_backend_and_path(
     catalog_path = tmp_path / "configured" / "catalog.sqlite"
     _write_project_config(
         root_path,
-        'catalog_backend = "sqlite"\n'
-        f'catalog_path = "{catalog_path.as_posix()}"\n',
+        f'catalog_backend = "sqlite"\ncatalog_path = "{catalog_path.as_posix()}"\n',
     )
 
     client = pulseon.init(root_path, catalog_backend=None)
@@ -143,8 +138,7 @@ def test_init_catalog_keywords_override_config(tmp_path: pathlib.Path) -> None:
     explicit_path = tmp_path / "explicit" / "catalog.db"
     _write_project_config(
         root_path,
-        'catalog_backend = "sqlite"\n'
-        f'catalog_path = "{configured_path.as_posix()}"\n',
+        f'catalog_backend = "sqlite"\ncatalog_path = "{configured_path.as_posix()}"\n',
     )
 
     client = pulseon.init(
@@ -167,9 +161,7 @@ def test_init_resolves_configured_relative_storage_paths_from_project_root(
     root_path = tmp_path / "project"
     _write_project_config(
         root_path,
-        'catalog_backend = "sqlite"\n'
-        'catalog_path = "storage/catalog.sqlite"\n'
-        'data_path = "storage/data"\n',
+        'catalog_backend = "sqlite"\ncatalog_path = "storage/catalog.sqlite"\ndata_path = "storage/data"\n',
     )
     unrelated_path = tmp_path / "unrelated"
     unrelated_path.mkdir()
@@ -490,13 +482,7 @@ def test_leftover_lock_file_does_not_block_resume(
         run_id="run/leftover lock",
     )
     first_client.shutdown()
-    lock_file = (
-        root_path
-        / ".pulseon"
-        / "locks"
-        / "runs"
-        / "run%2Fleftover%20lock.lock"
-    )
+    lock_file = root_path / ".pulseon" / "locks" / "runs" / "run%2Fleftover%20lock.lock"
 
     resumed = pulseon.init(root_path).resume_run(run.run_id)
 
@@ -567,15 +553,9 @@ def test_client_filters_and_paginates_runs_in_stable_created_order(
     assert [run.run_id for run in runs] == [first.run_id, second.run_id, third.run_id]
     assert [run.run_id for run in page] == [second.run_id]
     assert [run.run_id for run in tail] == [third.run_id]
-    assert [run.run_id for run in client.list_runs(project.project_id, status="running")] == [
-        second.run_id
-    ]
-    assert [run.run_id for run in client.list_runs(project.project_id, status="finished")] == [
-        first.run_id
-    ]
-    assert [run.run_id for run in client.list_runs(project.project_id, status="failed")] == [
-        third.run_id
-    ]
+    assert [run.run_id for run in client.list_runs(project.project_id, status="running")] == [second.run_id]
+    assert [run.run_id for run in client.list_runs(project.project_id, status="finished")] == [first.run_id]
+    assert [run.run_id for run in client.list_runs(project.project_id, status="failed")] == [third.run_id]
 
 
 def test_client_list_runs_rejects_unknown_status(tmp_path: pathlib.Path) -> None:

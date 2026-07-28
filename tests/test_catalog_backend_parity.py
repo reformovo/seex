@@ -51,12 +51,8 @@ def test_catalog_backend_round_trips_native_storage_workflow(
     )
     active_metrics = client.list_metrics(run.run_id)
     discovered_projects = client.list_projects()
-    discovered_runs = client.list_runs(
-        project.project_id, status="running", limit=1, offset=0
-    )
-    ranged_points = client.query_metric(
-        run.run_id, "train/loss", start_step=0, end_step=1
-    )
+    discovered_runs = client.list_runs(project.project_id, status="running", limit=1, offset=0)
+    ranged_points = client.query_metric(run.run_id, "train/loss", start_step=0, end_step=1)
     finished = client.finish_run(run.run_id)
     client.flush_run_data(run.run_id)
     terminal_points = client.query_metric(run.run_id, "train/loss")
@@ -97,13 +93,7 @@ def test_catalog_backend_round_trips_native_storage_workflow(
     ]
     assert diagnostics.last_flush_status == "succeeded"
     assert any(
-        (
-            data_path
-            / "main"
-            / "metric_points"
-            / "run_id=run-1"
-            / "metric_key_encoded=train%252Floss"
-        ).glob("*.parquet")
+        (data_path / "main" / "metric_points" / "run_id=run-1" / "metric_key_encoded=train%252Floss").glob("*.parquet")
     )
     assert catalog_path.is_file()
     assert data_path.is_dir()
@@ -145,17 +135,9 @@ def test_short_run_metrics_flush_from_inline_to_parquet(
 
     terminal_run = getattr(client, terminal_method)(run.run_id)
     terminal_points = client.query_metric(run.run_id, "train/loss")
-    partition_path = (
-        data_path
-        / "main"
-        / "metric_points"
-        / "run_id=run-1"
-        / "metric_key_encoded=train%252Floss"
-    )
+    partition_path = data_path / "main" / "metric_points" / "run_id=run-1" / "metric_key_encoded=train%252Floss"
 
-    assert terminal_run.status == (
-        "finished" if terminal_method == "finish_run" else "failed"
-    )
+    assert terminal_run.status == ("finished" if terminal_method == "finish_run" else "failed")
     assert [point.step for point in terminal_points] == list(range(16))
     assert any(partition_path.glob("*.parquet"))
 
@@ -212,11 +194,7 @@ def test_sqlite_catalog_file_contains_ducklake_and_pulseon_state(
     )
 
     tables_before_flush = _sqlite_table_names(catalog_path)
-    inline_tables = [
-        table
-        for table in tables_before_flush
-        if table.startswith("ducklake_inlined_data_")
-    ]
+    inline_tables = [table for table in tables_before_flush if table.startswith("ducklake_inlined_data_")]
     assert "ducklake_metadata" in tables_before_flush
     assert "ducklake_table" in tables_before_flush
     assert "pulseon_projects" in tables_before_flush
@@ -245,9 +223,7 @@ def test_unknown_catalog_backend_is_rejected(tmp_path: pathlib.Path) -> None:
 
 def _sqlite_table_names(catalog_path: pathlib.Path) -> set[str]:
     with sqlite3.connect(catalog_path) as connection:
-        rows = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
+        rows = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     return {str(row[0]) for row in rows}
 
 

@@ -9,7 +9,7 @@ use crate::model::comparison::{
     EvidenceCompleteness, ObjectiveDirection, ObjectiveEvidence, ObjectiveMetric, RankingEntry,
     RankingResult,
 };
-use crate::model::run::RunId;
+use crate::model::run::{Run, RunId};
 
 struct RankingCandidate {
     evidence: ObjectiveEvidence,
@@ -56,8 +56,25 @@ impl NativeClient {
                 });
             }
         }
-        let candidates = self
-            .ranking_evidence(run_ids, objective)?
+        Ok(rank_run_evidence(
+            objective,
+            self.ranking_evidence(run_ids, objective)?,
+        ))
+    }
+}
+
+/// Ranks already-loaded Run evidence with the canonical product ordering.
+///
+/// Complete finite evidence is eligible. Equal objective values receive a
+/// competition rank and are ordered by creation time, then Run ID. Ineligible
+/// entries retain their input order after eligible entries.
+pub fn rank_run_evidence(
+    objective: &ObjectiveMetric,
+    candidates: Vec<(Run, ObjectiveEvidence)>,
+) -> RankingResult {
+    rank_candidates(
+        objective,
+        candidates
             .into_iter()
             .enumerate()
             .map(|(ordinal, (run, evidence))| RankingCandidate {
@@ -65,9 +82,8 @@ impl NativeClient {
                 created_at: run.created_at,
                 ordinal,
             })
-            .collect();
-        Ok(rank_candidates(objective, candidates))
-    }
+            .collect(),
+    )
 }
 
 fn rank_candidates(

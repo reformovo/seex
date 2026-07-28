@@ -1,0 +1,3172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Pulseon Analysis Workbench</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:1400px;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Pulseon Analysis Workbench" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Pulseon Analysis Workbench&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(--background) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: light-dark(rgb(255 255 255), rgb(24 24 24));
+  --foreground: light-dark(rgb(26 28 31), rgb(255 255 255));
+  --card: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(rgb(255 255 255), rgb(45 45 45));
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(rgb(51 156 255), rgb(131 195 255));
+  --primary-foreground: light-dark(rgb(255 255 255), rgb(13 13 13));
+  --secondary: light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: light-dark(
+    rgb(26 28 31 / 49.4%),
+    rgb(255 255 255 / 49.8%)
+  );
+  --accent: light-dark(rgb(229 242 255), rgb(13 39 63));
+  --accent-foreground: var(--primary);
+  --destructive: light-dark(rgb(226 85 7), rgb(255 133 73));
+  --border: light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%));
+  --input: light-dark(
+    rgb(26 28 31 / 11.8%),
+    color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+  );
+  --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
+  --font-size-base: 14px;
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: 12.5px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+  --color-background-primary: var(--background);
+  --color-text-primary: var(--foreground);
+  --color-border-secondary: var(--border);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--viz-font-weight-medium);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;pulseon-analysis-workbench&quot;&gt;
+  &lt;style&gt;
+    #pulseon-analysis-workbench {
+      --track-label-width: 190px;
+      color: var(--foreground);
+      width: 100%;
+    }
+
+    #pulseon-analysis-workbench * {
+      box-sizing: border-box;
+    }
+
+    #pulseon-analysis-workbench .workbench {
+      height: 760px;
+      min-height: 620px;
+      overflow: hidden;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--card);
+      color: var(--card-foreground);
+    }
+
+    #pulseon-analysis-workbench .workspace-toolbar,
+    #pulseon-analysis-workbench .inspector-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .workspace-toolbar {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border);
+      position: static;
+      flex-wrap: nowrap;
+    }
+
+    #pulseon-analysis-workbench .view-tabs {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex: 1 1 auto;
+      min-width: 0;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    #pulseon-analysis-workbench .view-tab {
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+    }
+
+    #pulseon-analysis-workbench .view-tab [data-close-view] {
+      visibility: hidden;
+    }
+
+    #pulseon-analysis-workbench .view-tab [data-view-name] {
+      color: var(--muted-foreground);
+    }
+
+    #pulseon-analysis-workbench .view-tab [data-view-name]:hover {
+      background: var(--accent);
+      color: var(--accent-foreground);
+    }
+
+    #pulseon-analysis-workbench .view-tab [data-view-name].is-selected {
+      background: var(--secondary);
+      color: var(--secondary-foreground);
+    }
+
+    #pulseon-analysis-workbench .view-tab [data-view-name]:hover [data-close-view],
+    #pulseon-analysis-workbench .view-tab [data-view-name]:focus-visible [data-close-view],
+    #pulseon-analysis-workbench .view-tab [data-view-name].is-selected [data-close-view] {
+      visibility: visible;
+    }
+
+    #pulseon-analysis-workbench .shell {
+      display: grid;
+      grid-template-columns: 190px minmax(0, 1fr);
+      flex: 1;
+      min-height: 0;
+      overflow: visible;
+    }
+
+    #pulseon-analysis-workbench .shell.sidebar-hidden {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    #pulseon-analysis-workbench .shell.sidebar-hidden .sources {
+      display: none;
+    }
+
+    #pulseon-analysis-workbench .sources {
+      border-right: 1px solid var(--border);
+      padding: 10px 8px;
+      background: color-mix(in srgb, var(--muted) 48%, transparent);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      position: relative;
+      z-index: 5;
+    }
+
+    #pulseon-analysis-workbench .section-head,
+    #pulseon-analysis-workbench .tree-row,
+    #pulseon-analysis-workbench .run-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .section-head {
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    #pulseon-analysis-workbench .section-actions,
+    #pulseon-analysis-workbench .axis-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .source-scroll {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      scrollbar-width: thin;
+    }
+
+    #pulseon-analysis-workbench .sidebar-group {
+      margin-bottom: 8px;
+    }
+
+    #pulseon-analysis-workbench .sidebar-group.archived {
+      margin-top: 8px;
+      margin-bottom: 0;
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+    }
+
+    #pulseon-analysis-workbench .text-button {
+      border: 0;
+      background: transparent;
+      color: var(--muted-foreground);
+      padding: 3px 7px;
+      justify-content: flex-start;
+    }
+
+    #pulseon-analysis-workbench .text-button:hover,
+    #pulseon-analysis-workbench .text-button:focus-visible {
+      background: transparent;
+      color: var(--foreground);
+    }
+
+    #pulseon-analysis-workbench .sidebar-group-label {
+      padding: 3px 7px;
+      color: var(--muted-foreground);
+    }
+
+    #pulseon-analysis-workbench .icon-button {
+      border: 0;
+      background: transparent;
+      color: var(--muted-foreground);
+      padding: 2px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #pulseon-analysis-workbench .icon-button:hover,
+    #pulseon-analysis-workbench .icon-button:focus-visible {
+      background: transparent;
+      color: var(--foreground);
+    }
+
+    #pulseon-analysis-workbench .quick-run,
+    #pulseon-analysis-workbench .run-select,
+    #pulseon-analysis-workbench .run-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .quick-run {
+      padding: 5px 7px;
+    }
+
+    #pulseon-analysis-workbench .quick-run span,
+    #pulseon-analysis-workbench .run-select span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #pulseon-analysis-workbench .project-menu {
+      position: absolute;
+      z-index: 20;
+      left: var(--project-menu-x, calc(100% - 3px));
+      top: var(--project-menu-y, 48px);
+      width: 168px;
+      padding: 4px;
+    }
+
+    #pulseon-analysis-workbench .project-menu .btn {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    #pulseon-analysis-workbench .sidebar-reveal {
+      display: none;
+      flex: 0 0 auto;
+    }
+
+    #pulseon-analysis-workbench .shell.sidebar-hidden .sidebar-reveal {
+      display: inline-flex;
+    }
+
+    #pulseon-analysis-workbench .tree-row,
+    #pulseon-analysis-workbench .run-row {
+      padding: 6px 7px;
+    }
+
+    #pulseon-analysis-workbench .tree-row span,
+    #pulseon-analysis-workbench .run-row span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #pulseon-analysis-workbench .run-row {
+      padding-left: 23px;
+    }
+
+    #pulseon-analysis-workbench .run-row[hidden] {
+      display: none;
+    }
+
+    #pulseon-analysis-workbench .run-select {
+      flex: 1;
+      overflow: hidden;
+    }
+
+    #pulseon-analysis-workbench .run-select .icon-button,
+    #pulseon-analysis-workbench .run-actions,
+    #pulseon-analysis-workbench .run-actions .icon-button {
+      flex: 0 0 auto;
+    }
+
+    #pulseon-analysis-workbench .run-select &gt; span {
+      flex: 1;
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .run-actions {
+      display: none;
+      margin-left: auto;
+    }
+
+    #pulseon-analysis-workbench .project-actions {
+      display: none;
+      margin-left: auto;
+    }
+
+    #pulseon-analysis-workbench .project-name {
+      flex: 1;
+    }
+
+    #pulseon-analysis-workbench .quick-run:hover .run-actions,
+    #pulseon-analysis-workbench .quick-run:focus-within .run-actions,
+    #pulseon-analysis-workbench .run-row:hover .run-actions,
+    #pulseon-analysis-workbench .run-row:focus-within .run-actions {
+      display: flex;
+    }
+
+    #pulseon-analysis-workbench .project-row:hover .project-actions,
+    #pulseon-analysis-workbench .project-row:focus-within .project-actions {
+      display: inline-flex;
+    }
+
+    #pulseon-analysis-workbench .empty-runs {
+      padding: 5px 7px 5px 30px;
+      color: var(--muted-foreground);
+    }
+
+    #pulseon-analysis-workbench .project-hover-card {
+      position: absolute;
+      z-index: 18;
+      left: calc(100% - 3px);
+      top: var(--project-hover-y, 48px);
+      width: 230px;
+      padding: 8px;
+      pointer-events: none;
+    }
+
+    #pulseon-analysis-workbench .project-hover-card[hidden] {
+      display: none;
+    }
+
+    #pulseon-analysis-workbench .project-hover-row,
+    #pulseon-analysis-workbench .project-hover-status {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .project-hover-row + .project-hover-row {
+      margin-top: 7px;
+    }
+
+    #pulseon-analysis-workbench .project-hover-title {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #pulseon-analysis-workbench .project-hover-status {
+      color: var(--muted-foreground);
+      white-space: nowrap;
+    }
+
+    #pulseon-analysis-workbench .project-hover-source {
+      border-top: 1px solid var(--border);
+      padding-top: 7px;
+    }
+
+    #pulseon-analysis-workbench .popover-surface {
+      background: var(--popover);
+      color: var(--popover-foreground);
+    }
+
+    #pulseon-analysis-workbench .run-row:hover .run-meta,
+    #pulseon-analysis-workbench .run-row:focus-within .run-meta {
+      display: none;
+    }
+
+    #pulseon-analysis-workbench .show-more {
+      margin-left: 23px;
+    }
+
+    #pulseon-analysis-workbench .run-meta {
+      margin-left: auto;
+      color: var(--muted-foreground);
+    }
+
+    #pulseon-analysis-workbench .analysis {
+      min-width: 0;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #pulseon-analysis-workbench .toolbar-spacer {
+      flex: 1;
+    }
+
+    #pulseon-analysis-workbench .filter-field {
+      min-width: 160px;
+      max-width: 240px;
+    }
+
+    #pulseon-analysis-workbench .metric-track {
+      display: grid;
+      grid-template-columns: var(--track-label-width) minmax(0, 1fr);
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .timeline-ruler {
+      border-bottom: 1px solid var(--border);
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .ruler-scroll {
+      overflow-x: auto;
+      overflow-y: hidden;
+      min-width: 0;
+      scrollbar-width: thin;
+      overscroll-behavior-x: contain;
+      cursor: grab;
+    }
+
+    #pulseon-analysis-workbench .ruler-scroll.is-panning {
+      cursor: grabbing;
+    }
+
+    #pulseon-analysis-workbench .timeline-label,
+    #pulseon-analysis-workbench .track-label {
+      border-right: 1px solid var(--border);
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .timeline-label {
+      padding: 7px 10px;
+      color: var(--muted-foreground);
+    }
+
+    #pulseon-analysis-workbench .ruler {
+      position: relative;
+      display: flex;
+      min-height: 26px;
+      width: 100%;
+      min-width: 100%;
+    }
+
+    #pulseon-analysis-workbench .ruler-spacer {
+      flex: 0 0 var(--track-label-width);
+      border-right: 1px solid var(--border);
+    }
+
+    #pulseon-analysis-workbench .ruler-content {
+      position: relative;
+      flex: 1 0 auto;
+      min-width: 0;
+      background-image: repeating-linear-gradient(
+        90deg,
+        transparent 0,
+        transparent calc(12.5% - 1px),
+        var(--border) calc(12.5% - 1px),
+        var(--border) 12.5%
+      );
+    }
+
+    #pulseon-analysis-workbench .ticks {
+      display: flex;
+      justify-content: space-between;
+      padding: 3px 8px;
+      color: var(--muted-foreground);
+    }
+
+    #pulseon-analysis-workbench .timeline-brush {
+      display: grid;
+      grid-template-columns: var(--track-label-width) minmax(180px, 1fr);
+      align-items: stretch;
+      min-height: 40px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    #pulseon-analysis-workbench .timeline-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      padding: 3px 6px;
+      border-right: 1px solid var(--border);
+      min-width: 0;
+    }
+
+    #pulseon-analysis-workbench .brush-plot,
+    #pulseon-analysis-workbench .metric-plot {
+      position: relative;
+      min-width: 0;
+      overflow: hidden;
+      background-image: repeating-linear-gradient(
+        90deg,
+        transparent 0,
+        transparent calc(12.5% - 1px),
+        color-mix(in srgb, var(--border) 62%, transparent) calc(12.5% - 1px),
+        color-mix(in srgb, var(--border) 62%, transparent) 12.5%
+      );
+    }
+
+    #pulseon-analysis-workbench .brush-window {
+      position: absolute;
+      left: 21%;
+      width: 57%;
+      top: 4px;
+      bottom: 4px;
+      border-left: 2px solid var(--primary);
+      border-right: 2px solid var(--primary);
+      background: color-mix(in srgb, var(--primary) 12%, transparent);
+      pointer-events: none;
+    }
+
+    #pulseon-analysis-workbench .tracks {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      scrollbar-width: thin;
+    }
+
+    #pulseon-analysis-workbench .metric-track {
+      --metric-row-height: 52px;
+      height: var(--metric-row-height);
+      min-height: 52px;
+      grid-template-rows: minmax(0, 1fr);
+      border-bottom: 1px solid var(--border);
+      position: relative;
+      overflow: visible;
+    }
+
+    #pulseon-analysis-workbench .track-label {
+      padding: 5px 10px;
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      text-align: left;
+      color: var(--foreground);
+      background: transparent;
+      border-top: 0;
+      border-bottom: 0;
+      border-left: 0;
+      border-radius: 0;
+    }
+
+    #pulseon-analysis-workbench .metric-track.is-selected .track-label {
+      background: var(--primary);
+      color: var(--primary-foreground);
+    }
+
+    #pulseon-analysis-workbench .metric-track.is-selected .track-label .track-meta {
+      color: var(--primary-foreground);
+      opacity: .78;
+    }
+
+    #pulseon-analysis-workbench .track-copy {
+      min-width: 0;
+      flex: 1;
+    }
+
+    #pulseon-analysis-workbench .track-copy strong,
+    #pulseon-analysis-workbench .track-copy span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #pulseon-analysis-workbench .track-meta {
+      color: var(--muted-foreground);
+      margin-top: 2px;
+    }
+
+    #pulseon-analysis-workbench .series-key {
+      width: 9px;
+      height: 9px;
+      margin-top: 5px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+      background: var(--viz-series-1);
+    }
+
+    #pulseon-analysis-workbench .metric-plot {
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      width: 100%;
+      cursor: crosshair;
+      color: var(--foreground);
+    }
+
+    #pulseon-analysis-workbench .metric-track .track-label,
+    #pulseon-analysis-workbench .metric-track .metric-plot {
+      height: 100%;
+      min-height: 0;
+    }
+
+    #pulseon-analysis-workbench .metric-track .chart {
+      position: absolute;
+      inset: 0;
+    }
+
+    #pulseon-analysis-workbench .metric-track .metric-plot {
+      background-color: color-mix(in srgb, var(--accent) 42%, transparent);
+    }
+
+    #pulseon-analysis-workbench .chart {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #pulseon-analysis-workbench .chart-grid {
+      stroke: color-mix(in srgb, var(--border) 72%, transparent);
+      stroke-width: 1;
+    }
+
+    #pulseon-analysis-workbench .chart-line-primary,
+    #pulseon-analysis-workbench .chart-line-secondary {
+      fill: none;
+      vector-effect: non-scaling-stroke;
+    }
+
+    #pulseon-analysis-workbench .chart-line-primary {
+      stroke: var(--viz-series-1);
+      stroke-width: 2.6;
+    }
+
+    #pulseon-analysis-workbench .chart-line-secondary {
+      stroke: var(--viz-series-2);
+      stroke-width: 1.5;
+      opacity: .58;
+    }
+
+    #pulseon-analysis-workbench.baseline-secondary .chart-line-primary {
+      stroke-width: 1.5;
+      opacity: .58;
+    }
+
+    #pulseon-analysis-workbench.baseline-secondary .chart-line-secondary {
+      stroke-width: 2.6;
+      opacity: 1;
+    }
+
+    #pulseon-analysis-workbench .hover-cursor-line,
+    #pulseon-analysis-workbench .locked-cursor-line {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 0;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    #pulseon-analysis-workbench .hover-cursor-line {
+      border-left: 1px dashed var(--primary);
+    }
+
+    #pulseon-analysis-workbench .locked-cursor-line {
+      border-left: 1px solid var(--primary);
+    }
+
+    #pulseon-analysis-workbench.hover-cursor-active .hover-cursor-line,
+    #pulseon-analysis-workbench.locked-cursor-active .locked-cursor-line {
+      opacity: 1;
+    }
+
+    #pulseon-analysis-workbench .ruler-content .locked-cursor-line {
+      top: 5px;
+    }
+
+    #pulseon-analysis-workbench .ruler-content .locked-cursor-line::before {
+      content: &quot;&quot;;
+      position: absolute;
+      top: -5px;
+      left: -4px;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--primary);
+    }
+
+    #pulseon-analysis-workbench .metric-track .hover-cursor-line {
+      left: var(--hover-chart-x, 62%);
+    }
+
+    #pulseon-analysis-workbench .metric-track .locked-cursor-line {
+      left: var(--locked-chart-x, 42%);
+    }
+
+    #pulseon-analysis-workbench .ruler-content .hover-cursor-line {
+      left: var(--hover-ruler-x, 62%);
+    }
+
+    #pulseon-analysis-workbench .ruler-content .locked-cursor-line {
+      left: var(--locked-ruler-x, 42%);
+    }
+
+    #pulseon-analysis-workbench .cursor-label {
+      position: absolute;
+      left: var(--hover-ruler-x, 62%);
+      top: 2px;
+      transform: translateX(-50%);
+      background: var(--primary);
+      color: var(--primary-foreground);
+      padding: 2px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+    }
+
+    #pulseon-analysis-workbench.hover-cursor-active .cursor-label {
+      opacity: 1;
+    }
+
+    #pulseon-analysis-workbench .value-tag {
+      position: absolute;
+      z-index: 3;
+      left: var(--hover-chart-x, 62%);
+      top: var(--value-y, 50%);
+      transform: translate(0, -50%);
+      padding: 3px 7px 3px 13px;
+      border: 1px solid var(--border);
+      border-radius: 0;
+      background: var(--popover);
+      color: var(--popover-foreground);
+      clip-path: polygon(8px 0, 100% 0, 100% 100%, 8px 100%, 0 50%);
+      white-space: nowrap;
+      pointer-events: none;
+      opacity: 0;
+    }
+
+    #pulseon-analysis-workbench .value-tag.align-left {
+      transform: translate(-100%, -50%);
+      padding-right: 13px;
+      padding-left: 7px;
+      clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);
+    }
+
+    #pulseon-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;all&quot;] .value-tag,
+    #pulseon-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;primary&quot;] .value-tag-primary,
+    #pulseon-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;secondary&quot;] .value-tag-secondary {
+      opacity: 1;
+    }
+
+    #pulseon-analysis-workbench.hover-cursor-outside .hover-cursor-line,
+    #pulseon-analysis-workbench.hover-cursor-outside .cursor-label,
+    #pulseon-analysis-workbench.hover-cursor-outside .value-tag,
+    #pulseon-analysis-workbench.locked-cursor-outside .locked-cursor-line {
+      opacity: 0;
+    }
+
+    #pulseon-analysis-workbench .track-resizer {
+      position: absolute;
+      z-index: 4;
+      left: 0;
+      right: 0;
+      bottom: -4px;
+      width: 100%;
+      height: 8px;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      cursor: row-resize;
+    }
+
+    #pulseon-analysis-workbench .track-resizer:hover,
+    #pulseon-analysis-workbench .track-resizer:focus-visible {
+      background: color-mix(in srgb, var(--primary) 24%, transparent);
+    }
+
+    #pulseon-analysis-workbench .inspector {
+      border-top: 1px solid var(--border);
+      min-height: 176px;
+      max-height: 220px;
+      flex: 0 0 auto;
+      overflow: hidden;
+      background: var(--card);
+    }
+
+    #pulseon-analysis-workbench .inspector[hidden] {
+      display: none;
+    }
+
+    #pulseon-analysis-workbench .inspector-head {
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    #pulseon-analysis-workbench .inspector-tabs {
+      display: flex;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+
+    #pulseon-analysis-workbench .inspector-title {
+      flex: 1;
+      min-width: 150px;
+      text-align: right;
+      color: var(--muted-foreground);
+      white-space: nowrap;
+    }
+
+    #pulseon-analysis-workbench .inspector-body {
+      padding: 4px 10px 10px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+
+    #pulseon-analysis-workbench .inspector .table {
+      min-width: 780px;
+    }
+
+    #pulseon-analysis-workbench .inspector .table th,
+    #pulseon-analysis-workbench .inspector .table td {
+      white-space: nowrap;
+    }
+
+    #pulseon-analysis-workbench .inspector-panel[hidden] {
+      display: none;
+    }
+
+    #pulseon-analysis-workbench .popover-layer {
+      position: absolute;
+      top: 84px;
+      left: calc(var(--track-label-width) - 34px);
+      width: min(430px, calc(100% - 56px));
+      z-index: 10;
+    }
+
+    #pulseon-analysis-workbench .axis-popover {
+      position: absolute;
+      top: 84px;
+      left: 8px;
+      width: 200px;
+      padding: 6px;
+      z-index: 11;
+      background: var(--popover);
+      color: var(--popover-foreground);
+    }
+
+    #pulseon-analysis-workbench .axis-options {
+      display: grid;
+      gap: 3px;
+    }
+
+    #pulseon-analysis-workbench .axis-option {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    #pulseon-analysis-workbench .axis-option [data-axis-status] {
+      margin-left: auto;
+    }
+
+    #pulseon-analysis-workbench .popover-layer[hidden],
+    #pulseon-analysis-workbench .axis-popover[hidden],
+    #pulseon-analysis-workbench .view-menu[hidden] {
+      display: none;
+    }
+
+    #pulseon-analysis-workbench .metric-picker {
+      padding: 10px;
+      background: var(--popover);
+      color: var(--popover-foreground);
+    }
+
+    #pulseon-analysis-workbench .metric-options {
+      display: grid;
+      gap: 3px;
+      margin-top: 8px;
+    }
+
+    #pulseon-analysis-workbench .metric-option {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    #pulseon-analysis-workbench .metric-option-copy {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    #pulseon-analysis-workbench .metric-option-copy strong,
+    #pulseon-analysis-workbench .metric-option-copy span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #pulseon-analysis-workbench .view-menu {
+      position: absolute;
+      top: var(--view-menu-y, 40px);
+      left: var(--view-menu-x, 82px);
+      z-index: 12;
+      width: 150px;
+      padding: 6px;
+    }
+
+    #pulseon-analysis-workbench .view-menu .btn {
+      width: 100%;
+      justify-content: flex-start;
+    }
+
+    #pulseon-analysis-workbench .legend-inline {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      color: var(--muted-foreground);
+    }
+
+    #pulseon-analysis-workbench .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    #pulseon-analysis-workbench .legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--viz-series-1);
+    }
+
+    #pulseon-analysis-workbench .legend-dot.secondary {
+      background: var(--viz-series-2);
+    }
+
+    @media (max-width: 800px) {
+      #pulseon-analysis-workbench {
+        --track-label-width: 150px;
+      }
+
+      #pulseon-analysis-workbench .shell {
+        grid-template-columns: 150px minmax(0, 1fr);
+      }
+
+      #pulseon-analysis-workbench .sources {
+        padding-inline: 5px;
+      }
+
+      #pulseon-analysis-workbench .run-meta,
+      #pulseon-analysis-workbench .toolbar-spacer,
+      #pulseon-analysis-workbench .legend-inline {
+        display: none;
+      }
+    }
+
+    @media (max-width: 520px) {
+      #pulseon-analysis-workbench {
+        --track-label-width: 108px;
+      }
+
+      #pulseon-analysis-workbench .shell {
+        display: block;
+      }
+
+      #pulseon-analysis-workbench .view-tabs {
+        min-width: 0;
+      }
+
+      #pulseon-analysis-workbench .timeline-brush {
+        grid-template-columns: var(--track-label-width) minmax(100px, 1fr);
+      }
+
+      #pulseon-analysis-workbench .popover-layer {
+        left: 8px;
+        width: calc(100% - 16px);
+      }
+
+      #pulseon-analysis-workbench .filter-field {
+        max-width: none;
+        width: 100%;
+      }
+
+      #pulseon-analysis-workbench .track-label {
+        padding-inline: 6px;
+      }
+
+      #pulseon-analysis-workbench .track-meta {
+        display: none;
+      }
+
+      #pulseon-analysis-workbench .inspector-title {
+        text-align: left;
+      }
+    }
+  &lt;/style&gt;
+
+  &lt;section class=&quot;card workbench&quot; aria-label=&quot;PulseOn analysis workbench redesign&quot;&gt;
+    &lt;div id=&quot;workbench-shell&quot; class=&quot;shell&quot;&gt;
+      &lt;aside class=&quot;sources&quot; aria-label=&quot;Data sources and Runs&quot;&gt;
+        &lt;div class=&quot;section-head&quot;&gt;
+          &lt;strong&gt;PulseOn&lt;/strong&gt;
+          &lt;div class=&quot;section-actions&quot;&gt;
+            &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Import data source&quot; data-tooltip=&quot;Import source&quot;&gt;
+              &lt;i data-lucide=&quot;plus&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+            &lt;/button&gt;
+            &lt;button id=&quot;sidebar-collapse&quot; type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Hide sources&quot; data-tooltip=&quot;Hide sources&quot;&gt;
+              &lt;i data-lucide=&quot;panel-left-close&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+            &lt;/button&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;sidebar-group&quot;&gt;
+          &lt;div class=&quot;sidebar-group-label text-small&quot;&gt;Baseline&lt;/div&gt;
+          &lt;div id=&quot;baseline-list&quot;&gt;&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;sidebar-group&quot;&gt;
+          &lt;div class=&quot;sidebar-group-label text-small&quot;&gt;Pinned&lt;/div&gt;
+          &lt;div id=&quot;pinned-group&quot;&gt;&lt;div id=&quot;pinned-projects&quot;&gt;&lt;/div&gt;&lt;div id=&quot;pinned-list&quot;&gt;&lt;/div&gt;&lt;button id=&quot;show-more-pinned&quot; type=&quot;button&quot; class=&quot;text-button show-more&quot;&gt;Show more&lt;/button&gt;&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;label class=&quot;sidebar-group-label text-small&quot; for=&quot;run-filter&quot;&gt;Projects&lt;/label&gt;
+        &lt;input id=&quot;run-filter&quot; class=&quot;form-control&quot; type=&quot;search&quot; placeholder=&quot;Project, Run or ID&quot;&gt;
+        &lt;div class=&quot;source-scroll&quot; aria-label=&quot;Scrollable projects and Runs&quot;&gt;
+          &lt;div class=&quot;tree-row text-small text-muted&quot;&gt;&lt;i data-lucide=&quot;database&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;local-training&lt;/div&gt;
+          &lt;div id=&quot;project-list&quot;&gt;
+            &lt;div data-project-entry data-project-name=&quot;vision-transformer&quot; data-run-count=&quot;26&quot;&gt;
+              &lt;div class=&quot;tree-row project-row&quot; data-project-row&gt;&lt;button type=&quot;button&quot; class=&quot;icon-button&quot; data-project-expansion aria-label=&quot;Collapse vision-transformer Runs&quot; aria-expanded=&quot;true&quot;&gt;&lt;i data-lucide=&quot;folder-open&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;span class=&quot;project-name&quot;&gt;vision-transformer&lt;/span&gt;&lt;button type=&quot;button&quot; class=&quot;icon-button project-actions&quot; data-project-menu-trigger aria-label=&quot;Project actions for vision-transformer&quot; data-tooltip=&quot;More project actions&quot; aria-expanded=&quot;false&quot;&gt;&lt;i data-lucide=&quot;ellipsis&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;/div&gt;
+              &lt;div data-project-children&gt;
+                &lt;div id=&quot;project-run-list&quot;&gt;&lt;/div&gt;
+                &lt;button id=&quot;show-more-runs&quot; type=&quot;button&quot; class=&quot;text-button show-more&quot;&gt;Show more&lt;/button&gt;
+              &lt;/div&gt;
+            &lt;/div&gt;
+            &lt;div data-project-entry data-project-name=&quot;language-model&quot; data-run-count=&quot;0&quot;&gt;
+              &lt;div class=&quot;tree-row project-row&quot; data-project-row&gt;&lt;button type=&quot;button&quot; class=&quot;icon-button&quot; data-project-expansion aria-label=&quot;Collapse language-model Runs&quot; aria-expanded=&quot;true&quot;&gt;&lt;i data-lucide=&quot;folder-open&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;span class=&quot;project-name&quot;&gt;language-model&lt;/span&gt;&lt;button type=&quot;button&quot; class=&quot;icon-button project-actions&quot; data-project-menu-trigger aria-label=&quot;Project actions for language-model&quot; data-tooltip=&quot;More project actions&quot; aria-expanded=&quot;false&quot;&gt;&lt;i data-lucide=&quot;ellipsis&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;/div&gt;
+              &lt;div data-project-children&gt;&lt;div class=&quot;empty-runs text-small&quot;&gt;No runs&lt;/div&gt;&lt;/div&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;sidebar-group archived&quot;&gt;
+          &lt;div class=&quot;sidebar-group-label text-small&quot;&gt;Archived&lt;/div&gt;
+          &lt;div id=&quot;archived-group&quot;&gt;&lt;div id=&quot;archived-projects&quot;&gt;&lt;/div&gt;&lt;div id=&quot;archived-list&quot;&gt;&lt;/div&gt;&lt;button id=&quot;show-more-archived&quot; type=&quot;button&quot; class=&quot;text-button show-more&quot;&gt;Show more&lt;/button&gt;&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div id=&quot;project-menu&quot; class=&quot;card popover-surface project-menu&quot; role=&quot;menu&quot; hidden&gt;&lt;/div&gt;
+        &lt;div id=&quot;project-hover-card&quot; class=&quot;card popover-surface project-hover-card&quot; role=&quot;tooltip&quot; hidden&gt;&lt;/div&gt;
+      &lt;/aside&gt;
+
+      &lt;main class=&quot;analysis&quot;&gt;
+        &lt;nav class=&quot;workspace-toolbar&quot; aria-label=&quot;Analysis views and workspace controls&quot;&gt;
+          &lt;button id=&quot;sidebar-toggle&quot; type=&quot;button&quot; class=&quot;btn btn-ghost sidebar-reveal&quot; aria-label=&quot;Show sources&quot; data-tooltip=&quot;Show sources&quot;&gt;
+            &lt;i data-lucide=&quot;panel-left-open&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+          &lt;/button&gt;
+          &lt;div class=&quot;view-tabs&quot; role=&quot;tablist&quot; aria-label=&quot;Analysis views&quot;&gt;
+            &lt;span class=&quot;view-tab&quot; data-view-tab data-view-id=&quot;overview&quot;&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn is-selected&quot; data-view-name role=&quot;tab&quot; aria-selected=&quot;true&quot; aria-label=&quot;Overview view&quot;&gt;
+                &lt;span data-view-label&gt;Overview&lt;/span&gt;
+                &lt;span data-close-view data-tooltip=&quot;Close view&quot;&gt;&lt;i data-lucide=&quot;x&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/span&gt;
+              &lt;/button&gt;
+            &lt;/span&gt;
+            &lt;span class=&quot;view-tab&quot; data-view-tab data-view-id=&quot;ablation&quot;&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; data-view-name role=&quot;tab&quot; aria-selected=&quot;false&quot; aria-label=&quot;Ablation view&quot;&gt;
+                &lt;span data-view-label&gt;Ablation&lt;/span&gt;
+                &lt;span data-close-view data-tooltip=&quot;Close view&quot;&gt;&lt;i data-lucide=&quot;x&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/span&gt;
+              &lt;/button&gt;
+            &lt;/span&gt;
+            &lt;span class=&quot;view-tab&quot; data-view-tab data-view-id=&quot;throughput&quot;&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; data-view-name role=&quot;tab&quot; aria-selected=&quot;false&quot; aria-label=&quot;Throughput view&quot;&gt;
+                &lt;span data-view-label&gt;Throughput&lt;/span&gt;
+                &lt;span data-close-view data-tooltip=&quot;Close view&quot;&gt;&lt;i data-lucide=&quot;x&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/span&gt;
+              &lt;/button&gt;
+            &lt;/span&gt;
+            &lt;span class=&quot;view-tab&quot; data-view-tab data-view-id=&quot;memory&quot;&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; data-view-name role=&quot;tab&quot; aria-selected=&quot;false&quot; aria-label=&quot;Memory view&quot;&gt;
+                &lt;span data-view-label&gt;Memory&lt;/span&gt;
+                &lt;span data-close-view data-tooltip=&quot;Close view&quot;&gt;&lt;i data-lucide=&quot;x&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/span&gt;
+              &lt;/button&gt;
+            &lt;/span&gt;
+          &lt;/div&gt;
+          &lt;button id=&quot;new-view-button&quot; type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Create analysis view&quot; data-tooltip=&quot;New view&quot;&gt;
+            &lt;i data-lucide=&quot;plus&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+          &lt;/button&gt;
+          &lt;span class=&quot;toolbar-spacer&quot;&gt;&lt;/span&gt;
+          &lt;button id=&quot;details-toggle&quot; type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Hide bottom inspector&quot; aria-pressed=&quot;true&quot; data-tooltip=&quot;Hide bottom inspector&quot;&gt;
+            &lt;i data-lucide=&quot;panel-bottom-close&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+          &lt;/button&gt;
+          &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Refresh native sources&quot; data-tooltip=&quot;Refresh native sources&quot;&gt;
+            &lt;i data-lucide=&quot;refresh-cw&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+          &lt;/button&gt;
+
+          &lt;div id=&quot;view-menu&quot; class=&quot;card popover-surface view-menu&quot; hidden&gt;
+            &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; data-rename-view&gt;&lt;i data-lucide=&quot;pencil&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;Rename&lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost text-destructive&quot; data-delete-view&gt;&lt;i data-lucide=&quot;trash-2&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;Delete&lt;/button&gt;
+          &lt;/div&gt;
+
+          &lt;div id=&quot;axis-popover&quot; class=&quot;card popover-surface axis-popover&quot; hidden&gt;
+            &lt;div class=&quot;axis-options&quot; aria-label=&quot;Horizontal axis options&quot;&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn is-selected axis-option&quot; data-axis-mode=&quot;step&quot; aria-pressed=&quot;true&quot;&gt;
+                &lt;i data-lucide=&quot;arrow-up&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;span&gt;Step&lt;/span&gt;&lt;span data-axis-status&gt;Selected&lt;/span&gt;
+              &lt;/button&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost axis-option&quot; data-axis-mode=&quot;time&quot; aria-pressed=&quot;false&quot;&gt;
+                &lt;i data-lucide=&quot;clock&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;span&gt;Absolute time&lt;/span&gt;&lt;span data-axis-status&gt;&lt;/span&gt;
+              &lt;/button&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+
+          &lt;div id=&quot;metric-popover&quot; class=&quot;popover-layer&quot; hidden&gt;
+            &lt;div class=&quot;card popover-surface metric-picker&quot;&gt;
+              &lt;label class=&quot;form-label&quot; for=&quot;metric-search&quot;&gt;Add Metric&lt;/label&gt;
+              &lt;input id=&quot;metric-search&quot; class=&quot;form-control&quot; type=&quot;search&quot; placeholder=&quot;Filter available metrics&quot;&gt;
+              &lt;div class=&quot;metric-options&quot; aria-label=&quot;Available metrics&quot;&gt;
+                &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost metric-option&quot; data-metric-option=&quot;grad_norm&quot;&gt;
+                  &lt;i data-lucide=&quot;activity&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+                  &lt;span class=&quot;metric-option-copy&quot;&gt;&lt;strong&gt;grad_norm&lt;/strong&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;2 Runs · 800k effective points&lt;/span&gt;&lt;/span&gt;
+                &lt;/button&gt;
+                &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost metric-option&quot; data-metric-option=&quot;tokens_per_second&quot;&gt;
+                  &lt;i data-lucide=&quot;gauge&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+                  &lt;span class=&quot;metric-option-copy&quot;&gt;&lt;strong&gt;tokens_per_second&lt;/strong&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;1 Run · system metric&lt;/span&gt;&lt;/span&gt;
+                &lt;/button&gt;
+                &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost metric-option&quot; data-metric-option=&quot;val/perplexity&quot;&gt;
+                  &lt;i data-lucide=&quot;activity&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+                  &lt;span class=&quot;metric-option-copy&quot;&gt;&lt;strong&gt;val/perplexity&lt;/strong&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;2 Runs · minimize&lt;/span&gt;&lt;/span&gt;
+                &lt;/button&gt;
+                &lt;div id=&quot;metric-empty&quot; class=&quot;text-small text-muted&quot; hidden&gt;No matching metrics&lt;/div&gt;
+              &lt;/div&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/nav&gt;
+
+        &lt;div class=&quot;timeline-brush&quot;&gt;
+          &lt;div class=&quot;timeline-controls&quot;&gt;
+            &lt;button id=&quot;axis-mode-button&quot; type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Axis: Step&quot; aria-expanded=&quot;false&quot; data-tooltip=&quot;Axis: Step&quot;&gt;&lt;i data-lucide=&quot;arrow-up&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/button&gt;
+            &lt;button id=&quot;add-metric-button&quot; type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Add Metric&quot; aria-expanded=&quot;false&quot; data-tooltip=&quot;Add Metric&quot;&gt;
+              &lt;i data-lucide=&quot;plus&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
+            &lt;/button&gt;
+          &lt;/div&gt;
+          &lt;button type=&quot;button&quot; class=&quot;metric-plot brush-plot&quot; aria-label=&quot;Shared timeline selection from step 168000 to 624000&quot;&gt;
+            &lt;svg class=&quot;chart&quot; viewBox=&quot;0 0 800 88&quot; preserveAspectRatio=&quot;none&quot; role=&quot;img&quot; aria-label=&quot;Overview of the selected metric&quot;&gt;
+              &lt;title&gt;Selected metric overview&lt;/title&gt;
+              &lt;path id=&quot;timeline-primary&quot; class=&quot;chart-line-primary&quot; d=&quot;M0 9 C50 14 85 20 130 27 S205 38 260 45 S350 54 420 58 S530 63 620 67 S730 70 800 72&quot;&gt;&lt;/path&gt;
+              &lt;path id=&quot;timeline-secondary&quot; class=&quot;chart-line-secondary&quot; d=&quot;M0 12 C55 18 85 24 125 30 S205 44 255 49 S345 58 410 62 S530 68 610 71 S730 74 800 75&quot;&gt;&lt;/path&gt;
+            &lt;/svg&gt;
+            &lt;span class=&quot;brush-window&quot;&gt;&lt;/span&gt;
+          &lt;/button&gt;
+        &lt;/div&gt;
+
+        &lt;div class=&quot;timeline-ruler&quot;&gt;
+          &lt;div id=&quot;ruler-scroll&quot; class=&quot;ruler-scroll&quot; aria-label=&quot;Scrollable and zoomable horizontal axis&quot; data-tooltip=&quot;Scroll to pan · Cmd/Ctrl + scroll to zoom&quot;&gt;
+            &lt;div id=&quot;timeline-ruler-canvas&quot; class=&quot;ruler&quot;&gt;
+              &lt;span class=&quot;ruler-spacer&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;
+              &lt;div class=&quot;ruler-content&quot;&gt;
+                &lt;div id=&quot;axis-ticks&quot; class=&quot;ticks text-small&quot;&gt;&lt;span&gt;0&lt;/span&gt;&lt;span&gt;200k&lt;/span&gt;&lt;span&gt;400k&lt;/span&gt;&lt;span&gt;600k&lt;/span&gt;&lt;span&gt;800k&lt;/span&gt;&lt;/div&gt;
+                &lt;span id=&quot;cursor-label&quot; class=&quot;cursor-label text-small&quot;&gt;496k&lt;/span&gt;
+                &lt;span class=&quot;hover-cursor-line&quot;&gt;&lt;/span&gt;
+                &lt;span class=&quot;locked-cursor-line&quot;&gt;&lt;/span&gt;
+              &lt;/div&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+
+        &lt;div class=&quot;tracks&quot; aria-label=&quot;Metric tracks&quot;&gt;
+          &lt;article class=&quot;metric-track is-selected&quot; data-track=&quot;train/loss&quot; data-count=&quot;800,000&quot; data-step=&quot;800,000&quot; data-value=&quot;0.1842&quot; data-min=&quot;0.1768&quot; data-max=&quot;2.9410&quot;&gt;
+            &lt;button type=&quot;button&quot; class=&quot;track-label&quot; aria-pressed=&quot;true&quot;&gt;
+              &lt;span class=&quot;series-key&quot;&gt;&lt;/span&gt;
+              &lt;span class=&quot;track-copy&quot;&gt;&lt;strong&gt;train/loss&lt;/strong&gt;&lt;span class=&quot;track-meta text-small&quot;&gt;2 Runs · minimize&lt;/span&gt;&lt;/span&gt;
+            &lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;metric-plot&quot; aria-label=&quot;train loss chart&quot;&gt;
+              &lt;svg class=&quot;chart&quot; viewBox=&quot;0 0 800 88&quot; preserveAspectRatio=&quot;none&quot; role=&quot;img&quot; aria-label=&quot;Training loss decreases over 800000 steps&quot;&gt;
+                &lt;title&gt;train/loss&lt;/title&gt;
+                &lt;path class=&quot;chart-grid&quot; d=&quot;M0 22 H800 M0 44 H800 M0 66 H800&quot;&gt;&lt;/path&gt;
+                &lt;path class=&quot;chart-line-secondary&quot; d=&quot;M0 12 C55 18 85 24 125 30 S205 44 255 49 S345 58 410 62 S530 68 610 71 S730 74 800 75&quot;&gt;&lt;/path&gt;
+                &lt;path class=&quot;chart-line-primary&quot; d=&quot;M0 9 C50 14 85 20 130 27 S205 38 260 45 S350 54 420 58 S530 63 620 67 S730 70 800 72&quot;&gt;&lt;/path&gt;
+              &lt;/svg&gt;
+              &lt;span class=&quot;hover-cursor-line&quot;&gt;&lt;/span&gt;
+              &lt;span class=&quot;locked-cursor-line&quot;&gt;&lt;/span&gt;
+            &lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;track-resizer&quot; aria-label=&quot;Resize train loss track&quot;&gt;&lt;span class=&quot;sr-only&quot;&gt;Resize train loss track&lt;/span&gt;&lt;/button&gt;
+          &lt;/article&gt;
+
+          &lt;article class=&quot;metric-track&quot; data-track=&quot;eval/loss&quot; data-count=&quot;80,000&quot; data-step=&quot;800,000&quot; data-value=&quot;0.2218&quot; data-min=&quot;0.2084&quot; data-max=&quot;3.1040&quot;&gt;
+            &lt;button type=&quot;button&quot; class=&quot;track-label&quot; aria-pressed=&quot;false&quot;&gt;
+              &lt;span class=&quot;series-key&quot;&gt;&lt;/span&gt;
+              &lt;span class=&quot;track-copy&quot;&gt;&lt;strong&gt;eval/loss&lt;/strong&gt;&lt;span class=&quot;track-meta text-small&quot;&gt;2 Runs · minimize&lt;/span&gt;&lt;/span&gt;
+            &lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;metric-plot&quot; aria-label=&quot;evaluation loss chart&quot;&gt;
+              &lt;svg class=&quot;chart&quot; viewBox=&quot;0 0 800 88&quot; preserveAspectRatio=&quot;none&quot; role=&quot;img&quot; aria-label=&quot;Evaluation loss decreases with periodic spikes&quot;&gt;
+                &lt;title&gt;eval/loss&lt;/title&gt;
+                &lt;path class=&quot;chart-grid&quot; d=&quot;M0 22 H800 M0 44 H800 M0 66 H800&quot;&gt;&lt;/path&gt;
+                &lt;path class=&quot;chart-line-secondary&quot; d=&quot;M0 18 L70 28 L94 17 L130 36 L205 43 L232 31 L280 49 L365 57 L390 42 L440 61 L525 64 L550 51 L610 69 L690 71 L720 61 L800 74&quot;&gt;&lt;/path&gt;
+                &lt;path class=&quot;chart-line-primary&quot; d=&quot;M0 12 L70 23 L92 12 L130 31 L205 39 L230 26 L280 44 L365 52 L388 37 L440 56 L525 60 L548 45 L610 64 L690 67 L718 56 L800 70&quot;&gt;&lt;/path&gt;
+              &lt;/svg&gt;
+              &lt;span class=&quot;hover-cursor-line&quot;&gt;&lt;/span&gt;
+              &lt;span class=&quot;locked-cursor-line&quot;&gt;&lt;/span&gt;
+            &lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;track-resizer&quot; aria-label=&quot;Resize evaluation loss track&quot;&gt;&lt;span class=&quot;sr-only&quot;&gt;Resize evaluation loss track&lt;/span&gt;&lt;/button&gt;
+          &lt;/article&gt;
+
+          &lt;article class=&quot;metric-track&quot; data-track=&quot;accuracy&quot; data-count=&quot;80,000&quot; data-step=&quot;800,000&quot; data-value=&quot;0.9241&quot; data-min=&quot;0.1030&quot; data-max=&quot;0.9288&quot;&gt;
+            &lt;button type=&quot;button&quot; class=&quot;track-label&quot; aria-pressed=&quot;false&quot;&gt;
+              &lt;span class=&quot;series-key&quot;&gt;&lt;/span&gt;
+              &lt;span class=&quot;track-copy&quot;&gt;&lt;strong&gt;accuracy&lt;/strong&gt;&lt;span class=&quot;track-meta text-small&quot;&gt;2 Runs · maximize&lt;/span&gt;&lt;/span&gt;
+            &lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;metric-plot&quot; aria-label=&quot;accuracy chart&quot;&gt;
+              &lt;svg class=&quot;chart&quot; viewBox=&quot;0 0 800 88&quot; preserveAspectRatio=&quot;none&quot; role=&quot;img&quot; aria-label=&quot;Accuracy increases over 800000 steps&quot;&gt;
+                &lt;title&gt;accuracy&lt;/title&gt;
+                &lt;path class=&quot;chart-grid&quot; d=&quot;M0 22 H800 M0 44 H800 M0 66 H800&quot;&gt;&lt;/path&gt;
+                &lt;path class=&quot;chart-line-secondary&quot; d=&quot;M0 76 C65 70 105 62 155 59 S260 48 320 44 S430 35 510 31 S650 25 800 22&quot;&gt;&lt;/path&gt;
+                &lt;path class=&quot;chart-line-primary&quot; d=&quot;M0 80 C65 74 105 66 155 62 S260 52 320 48 S430 39 510 35 S650 29 800 26&quot;&gt;&lt;/path&gt;
+              &lt;/svg&gt;
+              &lt;span class=&quot;hover-cursor-line&quot;&gt;&lt;/span&gt;
+              &lt;span class=&quot;locked-cursor-line&quot;&gt;&lt;/span&gt;
+            &lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;track-resizer&quot; aria-label=&quot;Resize accuracy track&quot;&gt;&lt;span class=&quot;sr-only&quot;&gt;Resize accuracy track&lt;/span&gt;&lt;/button&gt;
+          &lt;/article&gt;
+
+          &lt;article class=&quot;metric-track&quot; data-track=&quot;learning_rate&quot; data-count=&quot;800,000&quot; data-step=&quot;800,000&quot; data-value=&quot;0.000012&quot; data-min=&quot;0.000012&quot; data-max=&quot;0.000300&quot;&gt;
+            &lt;button type=&quot;button&quot; class=&quot;track-label&quot; aria-pressed=&quot;false&quot;&gt;
+              &lt;span class=&quot;series-key&quot;&gt;&lt;/span&gt;
+              &lt;span class=&quot;track-copy&quot;&gt;&lt;strong&gt;learning_rate&lt;/strong&gt;&lt;span class=&quot;track-meta text-small&quot;&gt;2 Runs · schedule&lt;/span&gt;&lt;/span&gt;
+            &lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;metric-plot&quot; aria-label=&quot;learning rate chart&quot;&gt;
+              &lt;svg class=&quot;chart&quot; viewBox=&quot;0 0 800 88&quot; preserveAspectRatio=&quot;none&quot; role=&quot;img&quot; aria-label=&quot;Learning rate warmup followed by stepped decay&quot;&gt;
+                &lt;title&gt;learning_rate&lt;/title&gt;
+                &lt;path class=&quot;chart-grid&quot; d=&quot;M0 22 H800 M0 44 H800 M0 66 H800&quot;&gt;&lt;/path&gt;
+                &lt;path class=&quot;chart-line-secondary&quot; d=&quot;M0 75 L90 18 L260 18 L260 34 L450 34 L450 50 L620 50 L620 66 L800 66&quot;&gt;&lt;/path&gt;
+                &lt;path class=&quot;chart-line-primary&quot; d=&quot;M0 78 L85 22 L250 22 L250 38 L440 38 L440 54 L610 54 L610 70 L800 70&quot;&gt;&lt;/path&gt;
+              &lt;/svg&gt;
+              &lt;span class=&quot;hover-cursor-line&quot;&gt;&lt;/span&gt;
+              &lt;span class=&quot;locked-cursor-line&quot;&gt;&lt;/span&gt;
+            &lt;/button&gt;
+            &lt;button type=&quot;button&quot; class=&quot;track-resizer&quot; aria-label=&quot;Resize learning rate track&quot;&gt;&lt;span class=&quot;sr-only&quot;&gt;Resize learning rate track&lt;/span&gt;&lt;/button&gt;
+          &lt;/article&gt;
+        &lt;/div&gt;
+
+        &lt;section id=&quot;inspector&quot; class=&quot;inspector&quot; aria-label=&quot;Selected metric details&quot;&gt;
+          &lt;div class=&quot;inspector-head&quot;&gt;
+            &lt;div class=&quot;inspector-tabs&quot; role=&quot;tablist&quot; aria-label=&quot;Metric detail tabs&quot;&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn is-selected&quot; data-inspector-tab=&quot;summary&quot; role=&quot;tab&quot; aria-selected=&quot;true&quot;&gt;Summary&lt;/button&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; data-inspector-tab=&quot;ranking&quot; role=&quot;tab&quot; aria-selected=&quot;false&quot;&gt;Ranking&lt;/button&gt;
+              &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; data-inspector-tab=&quot;evidence&quot; role=&quot;tab&quot; aria-selected=&quot;false&quot;&gt;Evidence&lt;/button&gt;
+            &lt;/div&gt;
+            &lt;div class=&quot;inspector-title text-small&quot;&gt;Selected: &lt;strong id=&quot;selected-track-name&quot;&gt;train/loss&lt;/strong&gt; · cursor &lt;span id=&quot;selected-step&quot;&gt;496k&lt;/span&gt;&lt;/div&gt;
+            &lt;button id=&quot;close-inspector&quot; type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Close details&quot;&gt;&lt;i data-lucide=&quot;x&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/button&gt;
+          &lt;/div&gt;
+          &lt;div class=&quot;inspector-body&quot;&gt;
+            &lt;div class=&quot;inspector-panel&quot; data-inspector-panel=&quot;summary&quot; role=&quot;tabpanel&quot;&gt;
+              &lt;div class=&quot;table-responsive&quot;&gt;
+                &lt;table class=&quot;table table-sm&quot;&gt;
+                  &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Run&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Count&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Last step&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Last value&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Min&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Max&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+                  &lt;tbody id=&quot;summary-body&quot;&gt;
+                    &lt;tr&gt;&lt;td&gt;baseline&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;800,000&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;800,000&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0.1842&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0.1768&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;2.9410&lt;/td&gt;&lt;/tr&gt;
+                    &lt;tr&gt;&lt;td&gt;candidate-24&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;800,000&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;800,000&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0.1791&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0.1713&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;2.9082&lt;/td&gt;&lt;/tr&gt;
+                  &lt;/tbody&gt;
+                &lt;/table&gt;
+              &lt;/div&gt;
+            &lt;/div&gt;
+            &lt;div class=&quot;inspector-panel&quot; data-inspector-panel=&quot;ranking&quot; role=&quot;tabpanel&quot; hidden&gt;
+              &lt;div class=&quot;table-responsive&quot;&gt;
+                &lt;table class=&quot;table table-sm&quot;&gt;
+                  &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Rank&lt;/th&gt;&lt;th&gt;Run&lt;/th&gt;&lt;th&gt;Role&lt;/th&gt;&lt;th&gt;Status&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Objective&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Δ vs baseline&lt;/th&gt;&lt;th&gt;Evidence&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+                  &lt;tbody&gt;&lt;tr data-ranking-run=&quot;candidate-24&quot;&gt;&lt;td&gt;1&lt;/td&gt;&lt;td&gt;candidate-24&lt;/td&gt;&lt;td data-ranking-role&gt;Candidate&lt;/td&gt;&lt;td&gt;finished&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0.1791&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;−2.8%&lt;/td&gt;&lt;td&gt;Complete&lt;/td&gt;&lt;/tr&gt;&lt;tr data-ranking-run=&quot;baseline&quot;&gt;&lt;td&gt;2&lt;/td&gt;&lt;td&gt;baseline&lt;/td&gt;&lt;td data-ranking-role&gt;Baseline&lt;/td&gt;&lt;td&gt;finished&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0.1842&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;—&lt;/td&gt;&lt;td&gt;Complete&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;
+                &lt;/table&gt;
+              &lt;/div&gt;
+            &lt;/div&gt;
+            &lt;div class=&quot;inspector-panel&quot; data-inspector-panel=&quot;evidence&quot; role=&quot;tabpanel&quot; hidden&gt;
+              &lt;div class=&quot;table-responsive&quot;&gt;
+                &lt;table class=&quot;table table-sm&quot;&gt;
+                  &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Run&lt;/th&gt;&lt;th&gt;Status&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Last step&lt;/th&gt;&lt;th class=&quot;text-end&quot;&gt;Last value&lt;/th&gt;&lt;th&gt;Completeness&lt;/th&gt;&lt;th&gt;Project · Source&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+                  &lt;tbody&gt;&lt;tr&gt;&lt;td&gt;baseline&lt;/td&gt;&lt;td&gt;finished&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;800,000&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0.1842&lt;/td&gt;&lt;td&gt;Complete&lt;/td&gt;&lt;td&gt;vision-transformer · local-training&lt;/td&gt;&lt;/tr&gt;&lt;tr&gt;&lt;td&gt;candidate-24&lt;/td&gt;&lt;td&gt;finished&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;800,000&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;0.1791&lt;/td&gt;&lt;td&gt;Complete&lt;/td&gt;&lt;td&gt;vision-transformer · local-training&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;
+                &lt;/table&gt;
+              &lt;/div&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/section&gt;
+      &lt;/main&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;script&gt;
+    (() =&gt; {
+      const root = document.getElementById(&#x27;pulseon-analysis-workbench&#x27;);
+      const addMetricButton = root.querySelector(&#x27;#add-metric-button&#x27;);
+      const metricPopover = root.querySelector(&#x27;#metric-popover&#x27;);
+      const metricSearch = root.querySelector(&#x27;#metric-search&#x27;);
+      const metricEmpty = root.querySelector(&#x27;#metric-empty&#x27;);
+      const axisModeButton = root.querySelector(&#x27;#axis-mode-button&#x27;);
+      const axisPopover = root.querySelector(&#x27;#axis-popover&#x27;);
+      const viewMenu = root.querySelector(&#x27;#view-menu&#x27;);
+      const workspaceToolbar = root.querySelector(&#x27;.workspace-toolbar&#x27;);
+      const viewTabsContainer = root.querySelector(&#x27;.view-tabs&#x27;);
+      const newViewButton = root.querySelector(&#x27;#new-view-button&#x27;);
+      const shell = root.querySelector(&#x27;#workbench-shell&#x27;);
+      const sources = root.querySelector(&#x27;.sources&#x27;);
+      const sidebarToggle = root.querySelector(&#x27;#sidebar-toggle&#x27;);
+      const sidebarCollapse = root.querySelector(&#x27;#sidebar-collapse&#x27;);
+      const runFilter = root.querySelector(&#x27;#run-filter&#x27;);
+      const showMoreRuns = root.querySelector(&#x27;#show-more-runs&#x27;);
+      const showMorePinned = root.querySelector(&#x27;#show-more-pinned&#x27;);
+      const showMoreArchived = root.querySelector(&#x27;#show-more-archived&#x27;);
+      const projectRunList = root.querySelector(&#x27;#project-run-list&#x27;);
+      const projectList = root.querySelector(&#x27;#project-list&#x27;);
+      const pinnedProjects = root.querySelector(&#x27;#pinned-projects&#x27;);
+      const archivedProjects = root.querySelector(&#x27;#archived-projects&#x27;);
+      const pinnedList = root.querySelector(&#x27;#pinned-list&#x27;);
+      const archivedList = root.querySelector(&#x27;#archived-list&#x27;);
+      const baselineList = root.querySelector(&#x27;#baseline-list&#x27;);
+      const projectMenu = root.querySelector(&#x27;#project-menu&#x27;);
+      const projectHoverCard = root.querySelector(&#x27;#project-hover-card&#x27;);
+      const inspector = root.querySelector(&#x27;#inspector&#x27;);
+      const detailsToggle = root.querySelector(&#x27;#details-toggle&#x27;);
+      const closeInspector = root.querySelector(&#x27;#close-inspector&#x27;);
+      const selectedTrackName = root.querySelector(&#x27;#selected-track-name&#x27;);
+      const selectedStep = root.querySelector(&#x27;#selected-step&#x27;);
+      const summaryBody = root.querySelector(&#x27;#summary-body&#x27;);
+      const axisModeButtons = [...root.querySelectorAll(&#x27;[data-axis-mode]&#x27;)];
+      const axisTicks = root.querySelector(&#x27;#axis-ticks&#x27;);
+      const cursorLabel = root.querySelector(&#x27;#cursor-label&#x27;);
+      const rulerScroll = root.querySelector(&#x27;#ruler-scroll&#x27;);
+      const rulerCanvas = root.querySelector(&#x27;#timeline-ruler-canvas&#x27;);
+      const rulerContent = root.querySelector(&#x27;.ruler-content&#x27;);
+      const brushPlot = root.querySelector(&#x27;.brush-plot&#x27;);
+      const brushWindow = root.querySelector(&#x27;.brush-window&#x27;);
+      const metricCharts = [...root.querySelectorAll(&#x27;.metric-track .chart&#x27;)];
+      const metricPlots = [...root.querySelectorAll(&#x27;.metric-plot&#x27;)];
+      const timelinePrimary = root.querySelector(&#x27;#timeline-primary&#x27;);
+      const timelineSecondary = root.querySelector(&#x27;#timeline-secondary&#x27;);
+      let viewportStart = 0.21;
+      let viewportEnd = 0.78;
+      let hoverCursorRatio = 0.62;
+      let lockedCursorRatio = null;
+      let timelineZoom = 1 / (viewportEnd - viewportStart);
+      let contextViewTab = null;
+      let suppressRulerClick = false;
+      let projectMenuTarget = null;
+      let archivedLimit = 5;
+      const projectPlacements = new Map([
+        [&#x27;vision-transformer&#x27;, &#x27;normal&#x27;],
+        [&#x27;language-model&#x27;, &#x27;normal&#x27;],
+      ]);
+      const archivedRuns = new Set([&#x27;candidate-18&#x27;, &#x27;candidate-17&#x27;, &#x27;candidate-16&#x27;, &#x27;candidate-15&#x27;, &#x27;candidate-14&#x27;, &#x27;candidate-13&#x27;]);
+      const allRuns = [&#x27;baseline&#x27;, ...Array.from({ length: 25 }, (_, index) =&gt; `candidate-${25 - index}`)];
+      const viewStates = new Map([
+        [&#x27;overview&#x27;, { baseline: &#x27;baseline&#x27;, pinned: new Set([&#x27;candidate-24&#x27;, &#x27;candidate-23&#x27;, &#x27;candidate-22&#x27;, &#x27;candidate-21&#x27;, &#x27;candidate-20&#x27;, &#x27;candidate-19&#x27;]), selected: new Set([&#x27;baseline&#x27;, &#x27;candidate-24&#x27;, &#x27;candidate-25&#x27;]), projectLimit: 5, pinnedLimit: 5 }],
+        [&#x27;ablation&#x27;, { baseline: &#x27;candidate-25&#x27;, pinned: new Set([&#x27;candidate-12&#x27;, &#x27;candidate-11&#x27;]), selected: new Set([&#x27;candidate-25&#x27;, &#x27;candidate-12&#x27;]), projectLimit: 5, pinnedLimit: 5 }],
+        [&#x27;throughput&#x27;, { baseline: null, pinned: new Set([&#x27;candidate-9&#x27;]), selected: new Set([&#x27;candidate-9&#x27;]), projectLimit: 5, pinnedLimit: 5 }],
+        [&#x27;memory&#x27;, { baseline: &#x27;candidate-8&#x27;, pinned: new Set(), selected: new Set([&#x27;candidate-8&#x27;, &#x27;candidate-7&#x27;]), projectLimit: 5, pinnedLimit: 5 }],
+      ]);
+
+      const activeViewState = () =&gt; {
+        const tab = root.querySelector(&#x27;[data-view-name][aria-selected=&quot;true&quot;]&#x27;).closest(&#x27;[data-view-tab]&#x27;);
+        return viewStates.get(tab.dataset.viewId);
+      };
+
+      const setExpanded = (button, panel, expanded) =&gt; {
+        button.setAttribute(&#x27;aria-expanded&#x27;, String(expanded));
+        panel.hidden = !expanded;
+      };
+
+      const setButtonIcon = (button, iconName) =&gt; {
+        button.innerHTML = `&lt;i data-lucide=&quot;${iconName}&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;`;
+        if (window.lucide) window.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+      };
+
+      const runStatus = (name) =&gt; name === &#x27;candidate-25&#x27; ? &#x27;running&#x27; : name === &#x27;candidate-22&#x27; ? &#x27;failed&#x27; : &#x27;finished&#x27;;
+
+      const updateBaselineEvidence = () =&gt; {
+        const baselineRun = activeViewState().baseline;
+        root.classList.toggle(&#x27;baseline-secondary&#x27;, baselineRun === &#x27;candidate-24&#x27;);
+        root.querySelectorAll(&#x27;[data-ranking-run]&#x27;).forEach((row) =&gt; {
+          const selected = row.dataset.rankingRun === baselineRun;
+          row.querySelector(&#x27;[data-ranking-role]&#x27;).textContent = selected ? &#x27;Baseline&#x27; : &#x27;Candidate&#x27;;
+          row.children[5].textContent = !baselineRun || selected ? &#x27;—&#x27; : (baselineRun === &#x27;candidate-24&#x27; ? &#x27;+2.8%&#x27; : &#x27;−2.8%&#x27;);
+        });
+      };
+
+      const runActionOptions = {
+        project: [[&#x27;set-baseline&#x27;, &#x27;flag&#x27;, &#x27;Set baseline&#x27;], [&#x27;pin&#x27;, &#x27;pin&#x27;, &#x27;Pin Run&#x27;], [&#x27;archive&#x27;, &#x27;archive&#x27;, &#x27;Archive Run&#x27;]],
+        baseline: [[&#x27;clear-baseline&#x27;, &#x27;flag-off&#x27;, &#x27;Clear baseline&#x27;], [&#x27;pin&#x27;, &#x27;pin&#x27;, &#x27;Pin Run&#x27;], [&#x27;archive&#x27;, &#x27;archive&#x27;, &#x27;Archive Run&#x27;]],
+        pinned: [[&#x27;set-baseline&#x27;, &#x27;flag&#x27;, &#x27;Set baseline&#x27;], [&#x27;unpin&#x27;, &#x27;pin-off&#x27;, &#x27;Unpin Run&#x27;], [&#x27;archive&#x27;, &#x27;archive&#x27;, &#x27;Archive Run&#x27;]],
+        archived: [[&#x27;set-baseline&#x27;, &#x27;flag&#x27;, &#x27;Restore as baseline&#x27;], [&#x27;pin&#x27;, &#x27;pin&#x27;, &#x27;Restore and pin&#x27;], [&#x27;restore&#x27;, &#x27;archive-restore&#x27;, &#x27;Restore Run&#x27;]],
+      };
+
+      const runActionsMarkup = (placement) =&gt; `&lt;span class=&quot;run-actions&quot;&gt;${runActionOptions[placement].map(([action, icon, label]) =&gt; `&lt;button type=&quot;button&quot; class=&quot;icon-button&quot; data-run-action=&quot;${action}&quot; aria-label=&quot;${label}&quot; data-tooltip=&quot;${label}&quot;&gt;&lt;i data-lucide=&quot;${icon}&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/button&gt;`).join(&#x27;&#x27;)}&lt;/span&gt;`;
+
+      const renderQuickGroup = (container, names, limit, placement) =&gt; {
+        container.replaceChildren();
+        names.slice(0, limit).forEach((name) =&gt; {
+          const row = document.createElement(&#x27;div&#x27;);
+          row.className = &#x27;quick-run&#x27;;
+          row.dataset.runName = name;
+          row.dataset.placement = placement;
+          row.innerHTML = `&lt;span&gt;${name}&lt;/span&gt;${runActionsMarkup(placement)}`;
+          container.append(row);
+        });
+      };
+
+      const projectRunsFor = (view) =&gt; allRuns.filter((name) =&gt; name !== view.baseline &amp;&amp; !view.pinned.has(name) &amp;&amp; !archivedRuns.has(name));
+
+      const renderRunOrganization = () =&gt; {
+        const view = activeViewState();
+        const query = runFilter.value.trim().toLowerCase();
+        const projectRuns = projectRunsFor(view);
+        const visibleProjects = query ? projectRuns.filter((name) =&gt; name.includes(query)) : projectRuns.slice(0, view.projectLimit);
+        baselineList.replaceChildren();
+        if (view.baseline) renderQuickGroup(baselineList, [view.baseline], 1, &#x27;baseline&#x27;);
+        renderQuickGroup(pinnedList, [...view.pinned], view.pinnedLimit, &#x27;pinned&#x27;);
+        renderQuickGroup(archivedList, [...archivedRuns], archivedLimit, &#x27;archived&#x27;);
+        projectRunList.replaceChildren();
+        visibleProjects.forEach((name) =&gt; {
+          const row = document.createElement(&#x27;div&#x27;);
+          row.className = &#x27;run-row&#x27;;
+          row.dataset.runName = name;
+          row.dataset.placement = &#x27;project&#x27;;
+          const visible = view.selected.has(name);
+          row.innerHTML = `&lt;span class=&quot;run-select&quot;&gt;&lt;button type=&quot;button&quot; class=&quot;icon-button&quot; data-run-visibility aria-label=&quot;${visible ? &#x27;Hide&#x27; : &#x27;Show&#x27;} ${name}&quot; data-tooltip=&quot;${visible ? &#x27;Hide Run&#x27; : &#x27;Show Run&#x27;}&quot;&gt;&lt;i data-lucide=&quot;${visible ? &#x27;eye&#x27; : &#x27;eye-closed&#x27;}&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/button&gt;&lt;span&gt;${name}&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;run-meta text-small&quot;&gt;${runStatus(name)}&lt;/span&gt;${runActionsMarkup(&#x27;project&#x27;)}`;
+          projectRunList.append(row);
+        });
+        showMoreRuns.hidden = Boolean(query) || view.projectLimit &gt;= projectRuns.length;
+        showMorePinned.hidden = view.pinnedLimit &gt;= view.pinned.size;
+        showMoreArchived.hidden = archivedLimit &gt;= archivedRuns.size;
+        if (window.lucide) window.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+      };
+
+      const projectMenuOptions = {
+        normal: [[&#x27;pin&#x27;, &#x27;pin&#x27;, &#x27;Pin project&#x27;], [&#x27;archive&#x27;, &#x27;archive&#x27;, &#x27;Archive project&#x27;], [&#x27;remove&#x27;, &#x27;trash-2&#x27;, &#x27;Remove project&#x27;]],
+        pinned: [[&#x27;unpin&#x27;, &#x27;pin-off&#x27;, &#x27;Unpin project&#x27;], [&#x27;archive&#x27;, &#x27;archive&#x27;, &#x27;Archive project&#x27;], [&#x27;remove&#x27;, &#x27;trash-2&#x27;, &#x27;Remove project&#x27;]],
+        archived: [[&#x27;pin&#x27;, &#x27;pin&#x27;, &#x27;Pin project&#x27;], [&#x27;restore&#x27;, &#x27;archive-restore&#x27;, &#x27;Restore project&#x27;], [&#x27;remove&#x27;, &#x27;trash-2&#x27;, &#x27;Remove project&#x27;]],
+      };
+
+      const showProjectHoverCard = (entry) =&gt; {
+        const name = entry.dataset.projectName;
+        const placement = projectPlacements.get(name);
+        const count = Number.parseInt(entry.dataset.runCount, 10);
+        const status = placement === &#x27;normal&#x27;
+          ? &#x27;&#x27;
+          : `&lt;span class=&quot;project-hover-status text-small&quot;&gt;&lt;i data-lucide=&quot;${placement === &#x27;pinned&#x27; ? &#x27;pin&#x27; : &#x27;archive&#x27;}&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;${placement === &#x27;pinned&#x27; ? &#x27;Pinned&#x27; : &#x27;Archived&#x27;}&lt;/span&gt;`;
+        projectHoverCard.innerHTML = `&lt;div class=&quot;project-hover-row&quot;&gt;&lt;i data-lucide=&quot;folder&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;strong class=&quot;project-hover-title&quot;&gt;${name}&lt;/strong&gt;${status}&lt;/div&gt;&lt;div class=&quot;project-hover-row&quot;&gt;&lt;i data-lucide=&quot;circle-play&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;span&gt;${count} ${count === 1 ? &#x27;Run&#x27; : &#x27;Runs&#x27;}&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;project-hover-row project-hover-source&quot;&gt;&lt;i data-lucide=&quot;database&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;span&gt;local-training&lt;/span&gt;&lt;/div&gt;`;
+        projectHoverCard.hidden = false;
+        const sourceBounds = sources.getBoundingClientRect();
+        const rowBounds = entry.querySelector(&#x27;[data-project-row]&#x27;).getBoundingClientRect();
+        const maximumTop = Math.max(8, sourceBounds.height - projectHoverCard.getBoundingClientRect().height - 8);
+        projectHoverCard.style.setProperty(&#x27;--project-hover-y&#x27;, `${Math.max(8, Math.min(maximumTop, rowBounds.top - sourceBounds.top))}px`);
+        if (window.lucide) window.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+      };
+
+      const hideProjectHoverCard = () =&gt; { projectHoverCard.hidden = true; };
+
+      const moveProject = (entry, placement) =&gt; {
+        const destination = placement === &#x27;pinned&#x27; ? pinnedProjects : placement === &#x27;archived&#x27; ? archivedProjects : projectList;
+        entry.hidden = false;
+        destination.append(entry);
+      };
+
+      const openProjectMenu = (entry) =&gt; {
+        const name = entry.dataset.projectName;
+        const placement = projectPlacements.get(name);
+        const view = activeViewState();
+        const projectRuns = name === &#x27;vision-transformer&#x27; ? projectRunsFor(view) : [];
+        const visibleCount = projectRuns.filter((runName) =&gt; view.selected.has(runName)).length;
+        const visibilityState = visibleCount === 0 ? &#x27;none&#x27; : visibleCount === projectRuns.length ? &#x27;all&#x27; : &#x27;mixed&#x27;;
+        const visibilityOption = projectRuns.length === 0
+          ? []
+          : [[visibilityState === &#x27;all&#x27; ? &#x27;hide-project-runs&#x27; : &#x27;show-project-runs&#x27;, visibilityState === &#x27;all&#x27; ? &#x27;eye&#x27; : visibilityState === &#x27;none&#x27; ? &#x27;eye-closed&#x27; : &#x27;eye-off&#x27;, visibilityState === &#x27;all&#x27; ? &#x27;Hide all Runs&#x27; : &#x27;Show all Runs&#x27;]];
+        projectMenuTarget = entry;
+        hideProjectHoverCard();
+        projectMenu.innerHTML = [...visibilityOption, ...projectMenuOptions[placement]].map(([action, icon, label]) =&gt; `&lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; role=&quot;menuitem&quot; data-project-action=&quot;${action}&quot;&gt;&lt;i data-lucide=&quot;${icon}&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;${label}&lt;/button&gt;`).join(&#x27;&#x27;);
+        projectMenu.hidden = false;
+        const trigger = entry.querySelector(&#x27;[data-project-menu-trigger]&#x27;);
+        trigger.setAttribute(&#x27;aria-expanded&#x27;, &#x27;true&#x27;);
+        const sourceBounds = sources.getBoundingClientRect();
+        const triggerBounds = trigger.getBoundingClientRect();
+        const maximumTop = Math.max(40, sourceBounds.height - projectMenu.getBoundingClientRect().height - 8);
+        projectMenu.style.setProperty(&#x27;--project-menu-x&#x27;, `${triggerBounds.right - sourceBounds.left + 4}px`);
+        projectMenu.style.setProperty(&#x27;--project-menu-y&#x27;, `${Math.max(8, Math.min(maximumTop, triggerBounds.bottom - sourceBounds.top + 4))}px`);
+        if (window.lucide) window.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+      };
+
+      const applyRunAction = (name, action) =&gt; {
+        const view = activeViewState();
+        if (action === &#x27;set-baseline&#x27;) {
+          archivedRuns.delete(name);
+          view.pinned.delete(name);
+          view.baseline = name;
+          view.selected.add(name);
+        }
+        if (action === &#x27;clear-baseline&#x27;) view.baseline = null;
+        if (action === &#x27;pin&#x27;) {
+          archivedRuns.delete(name);
+          if (view.baseline === name) view.baseline = null;
+          view.pinned.add(name);
+          view.selected.add(name);
+        }
+        if (action === &#x27;unpin&#x27;) view.pinned.delete(name);
+        if (action === &#x27;archive&#x27;) {
+          archivedRuns.add(name);
+          viewStates.forEach((state) =&gt; {
+            state.pinned.delete(name);
+            if (state.baseline === name) state.baseline = null;
+          });
+        }
+        if (action === &#x27;restore&#x27;) archivedRuns.delete(name);
+        updateBaselineEvidence();
+        renderRunOrganization();
+      };
+
+      const applyProjectAction = (action) =&gt; {
+        if (!projectMenuTarget) return;
+        const name = projectMenuTarget.dataset.projectName;
+        const view = activeViewState();
+        const projectRuns = name === &#x27;vision-transformer&#x27; ? projectRunsFor(view) : [];
+        if (action === &#x27;show-project-runs&#x27;) projectRuns.forEach((runName) =&gt; view.selected.add(runName));
+        if (action === &#x27;hide-project-runs&#x27;) projectRuns.forEach((runName) =&gt; view.selected.delete(runName));
+        if (action === &#x27;pin&#x27;) projectPlacements.set(name, &#x27;pinned&#x27;);
+        if (action === &#x27;unpin&#x27; || action === &#x27;restore&#x27;) projectPlacements.set(name, &#x27;normal&#x27;);
+        if (action === &#x27;archive&#x27;) projectPlacements.set(name, &#x27;archived&#x27;);
+        if (action === &#x27;remove&#x27;) projectMenuTarget.hidden = true;
+        if (action === &#x27;pin&#x27; || action === &#x27;unpin&#x27; || action === &#x27;restore&#x27; || action === &#x27;archive&#x27;) {
+          moveProject(projectMenuTarget, projectPlacements.get(name));
+        }
+        if (action === &#x27;show-project-runs&#x27; || action === &#x27;hide-project-runs&#x27;) renderRunOrganization();
+        projectMenuTarget.querySelector(&#x27;[data-project-menu-trigger]&#x27;).setAttribute(&#x27;aria-expanded&#x27;, &#x27;false&#x27;);
+        projectMenu.hidden = true;
+        projectMenuTarget = null;
+      };
+
+      sources.addEventListener(&#x27;click&#x27;, (event) =&gt; {
+        const runVisibility = event.target.closest(&#x27;[data-run-visibility]&#x27;);
+        if (runVisibility) {
+          const view = activeViewState();
+          const name = runVisibility.closest(&#x27;[data-run-name]&#x27;).dataset.runName;
+          if (view.selected.has(name)) view.selected.delete(name); else view.selected.add(name);
+          renderRunOrganization();
+          return;
+        }
+        const expansion = event.target.closest(&#x27;[data-project-expansion]&#x27;);
+        if (expansion) {
+          const entry = expansion.closest(&#x27;[data-project-entry]&#x27;);
+          const children = entry.querySelector(&#x27;[data-project-children]&#x27;);
+          const expanded = expansion.getAttribute(&#x27;aria-expanded&#x27;) === &#x27;true&#x27;;
+          expansion.setAttribute(&#x27;aria-expanded&#x27;, String(!expanded));
+          expansion.setAttribute(&#x27;aria-label&#x27;, `${expanded ? &#x27;Expand&#x27; : &#x27;Collapse&#x27;} ${entry.dataset.projectName} Runs`);
+          children.hidden = expanded;
+          setButtonIcon(expansion, expanded ? &#x27;folder&#x27; : &#x27;folder-open&#x27;);
+          return;
+        }
+        const projectMenuButton = event.target.closest(&#x27;[data-project-menu-trigger]&#x27;);
+        if (projectMenuButton) {
+          const entry = projectMenuButton.closest(&#x27;[data-project-entry]&#x27;);
+          if (projectMenu.hidden || projectMenuTarget !== entry) openProjectMenu(entry);
+          else {
+            projectMenu.hidden = true;
+            projectMenuButton.setAttribute(&#x27;aria-expanded&#x27;, &#x27;false&#x27;);
+            projectMenuTarget = null;
+          }
+          return;
+        }
+        const runAction = event.target.closest(&#x27;[data-run-action]&#x27;);
+        if (runAction) applyRunAction(runAction.closest(&#x27;[data-run-name]&#x27;).dataset.runName, runAction.dataset.runAction);
+      });
+
+      sources.addEventListener(&#x27;pointerover&#x27;, (event) =&gt; {
+        const row = event.target.closest(&#x27;[data-project-row]&#x27;);
+        if (!row || row.contains(event.relatedTarget)) return;
+        showProjectHoverCard(row.closest(&#x27;[data-project-entry]&#x27;));
+      });
+
+      sources.addEventListener(&#x27;pointerout&#x27;, (event) =&gt; {
+        const row = event.target.closest(&#x27;[data-project-row]&#x27;);
+        if (!row || row.contains(event.relatedTarget)) return;
+        hideProjectHoverCard();
+      });
+
+      sources.addEventListener(&#x27;focusin&#x27;, (event) =&gt; {
+        const row = event.target.closest(&#x27;[data-project-row]&#x27;);
+        if (row) showProjectHoverCard(row.closest(&#x27;[data-project-entry]&#x27;));
+      });
+
+      sources.addEventListener(&#x27;focusout&#x27;, (event) =&gt; {
+        const row = event.target.closest(&#x27;[data-project-row]&#x27;);
+        if (row &amp;&amp; !row.contains(event.relatedTarget)) hideProjectHoverCard();
+      });
+
+      projectMenu.addEventListener(&#x27;click&#x27;, (event) =&gt; {
+        const action = event.target.closest(&#x27;[data-project-action]&#x27;)?.dataset.projectAction;
+        if (action) applyProjectAction(action);
+      });
+
+      showMoreRuns.addEventListener(&#x27;click&#x27;, () =&gt; { activeViewState().projectLimit += 5; renderRunOrganization(); });
+      showMorePinned.addEventListener(&#x27;click&#x27;, () =&gt; { activeViewState().pinnedLimit += 5; renderRunOrganization(); });
+      showMoreArchived.addEventListener(&#x27;click&#x27;, () =&gt; { archivedLimit += 5; renderRunOrganization(); });
+      runFilter.addEventListener(&#x27;input&#x27;, renderRunOrganization);
+      renderRunOrganization();
+
+      addMetricButton.addEventListener(&#x27;click&#x27;, () =&gt; {
+        const expanded = metricPopover.hidden;
+        setExpanded(axisModeButton, axisPopover, false);
+        setExpanded(addMetricButton, metricPopover, expanded);
+        if (expanded) metricSearch.focus();
+      });
+
+      axisModeButton.addEventListener(&#x27;click&#x27;, () =&gt; {
+        const expanded = axisPopover.hidden;
+        setExpanded(addMetricButton, metricPopover, false);
+        setExpanded(axisModeButton, axisPopover, expanded);
+      });
+
+      const updateMetricOptions = () =&gt; {
+        const query = metricSearch.value.trim().toLowerCase();
+        let visibleCount = 0;
+        root.querySelectorAll(&#x27;[data-metric-option]&#x27;).forEach((option) =&gt; {
+          const visible = option.dataset.metricOption.toLowerCase().includes(query);
+          option.hidden = !visible;
+          if (visible) visibleCount += 1;
+        });
+        metricEmpty.hidden = visibleCount !== 0;
+      };
+
+      metricSearch.addEventListener(&#x27;input&#x27;, updateMetricOptions);
+
+      root.querySelectorAll(&#x27;[data-metric-option]&#x27;).forEach((option) =&gt; {
+        option.addEventListener(&#x27;click&#x27;, () =&gt; {
+          option.remove();
+          updateMetricOptions();
+        });
+      });
+
+      const viewTabs = () =&gt; [...root.querySelectorAll(&#x27;[data-view-tab]&#x27;)];
+
+      const selectView = (viewTab) =&gt; {
+        viewTabs().forEach((candidate) =&gt; {
+          const selected = candidate === viewTab;
+          const nameButton = candidate.querySelector(&#x27;[data-view-name]&#x27;);
+          nameButton.classList.toggle(&#x27;is-selected&#x27;, selected);
+          nameButton.classList.toggle(&#x27;btn-ghost&#x27;, !selected);
+          nameButton.setAttribute(&#x27;aria-selected&#x27;, String(selected));
+        });
+        updateBaselineEvidence();
+        renderRunOrganization();
+      };
+
+      const updateViewCloseState = () =&gt; {
+        const onlyOneView = viewTabs().length === 1;
+        root.querySelectorAll(&#x27;[data-close-view]&#x27;).forEach((closeTarget) =&gt; {
+          closeTarget.setAttribute(&#x27;aria-disabled&#x27;, String(onlyOneView));
+          closeTarget.setAttribute(&#x27;data-tooltip&#x27;, onlyOneView ? &#x27;At least one view is required&#x27; : &#x27;Close view&#x27;);
+        });
+      };
+
+      const removeView = (viewTab) =&gt; {
+        const tabs = viewTabs();
+        if (tabs.length === 1 || !viewTab) return;
+        const wasSelected = viewTab.querySelector(&#x27;[data-view-name]&#x27;).getAttribute(&#x27;aria-selected&#x27;) === &#x27;true&#x27;;
+        const remaining = tabs.filter((candidate) =&gt; candidate !== viewTab);
+        viewStates.delete(viewTab.dataset.viewId);
+        viewTab.remove();
+        if (wasSelected) selectView(remaining[0]);
+        updateViewCloseState();
+        viewMenu.hidden = true;
+      };
+
+      workspaceToolbar.addEventListener(&#x27;click&#x27;, (event) =&gt; {
+        const closeButton = event.target.closest(&#x27;[data-close-view]&#x27;);
+        if (closeButton) {
+          removeView(closeButton.closest(&#x27;[data-view-tab]&#x27;));
+          return;
+        }
+        const nameButton = event.target.closest(&#x27;[data-view-name]&#x27;);
+        if (nameButton) selectView(nameButton.closest(&#x27;[data-view-tab]&#x27;));
+      });
+
+      workspaceToolbar.addEventListener(&#x27;contextmenu&#x27;, (event) =&gt; {
+        const nameButton = event.target.closest(&#x27;[data-view-name]&#x27;);
+        if (!nameButton) return;
+        event.preventDefault();
+        contextViewTab = nameButton.closest(&#x27;[data-view-tab]&#x27;);
+        selectView(contextViewTab);
+        const bounds = workspaceToolbar.getBoundingClientRect();
+        const x = Math.max(8, Math.min(bounds.width - 158, event.clientX - bounds.left));
+        const y = event.clientY - bounds.top + 4;
+        viewMenu.style.setProperty(&#x27;--view-menu-x&#x27;, `${x}px`);
+        viewMenu.style.setProperty(&#x27;--view-menu-y&#x27;, `${y}px`);
+        viewMenu.hidden = false;
+      });
+
+      root.querySelector(&#x27;[data-rename-view]&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; {
+        if (!contextViewTab) return;
+        const nameButton = contextViewTab.querySelector(&#x27;[data-view-name]&#x27;);
+        const label = nameButton.querySelector(&#x27;[data-view-label]&#x27;);
+        const nextName = window.prompt(&#x27;Rename view&#x27;, label.textContent.trim());
+        if (nextName &amp;&amp; nextName.trim()) {
+          label.textContent = nextName.trim();
+          nameButton.setAttribute(&#x27;aria-label&#x27;, `${nextName.trim()} view`);
+        }
+        viewMenu.hidden = true;
+      });
+
+      root.querySelector(&#x27;[data-delete-view]&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; removeView(contextViewTab));
+
+      newViewButton.addEventListener(&#x27;click&#x27;, () =&gt; {
+        const viewNumber = viewTabs().length + 1;
+        const viewTab = document.createElement(&#x27;span&#x27;);
+        viewTab.className = &#x27;view-tab&#x27;;
+        viewTab.setAttribute(&#x27;data-view-tab&#x27;, &#x27;&#x27;);
+        viewTab.dataset.viewId = `view-${viewNumber}`;
+        viewStates.set(viewTab.dataset.viewId, { baseline: null, pinned: new Set(), selected: new Set(), projectLimit: 5, pinnedLimit: 5 });
+        viewTab.innerHTML = `&lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; data-view-name role=&quot;tab&quot; aria-selected=&quot;false&quot; aria-label=&quot;View ${viewNumber}&quot;&gt;&lt;span data-view-label&gt;View ${viewNumber}&lt;/span&gt;&lt;span data-close-view data-tooltip=&quot;Close view&quot;&gt;&lt;i data-lucide=&quot;x&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;/span&gt;&lt;/button&gt;`;
+        viewTabsContainer.append(viewTab);
+        selectView(viewTab);
+        updateViewCloseState();
+        viewTab.scrollIntoView({ behavior: &#x27;smooth&#x27;, inline: &#x27;nearest&#x27;, block: &#x27;nearest&#x27; });
+        if (window.lucide) window.lucide.createIcons({ attrs: { width: 16, height: 16 } });
+      });
+
+      root.addEventListener(&#x27;pointerdown&#x27;, (event) =&gt; {
+        if (!viewMenu.contains(event.target) &amp;&amp; !event.target.closest(&#x27;[data-view-name]&#x27;)) viewMenu.hidden = true;
+        if (!projectMenu.contains(event.target) &amp;&amp; !event.target.closest(&#x27;[data-project-menu-trigger]&#x27;)) {
+          projectMenu.hidden = true;
+          if (projectMenuTarget) projectMenuTarget.querySelector(&#x27;[data-project-menu-trigger]&#x27;).setAttribute(&#x27;aria-expanded&#x27;, &#x27;false&#x27;);
+          projectMenuTarget = null;
+        }
+        if (!axisPopover.contains(event.target) &amp;&amp; !event.target.closest(&#x27;#axis-mode-button&#x27;)) {
+          setExpanded(axisModeButton, axisPopover, false);
+        }
+        if (!metricPopover.contains(event.target) &amp;&amp; !event.target.closest(&#x27;#add-metric-button&#x27;)) {
+          setExpanded(addMetricButton, metricPopover, false);
+        }
+      });
+
+      updateViewCloseState();
+
+      const setSidebarHidden = (hidden) =&gt; shell.classList.toggle(&#x27;sidebar-hidden&#x27;, hidden);
+
+      sidebarCollapse.addEventListener(&#x27;click&#x27;, () =&gt; setSidebarHidden(true));
+      sidebarToggle.addEventListener(&#x27;click&#x27;, () =&gt; setSidebarHidden(false));
+
+      const setInspectorVisible = (visible) =&gt; {
+        inspector.hidden = !visible;
+        detailsToggle.setAttribute(&#x27;aria-pressed&#x27;, String(visible));
+        detailsToggle.setAttribute(&#x27;data-tooltip&#x27;, visible ? &#x27;Hide bottom inspector&#x27; : &#x27;Show bottom inspector&#x27;);
+        detailsToggle.setAttribute(&#x27;aria-label&#x27;, visible ? &#x27;Hide bottom inspector&#x27; : &#x27;Show bottom inspector&#x27;);
+        setButtonIcon(detailsToggle, visible ? &#x27;panel-bottom-close&#x27; : &#x27;panel-bottom-open&#x27;);
+      };
+
+      detailsToggle.addEventListener(&#x27;click&#x27;, () =&gt; setInspectorVisible(inspector.hidden));
+      closeInspector.addEventListener(&#x27;click&#x27;, () =&gt; setInspectorVisible(false));
+
+      const absoluteTimeAt = (ratio) =&gt; {
+        const totalMinutes = 9 * 60 + Math.round(ratio * 240);
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+        return `${String(hours).padStart(2, &#x27;0&#x27;)}:${String(minutes).padStart(2, &#x27;0&#x27;)}`;
+      };
+
+      const updateAxis = () =&gt; {
+        const absolute = root.querySelector(&#x27;[data-axis-mode].is-selected&#x27;).dataset.axisMode === &#x27;time&#x27;;
+        const labels = absolute
+          ? [&#x27;09:00&#x27;, &#x27;10:00&#x27;, &#x27;11:00&#x27;, &#x27;12:00&#x27;, &#x27;13:00&#x27;]
+          : [&#x27;0&#x27;, &#x27;200k&#x27;, &#x27;400k&#x27;, &#x27;600k&#x27;, &#x27;800k&#x27;];
+        axisTicks.querySelectorAll(&#x27;span&#x27;).forEach((tick, index) =&gt; {
+          tick.textContent = labels[index];
+        });
+        const formatCoordinate = (ratio) =&gt; absolute ? absoluteTimeAt(ratio) : `${Math.round(ratio * 800)}k`;
+        cursorLabel.textContent = formatCoordinate(hoverCursorRatio);
+        selectedStep.textContent = formatCoordinate(lockedCursorRatio ?? hoverCursorRatio);
+      };
+
+      axisModeButtons.forEach((button) =&gt; {
+        button.addEventListener(&#x27;click&#x27;, () =&gt; {
+          const mode = button.dataset.axisMode;
+          axisModeButtons.forEach((candidate) =&gt; {
+            const selected = candidate === button;
+            candidate.classList.toggle(&#x27;is-selected&#x27;, selected);
+            candidate.classList.toggle(&#x27;btn-ghost&#x27;, !selected);
+            candidate.setAttribute(&#x27;aria-pressed&#x27;, String(selected));
+            candidate.querySelector(&#x27;[data-axis-status]&#x27;).textContent = selected ? &#x27;Selected&#x27; : &#x27;&#x27;;
+          });
+          setButtonIcon(axisModeButton, mode === &#x27;time&#x27; ? &#x27;clock&#x27; : &#x27;arrow-up&#x27;);
+          const label = mode === &#x27;time&#x27; ? &#x27;Axis: Absolute time&#x27; : &#x27;Axis: Step&#x27;;
+          axisModeButton.setAttribute(&#x27;aria-label&#x27;, label);
+          axisModeButton.setAttribute(&#x27;data-tooltip&#x27;, label);
+          setExpanded(axisModeButton, axisPopover, false);
+          updateAxis();
+        });
+      });
+
+      const rulerDimensions = () =&gt; {
+        const viewportWidth = rulerScroll.clientWidth;
+        const labelWidth = Number.parseFloat(getComputedStyle(root).getPropertyValue(&#x27;--track-label-width&#x27;)) || 0;
+        const plotViewportWidth = Math.max(1, viewportWidth - labelWidth);
+        return { labelWidth, plotViewportWidth };
+      };
+
+      const syncCursors = () =&gt; {
+        const span = viewportEnd - viewportStart;
+        const hoverChartRatio = Math.max(0, Math.min(1, (hoverCursorRatio - viewportStart) / span));
+        root.classList.toggle(&#x27;hover-cursor-outside&#x27;, hoverCursorRatio &lt; viewportStart || hoverCursorRatio &gt; viewportEnd);
+        root.style.setProperty(&#x27;--hover-chart-x&#x27;, `${hoverChartRatio * 100}%`);
+        root.style.setProperty(&#x27;--hover-ruler-x&#x27;, `${hoverCursorRatio * 100}%`);
+        if (lockedCursorRatio !== null) {
+          const lockedChartRatio = Math.max(0, Math.min(1, (lockedCursorRatio - viewportStart) / span));
+          root.classList.toggle(&#x27;locked-cursor-outside&#x27;, lockedCursorRatio &lt; viewportStart || lockedCursorRatio &gt; viewportEnd);
+          root.style.setProperty(&#x27;--locked-chart-x&#x27;, `${lockedChartRatio * 100}%`);
+          root.style.setProperty(&#x27;--locked-ruler-x&#x27;, `${lockedCursorRatio * 100}%`);
+        } else {
+          root.classList.remove(&#x27;locked-cursor-outside&#x27;);
+        }
+      };
+
+      const formatSeriesValue = (value) =&gt; value &lt; 0.001 ? value.toExponential(2) : value.toFixed(4);
+
+      const formatBaselineDelta = (value, baseline) =&gt; {
+        const delta = value - baseline;
+        return `${delta &gt;= 0 ? &#x27;+&#x27; : &#x27;−&#x27;}${formatSeriesValue(Math.abs(delta))}`;
+      };
+
+      const seriesValuesAt = (track, ratio) =&gt; {
+        const progress = Math.max(0, Math.min(1, ratio));
+        if (track.dataset.track === &#x27;accuracy&#x27;) {
+          const primary = 0.103 + 0.825 * (1 - Math.exp(-4 * progress));
+          const secondary = 0.096 + 0.807 * (1 - Math.exp(-3.7 * progress));
+          return { primary: { value: primary, y: 80 - 58 * progress }, secondary: { value: secondary, y: 76 - 54 * progress } };
+        }
+        if (track.dataset.track === &#x27;learning_rate&#x27;) {
+          const primary = progress &lt; 0.12 ? 0.000012 + progress / 0.12 * 0.000288 : 0.0003 * Math.pow(0.62, Math.floor((progress - 0.12) / 0.22));
+          const secondary = primary * 0.92;
+          const y = progress &lt; 0.12 ? 78 - progress / 0.12 * 56 : 22 + Math.floor((progress - 0.12) / 0.22) * 16;
+          return { primary: { value: primary, y }, secondary: { value: secondary, y: y - 4 } };
+        }
+        const last = Number.parseFloat(track.dataset.value);
+        const max = Number.parseFloat(track.dataset.max);
+        const primary = last + (max - last) * Math.exp(-4.2 * progress);
+        const secondary = last * 1.05 + (max * 1.03 - last * 1.05) * Math.exp(-3.8 * progress);
+        return { primary: { value: primary, y: 9 + 63 * (1 - Math.exp(-3.4 * progress)) }, secondary: { value: secondary, y: 13 + 62 * (1 - Math.exp(-3.1 * progress)) } };
+      };
+
+      metricPlots.forEach((plot) =&gt; {
+        const primary = document.createElement(&#x27;span&#x27;);
+        const secondary = document.createElement(&#x27;span&#x27;);
+        primary.className = &#x27;value-tag value-tag-primary text-small&#x27;;
+        secondary.className = &#x27;value-tag value-tag-secondary text-small&#x27;;
+        plot.append(primary, secondary);
+      });
+
+      const renderCursorValues = (scope, hoveredTrack = null, pointerY = 0) =&gt; {
+        const chartRatio = Math.max(0, Math.min(1, (hoverCursorRatio - viewportStart) / (viewportEnd - viewportStart)));
+        root.querySelectorAll(&#x27;.metric-track&#x27;).forEach((track) =&gt; {
+          const plot = track.querySelector(&#x27;.metric-plot&#x27;);
+          const values = seriesValuesAt(track, hoverCursorRatio);
+          let trackScope = scope;
+          if (scope === &#x27;nearest&#x27;) {
+            if (track !== hoveredTrack) trackScope = &#x27;none&#x27;;
+            else trackScope = Math.abs(values.primary.y / 88 * plot.clientHeight - pointerY) &lt;= Math.abs(values.secondary.y / 88 * plot.clientHeight - pointerY) ? &#x27;primary&#x27; : &#x27;secondary&#x27;;
+          }
+          plot.dataset.cursorScope = trackScope;
+          const primaryTag = plot.querySelector(&#x27;.value-tag-primary&#x27;);
+          const secondaryTag = plot.querySelector(&#x27;.value-tag-secondary&#x27;);
+          let primaryY = values.primary.y;
+          let secondaryY = values.secondary.y;
+          if (trackScope === &#x27;all&#x27; &amp;&amp; Math.abs(primaryY - secondaryY) &lt; 22) {
+            const midpoint = (primaryY + secondaryY) / 2;
+            primaryY = Math.max(11, midpoint - 11);
+            secondaryY = Math.min(77, midpoint + 11);
+          }
+          const primaryValue = formatSeriesValue(values.primary.value);
+          const baselineValue = formatSeriesValue(values.secondary.value);
+          const baselineDelta = formatBaselineDelta(values.primary.value, values.secondary.value);
+          primaryTag.textContent = `${primaryValue}(${baselineDelta})`;
+          secondaryTag.textContent = baselineValue;
+          primaryTag.setAttribute(&#x27;aria-label&#x27;, `candidate-24 ${primaryValue}; ${baselineDelta} from baseline`);
+          secondaryTag.setAttribute(&#x27;aria-label&#x27;, `baseline ${baselineValue}`);
+          primaryTag.style.setProperty(&#x27;--value-y&#x27;, `${primaryY / 88 * 100}%`);
+          secondaryTag.style.setProperty(&#x27;--value-y&#x27;, `${secondaryY / 88 * 100}%`);
+          primaryTag.classList.toggle(&#x27;align-left&#x27;, chartRatio &gt; 0.72);
+          secondaryTag.classList.toggle(&#x27;align-left&#x27;, chartRatio &gt; 0.72);
+        });
+      };
+
+      const setHoverCursor = (ratio, scope, hoveredTrack = null, pointerY = 0) =&gt; {
+        hoverCursorRatio = Math.max(0, Math.min(1, ratio));
+        root.classList.add(&#x27;hover-cursor-active&#x27;);
+        syncCursors();
+        updateAxis();
+        renderCursorValues(scope, hoveredTrack, pointerY);
+      };
+
+      const setLockedCursor = (ratio) =&gt; {
+        lockedCursorRatio = Math.max(0, Math.min(1, ratio));
+        root.classList.add(&#x27;locked-cursor-active&#x27;);
+        syncCursors();
+        updateAxis();
+      };
+
+      const clearHoverCursor = () =&gt; {
+        root.classList.remove(&#x27;hover-cursor-active&#x27;, &#x27;hover-cursor-outside&#x27;);
+        metricPlots.forEach((plot) =&gt; { plot.dataset.cursorScope = &#x27;none&#x27;; });
+      };
+
+      const applyViewport = (start, end, syncRuler = true) =&gt; {
+        const minimumSpan = 0.05;
+        const span = Math.max(minimumSpan, Math.min(1, end - start));
+        viewportStart = Math.max(0, Math.min(1 - span, start));
+        viewportEnd = viewportStart + span;
+        timelineZoom = 1 / span;
+
+        brushWindow.style.left = `${viewportStart * 100}%`;
+        brushWindow.style.width = `${span * 100}%`;
+        brushPlot.setAttribute(&#x27;aria-label&#x27;, `Global metric overview; selected viewport ${Math.round(viewportStart * 800)}k to ${Math.round(viewportEnd * 800)}k`);
+        metricCharts.forEach((chart) =&gt; {
+          chart.setAttribute(&#x27;viewBox&#x27;, `${viewportStart * 800} 0 ${span * 800} 88`);
+        });
+        syncCursors();
+
+        if (syncRuler) {
+          const { labelWidth, plotViewportWidth } = rulerDimensions();
+          const timelineWidth = plotViewportWidth * timelineZoom;
+          rulerCanvas.style.width = `${labelWidth + timelineWidth}px`;
+          rulerScroll.scrollLeft = viewportStart * timelineWidth;
+        }
+      };
+
+      const syncViewportFromRuler = () =&gt; {
+        const { plotViewportWidth } = rulerDimensions();
+        const span = 1 / timelineZoom;
+        const start = Math.max(0, Math.min(1 - span, rulerScroll.scrollLeft / (plotViewportWidth * timelineZoom)));
+        applyViewport(start, start + span, false);
+      };
+
+      const setTimelineZoom = (nextZoom, anchorRatio = 0.5) =&gt; {
+        const clampedZoom = Math.max(1, Math.min(20, nextZoom));
+        const anchor = viewportStart + anchorRatio * (viewportEnd - viewportStart);
+        const nextSpan = 1 / clampedZoom;
+        const nextStart = Math.max(0, Math.min(1 - nextSpan, anchor - anchorRatio * nextSpan));
+        applyViewport(nextStart, nextStart + nextSpan);
+      };
+
+      const rulerRatioAt = (event) =&gt; {
+        const bounds = rulerContent.getBoundingClientRect();
+        if (event.clientX &lt; bounds.left || event.clientX &gt; bounds.right) return null;
+        return Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+      };
+
+      rulerScroll.addEventListener(&#x27;pointermove&#x27;, (event) =&gt; {
+        if (rulerScroll.classList.contains(&#x27;is-panning&#x27;)) return;
+        const ratio = rulerRatioAt(event);
+        if (ratio === null) clearHoverCursor(); else setHoverCursor(ratio, &#x27;all&#x27;);
+      });
+
+      rulerScroll.addEventListener(&#x27;pointerleave&#x27;, clearHoverCursor);
+
+      rulerScroll.addEventListener(&#x27;click&#x27;, (event) =&gt; {
+        if (suppressRulerClick) {
+          suppressRulerClick = false;
+          return;
+        }
+        const ratio = rulerRatioAt(event);
+        if (ratio !== null) setLockedCursor(ratio);
+      });
+
+      rulerScroll.addEventListener(&#x27;wheel&#x27;, (event) =&gt; {
+        if (event.metaKey || event.ctrlKey) {
+          event.preventDefault();
+          const bounds = rulerScroll.getBoundingClientRect();
+          const labelWidth = Number.parseFloat(getComputedStyle(root).getPropertyValue(&#x27;--track-label-width&#x27;)) || 0;
+          const plotWidth = Math.max(1, bounds.width - labelWidth);
+          const anchorRatio = Math.max(0, Math.min(1, (event.clientX - bounds.left - labelWidth) / plotWidth));
+          setTimelineZoom(timelineZoom * Math.exp(-event.deltaY * 0.002), anchorRatio);
+          return;
+        }
+        if (timelineZoom &gt; 1 &amp;&amp; (event.deltaX || event.deltaY)) {
+          event.preventDefault();
+          rulerScroll.scrollLeft += Math.abs(event.deltaX) &gt; Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+        }
+      }, { passive: false });
+
+      rulerScroll.addEventListener(&#x27;scroll&#x27;, syncViewportFromRuler);
+
+      rulerScroll.addEventListener(&#x27;pointerdown&#x27;, (event) =&gt; {
+        if (event.button !== 0 || timelineZoom === 1) return;
+        const startX = event.clientX;
+        const startScroll = rulerScroll.scrollLeft;
+        let moved = false;
+        rulerScroll.classList.add(&#x27;is-panning&#x27;);
+        rulerScroll.setPointerCapture(event.pointerId);
+        const pan = (moveEvent) =&gt; {
+          moved = moved || Math.abs(moveEvent.clientX - startX) &gt; 3;
+          rulerScroll.scrollLeft = startScroll - (moveEvent.clientX - startX);
+        };
+        const finish = () =&gt; {
+          suppressRulerClick = moved;
+          rulerScroll.classList.remove(&#x27;is-panning&#x27;);
+          rulerScroll.removeEventListener(&#x27;pointermove&#x27;, pan);
+          rulerScroll.removeEventListener(&#x27;pointerup&#x27;, finish);
+          rulerScroll.removeEventListener(&#x27;pointercancel&#x27;, finish);
+        };
+        rulerScroll.addEventListener(&#x27;pointermove&#x27;, pan);
+        rulerScroll.addEventListener(&#x27;pointerup&#x27;, finish);
+        rulerScroll.addEventListener(&#x27;pointercancel&#x27;, finish);
+      });
+
+      brushPlot.addEventListener(&#x27;pointerdown&#x27;, (event) =&gt; {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        const bounds = brushPlot.getBoundingClientRect();
+        const pointerRatio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+        const edgeTolerance = 8 / bounds.width;
+        let dragStart = viewportStart;
+        let dragEnd = viewportEnd;
+        const initialSpan = dragEnd - dragStart;
+        let mode = &#x27;move&#x27;;
+
+        if (Math.abs(pointerRatio - dragStart) &lt;= edgeTolerance) {
+          mode = &#x27;start&#x27;;
+        } else if (Math.abs(pointerRatio - dragEnd) &lt;= edgeTolerance) {
+          mode = &#x27;end&#x27;;
+        } else if (pointerRatio &lt; dragStart || pointerRatio &gt; dragEnd) {
+          const centeredStart = Math.max(0, Math.min(1 - initialSpan, pointerRatio - initialSpan / 2));
+          applyViewport(centeredStart, centeredStart + initialSpan);
+          dragStart = centeredStart;
+          dragEnd = centeredStart + initialSpan;
+        }
+
+        brushPlot.setPointerCapture(event.pointerId);
+        const updateBrush = (moveEvent) =&gt; {
+          const nextRatio = Math.max(0, Math.min(1, (moveEvent.clientX - bounds.left) / bounds.width));
+          const delta = nextRatio - pointerRatio;
+          if (mode === &#x27;start&#x27;) {
+            applyViewport(Math.max(0, Math.min(dragEnd - 0.05, dragStart + delta)), dragEnd);
+          } else if (mode === &#x27;end&#x27;) {
+            applyViewport(dragStart, Math.min(1, Math.max(dragStart + 0.05, dragEnd + delta)));
+          } else {
+            const nextStart = Math.max(0, Math.min(1 - initialSpan, dragStart + delta));
+            applyViewport(nextStart, nextStart + initialSpan);
+          }
+        };
+        const finishBrush = () =&gt; {
+          brushPlot.removeEventListener(&#x27;pointermove&#x27;, updateBrush);
+          brushPlot.removeEventListener(&#x27;pointerup&#x27;, finishBrush);
+          brushPlot.removeEventListener(&#x27;pointercancel&#x27;, finishBrush);
+        };
+        brushPlot.addEventListener(&#x27;pointermove&#x27;, updateBrush);
+        brushPlot.addEventListener(&#x27;pointerup&#x27;, finishBrush);
+        brushPlot.addEventListener(&#x27;pointercancel&#x27;, finishBrush);
+      });
+
+      document.addEventListener(&#x27;keydown&#x27;, (event) =&gt; {
+        if (event.key === &#x27;Escape&#x27; &amp;&amp; lockedCursorRatio !== null) {
+          lockedCursorRatio = null;
+          root.classList.remove(&#x27;locked-cursor-active&#x27;, &#x27;locked-cursor-outside&#x27;);
+          updateAxis();
+          return;
+        }
+        if (!(event.metaKey || event.ctrlKey)) return;
+        if (event.key === &#x27;+&#x27; || event.key === &#x27;=&#x27;) {
+          event.preventDefault();
+          setTimelineZoom(timelineZoom * 1.25);
+        } else if (event.key === &#x27;-&#x27;) {
+          event.preventDefault();
+          setTimelineZoom(timelineZoom / 1.25);
+        }
+      });
+
+      const selectTrack = (track) =&gt; {
+        root.querySelectorAll(&#x27;.metric-track&#x27;).forEach((candidate) =&gt; {
+          const selected = candidate === track;
+          candidate.classList.toggle(&#x27;is-selected&#x27;, selected);
+          candidate.querySelector(&#x27;.track-label&#x27;).setAttribute(&#x27;aria-pressed&#x27;, String(selected));
+        });
+        selectedTrackName.textContent = track.dataset.track;
+        timelinePrimary.setAttribute(&#x27;d&#x27;, track.querySelector(&#x27;.chart-line-primary&#x27;).getAttribute(&#x27;d&#x27;));
+        timelineSecondary.setAttribute(&#x27;d&#x27;, track.querySelector(&#x27;.chart-line-secondary&#x27;).getAttribute(&#x27;d&#x27;));
+        const count = track.dataset.count;
+        const step = track.dataset.step;
+        const value = track.dataset.value;
+        const min = track.dataset.min;
+        const max = track.dataset.max;
+        summaryBody.innerHTML = `
+          &lt;tr&gt;&lt;td&gt;baseline&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${count}&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${step}&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${value}&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${min}&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${max}&lt;/td&gt;&lt;/tr&gt;
+          &lt;tr&gt;&lt;td&gt;candidate-24&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${count}&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${step}&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${value}&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${min}&lt;/td&gt;&lt;td class=&quot;text-end&quot;&gt;${max}&lt;/td&gt;&lt;/tr&gt;`;
+        setInspectorVisible(true);
+      };
+
+      root.querySelectorAll(&#x27;.metric-track&#x27;).forEach((track) =&gt; {
+        const plot = track.querySelector(&#x27;.metric-plot&#x27;);
+        track.querySelector(&#x27;.track-label&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; selectTrack(track));
+        plot.addEventListener(&#x27;pointermove&#x27;, (event) =&gt; {
+          const bounds = plot.getBoundingClientRect();
+          const chartRatio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+          setHoverCursor(viewportStart + chartRatio * (viewportEnd - viewportStart), &#x27;nearest&#x27;, track, event.clientY - bounds.top);
+        });
+        plot.addEventListener(&#x27;pointerleave&#x27;, clearHoverCursor);
+        plot.addEventListener(&#x27;click&#x27;, (event) =&gt; {
+          selectTrack(track);
+          const bounds = event.currentTarget.getBoundingClientRect();
+          const chartRatio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+          setLockedCursor(viewportStart + chartRatio * (viewportEnd - viewportStart));
+        });
+
+        const resizer = track.querySelector(&#x27;.track-resizer&#x27;);
+        resizer.addEventListener(&#x27;pointerdown&#x27;, (event) =&gt; {
+          event.preventDefault();
+          event.stopPropagation();
+          const startY = event.clientY;
+          const startHeight = track.getBoundingClientRect().height;
+          resizer.setPointerCapture(event.pointerId);
+          const resize = (moveEvent) =&gt; {
+            const height = Math.max(52, Math.min(180, startHeight + moveEvent.clientY - startY));
+            track.style.setProperty(&#x27;--metric-row-height&#x27;, `${height}px`);
+          };
+          const finish = () =&gt; {
+            resizer.removeEventListener(&#x27;pointermove&#x27;, resize);
+            resizer.removeEventListener(&#x27;pointerup&#x27;, finish);
+            resizer.removeEventListener(&#x27;pointercancel&#x27;, finish);
+          };
+          resizer.addEventListener(&#x27;pointermove&#x27;, resize);
+          resizer.addEventListener(&#x27;pointerup&#x27;, finish);
+          resizer.addEventListener(&#x27;pointercancel&#x27;, finish);
+        });
+      });
+
+      root.querySelectorAll(&#x27;[data-inspector-tab]&#x27;).forEach((tab) =&gt; {
+        tab.addEventListener(&#x27;click&#x27;, () =&gt; {
+          const name = tab.dataset.inspectorTab;
+          root.querySelectorAll(&#x27;[data-inspector-tab]&#x27;).forEach((candidate) =&gt; {
+            const selected = candidate === tab;
+            candidate.classList.toggle(&#x27;is-selected&#x27;, selected);
+            candidate.classList.toggle(&#x27;btn-ghost&#x27;, !selected);
+            candidate.setAttribute(&#x27;aria-selected&#x27;, String(selected));
+          });
+          root.querySelectorAll(&#x27;[data-inspector-panel]&#x27;).forEach((panel) =&gt; {
+            panel.hidden = panel.dataset.inspectorPanel !== name;
+          });
+        });
+      });
+
+      updateAxis();
+      requestAnimationFrame(() =&gt; applyViewport(viewportStart, viewportEnd));
+      if (window.ResizeObserver) {
+        const rulerResizeObserver = new ResizeObserver(() =&gt; applyViewport(viewportStart, viewportEnd));
+        rulerResizeObserver.observe(rulerScroll);
+      }
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

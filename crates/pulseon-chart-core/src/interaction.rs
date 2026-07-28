@@ -326,12 +326,17 @@ impl BrushState {
         if !delta.is_finite() {
             return Err(ChartError::InvalidTransform);
         }
-        let delta = delta.clamp(
-            self.home.start() - self.selected.start(),
-            self.home.end() - self.selected.end(),
-        );
-        let mut start = self.selected.start() + delta;
-        let mut end = self.selected.end() + delta;
+        let minimum_delta = self.home.start() - self.selected.start();
+        let maximum_delta = self.home.end() - self.selected.end();
+        let delta = delta.clamp(minimum_delta, maximum_delta);
+        let span = self.selected.span();
+        let (mut start, mut end) = if delta == minimum_delta {
+            (self.home.start(), self.home.start() + span)
+        } else if delta == maximum_delta {
+            (self.home.end() - span, self.home.end())
+        } else {
+            (self.selected.start() + delta, self.selected.end() + delta)
+        };
         if end - start < MIN_BRUSH_SPAN {
             if delta.is_sign_negative() {
                 end = minimum_end_for_minimum_span(start).min(self.home.end());
@@ -652,6 +657,13 @@ mod tests {
         assert_eq!(brush.selected(), range(6.0, 10.0));
         brush.pan_by(-20.0).expect("pan should clamp");
         assert_eq!(brush.selected(), range(0.0, 4.0));
+
+        let mut fractional = BrushState::new(range(0.0, 50.0)).expect("brush should be valid");
+        fractional.resize_end(31.7).expect("resize should succeed");
+        for _ in 0..1_000 {
+            fractional.pan_by(0.1).expect("pan should succeed");
+        }
+        assert_eq!(fractional.selected().end(), fractional.home().end());
     }
 
     #[test]

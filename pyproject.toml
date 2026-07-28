@@ -47,6 +47,7 @@ testing-extra = [
 linting = [
     { include-group = "dev" },
     "pyright",
+    "ruff",
 ]
 
 [tool.uv]
@@ -75,3 +76,7 @@ publishing-environment = "release"
 [tool.pyright]
 include = ["python", "scripts", "tests"]
 reportUnnecessaryTypeIgnoreComment = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"

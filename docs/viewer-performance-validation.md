@@ -2,19 +2,21 @@
 
 ## Measurement Record
 
-- Date: 2026-07-22
-- Base commit: `ec89fab`, plus the validation changes in the working tree
+- Date: 2026-07-27
+- Implementation: current Entity-architecture worktree
 - Platform: macOS 26.3 (25D125), arm64, Apple M4 Pro
 - Rust: 1.97.1
+- uv: 0.8.12
 - Xcode: 26.6 (17F113)
 - Metal compiler: Xcode Metal Toolchain 17.6.109.0
-- Display target: built-in Liquid Retina XDR with ProMotion enabled
+- Display target: ASUS XG27AQWMG at 2560 x 1440 and 280 Hz
 
-The automated scale, CPU, build, type, and test gates pass. The interactive
-120 Hz Metal trace remains pending because the current automation session
-cannot synthesize and record the required continuous gestures, and macOS denied
-screen capture. The Roadmap frame-rate item remains open until that trace is
-recorded.
+The automated scale, final-layout CPU, build, type, and test gates pass. A
+continuous Metal System Trace now covers the converged 10-Run, six-Metric
+workbench on the configured 280 Hz display. Runtime drawable waits remained
+below 1.2 ms and no post-warmup hang was recorded, but ten presentations
+spanned two refresh periods. The final display gate therefore remains open in
+Roadmap Phase 3E.
 
 ## Scale Fixture and Query Contract
 
@@ -58,27 +60,184 @@ Every scenario passed p95 <= 8.33 ms and maximum <= 16.7 ms.
 | Brush resize | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush pan | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
 | Brush zoom | 1,000 | 0.000 ms | 0.000 ms | 0.000 ms |
-| Cached path preparation | 200 | 0.324 ms | 0.405 ms | 1.180 ms |
-| Uncached path preparation | 200 | 7.621 ms | 7.892 ms | 8.075 ms |
-| Hit testing | 200 | 0.196 ms | 0.208 ms | 0.255 ms |
+| Cached path preparation | 200 | 0.151 ms | 0.193 ms | 0.314 ms |
+| Uncached path preparation | 200 | 1.988 ms | 2.076 ms | 2.167 ms |
+| Hit testing | 200 | 0.202 ms | 0.236 ms | 1.996 ms |
+| Ruler hover evidence | 1,000 | 0.003 ms | 0.003 ms | 0.092 ms |
 
-## 120 Hz Product Check
+After the converged renderer was integrated, an initial run failed the
+unchanged uncached-path gate at p95 9.018 ms and maximum 23.815 ms. A local
+Time Profiler recording identified GPUI/Lyon stroke tessellation and path
+construction, rather than storage projection, as the dominant work. Complete
+solid series now build their GPUI triangles directly; partial dashed evidence
+retains the existing GPUI/Lyon path semantics. Three subsequent standard
+release runs passed without changing thresholds. Their worst p95 was 7.485 ms
+and worst maximum was 15.362 ms. Local `.trace` bundles remain uncommitted.
 
-The release viewer opened the retained 10-million-point DuckDB Project with
-`MTL_HUD_ENABLED=1`, and Metal HUD initialized frame interval, present delay,
-FPS, and logical FPS metrics. This confirms the release binary and HUD can run
-against the scale fixture, but it is not the required interaction evidence.
+Multi-Run, multi-Metric manual testing then exposed two additional costs.
+Viewer-only Baseline, Pinned, Archived, and visibility changes were still
+invalidating every panel, and hover frames were preparing every static Metric
+path again. Organization changes now retain immutable snapshots and merge only
+missing Run evidence. Each Metric's static grid and curves use a cached GPUI
+child view, while cursors and callouts remain dynamic. GPUI paths preserve the
+first and last point plus min/max extrema in two-logical-pixel buckets; storage
+evidence, chart series, hit testing, and query budgets remain unchanged. The
+latest release run above reduced cached and uncached p95 by approximately 4.0x
+and 3.5x respectively. A GPUI regression confirms repeated ruler-hover frames
+do not prepare any static Metric chart again.
 
-To close the remaining gate, capture a Metal System Trace on the built-in
-ProMotion display after initial detail load and a five-second warm-up. Exercise
-brush handle resize, selected-window drag, main-chart pan, wheel or pinch zoom,
-and hover continuously for ten seconds each. The HUD must sustain 120 FPS and
-the trace must show no viewer-caused presentation spanning two 120 Hz refresh
-periods. Record the trace conclusion here before closing the Roadmap item.
+## High-Refresh Product Check
+
+The release viewer opened a retained DuckDB Project with 10 visible Runs and
+six Metric tracks on the ASUS XG27AQWMG configured at 2560 x 1440 and 280 Hz.
+After a five-second warmup, a 35.8-second Metal System Trace exercised brush
+resize and pan, ruler and chart pan, wheel and keyboard zoom, hover and locked
+cursors, and track and inspector scrolling. A separate 20-second trace used two
+persisted Views to cover repeated View switching and Bottom inspector toggling;
+it reported no hang.
+
+The trace recorded 129 single-period presented handlers at approximately
+3.572 ms and ten two-period handlers at approximately 7.144 ms. Post-warmup
+drawable waits had a 1.191 ms maximum and the only reported hang was a
+163.08 ms startup event before warmup. The strict Phase 3E requirement permits
+no viewer-caused presentation spanning two refresh periods, so this run does
+not close the gate. A separate real title-bar move to the target display then
+held approximately 140.57 FPS and a 7.11 ms HUD frame interval during sustained
+10-Run, six-track hover, corroborating the two-period trace samples. Local
+trace bundles remain uncommitted.
+
+Generate the retained multi-track DuckDB fixture once, then launch it with the
+HUD enabled:
+
+```bash
+PULSEON_VIEWER_TRACE_FIXTURE_ROOT=/tmp/pulseon-viewer-trace \
+  cargo test -p pulseon-viewer --release --features test-support \
+  retained_multi_track_fixture_supports_product_tracing \
+  -- --ignored --nocapture
+
+env -i \
+  HOME=/tmp/pulseon-viewer-trace/isolated-home \
+  USER="$USER" LOGNAME="$LOGNAME" \
+  PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" \
+  MTL_HUD_ENABLED=1 \
+  ./target/release/pulseon-viewer \
+  /tmp/pulseon-viewer-trace/duckdb
+```
+
+Fixture generation refuses to overwrite a non-empty backend directory. Reuse
+the retained directory for repeat traces, or remove it deliberately before
+regenerating it. Metal traces embed the target process environment, so the
+viewer is launched with an explicit minimal environment and trace bundles must
+remain local, uncommitted validation artifacts.
+
+## Automated Workbench Coverage
+
+The multi-project workbench contract is covered by direct behavioral tests:
+
+- `source_registry_reads_duckdb_and_sqlite_together`, composite-identity Core
+  tests, and `panel_requests_are_partitioned_by_source_with_full_run_references`
+  cover mixed backends and duplicate native identifiers;
+- `source_failures_do_not_erase_other_sources_drawable_series` and
+  `superseded_and_inactive_view_results_are_ignored` cover partial failure and
+  stale cross-source results;
+- `shared_timeline_unions_extents_from_multiple_sources`, Analysis View
+  lifecycle/isolation tests, and the keyboard zoom tests cover cross-Project
+  selection, shared viewport synchronization, and View isolation;
+- worker coalescing, visible-overscan scheduling, aligned Metric row/track, and
+  dock action tests cover query pressure, panel visibility, synchronized tracks,
+  and independent dock visibility;
+- `metric_click_opens_a_resizable_inspector_without_gesture_toggles`,
+  whole-series Metric summary and Objective evidence assertions, retained
+  inspector snapshots across zoom, and Project-scoped ranking tests cover
+  click-versus-drag, Summary/Ranking/Evidence, and explicit objective direction;
+  and
+- workbench document round trips plus healthy, removed-Run, unknown-Metric,
+  duplicate-identity, unsupported-version, and missing-source recovery tests
+  cover persistence and unavailable-source reconciliation without native
+  writes;
+- converged GPUI tests cover Project menu anchoring and real placement,
+  five-item pagination, Metric candidate removal and independent resizing,
+  compact single-line Run rows with fixed controls, shared-ruler pan/zoom
+  boundaries, simultaneous hover/locked cursors, dense evidence-callout
+  separation and full point context, baseline deltas, icon-control tooltips,
+  and narrow-window horizontal overflow of the tabular Bottom inspector; and
+- final convergence regressions additionally cover full-catalog Run filtering
+  beyond the revealed five-item page, all-Source refresh from an empty View,
+  the converged shell in a newly created empty View, Baseline/Pinned immunity
+  from Project batch visibility, exact brush/ruler/track horizontal geometry,
+  compact-row plot height, and distinct logical versus physical plot widths.
+- completion-audit regressions cover persisted Removed Project placement and
+  cross-View cleanup, 8 px window containment for rich popovers, keyboard-only
+  Run action exposure with stable icon widths, panel-generation cancellation
+  when Views deactivate, and the distinction between Project-name pagination
+  and Run-only search results.
+
+## Zed Reference Audit
+
+The workbench was compared against Zed commit
+`40dc154a7cc28270d2319873b0881ef053dc22b9` using the durable source map in
+`viewer-zed-ui-reference.md`. The review covered the same semantic roles and
+component boundaries at compact (600 x 520), default (800 x 600), and expanded
+(1440 x 900) logical window sizes.
+
+| Concern | Pinned-reference expectation | Viewer evidence | Result |
+| --- | --- | --- | --- |
+| Application shell | Full-height Project panel independent of the workspace; tabs remain inside the workspace | GPUI bounds keep the Project sidebar left of the Analysis workspace and keep the tab bar exactly within the Analysis bounds at all three sizes | Pass |
+| Tabs and toolbars | 32 px tab container, compact 28 px controls, one-pixel separators | The tab bar is 32 px, its selected interior is 31 px below the separator, and toolbar controls are 28 px | Pass |
+| Project tree and overlays | 28 px hierarchical rows, rounded selection, disclosure icons, searchable tree, restrained popover surface | Viewer-owned tree-row and popover primitives use the pinned tokens; the source action opens its in-panel popover in the GPUI interaction test | Pass |
+| Typography and spacing | Compact type hierarchy, muted secondary labels, 4 px radius, semantic panel spacing | Section labels, metadata, status, tooltip, and control text use shared theme roles; default-density tests pin 28/28/32 px geometry and the 4 px radius | Pass |
+| Interaction states | Hover, active, selected, focus, disabled, pending, and error use consistent semantic roles | Shared tab, tree-row, toolbar, icon, status, tooltip, and focus-ring primitives own these states; existing keyboard, unavailable-source, loading, selection-limit, and source-error tests exercise them | Pass |
+| Light and dark hierarchy | Identical structure with appearance-specific semantic palettes | Theme tests prove identical spacing and distinct window/panel/surface, text, focus, status, and series roles in light and dark appearances | Pass |
+| Display scale | Logical layout remains stable while storage/render budgets use physical pixels | The renderer scale test maps a 400 logical-pixel plot to 800 physical pixels at 2x without changing layout tokens | Pass |
+
+`application_shell_preserves_pinned_geometry_at_representative_sizes` is the
+repeatable shell audit. The GPUI test host does not emulate switching the
+macOS window appearance or display scale, so appearance hierarchy is verified
+directly from theme roles and physical scaling is verified at the renderer
+boundary. The final audit tightened Metric tracks to the reference's 52–180 px
+range, adopted icon-only toolbar controls, made View close controls contextual,
+compacted Run rows, and converted the inspector to fixed table columns.
+The final audit also reduced the complete brush row to 40 logical pixels,
+removed redundant selected-range text, and added semantic text tooltips to
+icon-only controls without changing their compact geometry.
+
+## Multi-Track Workbench Gate
+
+`representative_workbench_stays_responsive_while_a_source_is_pending` opens a
+2560 x 1800 logical-pixel workbench with 10 selected Runs, six simultaneously
+visible compact Metric tracks, and the Bottom inspector. Every track receives
+all 10 series. For each track, the test checks the storage-owned detail budget
+`clamp(physical_width * 2, 2,000, 10,000)` and allows only the two documented
+neighbor points per series. The million-point dual-backend validation above
+continues to prove the same budget boundary at production scale.
+
+The test then imports a second healthy native source. While its registry state
+is still `Loading`, keyboard zoom changes the shared viewport immediately, all
+10 Run selections and six panels remain intact, and the first track remains
+rendered. This uncovered and corrected a pre-existing import path that reset
+the active Core before background discovery; additional imports now discover
+their catalog without changing the active View.
+
+Cross-source reads remain bounded to four concurrent worker sessions by the
+shared registry gate, while each source worker serializes its own native
+connection. `concurrency_gate_blocks_reads_beyond_its_limit` verifies that an
+extra read waits for a permit, and pending-request tests verify latest-only
+coalescing per Metric panel.
+
+The release CPU command was rerun against the final layout and direct solid
+path implementation. Every p95 remained below 8.33 ms and every maximum
+remained below 16.7 ms across three consecutive runs; the final run is recorded
+in the CPU table above.
+The representative gate is opt-in and was run with
+`cargo test -p pulseon-viewer --release --features test-support
+representative_workbench_stays_responsive_while_a_source_is_pending --
+--ignored --nocapture --test-threads=1` so hardware-sensitive GPUI window
+teardown is not part of ordinary debug test runs.
 
 ## Verification
 
-Passed:
+Passed against implementation commit `f7bc0de` on 2026-07-26:
 
 - `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -86,10 +245,32 @@ Passed:
 - `cargo test`
 - `cargo test -p pulseon-viewer --features test-support`
 - `cargo build -p pulseon-viewer --release`
+- `cargo test -p pulseon-viewer --release interactive_chart_cpu_budget --
+  --ignored --nocapture`
+- `cargo test -p pulseon-viewer --release --features test-support
+  representative_workbench_stays_responsive_while_a_source_is_pending --
+  --ignored --nocapture --test-threads=1`
 - `uv run maturin develop --uv`
 - `uv run pyright` (zero errors)
 - `uv run pytest` (106 passed, 2 opt-in MinIO tests skipped)
 - `uv run maturin build --out dist`
+
+The first chained invocation of `cargo test -p pulseon-viewer --features
+test-support` reported every test as passed, then the GPUI test process received
+SIGSEGV during process teardown. An immediate standalone rerun of the exact
+command passed, including 43 library tests, 53 binary tests with two ignored
+hardware gates, three native-pipeline tests, and doc tests. The serialized GPUI
+suite also passed throughout implementation. No assertion, storage worker, or
+viewer runtime failure was observed; the one teardown fault was not reproduced.
+The latest full test-support run also passed without the teardown fault: 47
+library tests, 58 binary tests with two ignored hardware gates, three
+native-pipeline tests, and doc tests.
+
+The retained six-metric trace fixture is a local artifact. On 2026-07-27,
+`system_profiler` reported the connected XG27AQWMG at 2560 x 1440 and
+280.00 Hz. The high-refresh checkbox remains open because the recorded
+interaction run contained ten two-period presentations, not because the target
+display was unavailable.
 
 The Rust build emitted existing future-incompatibility warnings for `block`
 0.1.6 and `proc-macro-error2` 2.0.1; warnings were not produced by PulseOn code

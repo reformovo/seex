@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use pulseon_core::engine::client::NativeClient;
-use pulseon_model::alignment::{AlignmentAxis, AlignmentViewport};
+use pulseon_model::alignment::AlignmentViewport;
 use pulseon_model::metric::MetricKey;
 use pulseon_model::run::RunId;
 use pulseon_model::types::ProjectId;
@@ -12,20 +12,38 @@ use pulseon_storage::ProjectConnection;
 use pulseon_storage::bootstrap::{
     CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
 };
-use pulseon_viewer::query::{CurveSelection, CurveSnapshot, DetailRequest, OverviewRequest};
-use pulseon_viewer::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker};
+use pulseon_viewer::data::query::{
+    CurveAxis, CurveSelection, CurveSnapshot, DetailRequest, OverviewRequest,
+};
+use pulseon_viewer::data::worker::{
+    Generation, ReadEventReceiver, ReadRequest, ReadSnapshot, ReadWorker,
+};
+use pulseon_viewer::domain::{DataSourceId, RunRef};
+
+mod support;
+
+use support::receive_event;
 
 const RUNS: usize = 10;
 const SOURCE_POINTS: i64 = 1_000_000;
+const TRACE_SOURCE_POINTS: i64 = 100_000;
+const TRACE_METRICS: [&str; 6] = [
+    "loss",
+    "accuracy",
+    "latency",
+    "memory",
+    "throughput",
+    "error",
+];
 const QUERY_TIMEOUT: Duration = Duration::from_secs(300);
 
-fn fixture_root(backend: CatalogBackend) -> Result<PathBuf, Box<dyn Error>> {
+fn fixture_root(backend: CatalogBackend, root_variable: &str) -> Result<PathBuf, Box<dyn Error>> {
     let name = match backend {
         CatalogBackend::DuckDb => "duckdb",
         CatalogBackend::Sqlite => "sqlite",
     };
-    let base = std::env::var_os("PULSEON_VIEWER_SCALE_FIXTURE_ROOT")
-        .ok_or("PULSEON_VIEWER_SCALE_FIXTURE_ROOT must name a retained fixture directory")?;
+    let base = std::env::var_os(root_variable)
+        .ok_or_else(|| format!("{root_variable} must name a retained fixture directory"))?;
     let path = PathBuf::from(base).join(name);
     if path.exists() && fs::read_dir(&path)?.next().is_some() {
         return Err(format!("fixture directory is not empty: {}", path.display()).into());
@@ -34,8 +52,13 @@ fn fixture_root(backend: CatalogBackend) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
-fn build_fixture(backend: CatalogBackend) -> Result<(PathBuf, Vec<RunId>), Box<dyn Error>> {
-    let root = fixture_root(backend)?;
+fn build_fixture(
+    backend: CatalogBackend,
+    root_variable: &str,
+    metrics: &[&str],
+    source_points: i64,
+) -> Result<(PathBuf, Vec<RunId>), Box<dyn Error>> {
+    let root = fixture_root(backend, root_variable)?;
     let pulseon_dir = root.join(".pulseon");
     fs::create_dir_all(&pulseon_dir)?;
     let catalog_name = match backend {
@@ -85,16 +108,24 @@ fn build_fixture(backend: CatalogBackend) -> Result<(PathBuf, Vec<RunId>), Box<d
         ),
     )?);
     for (run_index, run_id) in run_ids.iter().enumerate() {
-        connection.execute(
-            "INSERT INTO dl.metric_points
-                 (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
-             SELECT ?, 'loss', 'loss', step,
-                    epoch_ms(1700000000000 + step),
-                    ((step % 1000) + ?)::DOUBLE / 1000,
-                    epoch_ms(1700000000000 + step)
-             FROM range(?) AS points(step)",
-            (run_id.as_str(), run_index as i64, SOURCE_POINTS),
-        )?;
+        for (metric_index, metric_key) in metrics.iter().enumerate() {
+            connection.execute(
+                "INSERT INTO dl.metric_points
+                     (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
+                 SELECT ?, ?, ?, step,
+                        epoch_ms(1700000000000 + step),
+                        ((step % 1000) + ?)::DOUBLE / 1000,
+                        epoch_ms(1700000000000 + step)
+                 FROM range(?) AS points(step)",
+                (
+                    run_id.as_str(),
+                    *metric_key,
+                    *metric_key,
+                    (run_index + metric_index) as i64,
+                    source_points,
+                ),
+            )?;
+        }
         connection.rebuild_metric_aggregates_for_run(run_id)?;
         connection.execute(
             "UPDATE pulseon_runs SET status = 'finished', finished_at = now() WHERE run_id = ?",
@@ -108,6 +139,8 @@ fn build_fixture(backend: CatalogBackend) -> Result<(PathBuf, Vec<RunId>), Box<d
 
 fn measure(
     worker: &ReadWorker,
+    events: &ReadEventReceiver,
+    source_id: &DataSourceId,
     generation: &mut u64,
     label: &str,
     request: ReadRequest,
@@ -117,8 +150,9 @@ fn measure(
     for _ in 0..6 {
         *generation += 1;
         let started = Instant::now();
-        worker.submit(Generation(*generation), request.clone())?;
-        let event = worker.recv_timeout(QUERY_TIMEOUT)?;
+        worker.submit(source_id.clone(), Generation(*generation), request.clone())?;
+        let event = receive_event(events, QUERY_TIMEOUT)?;
+        assert_eq!(&event.source_id, source_id);
         samples.push(started.elapsed());
         let snapshot = event.result?;
         first.get_or_insert(snapshot);
@@ -162,16 +196,32 @@ fn assert_snapshot(snapshot: &CurveSnapshot, budget: u32, max_total: usize, sour
 }
 
 fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
-    let (root, run_ids) = build_fixture(backend)?;
-    let worker = ReadWorker::spawn(&root)?;
+    let (root, run_ids) = build_fixture(
+        backend,
+        "PULSEON_VIEWER_SCALE_FIXTURE_ROOT",
+        &["loss"],
+        SOURCE_POINTS,
+    )?;
+    let mut worker = ReadWorker::spawn(&root)?;
+    let events = worker
+        .take_event_receiver()
+        .ok_or("worker event receiver should be available")?;
+    let source_id = DataSourceId::from_path(&root);
+    let project_id = ProjectId::from_string("viewer-scale");
     let selection = CurveSelection {
-        run_ids,
+        source_id: source_id.clone(),
+        runs: run_ids
+            .into_iter()
+            .map(|run_id| RunRef::new(source_id.clone(), project_id.clone(), run_id))
+            .collect(),
         metric_key: MetricKey::from_string("loss"),
-        axis: AlignmentAxis::Step,
+        axis: CurveAxis::Step,
     };
     let mut generation = 0;
     let overview = measure(
         &worker,
+        &events,
+        &source_id,
         &mut generation,
         "overview",
         ReadRequest::Overview(OverviewRequest {
@@ -187,6 +237,8 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let full_viewport = AlignmentViewport::new(0, SOURCE_POINTS - 1)?;
     let full = measure(
         &worker,
+        &events,
+        &source_id,
         &mut generation,
         "full detail",
         ReadRequest::Detail(DetailRequest {
@@ -204,6 +256,8 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let narrow_viewport = AlignmentViewport::new(450_000, 550_000)?;
     let narrow = measure(
         &worker,
+        &events,
+        &source_id,
         &mut generation,
         "narrow detail",
         ReadRequest::Detail(DetailRequest {
@@ -230,4 +284,53 @@ fn large_native_series_respect_viewer_query_budgets() -> Result<(), Box<dyn Erro
     );
     validate_backend(CatalogBackend::DuckDb)?;
     validate_backend(CatalogBackend::Sqlite)
+}
+
+#[test]
+#[ignore = "creates a retained six-metric native fixture for manual product tracing"]
+fn retained_multi_track_fixture_supports_product_tracing() -> Result<(), Box<dyn Error>> {
+    assert!(
+        std::hint::black_box(!cfg!(debug_assertions)),
+        "trace fixture generation requires --release"
+    );
+    let (root, run_ids) = build_fixture(
+        CatalogBackend::DuckDb,
+        "PULSEON_VIEWER_TRACE_FIXTURE_ROOT",
+        &TRACE_METRICS,
+        TRACE_SOURCE_POINTS,
+    )?;
+    let mut worker = ReadWorker::spawn(&root)?;
+    let events = worker
+        .take_event_receiver()
+        .ok_or("worker event receiver should be available")?;
+    let source_id = DataSourceId::from_path(&root);
+    let project_id = ProjectId::from_string("viewer-scale");
+    for (index, metric_key) in TRACE_METRICS.into_iter().enumerate() {
+        let selection = CurveSelection {
+            source_id: source_id.clone(),
+            runs: run_ids
+                .iter()
+                .cloned()
+                .map(|run_id| RunRef::new(source_id.clone(), project_id.clone(), run_id))
+                .collect(),
+            metric_key: MetricKey::from_string(metric_key),
+            axis: CurveAxis::Step,
+        };
+        worker.submit(
+            source_id.clone(),
+            Generation(index as u64 + 1),
+            ReadRequest::Detail(DetailRequest {
+                selection,
+                viewport: AlignmentViewport::new(0, TRACE_SOURCE_POINTS - 1)?,
+                physical_width: 5_000,
+            }),
+        )?;
+        let event = receive_event(&events, QUERY_TIMEOUT)?;
+        let ReadSnapshot::Detail(snapshot) = event.result? else {
+            return Err("expected detail snapshot".into());
+        };
+        assert_snapshot(&snapshot, 10_000, 100_020, TRACE_SOURCE_POINTS as u64);
+    }
+    println!("retained trace fixture: {}", root.display());
+    Ok(())
 }

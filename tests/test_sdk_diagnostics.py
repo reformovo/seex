@@ -40,9 +40,11 @@ def test_context_manager_preserves_user_exception(
 ) -> None:
     import pulseon
 
-    with pytest.raises(ValueError, match="user failure"):
-        with pulseon.init(tmp_path / "pulseon"):
-            raise ValueError("user failure")
+    with (
+        pytest.raises(ValueError, match="user failure"),
+        pulseon.init(tmp_path / "pulseon"),
+    ):
+        raise ValueError("user failure")
 
 
 def test_explicit_shutdown_drain_timeout_keeps_client_usable(
@@ -110,4 +112,4 @@ def test_v2_diagnostics_contract_fields_are_read_only(
     for removed_field in helpers.V2_REMOVED_DIAGNOSTIC_FIELDS:
         assert not hasattr(diagnostics, removed_field)
     with pytest.raises(AttributeError):
-        setattr(diagnostics, "pending_reports", 1)
+        diagnostics.pending_reports = 1  # pyright: ignore[reportAttributeAccessIssue]

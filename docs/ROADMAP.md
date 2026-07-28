@@ -148,10 +148,12 @@ the pre-1.0 CLI JSON envelope with version 2.
 
 ### Phase 3: GPUI Desktop Viewer
 
-The decision-complete implementation and validation contract lives in
-[`docs/phase3-gpui-curve-viewer.md`](phase3-gpui-curve-viewer.md). A million
-points is a storage-source scale; GPUI renders only fixed-budget overview and
-detail reductions selected through a brush.
+The original single-panel implementation and validation contract lives in
+[`docs/phase3-gpui-curve-viewer.md`](phase3-gpui-curve-viewer.md). The
+multi-project workbench extension is defined in
+[`docs/drafts/multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md).
+A million points is a storage-source scale; GPUI renders only fixed-budget
+storage reductions selected through a shared viewport.
 
 #### Phase 3A: Renderer-Independent Brush Contract
 
@@ -205,25 +207,317 @@ detail reductions selected through a brush.
   picker cancellation, command behavior, resize budgets, brush synchronization,
   pending results, hover, and stale-result rejection.
 
-#### Phase 3D: Performance and Product Validation
+#### Phase 3D: Scale and Automated Performance Baseline
 
 - [x] Build a deterministic fixture with 10 Runs and 1,000,000 effective source
   points per series. Assert that the viewer receives only the requested
   overview/detail budgets plus contract-defined neighbors.
 - [x] Validate that narrowing the brush keeps the detail budget fixed, narrows
   the storage viewport, and never crops or resamples viewer-owned points.
-- [ ] Measure storage query latency separately from rendering. In a macOS ARM64
-  release build, verify cached brush, pan, zoom, path preparation, and hit
-  testing at p95 <= 8.33 ms with no sample above 16.7 ms; separately validate
-  stable 120 FPS on a 120 Hz ProMotion display after initial load.
+- [x] Measure DuckDB and SQLite overview, full-detail, and narrow-detail query
+  latency separately from rendering, including cold and warm samples.
+- [x] In a macOS ARM64 release build, verify cached brush, pan, zoom, path
+  preparation, and hit testing at p95 <= 8.33 ms with no sample above 16.7 ms.
 - [x] Pass formatting, workspace Clippy, Rust tests, viewer release build,
   maturin develop/build, Pyright, and pytest; document any exact environmental
   blocker, including a missing Xcode Metal Toolchain.
 
-Automated measurements and the remaining 120 Hz trace procedure are recorded
-in [`viewer-performance-validation.md`](viewer-performance-validation.md).
+Automated measurements are recorded in
+[`viewer-performance-validation.md`](viewer-performance-validation.md). The
+single-panel UI is no longer the durable product surface, so its outstanding
+manual display trace is carried into Phase 3E and must validate the final
+shared-timeline, multi-panel interaction path.
 
-#### Phase 3E: macOS ARM64 Release
+#### Phase 3E: Multi-Project Analysis Workbench
+
+The workbench implements the product and architecture contract in
+[`multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md).
+It does not change the public Python API, native catalog or Parquet schemas,
+comparison semantics, runtime dependency set, CI, or release behavior without
+separate approval. Product code uses durable workbench terminology and never
+roadmap phase identifiers.
+
+##### Zed-Aligned Visual Foundation
+
+- [x] Use [Zed](https://github.com/zed-industries/zed) as the visual and
+  interaction reference, initially pinned to commit
+  [`40dc154a`](https://github.com/zed-industries/zed/commit/40dc154a7cc28270d2319873b0881ef053dc22b9).
+  Record any deliberate reference update. Do not follow a moving `main` during
+  implementation. The durable source map and update procedure live in
+  [`viewer-zed-ui-reference.md`](viewer-zed-ui-reference.md).
+- [x] Add viewer-owned semantic theme and spacing tokens modeled on Zed's UI
+  roles: window, panel, elevated surface, border, text, muted text, hover,
+  active, focus, disabled, accent, and status. Remove feature-level hard-coded
+  RGB values and preserve the same hierarchy in light and dark appearance.
+- [x] Build viewer-owned tab bar, sidebar tree row, toolbar/icon button,
+  popover, tooltip, status badge, empty state, and focus-ring primitives with
+  Zed-consistent compact geometry, typography, one-pixel separators, selected
+  surfaces, and complete hover/active/focused/disabled states.
+- [x] Use Zed's `theme`, `ui`, `title_bar`, `project_panel`, and `workspace`
+  crates as direct implementation references. Adapt relevant component
+  structure, tokens, icons, and interaction logic into viewer-owned code. Do
+  not depend on whole Zed application crates because their GPUI revision and
+  dependency graph differ from the viewer's pinned runtime.
+
+##### Workbench Identity and Multi-Source Reads
+
+- [x] Add viewer-local `DataSourceId` and composite
+  `RunRef = DataSourceId + ProjectId + RunId` identities. Use the full identity
+  for selection, series colors, caches, hover, requests, and stale-result
+  reconciliation while preserving existing storage/model identities.
+- [x] Add a retained source registry and bounded read coordination for multiple
+  local native stores. Support DuckDB and SQLite together, keep each native
+  connection worker-owned, lazily activate source sessions, and preserve
+  source-specific loading and error state.
+- [x] Fan panel reads out by source and merge immutable evidence at the viewer
+  boundary. One source failure must not erase another source's drawable
+  results, and inactive or superseded View/panel generations must be ignored.
+
+##### Project and Run Sidebar
+
+- [x] Replace the single-source selectors with a searchable, collapsible
+  Project/Run sidebar over all imported sources. Keep it as an independent,
+  full-height application-shell region outside the Analysis workspace, qualify
+  name collisions with source identity, and retain unavailable sources with
+  actionable state.
+- [x] Add Import Source, reveal path, refresh, and remove-from-workbench
+  actions plus `ToggleProjectSidebar`. Removing an import must never delete or
+  mutate native data; hiding the sidebar expands the complete Analysis
+  workspace.
+- [x] Make Run checkboxes reflect the active Analysis View and retain the
+  existing limit of 10 selected Runs per View across Project/source boundaries.
+
+##### Analysis Views
+
+- [x] Add top tabs for creating an empty View, duplicating the active View,
+  activating, renaming, and closing Views. Place this bar inside the Analysis
+  workspace so it never spans the independent Project/Run sidebar. Closing the
+  last View creates a new empty View.
+- [x] Give each View independent ordered Runs and metrics, alignment axis, track
+  density, shared viewport, snapshots, pending generations, and errors. View
+  switching must not share mutable selection or brush state implicitly.
+
+##### Metric Sidebar, Shared Timeline, and Tracks
+
+- [x] Render one sticky shared timeline brush per View. Its home range is the
+  union of valid selected Run/metric extents; it renders navigation ticks and
+  selection rather than a synthetic metric aggregation and spans only the
+  chart-track column.
+- [x] Support handle resize, selected-window pan, wheel/pinch zoom,
+  `Command-+`, `Command--`, and `Command-0`. Reproject cached evidence
+  immediately, then use one View-level 100 ms trailing debounce before
+  requesting visible-track detail.
+- [x] Render a Metric sidebar inside the Analysis workspace and one aligned
+  detail chart track per selected metric. Synchronize row heights and vertical
+  scrolling, keep horizontal navigation in the chart column, and preserve
+  unavailable evidence, independent y ranges, hover, errors, ordering, and
+  removal.
+- [x] Derive each visible track's storage budget from its own physical plot
+  width and independently reduce every Run/metric series. Prepare visible
+  tracks plus one viewport of overscan; off-screen tracks contribute extents
+  but do not issue detail queries or prepare GPUI paths.
+
+##### Bottom Inspector and Dock Visibility
+
+- [x] Add a resizable Bottom inspector inside the Analysis workspace, spanning
+  the Metric sidebar and chart column but not the independent Project/Run
+  sidebar. A click without a drag on a Metric row or chart track selects it and
+  opens `Summary`, `Ranking`, and `Evidence`; pan/zoom/brush gestures never
+  toggle the inspector.
+- [x] Query whole-effective-series Metric summaries and Objective evidence in
+  the background through the same Core semantics exposed by the Python and CLI
+  read surfaces. Summary reports count, last step/value, minimum, and maximum;
+  Ranking requires an explicit direction, uses canonical competition ranking,
+  and remains grouped by Project for cross-Project Views. Tag inspector results
+  for stale-result rejection, and do not refresh them for viewport navigation.
+- [x] Hide and restore Project sidebar and Bottom inspector independently,
+  retain their previous width/height, and let the Metric sidebar resize or
+  collapse compactly without clearing selections. Expose durable toggle/show
+  actions and keep focus restoration keyboard-accessible.
+
+##### Persistence and Recovery
+
+- [x] Persist a versioned, viewer-owned workbench document containing imported
+  source paths, Views, composite selections, selected Metric/inspector tab,
+  dock visibility and dimensions, and presentation settings. Do not persist
+  metric points, query snapshots, credentials, native connections, or renderer
+  geometry.
+- [x] Restore state without mutating native stores and reconcile moved or
+  missing sources, removed Projects/Runs, duplicate identifiers, unknown
+  metrics, and unsupported document versions explicitly.
+
+##### Design Convergence and Viewer-Only Organization
+
+The completed items above record the first multi-project workbench delivery.
+The following checklist converges that implementation on the durable
+interaction design in
+[`multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md)
+before release work begins.
+
+- [x] Replace the transitional application layout with the compact Analysis
+  workspace: no global viewer title bar, an independently hidden Project
+  sidebar, scrollable View tabs, a selected-Metric global brush, a separate
+  Step/Time ruler, compact resizable Metric tracks, and a fixed Bottom
+  inspector. Keep resource regions independently scrollable as they grow.
+- [x] Converge the Project/Run sidebar on folder/folder-open disclosure,
+  five-item `Show more` pagination, explicit `No runs`, anchored Project
+  information and action popovers, binary Run visibility eyes, and three
+  non-shrinking Run actions. Use one opaque Zed-aligned popover treatment
+  throughout.
+- [x] Add viewer-only sidebar organization. Each View owns its baseline,
+  Pinned Runs, and Project Run visibility; Archived Runs are workbench-wide.
+  Identify Pinned and Archived Projects by `DataSourceId + ProjectId` and move
+  their complete tree entries between `Projects`, `Pinned`, and `Archived`
+  without mutating native stores or child Run state.
+- [x] Converge View and Metric behavior: keep all View state isolated, show only
+  unselected metrics in Add Metric, use a fixed Metric label column, support
+  compact per-track height adjustment, give every plot the same background,
+  and express selection through the label cell and accessibility state.
+- [x] Implement the final navigation model. The brush always renders the
+  selected Metric's complete overview; brush, ruler, and tracks share one
+  viewport; ruler pan and zoom clamp exactly to the first and final coordinate;
+  cached evidence reprojects immediately and detail reads retain the 100 ms
+  View-level trailing debounce.
+- [x] Add a viewer-owned Absolute Time presentation mode alongside Step. Query
+  by metric observation timestamp through the existing worker, storage
+  reduction, and immutable-snapshot boundaries without extending Phase 2
+  comparison axes or the public Python API.
+- [x] Add independent hover and locked cursors. The dashed hover cursor carries
+  the Step/Time capsule and pointed value callouts; clicking a chart or ruler
+  places a separate solid cursor with a ruler-edge triangle and no tooltip.
+  Candidate callouts show the signed raw `candidate - baseline` delta, for
+  example `1.00(+0.55)`.
+- [x] Integrate the View baseline with curve emphasis, hover deltas,
+  Project-scoped Ranking, and the Bottom inspector. Keep Summary, Ranking, and
+  Evidence on the existing Core/CLI/Python whole-series semantics; never derive
+  them from viewport or renderer-owned points.
+- [x] Persist Project placement, Archived Runs, each View's
+  baseline/Pinned/visible Runs, axis mode, Metric order, row heights, and dock
+  dimensions in the canonical `pulseon-workbench 3` document. Earlier viewer
+  documents are rejected without migration; loading and saving never mutate
+  native data.
+
+##### Resource Efficiency and Memory Boundaries
+
+The Viewer currently bounds returned points per Run/Metric series, but that
+query budget is not an end-to-end memory bound. The following stages align
+storage reduction with final logical-pixel rendering, remove duplicate point
+ownership, bound GPUI geometry, and reduce native-query working memory. All
+stages are Phase 3E release gates and must preserve interaction fidelity.
+
+###### Stage 1: Baseline and Budget Calibration
+
+- [ ] Add release/test-support resource counters for each panel/generation:
+  requested budget, source and returned points, projected and compacted points,
+  path vertices, concurrent reads, and stale reads. Record the baseline in the
+  existing performance report without adding permanent production logging.
+- [ ] Derive Overview and Detail budgets from logical plot width `L`. Use
+  `clamp(L, 256, 2_000)` for Overview and `clamp(2L, 512, 5_000)` for Detail,
+  while continuing to permit at most two contract-defined viewport neighbors.
+- [ ] Keep budgets independent of Run/Metric count, visibility, and
+  Pin/Baseline/Archive state so organizational actions never trigger a curve
+  reload solely to change sampling density.
+
+###### Stage 2: Compact Immutable Snapshots
+
+- [ ] Let each `CurveSeriesSnapshot` retain one chart `Series` plus series-level
+  Run metadata, completeness, reasons, and `source_row_count`. Convert Phase 2
+  aligned evidence immediately and release per-point RunId, MetricKey,
+  timestamp, and other fields unused by the Viewer.
+- [ ] Remove duplicate `AlignedMetricPoint`/`DataPoint` ownership from Viewer
+  snapshots. Hover, locked cursor, baseline delta, and inspector cursor values
+  must read the same retained real sample without interpolation or fabricated
+  evidence.
+- [ ] Preserve Phase 2 aligned queries, the public Python API, native catalog,
+  Parquet schema, storage reduction, and comparison semantics.
+
+###### Stage 3: Bounded GPUI Rendering Memory
+
+- [ ] Preallocate render compaction from logical canvas bucket count rather than
+  input point count, and evict projection/path entries for removed Runs and
+  Metrics.
+- [ ] Reduce long-lived `Path<Pixels>` ownership and deep copies. Retain only
+  the latest projected geometry, produce a one-shot paint path, and select the
+  lower-vertex stroke/triangle implementation that still passes every Phase 3D
+  CPU threshold.
+- [ ] Preserve visible tracks plus one viewport of overscan. Off-screen tracks
+  must not prepare paths, and hover emphasis must not issue queries or replace
+  immutable snapshots.
+
+###### Stage 4: Lower Native Query Peaks
+
+- [ ] Separate whole-series diagnostics from viewport reduction, narrow DuckDB
+  materialized rows, and apply safe Step/Time viewport and neighbor filtering
+  as early as possible. Preserve last-write-wins, negative/decreasing-axis
+  diagnostics, and DuckDB/SQLite parity.
+- [ ] Keep four-way bounded reads and the 100 ms trailing debounce so multiple
+  Metrics do not regress to sequential loading. Add superseded-generation
+  checks before execution and between Runs; stale results must not enter a
+  merged snapshot.
+- [ ] Do not reduce visible Metric count, selected Run count, or interaction
+  refresh rate to obtain lower memory use.
+
+###### Stage 5: Resource and Release Validation
+
+- [ ] Cover 1x/2x/3x display scale, sparse/dense windows, spikes, viewport
+  neighbors, Step/Absolute Time, and nearest-real-point tooltips. Detail
+  projection error must stay within one two-logical-pixel render bucket.
+- [ ] With 10 Runs and at least six visible Metrics, repeat zoom, brush, scroll,
+  and View switching. At 2x scale, halve Detail return points approximately,
+  reduce compact-snapshot point storage by at least 60%, and reduce peak RSS by
+  at least 25% from the Stage 1 baseline.
+- [ ] After warm-up, run 30 zoom-in/zoom-out cycles without monotonic memory
+  growth. Final RSS must remain within `max(5%, 32 MiB)` of the warm steady
+  state, and stale reads must retain no snapshot.
+- [ ] Re-run Viewer tests, Clippy, check, the release build, every Phase 3D CPU
+  threshold, and the active-display Metal System Trace. Record RSS, allocation
+  high-water marks, and Metal instance-buffer growth; Phase 3F remains blocked
+  until every resource gate passes.
+
+##### Validation Gates
+
+- [x] Cover mixed DuckDB/SQLite sources, duplicate Project/Run identifiers,
+  partial source failure, cross-Project selection, View isolation, shared
+  viewport synchronization, keyboard zoom, query coalescing, panel visibility,
+  synchronized Metric tracks, click-versus-drag inspector behavior,
+  whole-series Summary and Objective evidence, canonical Project-scoped
+  Ranking, independent dock visibility, stale results,
+  persistence round trips, and unavailable-source recovery.
+- [x] Compare the application shell, tabs, Project tree, toolbars, popovers,
+  interaction states, typography, spacing, and light/dark hierarchy against the
+  pinned Zed reference at representative window sizes and display scales.
+- [x] Validate a representative View with 10 Runs and at least six visible
+  Metric tracks plus the Bottom inspector. Preserve storage point budgets, the
+  Phase 3D CPU thresholds,
+  bounded query concurrency, and responsive interaction while sources are
+  pending.
+- [x] Cover the converged state model with View isolation, Project/Run
+  placement, v1 missing-record defaults, persistence round trips, source
+  reconciliation, and proof that viewer-only organization never writes native
+  data.
+- [x] Cover the converged GPUI interaction with menu anchors and opaque
+  popovers, pagination and empty states, fixed Run icon widths, Metric
+  add/resize behavior, ruler boundaries, independent cursors, baseline deltas,
+  and a single-line horizontally scrollable inspector.
+- [x] Re-run the representative 10-Run, six-track workload against the final
+  layout. Preserve fixed storage budgets, visible-track scheduling, bounded
+  query merging, the 100 ms debounce, and every Phase 3D CPU threshold.
+- [ ] On the active high-refresh display, record its configured refresh rate
+  and, after every resource-efficiency stage passes, a Metal System Trace for
+  the converged shared-brush resize/pan, ruler and chart pan, wheel/pinch and
+  keyboard zoom, dual-cursor hover/locking, track scrolling, View switching,
+  and Bottom inspector path. Record RSS, allocation high-water marks, and Metal
+  instance-buffer growth. Sustain the configured rate after warm-up with no
+  viewer-caused presentation spanning two refresh periods; at 280 Hz that
+  boundary is approximately 7.14 ms. This is the final Phase 3E gate.
+- [x] Pass formatting, workspace Clippy, Rust tests, viewer release build,
+  maturin develop/build, Pyright, and pytest, and update the persistent
+  performance record with exact commands, machine, display, and conclusions.
+
+#### Phase 3F: macOS ARM64 Release
+
+Phase 3F starts only after every Phase 3E design-convergence and validation
+item, including the active-display Metal trace, is complete.
 
 - [ ] Add a macOS ARM64 viewer CI job that installs or verifies the Xcode Metal
   Toolchain, runs viewer tests, and builds the unsigned release binary without
@@ -268,8 +562,9 @@ in [`viewer-performance-validation.md`](viewer-performance-validation.md).
 
 - [ ] Evaluate the [research driver](drafts/autoresearch-control-loop-notes.md)
   without moving source or Git mutation into PulseOn Core.
-- [ ] Design workspace hierarchy, config/tag filtering, export, Web UI, MCP,
-  and other agent-facing surfaces as independently reviewable roadmap phases.
+- [ ] Design config/tag filtering, export, Web UI, MCP, and other agent-facing
+  surfaces as independently reviewable roadmap phases after the local analysis
+  workbench is validated.
 
 ## 1.0 / Stable Contract
 
