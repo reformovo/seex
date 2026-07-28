@@ -334,26 +334,12 @@ jobs:
       # Used to generate artifact attestation
       attestations: write
     steps:
-      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v7
-      - name: Validate Seex 0.1.0b0 artifacts
-        run: |
-          test "$GITHUB_REF_NAME" = "v0.1.0b0"
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/seex-python/Cargo.toml | head -1)"
-          test "$version" = "0.1.0-beta.0"
-          artifacts="$(find wheels-* -type f \( -name '*.whl' -o -name '*.tar.gz' \) -print)"
-          test -n "$artifacts"
-          unexpected="$(printf '%s\n' "$artifacts" | grep -Ev '/seex-0\.1\.0b0(-[^/]+\.whl|\.tar\.gz)$' || true)"
-          test -z "$unexpected"
       - name: Generate artifact attestation
         uses: actions/attest@v4
         with:
-          subject-path: |
-            wheels-*/*.whl
-            wheels-sdist/*.tar.gz
+          subject-path: "wheels-*/*"
       - name: Install uv
         uses: astral-sh/setup-uv@v7
       - name: Publish to PyPI
-        run: >-
-          uv publish --trusted-publishing always
-          wheels-*/*.whl wheels-sdist/*.tar.gz
+        run: uv publish --trusted-publishing always 'wheels-*/*'
