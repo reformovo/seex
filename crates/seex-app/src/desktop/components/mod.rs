@@ -134,33 +134,6 @@ pub fn sidebar_tree_row(
         .when(disabled, |row| row.opacity(0.45))
 }
 
-pub fn toolbar_button(
-    id: impl Into<ElementId>,
-    theme: ViewerTheme,
-    selected: bool,
-    disabled: bool,
-) -> Stateful<Div> {
-    focus_ring(id, theme)
-        .tab_index(if disabled { -1 } else { 0 })
-        .h(theme.spacing.control_height)
-        .px_3()
-        .rounded(theme.spacing.corner_radius)
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(selected, |button| {
-            button
-                .bg(theme.colors.accent)
-                .text_color(theme.colors.accent_text)
-        })
-        .when(!selected && !disabled, |button| {
-            button.hover(|style| style.bg(theme.colors.element_hover))
-        })
-        .when(disabled, |button| {
-            button.text_color(theme.colors.disabled).cursor_default()
-        })
-}
-
 pub fn top_bar_icon_button(
     id: impl Into<ElementId>,
     theme: ViewerTheme,
@@ -253,27 +226,6 @@ impl Render for LabelTooltip {
             .whitespace_nowrap()
             .child(self.label.clone())
     }
-}
-
-pub fn status_badge(theme: ViewerTheme) -> Div {
-    div()
-        .px_3()
-        .py_2()
-        .rounded(theme.spacing.corner_radius)
-        .bg(theme.colors.element_active)
-        .text_color(theme.colors.text)
-        .text_sm()
-}
-
-pub fn empty_state(theme: ViewerTheme) -> Div {
-    div()
-        .flex_1()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap(theme.spacing.content_gap)
-        .text_color(theme.colors.text_muted)
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ use gpui::{
     div, prelude::*,
 };
 
+#[cfg(test)]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
 
 #[path = "assets.rs"]
@@ -374,36 +375,7 @@ impl Render for ViewerApp {
                             .child(if has_sources {
                                 self.workspace.clone().into_any_element()
                             } else {
-                                components::empty_state(theme)
-                                    .child(
-                                        components::status_badge(theme)
-                                            .child("Import a local Seex source to compare Runs."),
-                                    )
-                                    .child(
-                                        components::toolbar_button(
-                                            "open-project",
-                                            theme,
-                                            true,
-                                            false,
-                                        )
-                                        .debug_selector(|| "open-project".to_owned())
-                                        .key_context(SELECTABLE_CONTEXT)
-                                        .tab_index(0)
-                                        .cursor_pointer()
-                                        .px_4()
-                                        .py_2()
-                                        .hover(|style| style.bg(theme.colors.accent_hover))
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.open_picker(cx)),
-                                        )
-                                        .on_action(cx.listener(
-                                            |this, _: &ActivateSelection, _, cx| {
-                                                this.open_picker(cx)
-                                            },
-                                        ))
-                                        .child("Import Source…"),
-                                    )
-                                    .into_any_element()
+                                div().flex_1().into_any_element()
                             })
                             .children(
                                 (has_sources && inspector_visible)

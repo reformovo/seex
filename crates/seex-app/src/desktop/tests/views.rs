@@ -57,6 +57,14 @@ fn view_actions_dispatch_through_the_focused_root(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn no_sources_render_a_blank_workspace(cx: &mut TestAppContext) {
+    let (_window, mut cx) = open_viewer(cx, None);
+
+    assert!(cx.debug_bounds("open-project").is_none());
+    assert!(cx.debug_bounds("metric-track-scroll").is_none());
+}
+
+#[gpui::test]
 fn analysis_view_tabs_manage_the_active_view_lifecycle(cx: &mut TestAppContext) {
     let (window, mut cx) = open_viewer(cx, None);
     let original_view = window
