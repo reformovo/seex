@@ -8,6 +8,7 @@ description = "Local-first training metrics tracker backed by Rust, PyO3, DuckDB
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Seex contributors" },
 ]
@@ -63,7 +64,6 @@ config-settings = { build-args = '--profile=dev' }
 
 [tool.maturin]
 manifest-path = "crates/seex-python/Cargo.toml"
-include = [{ path = ".cargo/config.toml", format = "sdist" }]
 python-source = "python"
 module-name = "seex._seex"
 bindings = "pyo3"
