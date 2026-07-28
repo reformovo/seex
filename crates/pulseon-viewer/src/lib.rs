@@ -1,15 +1,11 @@
-//! Renderer-independent state and native reads for the PulseOn desktop viewer.
+//! Domain state and native reads for the PulseOn desktop viewer.
 
 #![forbid(unsafe_code)]
 
-pub mod coordination;
-pub mod core;
-pub mod model;
-pub mod query;
-pub mod registry;
-mod source;
+pub mod data;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+pub mod desktop;
+pub mod domain;
 pub mod workbench;
-pub mod workbench_document;
-pub mod worker;
 
-pub use source::SourceError;
+pub use data::SourceError;

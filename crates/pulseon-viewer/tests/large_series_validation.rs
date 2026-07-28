@@ -12,11 +12,17 @@ use pulseon_storage::ProjectConnection;
 use pulseon_storage::bootstrap::{
     CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
 };
-use pulseon_viewer::core::{DataSourceId, RunRef};
-use pulseon_viewer::query::{
+use pulseon_viewer::data::query::{
     CurveAxis, CurveSelection, CurveSnapshot, DetailRequest, OverviewRequest,
 };
-use pulseon_viewer::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker};
+use pulseon_viewer::data::worker::{
+    Generation, ReadEventReceiver, ReadRequest, ReadSnapshot, ReadWorker,
+};
+use pulseon_viewer::domain::{DataSourceId, RunRef};
+
+mod support;
+
+use support::receive_event;
 
 const RUNS: usize = 10;
 const SOURCE_POINTS: i64 = 1_000_000;
@@ -133,6 +139,7 @@ fn build_fixture(
 
 fn measure(
     worker: &ReadWorker,
+    events: &ReadEventReceiver,
     source_id: &DataSourceId,
     generation: &mut u64,
     label: &str,
@@ -144,7 +151,7 @@ fn measure(
         *generation += 1;
         let started = Instant::now();
         worker.submit(source_id.clone(), Generation(*generation), request.clone())?;
-        let event = worker.recv_timeout(QUERY_TIMEOUT)?;
+        let event = receive_event(events, QUERY_TIMEOUT)?;
         assert_eq!(&event.source_id, source_id);
         samples.push(started.elapsed());
         let snapshot = event.result?;
@@ -195,7 +202,10 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
         &["loss"],
         SOURCE_POINTS,
     )?;
-    let worker = ReadWorker::spawn(&root)?;
+    let mut worker = ReadWorker::spawn(&root)?;
+    let events = worker
+        .take_event_receiver()
+        .ok_or("worker event receiver should be available")?;
     let source_id = DataSourceId::from_path(&root);
     let project_id = ProjectId::from_string("viewer-scale");
     let selection = CurveSelection {
@@ -210,6 +220,7 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let mut generation = 0;
     let overview = measure(
         &worker,
+        &events,
         &source_id,
         &mut generation,
         "overview",
@@ -226,6 +237,7 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let full_viewport = AlignmentViewport::new(0, SOURCE_POINTS - 1)?;
     let full = measure(
         &worker,
+        &events,
         &source_id,
         &mut generation,
         "full detail",
@@ -244,6 +256,7 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let narrow_viewport = AlignmentViewport::new(450_000, 550_000)?;
     let narrow = measure(
         &worker,
+        &events,
         &source_id,
         &mut generation,
         "narrow detail",
@@ -286,7 +299,10 @@ fn retained_multi_track_fixture_supports_product_tracing() -> Result<(), Box<dyn
         &TRACE_METRICS,
         TRACE_SOURCE_POINTS,
     )?;
-    let worker = ReadWorker::spawn(&root)?;
+    let mut worker = ReadWorker::spawn(&root)?;
+    let events = worker
+        .take_event_receiver()
+        .ok_or("worker event receiver should be available")?;
     let source_id = DataSourceId::from_path(&root);
     let project_id = ProjectId::from_string("viewer-scale");
     for (index, metric_key) in TRACE_METRICS.into_iter().enumerate() {
@@ -309,7 +325,7 @@ fn retained_multi_track_fixture_supports_product_tracing() -> Result<(), Box<dyn
                 physical_width: 5_000,
             }),
         )?;
-        let event = worker.recv_timeout(QUERY_TIMEOUT)?;
+        let event = receive_event(&events, QUERY_TIMEOUT)?;
         let ReadSnapshot::Detail(snapshot) = event.result? else {
             return Err("expected detail snapshot".into());
         };

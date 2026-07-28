@@ -6,22 +6,16 @@ use pulseon_model::metric::MetricKey;
 use pulseon_model::run::RunId;
 use pulseon_model::types::ProjectId;
 
-use crate::coordination::{AnalysisViewId, MetricPanelId, PanelReadMode, SourceReadFailure};
-use crate::core::{DataSourceId, RunRef, SelectionError, ViewNavigation};
-use crate::query::{CurveSnapshot, InspectorSnapshot};
-use crate::workbench_document::WorkbenchDocument;
-use crate::worker::{Generation, ReadKind};
+use crate::data::query::{CurveSnapshot, InspectorSnapshot};
+use crate::data::worker::{Generation, ReadKind};
+use crate::domain::{DataSourceId, RunRef, SelectionError, ViewNavigation};
+use crate::workbench::document::WorkbenchDocument;
+use crate::workbench::panel_reads::{
+    AnalysisViewId, MetricPanelId, PanelReadMode, SourceReadFailure,
+};
 
 pub const DEFAULT_METRIC_ROW_HEIGHT: f32 = 52.;
 const MAX_METRIC_ROW_HEIGHT: f32 = 180.;
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum TrackDensity {
-    Compact,
-    #[default]
-    Comfortable,
-    Spacious,
-}
 
 /// Collision-free viewer-local identity for a Project in an imported source.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -94,8 +88,7 @@ impl MetricPanel {
 
     pub fn needs_detail(&self, viewport: AlignmentViewport, physical_width: u32) -> bool {
         !self.is_pending(ReadKind::Detail)
-            && (self.detail.is_none()
-                || self.requested_detail_viewport != Some(viewport)
+            && (self.requested_detail_viewport != Some(viewport)
                 || self.physical_width != physical_width)
     }
 }
@@ -109,12 +102,11 @@ pub struct AnalysisView {
     pub pinned_runs: Vec<RunRef>,
     pub panels: Vec<MetricPanel>,
     pub selected_panel_id: Option<MetricPanelId>,
-    pub track_density: TrackDensity,
     pub navigation: ViewNavigation,
-    pub local_error: Option<String>,
     pub timeline_extents: HashMap<MetricKey, AlignmentViewport>,
 }
 
+#[derive(Clone)]
 pub struct AnalysisViews {
     views: Vec<AnalysisView>,
     pinned_projects: Vec<ProjectRef>,
@@ -135,9 +127,7 @@ impl Default for AnalysisViews {
             pinned_runs: Vec::new(),
             panels: Vec::new(),
             selected_panel_id: None,
-            track_density: TrackDensity::default(),
             navigation: ViewNavigation::default(),
-            local_error: None,
             timeline_extents: HashMap::new(),
         };
         Self {
@@ -170,11 +160,6 @@ impl AnalysisViews {
                         saved.name,
                         saved_run.run_id.as_str()
                     ));
-                } else if runs.len() == crate::core::MAX_SELECTED_RUNS {
-                    issues.push(format!(
-                        "View {:?} exceeds the 10 Run selection limit",
-                        saved.name
-                    ));
                 } else {
                     runs.push(run);
                 }
@@ -184,13 +169,6 @@ impl AnalysisViews {
             for organized in baseline.iter().chain(&pinned_runs) {
                 if runs.contains(organized) {
                     continue;
-                }
-                if runs.len() == crate::core::MAX_SELECTED_RUNS {
-                    issues.push(format!(
-                        "View {:?} cannot make every organized Run visible",
-                        saved.name
-                    ));
-                    break;
                 }
                 runs.push(organized.clone());
             }
@@ -245,9 +223,7 @@ impl AnalysisViews {
                 pinned_runs,
                 panels,
                 selected_panel_id,
-                track_density: saved.track_density,
                 navigation,
-                local_error: None,
                 timeline_extents: HashMap::new(),
             });
         }
@@ -330,6 +306,13 @@ impl AnalysisViews {
             .expect("active Analysis View must remain in the collection")
     }
 
+    pub fn active_visible_runs(&self) -> impl Iterator<Item = &RunRef> {
+        self.active()
+            .runs
+            .iter()
+            .filter(|run| !self.archived_runs.contains(run))
+    }
+
     pub fn active_mut(&mut self) -> &mut AnalysisView {
         self.views
             .iter_mut()
@@ -347,9 +330,7 @@ impl AnalysisViews {
             pinned_runs: Vec::new(),
             panels: Vec::new(),
             selected_panel_id: None,
-            track_density: TrackDensity::default(),
             navigation: ViewNavigation::default(),
-            local_error: None,
             timeline_extents: HashMap::new(),
         });
         self.active_view_id = view_id.clone();
@@ -367,9 +348,7 @@ impl AnalysisViews {
             pinned_runs: active.pinned_runs,
             panels: active.panels,
             selected_panel_id: active.selected_panel_id,
-            track_density: active.track_density,
             navigation: active.navigation,
-            local_error: active.local_error,
             timeline_extents: active.timeline_extents,
         });
         self.active_view_id = view_id.clone();
@@ -412,19 +391,17 @@ impl AnalysisViews {
         true
     }
 
-    pub fn toggle_active_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
-        let archived = self.archived_runs.clone();
+    pub fn toggle_active_run(
+        &mut self,
+        run: RunRef,
+        selection_has_capacity: bool,
+    ) -> Result<bool, SelectionError> {
         let view = self.active_mut();
         let selected = if let Some(index) = view.runs.iter().position(|item| item == &run) {
             view.runs.remove(index);
             false
         } else {
-            let visible_count = view
-                .runs
-                .iter()
-                .filter(|item| !archived.contains(item))
-                .count();
-            if visible_count == crate::core::MAX_SELECTED_RUNS {
+            if !selection_has_capacity {
                 return Err(SelectionError::RunLimit);
             }
             view.runs.push(run);
@@ -433,11 +410,15 @@ impl AnalysisViews {
         Ok(selected)
     }
 
-    pub fn set_active_baseline(&mut self, baseline: Option<RunRef>) -> Result<(), SelectionError> {
+    pub fn set_active_baseline(
+        &mut self,
+        baseline: Option<RunRef>,
+        selection_has_capacity: bool,
+    ) -> Result<(), SelectionError> {
         if let Some(run) = &baseline
             && !self.active().runs.contains(run)
         {
-            self.toggle_active_run(run.clone())?;
+            self.toggle_active_run(run.clone(), selection_has_capacity)?;
         }
         if let Some(run) = &baseline {
             self.active_mut().pinned_runs.retain(|item| item != run);
@@ -446,11 +427,15 @@ impl AnalysisViews {
         Ok(())
     }
 
-    pub fn toggle_active_pinned_run(&mut self, run: RunRef) -> Result<bool, SelectionError> {
+    pub fn toggle_active_pinned_run(
+        &mut self,
+        run: RunRef,
+        selection_has_capacity: bool,
+    ) -> Result<bool, SelectionError> {
         let adding = !self.active().pinned_runs.contains(&run);
         let was_baseline = self.active().baseline.as_ref() == Some(&run);
         if adding && !self.active().runs.contains(&run) {
-            self.toggle_active_run(run.clone())?;
+            self.toggle_active_run(run.clone(), selection_has_capacity)?;
         }
         let pinned = &mut self.active_mut().pinned_runs;
         let added = if let Some(index) = pinned.iter().position(|candidate| candidate == &run) {
@@ -906,7 +891,7 @@ fn metric_row_height(height: f32) -> f32 {
     height.clamp(DEFAULT_METRIC_ROW_HEIGHT, MAX_METRIC_ROW_HEIGHT)
 }
 
-fn saved_run_ref(saved: &crate::workbench_document::SavedRunRef) -> RunRef {
+fn saved_run_ref(saved: &crate::workbench::document::SavedRunRef) -> RunRef {
     RunRef::new(
         DataSourceId::from_path(&saved.source_path),
         saved.project_id.clone(),
@@ -915,426 +900,5 @@ fn saved_run_ref(saved: &crate::workbench_document::SavedRunRef) -> RunRef {
 }
 
 #[cfg(test)]
-mod tests {
-    use pulseon_chart_core::AxisRange;
-    use pulseon_model::alignment::AlignmentAxis;
-
-    use crate::workbench_document::{SavedAnalysisView, SavedProjectRef, SavedRunRef};
-
-    use super::*;
-
-    #[test]
-    fn closing_the_last_view_creates_a_new_empty_view() {
-        let mut views = AnalysisViews::default();
-        let original = views.active().view_id.clone();
-
-        assert!(views.close(&original));
-        assert_eq!(views.views().len(), 1);
-        assert_ne!(views.active().view_id, original);
-        assert!(views.active().runs.is_empty());
-    }
-
-    #[test]
-    fn run_visibility_changes_preserve_loaded_panel_state() {
-        let mut views = AnalysisViews::default();
-        let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
-        views.begin_active_panel_read(&panel_id, ReadKind::Detail, Generation(7));
-        let run = RunRef::new(
-            DataSourceId::from_string("source"),
-            ProjectId::from_string("project"),
-            RunId::from_string("run"),
-        );
-
-        assert!(
-            views
-                .toggle_active_run(run.clone())
-                .expect("show should fit")
-        );
-        assert!(
-            views
-                .active_panel(&panel_id)
-                .expect("panel should remain")
-                .is_pending(ReadKind::Detail)
-        );
-        assert!(!views.toggle_active_run(run).expect("hide should succeed"));
-        assert!(
-            views
-                .active_panel(&panel_id)
-                .expect("panel should remain")
-                .is_pending(ReadKind::Detail)
-        );
-    }
-
-    #[test]
-    fn run_organization_changes_preserve_loaded_panel_state() {
-        let mut views = AnalysisViews::default();
-        let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
-        views.begin_active_panel_read(&panel_id, ReadKind::Detail, Generation(9));
-        let run = RunRef::new(
-            DataSourceId::from_string("source"),
-            ProjectId::from_string("project"),
-            RunId::from_string("run"),
-        );
-
-        views
-            .set_active_baseline(Some(run.clone()))
-            .expect("baseline should fit");
-        views
-            .toggle_active_pinned_run(run.clone())
-            .expect("pin should succeed");
-        views.archive_run(run);
-
-        assert!(
-            views
-                .active_panel(&panel_id)
-                .expect("panel should remain")
-                .is_pending(ReadKind::Detail)
-        );
-    }
-
-    #[test]
-    fn duplicated_views_copy_selection_without_sharing_mutation() {
-        let mut views = AnalysisViews::default();
-        let run = RunRef::new(
-            DataSourceId::from_string("source"),
-            pulseon_model::types::ProjectId::from_string("project"),
-            pulseon_model::run::RunId::from_string("run"),
-        );
-        views
-            .toggle_active_run(run)
-            .expect("first Run should be selected");
-        let baseline = RunRef::new(
-            DataSourceId::from_string("source"),
-            ProjectId::from_string("project"),
-            RunId::from_string("baseline"),
-        );
-        views
-            .set_active_baseline(Some(baseline.clone()))
-            .expect("baseline should fit the visible Run limit");
-        let pinned = RunRef::new(
-            DataSourceId::from_string("source"),
-            ProjectId::from_string("project"),
-            RunId::from_string("pinned"),
-        );
-        assert!(
-            views
-                .toggle_active_pinned_run(pinned)
-                .expect("pinned Run should fit the visible Run limit")
-        );
-        views.select_active_metric(MetricKey::from_string("loss"));
-        views
-            .active_mut()
-            .navigation
-            .select_axis(pulseon_model::alignment::AlignmentAxis::ElapsedTime);
-
-        let duplicate = views.duplicate_active();
-        views.active_mut().runs.clear();
-        views.active_mut().baseline = None;
-        views.active_mut().pinned_runs.clear();
-        views.active_mut().panels.clear();
-        views
-            .active_mut()
-            .navigation
-            .select_axis(pulseon_model::alignment::AlignmentAxis::Step);
-        assert!(views.activate(&AnalysisViewId::from_string("view-1")));
-
-        assert_eq!(views.active().runs.len(), 3);
-        assert!(views.active().baseline.is_some());
-        assert_eq!(views.active().pinned_runs.len(), 1);
-        assert_eq!(
-            views
-                .active()
-                .panels
-                .iter()
-                .map(|panel| panel.metric_key.clone())
-                .collect::<Vec<_>>(),
-            [MetricKey::from_string("loss")]
-        );
-        assert_eq!(
-            views.active().navigation.axis(),
-            pulseon_model::alignment::AlignmentAxis::ElapsedTime
-        );
-        assert!(views.activate(&duplicate));
-        assert!(views.active().runs.is_empty());
-        assert!(views.active().baseline.is_none());
-        assert!(views.active().pinned_runs.is_empty());
-        assert!(views.active().panels.is_empty());
-        assert_eq!(
-            views.active().navigation.axis(),
-            pulseon_model::alignment::AlignmentAxis::Step
-        );
-    }
-
-    #[test]
-    fn metric_selection_is_isolated_per_view() {
-        let mut views = AnalysisViews::default();
-        let first_view = views.active().view_id.clone();
-        let loss = views.select_active_metric(MetricKey::from_string("loss"));
-
-        let second_view = views.create_empty();
-        let accuracy = views.select_active_metric(MetricKey::from_string("accuracy"));
-        assert!(views.select_active_panel(&accuracy));
-        assert!(views.activate(&first_view));
-
-        assert_eq!(views.active().selected_panel_id.as_ref(), Some(&loss));
-        assert!(views.activate(&second_view));
-        assert_eq!(views.active().selected_panel_id.as_ref(), Some(&accuracy));
-    }
-
-    #[test]
-    fn metric_panel_heights_use_the_compact_bounded_range() {
-        let mut views = AnalysisViews::default();
-        let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
-
-        assert_eq!(views.active().panels[0].row_height, 52.);
-        assert!(views.set_active_panel_height(&panel_id, 1.));
-        assert_eq!(views.active().panels[0].row_height, 52.);
-        assert!(views.set_active_panel_height(&panel_id, 1_000.));
-        assert_eq!(views.active().panels[0].row_height, 180.);
-    }
-
-    #[test]
-    fn restore_reports_duplicate_identities_and_unknown_selection() {
-        let saved_run = SavedRunRef {
-            source_path: "/tmp/source".into(),
-            project_id: ProjectId::from_string("project"),
-            run_id: RunId::from_string("run"),
-        };
-        let document = WorkbenchDocument {
-            sources: vec![saved_run.source_path.clone()],
-            pinned_projects: vec![SavedProjectRef {
-                source_path: saved_run.source_path.clone(),
-                project_id: ProjectId::from_string("project"),
-            }],
-            archived_projects: Vec::new(),
-            removed_projects: Vec::new(),
-            archived_runs: Vec::new(),
-            views: vec![SavedAnalysisView {
-                name: "Duplicates".to_owned(),
-                runs: vec![saved_run.clone(), saved_run],
-                baseline: None,
-                pinned_runs: Vec::new(),
-                metrics: vec!["loss".to_owned(), "loss".to_owned()],
-                metric_heights: Vec::new(),
-                selected_metric: Some("unknown".to_owned()),
-                axis: AlignmentAxis::Step,
-                track_density: TrackDensity::Comfortable,
-                viewport: Some(AxisRange::new(0., 1.).expect("viewport should be valid")),
-            }],
-            active_view: 0,
-            project_sidebar_visible: true,
-            project_sidebar_width: 320.,
-            metric_sidebar_compact: false,
-            bottom_inspector_visible: false,
-            bottom_inspector_height: 220.,
-        };
-
-        let (views, issues) = AnalysisViews::restore(&document);
-
-        assert_eq!(views.active().runs.len(), 1);
-        assert_eq!(views.active().panels.len(), 1);
-        assert_eq!(views.pinned_projects().len(), 1);
-        assert!(views.active().selected_panel_id.is_none());
-        assert_eq!(issues.len(), 3);
-    }
-
-    #[test]
-    fn restored_organization_uses_composite_source_identities() {
-        let project_id = ProjectId::from_string("shared-project");
-        let saved_project = |source: &str| SavedProjectRef {
-            source_path: source.into(),
-            project_id: project_id.clone(),
-        };
-        let document = WorkbenchDocument {
-            sources: vec!["/tmp/source-a".into(), "/tmp/source-b".into()],
-            pinned_projects: vec![saved_project("/tmp/source-a")],
-            archived_projects: vec![saved_project("/tmp/source-b")],
-            removed_projects: Vec::new(),
-            archived_runs: Vec::new(),
-            views: Vec::new(),
-            active_view: 0,
-            project_sidebar_visible: true,
-            project_sidebar_width: 320.,
-            metric_sidebar_compact: false,
-            bottom_inspector_visible: false,
-            bottom_inspector_height: 220.,
-        };
-
-        let (views, issues) = AnalysisViews::restore(&document);
-
-        assert!(issues.is_empty());
-        assert_ne!(views.pinned_projects()[0], views.archived_projects()[0]);
-        assert_eq!(views.pinned_projects()[0].project_id, project_id);
-    }
-
-    #[test]
-    fn view_organization_is_local_while_archived_runs_are_shared() {
-        let mut views = AnalysisViews::default();
-        let run = |name: &str| {
-            RunRef::new(
-                DataSourceId::from_string("source"),
-                ProjectId::from_string("project"),
-                RunId::from_string(name),
-            )
-        };
-        views
-            .set_active_baseline(Some(run("baseline")))
-            .expect("baseline should fit the visible Run limit");
-        assert!(
-            views
-                .toggle_active_pinned_run(run("pinned"))
-                .expect("pinned Run should fit the visible Run limit")
-        );
-        let first = views.active().view_id.clone();
-        let second = views.create_empty();
-
-        assert!(views.active().baseline.is_none());
-        assert!(views.active().pinned_runs.is_empty());
-        let archived = run("archived");
-        views
-            .toggle_active_run(archived.clone())
-            .expect("archived candidate should fit the visible Run limit");
-        views.archive_run(archived.clone());
-        assert!(views.active().runs.contains(&archived));
-        assert!(views.activate(&first));
-        assert_eq!(views.active().baseline.as_ref(), Some(&run("baseline")));
-        assert_eq!(views.active().pinned_runs, [run("pinned")]);
-        assert_eq!(views.archived_runs(), std::slice::from_ref(&archived));
-        assert!(views.activate(&second));
-        assert_eq!(views.archived_runs(), std::slice::from_ref(&archived));
-        views.restore_run(&archived);
-        assert!(views.active().runs.contains(&archived));
-    }
-
-    #[test]
-    fn removed_projects_clear_every_view_without_touching_other_projects() {
-        let mut views = AnalysisViews::default();
-        let project = ProjectRef::new(
-            DataSourceId::from_string("source"),
-            ProjectId::from_string("removed"),
-        );
-        let run = |name: &str| {
-            RunRef::new(
-                project.source_id.clone(),
-                project.project_id.clone(),
-                RunId::from_string(name),
-            )
-        };
-        views
-            .set_active_baseline(Some(run("baseline")))
-            .expect("baseline should fit the visible Run limit");
-        views
-            .toggle_active_pinned_run(run("pinned"))
-            .expect("pinned Run should fit the visible Run limit");
-        views.archive_run(run("archived"));
-        views.pin_project(project.clone());
-        views.create_empty();
-        views
-            .toggle_active_run(run("second-view"))
-            .expect("second View Run should fit");
-        let retained = RunRef::new(
-            project.source_id.clone(),
-            ProjectId::from_string("retained"),
-            RunId::from_string("retained"),
-        );
-        views
-            .toggle_active_run(retained.clone())
-            .expect("other Project Run should fit");
-
-        views.remove_project(project.clone());
-
-        assert_eq!(views.removed_projects(), std::slice::from_ref(&project));
-        assert!(views.pinned_projects().is_empty());
-        assert!(views.archived_projects().is_empty());
-        assert!(views.archived_runs().is_empty());
-        assert!(views.views().iter().all(|view| {
-            view.baseline.is_none()
-                && view.pinned_runs.is_empty()
-                && view.runs.iter().all(|run| !project.contains_run(run))
-        }));
-        assert!(views.active().runs.contains(&retained));
-    }
-
-    #[test]
-    fn timeline_home_is_the_union_of_loaded_metric_extents() {
-        let mut views = AnalysisViews::default();
-        views.record_active_metric_extent(
-            MetricKey::from_string("loss"),
-            Some(AlignmentViewport::new(10, 20).expect("test extent should be valid")),
-        );
-
-        let home = views
-            .record_active_metric_extent(
-                MetricKey::from_string("accuracy"),
-                Some(AlignmentViewport::new(5, 15).expect("test extent should be valid")),
-            )
-            .expect("metric extents should produce a timeline home");
-
-        assert_eq!((home.start(), home.end()), (5, 20));
-    }
-
-    #[test]
-    fn metric_panels_keep_independent_generations_and_source_errors() {
-        let mut views = AnalysisViews::default();
-        let first = views.select_active_metric(MetricKey::from_string("loss"));
-        let second = views.select_active_metric(MetricKey::from_string("accuracy"));
-        views.begin_active_panel_read(&first, ReadKind::Detail, Generation(1));
-        views.begin_active_panel_read(&second, ReadKind::Detail, Generation(2));
-
-        assert!(!views.complete_active_panel_read(
-            &first,
-            ReadKind::Detail,
-            Generation(2),
-            PanelReadMode::Replace,
-            None,
-            Vec::new(),
-        ));
-        assert!(views.complete_active_panel_read(
-            &second,
-            ReadKind::Detail,
-            Generation(2),
-            PanelReadMode::Replace,
-            None,
-            vec![SourceReadFailure {
-                source_id: DataSourceId::from_string("source-b"),
-                message: "unavailable".to_owned(),
-            }],
-        ));
-
-        assert!(
-            views
-                .active_panel(&first)
-                .expect("first panel should exist")
-                .is_pending(ReadKind::Detail)
-        );
-        assert_eq!(
-            views
-                .active_panel(&second)
-                .expect("second panel should exist")
-                .source_errors
-                .len(),
-            1
-        );
-        views.begin_active_panel_read(&first, ReadKind::Inspector, Generation(3));
-        assert!(!views.complete_active_inspector_read(&first, Generation(2), None, Vec::new(),));
-        assert!(views.complete_active_inspector_read(&first, Generation(3), None, Vec::new(),));
-    }
-
-    #[test]
-    fn deactivating_a_view_cancels_every_panel_generation() {
-        let mut views = AnalysisViews::default();
-        let panel = views.select_active_metric(MetricKey::from_string("loss"));
-        let viewport = AlignmentViewport::new(10, 20).expect("viewport should be valid");
-        views.begin_active_panel_read(&panel, ReadKind::Overview, Generation(1));
-        views.begin_active_panel_detail(&panel, Generation(2), viewport, 800);
-        views.begin_active_panel_read(&panel, ReadKind::Inspector, Generation(3));
-
-        views.cancel_active_panel_reads();
-
-        let panel = views.active_panel(&panel).expect("panel should remain");
-        assert!(!panel.is_pending(ReadKind::Overview));
-        assert!(!panel.is_pending(ReadKind::Detail));
-        assert!(!panel.is_pending(ReadKind::Inspector));
-        assert!(panel.requested_detail_viewport.is_none());
-    }
-}
+#[path = "tests.rs"]
+mod tests;

@@ -6,9 +6,7 @@ use pulseon_model::alignment::AlignmentAxis;
 use pulseon_model::run::RunId;
 use pulseon_model::types::ProjectId;
 
-use crate::workbench::TrackDensity;
-
-const HEADER: &str = "pulseon-workbench 2";
+const HEADER: &str = "pulseon-workbench 3";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkbenchDocument {
@@ -36,7 +34,6 @@ pub struct SavedAnalysisView {
     pub metric_heights: Vec<(String, f32)>,
     pub selected_metric: Option<String>,
     pub axis: AlignmentAxis,
-    pub track_density: TrackDensity,
     pub viewport: Option<AxisRange>,
 }
 
@@ -141,10 +138,9 @@ impl WorkbenchDocument {
                 |range| format!("{} {}", range.start().to_bits(), range.end().to_bits()),
             );
             output.push_str(&format!(
-                "view {} {} {} {} {viewport}\n",
+                "view {} {} {} {viewport}\n",
                 encode(&view.name),
                 axis_name(view.axis),
-                density_name(view.track_density),
                 view.selected_metric
                     .as_deref()
                     .map_or_else(|| "-".to_owned(), encode),
@@ -224,7 +220,7 @@ impl WorkbenchDocument {
                 ["source", path] => document
                     .sources
                     .push(PathBuf::from(decode(path, line_number)?)),
-                ["view", name, axis, density, selected, start, end] => {
+                ["view", name, axis, selected, start, end] => {
                     if let Some(view) = current.take() {
                         document.views.push(view);
                     }
@@ -239,7 +235,6 @@ impl WorkbenchDocument {
                             .then(|| decode(selected, line_number))
                             .transpose()?,
                         axis: parse_axis(axis, line_number)?,
-                        track_density: parse_density(density, line_number)?,
                         viewport: if *start == "-" && *end == "-" {
                             None
                         } else {
@@ -402,7 +397,6 @@ macro_rules! named_enum {
 }
 
 named_enum!(axis_name, parse_axis, AlignmentAxis, {"step" => AlignmentAxis::Step, "elapsed" => AlignmentAxis::ElapsedTime});
-named_enum!(density_name, parse_density, TrackDensity, {"compact" => TrackDensity::Compact, "comfortable" => TrackDensity::Comfortable, "spacious" => TrackDensity::Spacious});
 fn invalid_value(line: usize, message: &str) -> WorkbenchDocumentError {
     WorkbenchDocumentError::Invalid {
         line,
@@ -412,7 +406,16 @@ fn invalid_value(line: usize, message: &str) -> WorkbenchDocumentError {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::PathBuf;
+
+    use pulseon_chart_core::AxisRange;
+    use pulseon_model::alignment::AlignmentAxis;
+    use pulseon_model::run::RunId;
+    use pulseon_model::types::ProjectId;
+
+    use super::{
+        SavedAnalysisView, SavedProjectRef, SavedRunRef, WorkbenchDocument, WorkbenchDocumentError,
+    };
 
     fn document() -> WorkbenchDocument {
         let source_path = PathBuf::from("/tmp/project with spaces");
@@ -446,7 +449,6 @@ mod tests {
                 metric_heights: vec![("loss".to_owned(), 128.)],
                 selected_metric: Some("loss".to_owned()),
                 axis: AlignmentAxis::ElapsedTime,
-                track_density: TrackDensity::Compact,
                 viewport: Some(AxisRange::new(10., 20.).expect("test viewport should be valid")),
             }],
             active_view: 0,
@@ -489,8 +491,8 @@ mod tests {
     }
 
     #[test]
-    fn obsolete_v1_documents_are_rejected() {
-        let raw = "pulseon-workbench 1\n\
+    fn obsolete_documents_are_rejected() {
+        let raw = "pulseon-workbench 2\n\
                    dock 1 1134559232 0 0 1130102784\n\
                    active 0\n\
                    view 566965772031 step comfortable summary none - - -\n\

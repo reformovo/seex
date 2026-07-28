@@ -4,12 +4,12 @@ use std::fmt;
 use pulseon_model::alignment::AlignmentViewport;
 use pulseon_model::metric::MetricKey;
 
-use crate::core::{DataSourceId, RunRef};
-use crate::query::{
+use crate::data::query::{
     CurveAxis, CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest, InspectorRequest,
     InspectorRunSnapshot, InspectorSnapshot, OverviewRequest,
 };
-use crate::worker::{Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot};
+use crate::data::worker::{Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot};
+use crate::domain::{DataSourceId, RunRef};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnalysisViewId(String);
@@ -407,9 +407,14 @@ mod tests {
     use pulseon_model::types::ProjectId;
 
     use crate::SourceError;
-    use crate::worker::WorkerError;
+    use crate::data::worker::WorkerError;
 
-    use super::*;
+    use super::{
+        AlignmentViewport, AnalysisViewId, CurveAxis, CurveSeriesSnapshot, CurveSnapshot,
+        DataSourceId, Generation, MetricKey, MetricPanelId, PanelReadCoordinator, PanelReadMode,
+        PanelReadOutcome, PanelReadRequest, PanelReadTag, ReadEvent, ReadKind, ReadRequest,
+        ReadSnapshot, RunRef,
+    };
 
     fn run_ref(source: &str, run: &str) -> RunRef {
         RunRef::new(

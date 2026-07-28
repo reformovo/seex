@@ -2,21 +2,21 @@
 
 ## Measurement Record
 
-- Date: 2026-07-26
-- Implementation commit: `3e2be8d`, plus this validation record update
+- Date: 2026-07-27
+- Implementation: current Entity-architecture worktree
 - Platform: macOS 26.3 (25D125), arm64, Apple M4 Pro
 - Rust: 1.97.1
 - uv: 0.8.12
 - Xcode: 26.6 (17F113)
 - Metal compiler: Xcode Metal Toolchain 17.6.109.0
-- Display target: external display configured at 280 Hz; model and resolution
-  were not recorded
+- Display target: ASUS XG27AQWMG at 2560 x 1440 and 280 Hz
 
-The automated scale, final-layout CPU, build, type, and test gates pass. An
-earlier exploratory run displayed 280 FPS on the external 280 Hz display, but
-the persistent record does not yet contain the required gesture-by-gesture
-missed-presentation analysis for the converged multi-panel workbench. The final
-display gate therefore remains open in Roadmap Phase 3E.
+The automated scale, final-layout CPU, build, type, and test gates pass. A
+continuous Metal System Trace now covers the converged 10-Run, six-Metric
+workbench on the configured 280 Hz display. Runtime drawable waits remained
+below 1.2 ms and no post-warmup hang was recorded, but ten presentations
+spanned two refresh periods. The final display gate therefore remains open in
+Roadmap Phase 3E.
 
 ## Scale Fixture and Query Contract
 
@@ -88,35 +88,38 @@ do not prepare any static Metric chart again.
 
 ## High-Refresh Product Check
 
-The release viewer opened the retained 10-million-point DuckDB Project with
-`MTL_HUD_ENABLED=1`, and Metal HUD initialized frame interval, present delay,
-FPS, and logical FPS metrics. The observed display rate was 280 FPS on the
-external 280 Hz display. This confirms that the release binary and HUD can run
-against the scale fixture, but it is not the final multi-panel interaction
-evidence.
+The release viewer opened a retained DuckDB Project with 10 visible Runs and
+six Metric tracks on the ASUS XG27AQWMG configured at 2560 x 1440 and 280 Hz.
+After a five-second warmup, a 35.8-second Metal System Trace exercised brush
+resize and pan, ruler and chart pan, wheel and keyboard zoom, hover and locked
+cursors, and track and inspector scrolling. A separate 20-second trace used two
+persisted Views to cover repeated View switching and Bottom inspector toggling;
+it reported no hang.
 
-To close the Phase 3E gate, capture a Metal System Trace after the shared
-timeline and Metric panel grid are implemented, initial detail loading has
-finished, and the UI has warmed for five seconds. Exercise shared-brush resize
-and pan, chart pan, wheel/pinch and keyboard zoom, hover, grid scrolling, and
-View switching. Record the display's configured rate and require no
-viewer-caused presentation spanning two refresh periods. At 280 Hz, two periods
-are approximately 7.14 ms. Record the trace conclusion here; do not commit the
-local trace bundle.
+The trace recorded 129 single-period presented handlers at approximately
+3.572 ms and ten two-period handlers at approximately 7.144 ms. Post-warmup
+drawable waits had a 1.191 ms maximum and the only reported hang was a
+163.08 ms startup event before warmup. The strict Phase 3E requirement permits
+no viewer-caused presentation spanning two refresh periods, so this run does
+not close the gate. A separate real title-bar move to the target display then
+held approximately 140.57 FPS and a 7.11 ms HUD frame interval during sustained
+10-Run, six-track hover, corroborating the two-period trace samples. Local
+trace bundles remain uncommitted.
 
 Generate the retained multi-track DuckDB fixture once, then launch it with the
 HUD enabled:
 
 ```bash
 PULSEON_VIEWER_TRACE_FIXTURE_ROOT=/tmp/pulseon-viewer-trace \
-  cargo test -p pulseon-viewer --release retained_multi_track_fixture \
+  cargo test -p pulseon-viewer --release --features test-support \
+  retained_multi_track_fixture_supports_product_tracing \
   -- --ignored --nocapture
 
 env -i \
-  HOME="$HOME" USER="$USER" LOGNAME="$LOGNAME" \
+  HOME=/tmp/pulseon-viewer-trace/isolated-home \
+  USER="$USER" LOGNAME="$LOGNAME" \
   PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
   TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" \
-  PULSEON_VIEWER_WORKBENCH_PATH=/tmp/pulseon-viewer-trace/workbench.state \
   MTL_HUD_ENABLED=1 \
   ./target/release/pulseon-viewer \
   /tmp/pulseon-viewer-trace/duckdb
@@ -263,11 +266,11 @@ The latest full test-support run also passed without the teardown fault: 47
 library tests, 58 binary tests with two ignored hardware gates, three
 native-pipeline tests, and doc tests.
 
-The retained six-metric trace fixture is 89 MiB. At the time of the automated
-gate, `system_profiler` reported two connected Mi Monitor displays at
-3840 x 2160 and 2160 x 3840, each using a 60 Hz logical mode. These are not the
-280 Hz target display; the separate high-refresh checkbox remains open until
-the user reconnects that display and records the required Metal System Trace.
+The retained six-metric trace fixture is a local artifact. On 2026-07-27,
+`system_profiler` reported the connected XG27AQWMG at 2560 x 1440 and
+280.00 Hz. The high-refresh checkbox remains open because the recorded
+interaction run contained ten two-period presentations, not because the target
+display was unavailable.
 
 The Rust build emitted existing future-incompatibility warnings for `block`
 0.1.6 and `proc-macro-error2` 2.0.1; warnings were not produced by PulseOn code

@@ -228,7 +228,8 @@ native-storage record.
 - Provide create, activate, rename, duplicate, and close actions while always
   retaining at least one View.
 - Each View owns its name, visible and Pinned Runs, optional baseline, ordered
-  metrics, alignment axis, panel order, track density, and chart viewport state.
+  metrics, alignment axis, panel order, per-Metric row heights, and chart
+  viewport state.
 - A new View starts empty or duplicates the active View explicitly; Views must
   never share mutable selection state implicitly.
 - Keep Bottom inspector and Refresh as icon-only controls at the right edge,
@@ -460,11 +461,11 @@ connections, or renderer geometry.
 
 Loading tolerates unavailable sources, removed Projects or Runs, and unknown
 metrics without mutating source data. The viewer owns a dependency-free,
-length-safe hexadecimal text document headed by `pulseon-workbench 1`, stored
+length-safe hexadecimal text document headed by `pulseon-workbench 3`, stored
 at `~/Library/Application Support/PulseOn Viewer/workbench.state` on macOS.
 `PULSEON_VIEWER_WORKBENCH_PATH` overrides the location for controlled testing.
 Writes replace a temporary sibling atomically. Unsupported versions are
-reported and left untouched; v1 has no implicit migration path.
+reported and left untouched; earlier documents have no implicit migration path.
 
 ## Performance Contract
 

@@ -7,7 +7,7 @@ use pulseon_storage::bootstrap::{
 use pulseon_storage::config::{InitConfigError, resolve_storage_config};
 use pulseon_storage::{ProjectConnection, ProjectMetricReader, StorageError};
 
-use crate::model::{CatalogSnapshot, DiscoveryRequest};
+use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
 /// Failures while opening an existing viewer source.
 #[derive(Debug, thiserror::Error)]
@@ -142,7 +142,7 @@ mod tests {
     use pulseon_model::run::RunId;
     use pulseon_model::types::ProjectId;
 
-    use super::*;
+    use super::{DiscoveryRequest, ReadSession, SourceError};
 
     #[test]
     fn s3_is_rejected_before_missing_credentials_are_resolved()

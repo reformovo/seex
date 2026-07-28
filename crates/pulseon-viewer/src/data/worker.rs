@@ -6,14 +6,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+#[cfg(test)]
+use std::time::{Duration, Instant};
 
-use crate::core::DataSourceId;
-use crate::model::{CatalogSnapshot, DiscoveryRequest};
-use crate::query::{
+use crate::data::query::{
     CurveSnapshot, DetailRequest, InspectorRequest, InspectorSnapshot, OverviewRequest, QueryError,
 };
-use crate::source::{ReadSession, SourceError};
+use crate::data::source::{ReadSession, SourceError};
+use crate::data::{CatalogSnapshot, DiscoveryRequest};
+use crate::domain::DataSourceId;
 
 /// Monotonically increasing identity for one read request.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -180,29 +181,38 @@ impl ReadEventReceiver {
         })
         .await
     }
+}
 
-    pub fn try_event(&self) -> Option<ReadEvent> {
-        self.0.lock().queue.pop_front()
+#[cfg(test)]
+pub(crate) fn recv_event_for_test(
+    receiver: &ReadEventReceiver,
+    timeout: Duration,
+) -> Option<ReadEvent> {
+    use std::future::Future;
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    struct ThreadWake(std::thread::Thread);
+
+    impl Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
     }
 
-    pub fn recv_timeout(&self, timeout: Duration) -> Result<ReadEvent, mpsc::RecvTimeoutError> {
-        let state = self.0.lock();
-        let (mut state, wait) = self
-            .0
-            .available
-            .wait_timeout_while(state, timeout, |state| {
-                state.queue.is_empty() && !state.sender_closed
-            })
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(event) = state.queue.pop_front() {
-            Ok(event)
-        } else if state.sender_closed {
-            Err(mpsc::RecvTimeoutError::Disconnected)
-        } else if wait.timed_out() {
-            Err(mpsc::RecvTimeoutError::Timeout)
-        } else {
-            Err(mpsc::RecvTimeoutError::Disconnected)
+    let deadline = Instant::now() + timeout;
+    let mut future = std::pin::pin!(receiver.recv());
+    let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+    let mut cx = Context::from_waker(&waker);
+    loop {
+        if let Poll::Ready(event) = future.as_mut().poll(&mut cx) {
+            return event;
         }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        std::thread::park_timeout(remaining);
     }
 }
 
@@ -315,22 +325,6 @@ impl ReadWorker {
                 _ticket: ticket,
             })
             .map_err(|_| WorkerClosed)
-    }
-
-    pub fn try_event(&self) -> Option<ReadEvent> {
-        self.events.as_ref().and_then(ReadEventReceiver::try_event)
-    }
-
-    /// Waits for an event from background coordination or test code.
-    ///
-    /// # Errors
-    ///
-    /// Returns a receive error if the timeout expires or the worker stops.
-    pub fn recv_timeout(&self, timeout: Duration) -> Result<ReadEvent, mpsc::RecvTimeoutError> {
-        self.events
-            .as_ref()
-            .ok_or(mpsc::RecvTimeoutError::Disconnected)?
-            .recv_timeout(timeout)
     }
 
     /// Transfers the event stream to an event-driven integration.
@@ -534,11 +528,20 @@ fn execute(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::{Arc, Condvar, Mutex, mpsc};
+    use std::thread;
+    use std::time::Duration;
+
     use pulseon_model::metric::MetricKey;
 
-    use crate::query::{CurveAxis, CurveSelection};
+    use crate::data::query::{CurveAxis, CurveSelection};
 
-    use super::*;
+    use super::{
+        DataSourceId, DiscoveryRequest, Generation, OverviewRequest, PendingRequests,
+        ReadConcurrencyGate, ReadRequest, ReadWorker, RequestQueue, RequestTicket, TaggedRequest,
+        next_request, read_event_channel,
+    };
 
     fn overview_request(metric: &str) -> ReadRequest {
         ReadRequest::Overview(OverviewRequest {

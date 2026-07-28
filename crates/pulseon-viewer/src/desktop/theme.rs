@@ -167,7 +167,9 @@ impl ViewerSpacing {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use gpui::{WindowAppearance, px};
+
+    use super::{SERIES_COUNT, ViewerSpacing, ViewerTheme};
 
     #[test]
     fn appearances_have_distinct_semantic_palettes() {

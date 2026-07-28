@@ -74,7 +74,9 @@ impl AssetSource for ViewerAssets {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use gpui::AssetSource;
+
+    use super::{ASSETS, ViewerAssets};
 
     #[test]
     fn embedded_icon_paths_are_loadable_and_listed() -> gpui::Result<()> {

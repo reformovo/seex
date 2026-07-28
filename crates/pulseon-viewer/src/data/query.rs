@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use crate::core::{DataSourceId, RunRef};
-use crate::source::ReadSession;
+use crate::data::source::ReadSession;
+use crate::domain::{DataSourceId, RunRef};
 use pulseon_chart_core::{DataPoint, Series, SeriesId};
 use pulseon_core::engine::EngineError;
 use pulseon_core::engine::query::NativeQueryStore;
@@ -315,7 +315,10 @@ mod tests {
     use pulseon_model::run::{RunId, RunStatus};
     use pulseon_model::types::ProjectId;
 
-    use super::*;
+    use super::{
+        AlignmentViewport, CurveAxis, CurveSelection, DataSourceId, DetailRequest, MetricKey,
+        OverviewRequest, ReadSession, RunRef, brushable_range, detail_budget, overview_budget,
+    };
 
     #[test]
     fn screen_budgets_clamp_density_and_overflow() {

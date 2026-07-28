@@ -12,11 +12,17 @@ use pulseon_model::types::ProjectId;
 use pulseon_storage::StorageError;
 use pulseon_storage::bootstrap::CatalogBackend;
 use pulseon_viewer::SourceError;
-use pulseon_viewer::core::{DataSourceId, RunRef};
-use pulseon_viewer::model::DiscoveryRequest;
-use pulseon_viewer::query::{CurveAxis, CurveSelection, DetailRequest, OverviewRequest};
-use pulseon_viewer::registry::{SourceRegistry, SourceStatus};
-use pulseon_viewer::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker, WorkerError};
+use pulseon_viewer::data::DiscoveryRequest;
+use pulseon_viewer::data::query::{CurveAxis, CurveSelection, DetailRequest, OverviewRequest};
+use pulseon_viewer::data::registry::{SourceRegistry, SourceStatus};
+use pulseon_viewer::data::worker::{
+    Generation, ReadEventReceiver, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
+};
+use pulseon_viewer::domain::{DataSourceId, RunRef};
+
+mod support;
+
+use support::receive_event;
 
 const SOURCE_POINTS: i64 = 2_100;
 const EVENT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -153,13 +159,14 @@ fn fixture(backend: CatalogBackend, absolute_paths: bool) -> Result<Fixture, Box
 
 fn read(
     worker: &ReadWorker,
+    events: &ReadEventReceiver,
     source_id: DataSourceId,
     generation: u64,
     request: ReadRequest,
 ) -> Result<ReadSnapshot, Box<dyn Error>> {
     let expected_kind = request.kind();
     worker.submit(source_id.clone(), Generation(generation), request)?;
-    let event = worker.recv_timeout(EVENT_TIMEOUT)?;
+    let event = receive_event(events, EVENT_TIMEOUT)?;
     assert_eq!(event.source_id, source_id);
     assert_eq!(event.generation, Generation(generation));
     assert_eq!(event.kind, expected_kind);
@@ -167,7 +174,10 @@ fn read(
 }
 
 fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
-    let worker = ReadWorker::spawn(fixture.root_path())?;
+    let mut worker = ReadWorker::spawn(fixture.root_path())?;
+    let events = worker
+        .take_event_receiver()
+        .ok_or("worker event receiver should be available")?;
     let source_id = fixture.source_id();
     let selection = fixture.selection();
     let discovery_request = DiscoveryRequest {
@@ -181,6 +191,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
     };
     let catalog = match read(
         &worker,
+        &events,
         source_id.clone(),
         1,
         ReadRequest::Discover(discovery_request.clone()),
@@ -205,6 +216,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
     };
     let overview = match read(
         &worker,
+        &events,
         source_id.clone(),
         2,
         ReadRequest::Overview(overview_request),
@@ -255,6 +267,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
     };
     let full_detail = match read(
         &worker,
+        &events,
         source_id.clone(),
         3,
         ReadRequest::Detail(DetailRequest {
@@ -277,6 +290,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
     };
     let detail = match read(
         &worker,
+        &events,
         source_id,
         4,
         ReadRequest::Detail(detail_request.clone()),
@@ -340,8 +354,8 @@ fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Erro
         Generation(2),
         ReadRequest::Discover(DiscoveryRequest::default()),
     )?;
-    let duckdb_event = duckdb_events.recv_timeout(EVENT_TIMEOUT)?;
-    let sqlite_event = sqlite_events.recv_timeout(EVENT_TIMEOUT)?;
+    let duckdb_event = receive_event(&duckdb_events, EVENT_TIMEOUT)?;
+    let sqlite_event = receive_event(&sqlite_events, EVENT_TIMEOUT)?;
     assert!(matches!(
         &duckdb_event.result,
         Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
@@ -367,7 +381,10 @@ fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Erro
 #[test]
 fn worker_reports_a_missing_catalog_without_creating_it() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
-    let worker = ReadWorker::spawn(root.path())?;
+    let mut worker = ReadWorker::spawn(root.path())?;
+    let events = worker
+        .take_event_receiver()
+        .ok_or("worker event receiver should be available")?;
     let source_id = DataSourceId::from_path(root.path());
     worker.submit(
         source_id.clone(),
@@ -375,7 +392,7 @@ fn worker_reports_a_missing_catalog_without_creating_it() -> Result<(), Box<dyn 
         ReadRequest::Discover(DiscoveryRequest::default()),
     )?;
 
-    let event = worker.recv_timeout(EVENT_TIMEOUT)?;
+    let event = receive_event(&events, EVENT_TIMEOUT)?;
 
     assert_eq!(event.source_id, source_id);
     assert!(matches!(

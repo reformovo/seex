@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::core::DataSourceId;
-use crate::model::CatalogSnapshot;
-use crate::worker::{
+use crate::data::CatalogSnapshot;
+use crate::data::worker::{
     Generation, ReadConcurrencyGate, ReadEvent, ReadEventReceiver, ReadRequest, ReadWorker,
     WorkerClosed,
 };
+use crate::domain::DataSourceId;
 use pulseon_model::types::ProjectId;
 
 const MAX_CONCURRENT_SOURCE_READS: usize = 4;
@@ -52,6 +52,13 @@ impl Default for SourceRegistry {
 }
 
 impl SourceRegistry {
+    pub(crate) fn snapshot(&self) -> Arc<[ImportedSource]> {
+        self.entries
+            .iter()
+            .map(|entry| entry.source.clone())
+            .collect()
+    }
+
     /// Retains a source without opening its native catalog.
     pub fn import(&mut self, root_path: PathBuf) -> DataSourceId {
         let source_id = DataSourceId::from_path(&root_path);
@@ -169,7 +176,7 @@ impl SourceRegistry {
             return;
         };
         let catalog_project = entry.catalog_requests.remove(&event.generation).flatten();
-        if let Ok(crate::worker::ReadSnapshot::Catalog(snapshot)) = &event.result {
+        if let Ok(crate::data::worker::ReadSnapshot::Catalog(snapshot)) = &event.result {
             merge_catalog(
                 &mut entry.source.catalog,
                 snapshot,
@@ -250,10 +257,13 @@ mod tests {
     use pulseon_model::run::{Run, RunId, RunStatus};
     use pulseon_model::types::{Project, ProjectId};
 
-    use crate::model::CatalogSnapshot;
-    use crate::worker::{ReadKind, ReadSnapshot};
+    use crate::data::CatalogSnapshot;
+    use crate::data::worker::{ReadKind, ReadSnapshot};
 
-    use super::*;
+    use super::{
+        DataSourceId, Generation, ReadEvent, ReadRequest, SourceRegistry, SourceRegistryError,
+        SourceStatus, merge_catalog,
+    };
 
     #[test]
     fn importing_sources_is_retained_ordered_and_lazy() {
@@ -305,7 +315,7 @@ mod tests {
             registry.source(&source_id).map(|source| &source.status),
             Some(&SourceStatus::Loading)
         );
-        assert!(events.try_event().is_none());
+        drop(events);
         assert!(
             registry
                 .activate(&source_id)

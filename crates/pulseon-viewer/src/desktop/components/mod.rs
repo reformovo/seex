@@ -1,15 +1,17 @@
 use gpui::{
-    AnyView, App, Context, Div, ElementId, Render, Rgba, SharedString, Stateful, Svg, Window, div,
+    AnyView, App, Context, Div, ElementId, Render, SharedString, Stateful, Svg, Window, div,
     prelude::*, px, svg,
 };
 
 use super::theme::ViewerTheme;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StatusTone {
-    Info,
-    Error,
-}
+mod popover;
+mod resize_handle;
+mod text_input;
+
+pub(super) use popover::{popover, popover_menu_item};
+pub(super) use resize_handle::{horizontal_resize_handle, vertical_resize_handle};
+pub(super) use text_input::TextInput;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IconName {
@@ -214,36 +216,6 @@ pub fn sidebar_hover_icon_button(
         .when(force_visible, |button| button.visible().opacity(1.))
 }
 
-pub fn popover(theme: ViewerTheme) -> Div {
-    div()
-        .occlude()
-        .p_3()
-        .rounded(theme.spacing.corner_radius)
-        .border_1()
-        .border_color(theme.colors.border)
-        .bg(theme.colors.surface)
-}
-
-pub fn popover_menu_item(
-    id: impl Into<ElementId>,
-    label: &str,
-    icon_name: Option<IconName>,
-    theme: ViewerTheme,
-) -> Stateful<Div> {
-    div()
-        .id(id)
-        .h(theme.spacing.control_height)
-        .px_2()
-        .gap_2()
-        .rounded(theme.spacing.corner_radius)
-        .flex()
-        .items_center()
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.colors.element_hover))
-        .children(icon_name.map(|icon_name| icon(icon_name, theme)))
-        .child(label.to_owned())
-}
-
 pub fn tooltip(theme: ViewerTheme) -> Div {
     div()
         .p_3()
@@ -283,14 +255,13 @@ impl Render for LabelTooltip {
     }
 }
 
-pub fn status_badge(theme: ViewerTheme, tone: StatusTone) -> Div {
-    let (background, text) = status_colors(theme, tone);
+pub fn status_badge(theme: ViewerTheme) -> Div {
     div()
         .px_3()
         .py_2()
         .rounded(theme.spacing.corner_radius)
-        .bg(background)
-        .text_color(text)
+        .bg(theme.colors.element_active)
+        .text_color(theme.colors.text)
         .text_sm()
 }
 
@@ -305,29 +276,9 @@ pub fn empty_state(theme: ViewerTheme) -> Div {
         .text_color(theme.colors.text_muted)
 }
 
-fn status_colors(theme: ViewerTheme, tone: StatusTone) -> (Rgba, Rgba) {
-    match tone {
-        StatusTone::Info => (theme.colors.element_active, theme.colors.text),
-        StatusTone::Error => (theme.colors.error_background, theme.colors.error_text),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use gpui::WindowAppearance;
-
-    use super::*;
-
-    #[test]
-    fn status_tones_use_distinct_semantic_pairs() {
-        for appearance in [WindowAppearance::Light, WindowAppearance::Dark] {
-            let theme = ViewerTheme::for_appearance(appearance);
-            let info = status_colors(theme, StatusTone::Info);
-            let error = status_colors(theme, StatusTone::Error);
-
-            assert_ne!(info, error);
-        }
-    }
+    use super::IconName;
 
     #[test]
     fn icon_name_has_a_stable_asset_path() {

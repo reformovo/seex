@@ -391,11 +391,88 @@ before release work begins.
   Project-scoped Ranking, and the Bottom inspector. Keep Summary, Ranking, and
   Evidence on the existing Core/CLI/Python whole-series semantics; never derive
   them from viewport or renderer-owned points.
-- [x] Extend optional `pulseon-workbench 1` viewer-state records for Project
-  placement, Archived Runs, each View's baseline/Pinned/visible Runs, axis
-  mode, Metric order, track sizes, and dock dimensions. Missing records in an
-  older v1 document use safe defaults; loading and saving never mutate native
-  data.
+- [x] Persist Project placement, Archived Runs, each View's
+  baseline/Pinned/visible Runs, axis mode, Metric order, row heights, and dock
+  dimensions in the canonical `pulseon-workbench 3` document. Earlier viewer
+  documents are rejected without migration; loading and saving never mutate
+  native data.
+
+##### Resource Efficiency and Memory Boundaries
+
+The Viewer currently bounds returned points per Run/Metric series, but that
+query budget is not an end-to-end memory bound. The following stages align
+storage reduction with final logical-pixel rendering, remove duplicate point
+ownership, bound GPUI geometry, and reduce native-query working memory. All
+stages are Phase 3E release gates and must preserve interaction fidelity.
+
+###### Stage 1: Baseline and Budget Calibration
+
+- [ ] Add release/test-support resource counters for each panel/generation:
+  requested budget, source and returned points, projected and compacted points,
+  path vertices, concurrent reads, and stale reads. Record the baseline in the
+  existing performance report without adding permanent production logging.
+- [ ] Derive Overview and Detail budgets from logical plot width `L`. Use
+  `clamp(L, 256, 2_000)` for Overview and `clamp(2L, 512, 5_000)` for Detail,
+  while continuing to permit at most two contract-defined viewport neighbors.
+- [ ] Keep budgets independent of Run/Metric count, visibility, and
+  Pin/Baseline/Archive state so organizational actions never trigger a curve
+  reload solely to change sampling density.
+
+###### Stage 2: Compact Immutable Snapshots
+
+- [ ] Let each `CurveSeriesSnapshot` retain one chart `Series` plus series-level
+  Run metadata, completeness, reasons, and `source_row_count`. Convert Phase 2
+  aligned evidence immediately and release per-point RunId, MetricKey,
+  timestamp, and other fields unused by the Viewer.
+- [ ] Remove duplicate `AlignedMetricPoint`/`DataPoint` ownership from Viewer
+  snapshots. Hover, locked cursor, baseline delta, and inspector cursor values
+  must read the same retained real sample without interpolation or fabricated
+  evidence.
+- [ ] Preserve Phase 2 aligned queries, the public Python API, native catalog,
+  Parquet schema, storage reduction, and comparison semantics.
+
+###### Stage 3: Bounded GPUI Rendering Memory
+
+- [ ] Preallocate render compaction from logical canvas bucket count rather than
+  input point count, and evict projection/path entries for removed Runs and
+  Metrics.
+- [ ] Reduce long-lived `Path<Pixels>` ownership and deep copies. Retain only
+  the latest projected geometry, produce a one-shot paint path, and select the
+  lower-vertex stroke/triangle implementation that still passes every Phase 3D
+  CPU threshold.
+- [ ] Preserve visible tracks plus one viewport of overscan. Off-screen tracks
+  must not prepare paths, and hover emphasis must not issue queries or replace
+  immutable snapshots.
+
+###### Stage 4: Lower Native Query Peaks
+
+- [ ] Separate whole-series diagnostics from viewport reduction, narrow DuckDB
+  materialized rows, and apply safe Step/Time viewport and neighbor filtering
+  as early as possible. Preserve last-write-wins, negative/decreasing-axis
+  diagnostics, and DuckDB/SQLite parity.
+- [ ] Keep four-way bounded reads and the 100 ms trailing debounce so multiple
+  Metrics do not regress to sequential loading. Add superseded-generation
+  checks before execution and between Runs; stale results must not enter a
+  merged snapshot.
+- [ ] Do not reduce visible Metric count, selected Run count, or interaction
+  refresh rate to obtain lower memory use.
+
+###### Stage 5: Resource and Release Validation
+
+- [ ] Cover 1x/2x/3x display scale, sparse/dense windows, spikes, viewport
+  neighbors, Step/Absolute Time, and nearest-real-point tooltips. Detail
+  projection error must stay within one two-logical-pixel render bucket.
+- [ ] With 10 Runs and at least six visible Metrics, repeat zoom, brush, scroll,
+  and View switching. At 2x scale, halve Detail return points approximately,
+  reduce compact-snapshot point storage by at least 60%, and reduce peak RSS by
+  at least 25% from the Stage 1 baseline.
+- [ ] After warm-up, run 30 zoom-in/zoom-out cycles without monotonic memory
+  growth. Final RSS must remain within `max(5%, 32 MiB)` of the warm steady
+  state, and stale reads must retain no snapshot.
+- [ ] Re-run Viewer tests, Clippy, check, the release build, every Phase 3D CPU
+  threshold, and the active-display Metal System Trace. Record RSS, allocation
+  high-water marks, and Metal instance-buffer growth; Phase 3F remains blocked
+  until every resource gate passes.
 
 ##### Validation Gates
 
@@ -426,12 +503,13 @@ before release work begins.
   layout. Preserve fixed storage budgets, visible-track scheduling, bounded
   query merging, the 100 ms debounce, and every Phase 3D CPU threshold.
 - [ ] On the active high-refresh display, record its configured refresh rate
-  and a Metal System Trace for the converged shared-brush resize/pan, ruler and
-  chart pan, wheel/pinch and keyboard zoom, dual-cursor hover/locking, track
-  scrolling, View switching, and Bottom inspector path. Sustain the configured
-  rate after warm-up with no viewer-caused presentation spanning two refresh
-  periods; at 280 Hz that boundary is approximately 7.14 ms. This is the final
-  Phase 3E gate.
+  and, after every resource-efficiency stage passes, a Metal System Trace for
+  the converged shared-brush resize/pan, ruler and chart pan, wheel/pinch and
+  keyboard zoom, dual-cursor hover/locking, track scrolling, View switching,
+  and Bottom inspector path. Record RSS, allocation high-water marks, and Metal
+  instance-buffer growth. Sustain the configured rate after warm-up with no
+  viewer-caused presentation spanning two refresh periods; at 280 Hz that
+  boundary is approximately 7.14 ms. This is the final Phase 3E gate.
 - [x] Pass formatting, workspace Clippy, Rust tests, viewer release build,
   maturin develop/build, Pyright, and pytest, and update the persistent
   performance record with exact commands, machine, display, and conclusions.
