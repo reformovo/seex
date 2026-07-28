@@ -1,4 +1,4 @@
-# PulseOn Benchmark Report
+# Seex Benchmark Report
 
 ## Measurement Record
 
@@ -6,7 +6,7 @@
 - Commit: `37da340`
 - Platform: macOS 26.3, arm64
 - Python: CPython 3.13.2
-- PulseOn: 0.1.0a4
+- Seex lineage: 0.1.0a4 baseline (measured before the identity reset)
 - Local object storage: MinIO `RELEASE.2025-09-07T16-13-09Z`, linux/arm64
 - Cloud object storage: configured S3-compatible OSS; endpoint, bucket, base
   prefix, and credentials are intentionally omitted.
@@ -36,14 +36,14 @@ uv run python scripts/bench_log_throughput.py --reports 100000
 uv run python scripts/bench_log_persistence.py \
   --reports 1000 \
   --repeats 3 \
-  --object-storage-config .pulseon/config.toml
+  --object-storage-config .seex/config.toml
 
 uv run python scripts/bench_minio_metric_query.py
 ```
 
 The persistence results below redact configured storage paths. The MinIO query
 command used an ephemeral local MinIO instance and the required
-`PULSEON_MINIO_*` environment variables. Cloud OSS query timing used the same
+`SEEX_MINIO_*` environment variables. Cloud OSS query timing used the same
 dataset and selection through the SDK because OSS does not expose MinIO admin
 trace APIs.
 
@@ -129,7 +129,7 @@ OSS does not expose MinIO `admin trace`, and the configured credentials do not
 grant `ListBucket`. Cloud response bytes, amplification, object counts, and
 independent unrelated-partition evidence are therefore unavailable. Test
 objects were retained under
-`pulseon-query-bench-oss/7e0a3c95e02e420eb5d767fab115c236/`.
+`seex-query-bench-oss/7e0a3c95e02e420eb5d767fab115c236/`.
 
 ## Verification and Assessment
 
