@@ -7,7 +7,7 @@
 
 Trainers commonly rent compute from a GPU platform only for the duration of a
 training job. The training machine is therefore an ephemeral execution
-environment rather than the durable home of a PulseOn project.
+environment rather than the durable home of a Seex project.
 
 The current native mode assumes that the process reporting metrics can also
 open the project's local catalog. An S3-compatible `data_path` makes Parquet
@@ -18,16 +18,16 @@ with it.
 
 ## Proposed Direction
 
-Separate the ephemeral training node from a stable PulseOn control service:
+Separate the ephemeral training node from a stable Seex control service:
 
 ```text
 ephemeral training node
-  PulseOn SDK
+  Seex SDK
   bounded queue / optional local spool
         |
         | batched HTTPS reports
         v
-stable PulseOn service
+stable Seex service
   authentication, idempotency, run lifecycle, queries
   DuckDB/DuckLake writer
         |
@@ -119,7 +119,7 @@ a queue-full error or applying configured backpressure.
 
 ## Possible Delivery Phases
 
-1. Add a single-instance PulseOn service that owns the existing native engine,
+1. Add a single-instance Seex service that owns the existing native engine,
    a persistent catalog volume, and an S3-compatible data path.
 2. Add a remote client mode for project/run lifecycle, batched reporting,
    finalization, diagnostics, and queries while retaining local native mode.
@@ -137,8 +137,8 @@ a queue-full error or applying configured backpressure.
 - What maximum metric-loss window is acceptable when a rental platform kills
   an instance without a shutdown notice?
 - Is the stable service self-hosted by one trainer, provided as a managed
-  PulseOn service, or both?
-- Does one remote service initially represent one PulseOn project root, one
+  Seex service, or both?
+- Does one remote service initially represent one Seex project root, one
   user, or a future workspace containing multiple projects?
 - Are model checkpoints and artifacts in scope, or does this design cover only
   the existing numeric metric model?
@@ -146,5 +146,5 @@ a queue-full error or applying configured backpressure.
   durable ingestion log become an earlier acceptance boundary?
 
 The answers affect the domain language and may justify a future ADR. Until
-they are resolved, terms such as "training node" and "PulseOn control service"
+they are resolved, terms such as "training node" and "Seex control service"
 remain provisional and are not added to the project glossary.

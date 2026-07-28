@@ -2,8 +2,8 @@
 
 - Python package backed by Rust/PyO3, built with `maturin`.
 - Virtual Cargo workspace: edition 2024 crates under `crates/`; the PyO3
-  `cdylib` source is under `crates/pulseon-python/src/`.
-- Python package source: `python/pulseon/`; tests under `tests/`.
+  `cdylib` source is under `crates/seex-python/src/`.
+- Python package source: `python/seex/`; tests under `tests/`.
 - Architecture references: `docs/native-storage-boundary.md` and
   `docs/crate-boundaries.md`; roadmap: `docs/ROADMAP.md`.
 
@@ -12,7 +12,7 @@
 - Declare the files you will edit before changing code. Keep normal tasks to <=5 files and <=200 changed lines unless the user expands scope.
 - Use the root `rust-toolchain.toml` as the single Rust toolchain source for local development and CI; update it deliberately when upgrading Rust.
 - Preserve the native storage boundaries described in `docs/native-storage-boundary.md`.
-- Keep Python code typed; update `python/pulseon/_pulseon.pyi` when exposing new Python API from Rust.
+- Keep Python code typed; update `python/seex/_seex.pyi` when exposing new Python API from Rust.
 - Type-check all Python code under `python/`, `scripts/`, and `tests/`; keep suppressions narrow and inline for deliberate type-contract violations.
 - Add or update tests for new behavior. Rust logic should have Rust tests where possible; Python-facing behavior should have `pytest` coverage.
 - Run the relevant verification commands after edits and report any command you could not run.
@@ -20,7 +20,7 @@
 
 ## Must Never
 
-- Do not edit generated build artifacts in `dist/`, `target/`, `pulseon.egg-info/`, `__pycache__/`, or `.pytest_cache/`.
+- Do not edit generated build artifacts in `dist/`, `target/`, `seex.egg-info/`, `__pycache__/`, or `.pytest_cache/`.
 - Do not commit secrets, `.env` files, local database files, or local object-storage data.
 - Do not bypass failing checks by weakening lint/type/test configuration without explicit approval.
 - Do not introduce broad refactors while implementing a narrow roadmap phase.

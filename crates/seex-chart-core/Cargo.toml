@@ -1,0 +1,11 @@
+[package]
+name = "seex-chart-core"
+version = "0.1.0-beta.0"
+edition = "2024"
+description = "Renderer-agnostic chart primitives for Seex."
+license = "MIT"
+repository = "https://github.com/reformovo/seex"
+
+[lib]
+name = "seex_chart_core"
+path = "src/lib.rs"

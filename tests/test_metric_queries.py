@@ -12,9 +12,9 @@ from tests import helpers
 def test_client_queries_metric_points_and_terminal_summaries(
     tmp_path: pathlib.Path,
 ) -> None:
-    import pulseon
+    import seex
 
-    client = pulseon.init(tmp_path / "pulseon")
+    client = seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.25)
@@ -32,9 +32,9 @@ def test_client_queries_metric_points_and_terminal_summaries(
 
     assert [point.step for point in points] == [0, 1]
     assert [point.value_f64 for point in points] == [0.25, 0.125]
-    assert isinstance(points[0], pulseon.MetricPoint)
+    assert isinstance(points[0], seex.MetricPoint)
     assert len(summaries) == 1
-    assert isinstance(summaries[0], pulseon.MetricSummary)
+    assert isinstance(summaries[0], seex.MetricSummary)
     assert summaries[0].effective_count == 2
     assert summaries[0].last_step == 1
     assert summaries[0].last_value_f64 == 0.125
@@ -45,9 +45,9 @@ def test_client_queries_metric_points_and_terminal_summaries(
 
 
 def test_table_queries_preserve_object_query_results(tmp_path: pathlib.Path) -> None:
-    import pulseon
+    import seex
 
-    client = pulseon.init(tmp_path / "pulseon")
+    client = seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.25)
@@ -78,9 +78,9 @@ def test_table_queries_preserve_object_query_results(tmp_path: pathlib.Path) -> 
 
 
 def test_empty_arrow_tables_preserve_public_schemas(tmp_path: pathlib.Path) -> None:
-    import pulseon
+    import seex
 
-    client = pulseon.init(tmp_path / "pulseon")
+    client = seex.init(tmp_path / "seex")
     point_table = client.query_metric_table("missing-run", "train/loss")
     summary_table = client.query_metric_summaries_table([], "train/loss")
 
@@ -110,9 +110,9 @@ def test_empty_arrow_tables_preserve_public_schemas(tmp_path: pathlib.Path) -> N
 def test_active_run_discovery_and_summaries_use_persisted_points(
     tmp_path: pathlib.Path,
 ) -> None:
-    import pulseon
+    import seex
 
-    client = pulseon.init(tmp_path / "pulseon")
+    client = seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("eval/accuracy", 0, 0.8)
@@ -143,9 +143,9 @@ def test_active_run_discovery_and_summaries_use_persisted_points(
 def test_terminal_run_metric_discovery_uses_rebuilt_aggregate_state(
     tmp_path: pathlib.Path,
 ) -> None:
-    import pulseon
+    import seex
 
-    client = pulseon.init(tmp_path / "pulseon")
+    client = seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("eval/accuracy", 0, 0.8)
@@ -159,13 +159,13 @@ def test_terminal_run_metric_discovery_uses_rebuilt_aggregate_state(
         "train/loss",
     ]
     assert [metric.effective_count for metric in metrics] == [1, 1]
-    assert isinstance(metrics[0], pulseon.MetricSummary)
+    assert isinstance(metrics[0], seex.MetricSummary)
 
 
 def test_summary_comparison_preserves_mixed_run_order(tmp_path: pathlib.Path) -> None:
-    import pulseon
+    import seex
 
-    client = pulseon.init(tmp_path / "pulseon")
+    client = seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     terminal = client.create_run(project.project_id, "terminal", run_id="terminal")
     terminal.log("train/loss", 0, 0.5)
@@ -191,9 +191,9 @@ def test_summary_comparison_preserves_mixed_run_order(tmp_path: pathlib.Path) ->
 def test_client_query_metric_applies_range_filters_and_short_max_points(
     tmp_path: pathlib.Path,
 ) -> None:
-    import pulseon
+    import seex
 
-    client = pulseon.init(tmp_path / "pulseon")
+    client = seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     for step in range(100):
@@ -234,24 +234,24 @@ def test_sdk_downsampling_does_not_install_lttb_without_opt_in(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import pulseon
+    import seex
 
     isolated_home = tmp_path / "home"
     isolated_home.mkdir()
     monkeypatch.setenv("HOME", str(isolated_home))
-    monkeypatch.delenv("PULSEON_LTTB_AUTO_INSTALL", raising=False)
-    monkeypatch.delenv("PULSEON_LTTB_EXTENSION_PATH", raising=False)
-    client = pulseon.init(tmp_path / "project")
+    monkeypatch.delenv("SEEX_LTTB_AUTO_INSTALL", raising=False)
+    monkeypatch.delenv("SEEX_LTTB_EXTENSION_PATH", raising=False)
+    client = seex.init(tmp_path / "project")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     for step in range(201):
         run.log("train/loss", step, float(step))
     client.finish_run(run.run_id)
 
-    with pytest.raises(pulseon.StorageError) as error_info:
+    with pytest.raises(seex.StorageError) as error_info:
         client.query_metric(run.run_id, "train/loss", max_points=200)
 
     message = str(error_info.value)
     assert "will not download it automatically" in message
-    assert "PULSEON_LTTB_AUTO_INSTALL=1" in message
+    assert "SEEX_LTTB_AUTO_INSTALL=1" in message
     client.shutdown()

@@ -1,4 +1,4 @@
-# PulseOn Roadmap
+# Seex Roadmap
 
 > This roadmap tracks current and future work. Shipped release details live in
 > `docs/release-notes/`; durable product boundaries live in
@@ -7,10 +7,10 @@
 Pre-1.0 releases do not promise store, API, or machine-output compatibility;
 compatibility and migration commitments begin with the future 1.0 release.
 
-## 0.2.x / Desktop Curve Viewer
+## 0.1.x / Local SDK and Desktop App
 
-0.2.x unlocks interactive analysis that 0.1.x's headless read surface cannot
-provide, and ships the comparison alignment semantics that the viewer consumes.
+Seex 0.1.x establishes the renamed headless SDK and interactive desktop app,
+including the comparison alignment semantics consumed by the app.
 See [ADR 0011](adr/0011-desktop-first-curve-viewer.md) for the desktop-first
 decision and [ADR 0012](adr/0012-defer-remote-training.md) for the remote
 training deferral.
@@ -19,24 +19,24 @@ training deferral.
 
 - [x] One-time workspace migration to a virtual Cargo workspace (root `Cargo.toml`
   holds only `[workspace]`, no `[package]`): move `src/` to
-  `crates/pulseon-core/src/`, set `members = ["crates/*"]`, update
+  `crates/seex-core/src/`, set `members = ["crates/*"]`, update
   `pyproject.toml`/maturin `manifest-path` and any CI `cargo` invocations. No
   behavior change; `cargo check`, `cargo test`, `uv run maturin develop`,
   `uv run pyright`, and `uv run pytest` must still pass after the move.
-- [x] `crates/pulseon-chart-core`: series model, viewport, scales, ticks,
+- [x] `crates/seex-chart-core`: series model, viewport, scales, ticks,
   path projection, path cache, hit testing, selection and zoom state. Must not
   depend on GPUI, egui, Tauri, React, or a browser runtime, and must be unit
   testable without a window.
-- [x] `crates/pulseon-data`: Parquet/DuckDB query and PulseOn schema validation,
+- [x] `crates/seex-data`: Parquet/DuckDB query and Seex schema validation,
   viewport-aware query planning, and screen-budgeted point reduction. Reuses the
   existing Parquet schema contract; no schema changes.
 
 ### Phase 1.5: Crate Responsibility Realignment
 
-- [x] Extract shared domain and query contracts into `pulseon-model`.
-- [x] Split the PyO3 artifact into `pulseon-python`, leaving `pulseon-core` as a
+- [x] Extract shared domain and query contracts into `seex-model`.
+- [x] Split the PyO3 artifact into `seex-python`, leaving `seex-core` as a
   reusable application library.
-- [x] Rename `pulseon-data` to `pulseon-storage` and consolidate native project
+- [x] Rename `seex-data` to `seex-storage` and consolidate native project
   and standalone Parquet reads behind one metric query contract.
 - [x] Move DuckDB/DuckLake bootstrap, reads, writes, flush, configuration, and
   storage errors out of Core. Preserve the Python API and Parquet contract.
@@ -53,7 +53,7 @@ the pre-1.0 CLI JSON envelope with version 2.
 
 #### Phase 2A: Contract and Product Language
 
-- [x] Write `docs/comparison-semantics.md` as the renderer-agnostic 0.2.x
+- [x] Write `docs/comparison-semantics.md` as the renderer-agnostic 0.1.x
   contract, explicitly marked as changeable before 1.0. Define comparison axis,
   objective metric, comparison evidence, completeness, outcome, and preference
   as general product terms. Candidate and incumbent remain request roles, not
@@ -68,15 +68,15 @@ the pre-1.0 CLI JSON envelope with version 2.
   step. Raw delta is `candidate - reference`; relative delta divides by the
   absolute reference and is absent for a zero reference. Direction-normalized
   improvement is positive when better. No tolerance, significance, or
-  uncertainty claim is made in 0.2.x.
+  uncertainty claim is made in 0.1.x.
 
 #### Phase 2B: Observation Time and Aligned Query Foundation
 
 - [x] Capture a metric's observation timestamp on the `run.log(...)` enqueue
   path while leaving `ingested_at` on the background writer. Preserve the
   logging signature, queue admission, drain/finalization behavior, and metric
-  schema. Document pre-0.2 timestamps as best-effort elapsed evidence because
-  their writer-time origin cannot be detected or migrated safely.
+  schema. Seex stores observation time at the logging boundary and does not
+  migrate timestamps from pre-Seex stores.
 - [x] Add shared alignment request/result types and axis-aware storage queries
   for the native project store and standalone Parquet facts. Alignment uses a
   closed viewport plus one neighboring point on each side. Both axes support
@@ -108,7 +108,7 @@ the pre-1.0 CLI JSON envelope with version 2.
 - [x] Report primary and secondary last values, raw and relative deltas,
   normalized improvement, structured completeness/reasons, numeric outcome,
   and compute-only preference. Secondary metrics never affect outcome,
-  preference, ranking, or tie-breaking in 0.2.x.
+  preference, ranking, or tie-breaking in 0.1.x.
 - [x] Allow running and failed Runs to expose available numeric evidence but
   mark their report partial and preference inconclusive. Unknown or duplicate
   Run identities are request errors; missing metrics and non-finite values are
@@ -171,7 +171,7 @@ storage reductions selected through a shared viewport.
 
 #### Phase 3B: Native Read Session and Query Pipeline
 
-- [x] Add `pulseon-viewer` as a workspace binary with model, storage, Core, and
+- [x] Add `seex-app` as a workspace binary with model, storage, Core, and
   chart-core dependencies. Pin GPUI 0.2.2 only for macOS; keep a non-macOS
   unsupported entrypoint so Linux workspace checks continue to compile.
 - [x] Open existing local native Projects through the shared configuration and
@@ -393,7 +393,7 @@ before release work begins.
   them from viewport or renderer-owned points.
 - [x] Persist Project placement, Archived Runs, each View's
   baseline/Pinned/visible Runs, axis mode, Metric order, row heights, and dock
-  dimensions in the canonical `pulseon-workbench 3` document. Earlier viewer
+  dimensions in the canonical `seex-workbench 1` document. Earlier viewer
   documents are rejected without migration; loading and saving never mutate
   native data.
 
@@ -522,17 +522,17 @@ item, including the active-display Metal trace, is complete.
 - [ ] Add a macOS ARM64 viewer CI job that installs or verifies the Xcode Metal
   Toolchain, runs viewer tests, and builds the unsigned release binary without
   changing the Python wheel matrix or PyPI dependency graph.
-- [ ] On tags, produce `pulseon-viewer-macos-aarch64` and its SHA-256 checksum,
+- [ ] On tags, produce `seex-app-macos-aarch64` and its SHA-256 checksum,
   attest both artifacts, and attach them to the corresponding GitHub Release.
 - [ ] Preserve the existing Python wheel and sdist release behavior and verify
   the release job cannot publish a viewer artifact to PyPI accidentally.
 
-### Out of 0.2.x Scope
+### Out of 0.1.x Scope
 
 - Cumulative-token and normalized-budget comparison axes.
 - Stable Contract / compatibility ADR / schema version marker / deprecation
   policy (deferred to 1.0).
-- Retry-safe migration command (mutates state; deferred to 1.0).
+- Migration from pre-Seex stores; legacy state remains out of scope.
 - Persisted research decisions / durable research context / lineage / decisions
   in catalog state (ADR-gated, later).
 - Research driver with Git/source mutation (ADR-gated, later).
@@ -561,25 +561,21 @@ item, including the active-display Metal trace, is complete.
 ### Analysis and Agent Workflows
 
 - [ ] Evaluate the [research driver](drafts/autoresearch-control-loop-notes.md)
-  without moving source or Git mutation into PulseOn Core.
+  without moving source or Git mutation into Seex Core.
 - [ ] Design config/tag filtering, export, Web UI, MCP, and other agent-facing
   surfaces as independently reviewable roadmap phases after the local analysis
   workbench is validated.
 
 ## 1.0 / Stable Contract
 
-1.0 freezes the surfaces proven by 0.2.x. It is the first release with a
+1.0 freezes the surfaces proven by 0.1.x. It is the first release with a
 compatibility commitment; pre-1.0 releases make none.
 
 - [ ] Accept an ADR defining 1.0 compatibility for the typed Python API,
   versioned CLI JSON, catalog application schema, and Parquet schema.
 - [ ] Add an explicit store schema/version marker without changing the metric
   point Parquet compatibility boundary.
-- [ ] Support an explicit `0.1.0a5` store upgrade; diagnose older unversioned
-  stores without promising direct a1-a4 migration.
 - [ ] Document additive changes, deprecation, breaking changes, and the support
   window for stable stores and machine-readable output.
-- [ ] Add an explicit, retry-safe migration command that backs up catalog state
-  and never rewrites a store during ordinary initialization. Cover DuckDB and
-  SQLite stores, backend/config mismatches, mixed legacy artifacts, interrupted
-  migration, retry, and backup recovery.
+- [ ] Define migration policy only for stores created after the stable 1.0
+  compatibility boundary; pre-Seex stores remain unsupported.

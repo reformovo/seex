@@ -4,12 +4,12 @@
 
 ## Case Study
 
-PulseOn supported one hardware-local MLX autoresearch session on Apple Silicon:
+Seex supported one hardware-local MLX autoresearch session on Apple Silicon:
 one baseline and 23 Candidate Runs, with nine kept and 14 discarded. The
 accepted sequence reduced validation bits per byte from `1.879073` to
 `1.460362` and peak memory from `8.42 GiB` to `4.28 GiB`.
 
-PulseOn retained per-step curves, allowed concurrent SQLite-backed queries,
+Seex retained per-step curves, allowed concurrent SQLite-backed queries,
 preserved evidence for reverted candidates, and exposed deterministic table
 and versioned JSON output.
 
@@ -42,7 +42,7 @@ decision. Curve comparison is also ambiguous when Runs have different step
 counts. In the case study, changing batch size moved the terminal step from
 roughly 240 to roughly 984 under the same wall-time budget.
 
-PulseOn 0.2.x comparison uses raw step and elapsed wall time. Cumulative-token
+Seex 0.1.x comparison uses raw step and elapsed wall time. Cumulative-token
 and normalized-budget axes are intentionally deferred.
 
 The curve viewer direction in `docs/drafts/gpui-curve-viewer-spike.md` should
@@ -56,20 +56,18 @@ A strict lower-is-better policy accepted the final change from `1.463308` to
 single-Run policy, but not necessarily for a statistical claim. Fixed wall
 time also produces different token and step totals as throughput changes.
 
-PulseOn currently retains the facts needed to investigate these effects, but
+Seex currently retains the facts needed to investigate these effects, but
 does not group repeated configurations, estimate variance, or distinguish a
 clear improvement from an inconclusive near tie.
 
 ### Diagnostics
 
-The first baseline attempt failed during initialization because a reused
-`.pulseon` directory contained incompatible legacy DuckDB and requested SQLite
-catalog state. The error identified a storage attachment failure but did not
-explain the conflicting state or provide a safe diagnostic and migration path.
+Seex stores are created under `.seex`; pre-Seex directories are neither
+discovered nor migrated during initialization.
 
 ## Working Language
 
-`Run` remains the canonical PulseOn product term. This draft uses these
+`Run` remains the canonical Seex product term. This draft uses these
 autoresearch-specific phrases only as working language:
 
 - **Candidate Run**: a Run evaluating one focused code or parameter change;
@@ -80,22 +78,22 @@ autoresearch-specific phrases only as working language:
   starts Runs, and applies a comparison policy.
 
 These terms are not proposed schema names yet. They should not be added to the
-glossary until PulseOn accepts the corresponding product boundary.
+glossary until Seex accepts the corresponding product boundary.
 
 ## Working Position
 
-PulseOn Core should remain the source of durable evidence and domain queries.
+Seex Core should remain the source of durable evidence and domain queries.
 An optional research driver should own mutations and loop control:
 
 ```text
 research driver: edit, check, commit, start Run, enforce budget, apply Git action
         |
         v
-PulseOn Core
+Seex Core
   lifecycle, metrics, context, lineage, comparisons, diagnostics, JSON evidence
 ```
 
-PulseOn Core should not edit source files, commit or revert Git history, or put
+Seex Core should not edit source files, commit or revert Git history, or put
 decision logic on the metric-reporting hot path. Research context belongs in
 catalog application state, not the metric-point Parquet compatibility schema.
 Adding durable context or decisions would require an explicit future schema
@@ -110,7 +108,7 @@ A future Run creation surface could accept structured context for:
 - source identity: Git commit, branch, dirty state, and parent commit;
 - lineage plus parameters and the focused diff;
 - objective metric, direction, and execution/evaluation budgets; and
-- hardware, PulseOn, MLX, data, and tokenizer fingerprints.
+- hardware, Seex, MLX, data, and tokenizer fingerprints.
 
 The storage shape is intentionally unresolved. Generic Run metadata, typed
 catalog tables, and an external Git-tracked research ledger have different
@@ -122,10 +120,10 @@ An optional autoresearch command surface could build on the existing read
 contract:
 
 ```bash
-pulseon autoresearch compare <candidate-run> --against <incumbent-run>
-pulseon autoresearch decide <candidate-run> --policy strict-improvement
-pulseon autoresearch leaderboard --metric eval/val_bpb --direction minimize
-pulseon autoresearch best --metric eval/val_bpb --direction minimize
+seex autoresearch compare <candidate-run> --against <incumbent-run>
+seex autoresearch decide <candidate-run> --policy strict-improvement
+seex autoresearch leaderboard --metric eval/val_bpb --direction minimize
+seex autoresearch best --metric eval/val_bpb --direction minimize
 ```
 
 Machine output should use the existing versioned JSON envelope and include the
@@ -145,7 +143,7 @@ Runs by source and parameter fingerprint, compute uncertainty, and return
 
 The driver should be able to enforce a maximum wall time, detect missing
 heartbeats, and stop on non-finite loss, sustained throughput collapse, or
-clear divergence. PulseOn may expose evidence or stop advice, but the driver
+clear divergence. Seex may expose evidence or stop advice, but the driver
 owns process termination. Every stop needs a structured reason retained with
 the Run evidence.
 
@@ -154,22 +152,21 @@ the Run evidence.
 A diagnostic surface should be safe and read-only by default:
 
 ```bash
-pulseon doctor
-pulseon doctor --verbose
-pulseon migrate --from duckdb --to sqlite
+seex doctor
+seex doctor --verbose
 ```
 
 It should identify configured and detected backends, conflicting catalog
 artifacts, schema or release compatibility, sanitized paths, and a concrete
-recovery command. Migration or repair must require an explicit command and
-create a backup rather than silently rewriting a store during initialization.
+recovery command. It must remain read-only and never rewrite a store during
+initialization.
 
 ## Possible Delivery Phases
 
 1. Add read-only comparison reports, objective-aware ranking, and store
    diagnostics using the existing Run and metric read surface.
 2. Decide through an ADR whether generic Run context, lineage, and durable
-   research decisions belong in PulseOn catalog application state.
+   research decisions belong in Seex catalog application state.
 3. Add an optional research driver with strict comparison, budget enforcement,
    Git-action advice, and Git-friendly ledger export.
 4. Add repeated-Run grouping, uncertainty-aware decisions, stop advice, and
@@ -186,8 +183,8 @@ create a backup rather than silently rewriting a store during initialization.
 - Emit deterministic, versioned JSON suitable for an agent to consume without
   scraping human-readable output.
 - Return `inconclusive` when a rigor policy lacks enough evidence.
-- Diagnose mixed catalogs read-only; require explicit backup and migration.
-- Keep all source and Git mutations outside PulseOn Core.
+- Diagnose mixed catalogs read-only without modifying them.
+- Keep all source and Git mutations outside Seex Core.
 
 ## Open Questions
 

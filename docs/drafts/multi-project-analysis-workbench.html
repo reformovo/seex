@@ -813,19 +813,19 @@ svg {
 html&gt;body{padding:0}&lt;/style&gt;
 &lt;/head&gt;
 &lt;body&gt;
-&lt;div id=&quot;pulseon-analysis-workbench&quot;&gt;
+&lt;div id=&quot;seex-analysis-workbench&quot;&gt;
   &lt;style&gt;
-    #pulseon-analysis-workbench {
+    #seex-analysis-workbench {
       --track-label-width: 190px;
       color: var(--foreground);
       width: 100%;
     }
 
-    #pulseon-analysis-workbench * {
+    #seex-analysis-workbench * {
       box-sizing: border-box;
     }
 
-    #pulseon-analysis-workbench .workbench {
+    #seex-analysis-workbench .workbench {
       height: 760px;
       min-height: 620px;
       overflow: hidden;
@@ -836,22 +836,22 @@ html&gt;body{padding:0}&lt;/style&gt;
       color: var(--card-foreground);
     }
 
-    #pulseon-analysis-workbench .workspace-toolbar,
-    #pulseon-analysis-workbench .inspector-head {
+    #seex-analysis-workbench .workspace-toolbar,
+    #seex-analysis-workbench .inspector-head {
       display: flex;
       align-items: center;
       gap: 8px;
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .workspace-toolbar {
+    #seex-analysis-workbench .workspace-toolbar {
       padding: 6px 10px;
       border-bottom: 1px solid var(--border);
       position: static;
       flex-wrap: nowrap;
     }
 
-    #pulseon-analysis-workbench .view-tabs {
+    #seex-analysis-workbench .view-tabs {
       display: flex;
       align-items: center;
       gap: 4px;
@@ -862,37 +862,37 @@ html&gt;body{padding:0}&lt;/style&gt;
       scrollbar-width: thin;
     }
 
-    #pulseon-analysis-workbench .view-tab {
+    #seex-analysis-workbench .view-tab {
       display: inline-flex;
       align-items: center;
       flex: 0 0 auto;
     }
 
-    #pulseon-analysis-workbench .view-tab [data-close-view] {
+    #seex-analysis-workbench .view-tab [data-close-view] {
       visibility: hidden;
     }
 
-    #pulseon-analysis-workbench .view-tab [data-view-name] {
+    #seex-analysis-workbench .view-tab [data-view-name] {
       color: var(--muted-foreground);
     }
 
-    #pulseon-analysis-workbench .view-tab [data-view-name]:hover {
+    #seex-analysis-workbench .view-tab [data-view-name]:hover {
       background: var(--accent);
       color: var(--accent-foreground);
     }
 
-    #pulseon-analysis-workbench .view-tab [data-view-name].is-selected {
+    #seex-analysis-workbench .view-tab [data-view-name].is-selected {
       background: var(--secondary);
       color: var(--secondary-foreground);
     }
 
-    #pulseon-analysis-workbench .view-tab [data-view-name]:hover [data-close-view],
-    #pulseon-analysis-workbench .view-tab [data-view-name]:focus-visible [data-close-view],
-    #pulseon-analysis-workbench .view-tab [data-view-name].is-selected [data-close-view] {
+    #seex-analysis-workbench .view-tab [data-view-name]:hover [data-close-view],
+    #seex-analysis-workbench .view-tab [data-view-name]:focus-visible [data-close-view],
+    #seex-analysis-workbench .view-tab [data-view-name].is-selected [data-close-view] {
       visibility: visible;
     }
 
-    #pulseon-analysis-workbench .shell {
+    #seex-analysis-workbench .shell {
       display: grid;
       grid-template-columns: 190px minmax(0, 1fr);
       flex: 1;
@@ -900,15 +900,15 @@ html&gt;body{padding:0}&lt;/style&gt;
       overflow: visible;
     }
 
-    #pulseon-analysis-workbench .shell.sidebar-hidden {
+    #seex-analysis-workbench .shell.sidebar-hidden {
       grid-template-columns: minmax(0, 1fr);
     }
 
-    #pulseon-analysis-workbench .shell.sidebar-hidden .sources {
+    #seex-analysis-workbench .shell.sidebar-hidden .sources {
       display: none;
     }
 
-    #pulseon-analysis-workbench .sources {
+    #seex-analysis-workbench .sources {
       border-right: 1px solid var(--border);
       padding: 10px 8px;
       background: color-mix(in srgb, var(--muted) 48%, transparent);
@@ -919,47 +919,47 @@ html&gt;body{padding:0}&lt;/style&gt;
       z-index: 5;
     }
 
-    #pulseon-analysis-workbench .section-head,
-    #pulseon-analysis-workbench .tree-row,
-    #pulseon-analysis-workbench .run-row {
+    #seex-analysis-workbench .section-head,
+    #seex-analysis-workbench .tree-row,
+    #seex-analysis-workbench .run-row {
       display: flex;
       align-items: center;
       gap: 7px;
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .section-head {
+    #seex-analysis-workbench .section-head {
       justify-content: space-between;
       margin-bottom: 8px;
     }
 
-    #pulseon-analysis-workbench .section-actions,
-    #pulseon-analysis-workbench .axis-controls {
+    #seex-analysis-workbench .section-actions,
+    #seex-analysis-workbench .axis-controls {
       display: flex;
       align-items: center;
       gap: 4px;
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .source-scroll {
+    #seex-analysis-workbench .source-scroll {
       flex: 1;
       min-height: 0;
       overflow-y: auto;
       scrollbar-width: thin;
     }
 
-    #pulseon-analysis-workbench .sidebar-group {
+    #seex-analysis-workbench .sidebar-group {
       margin-bottom: 8px;
     }
 
-    #pulseon-analysis-workbench .sidebar-group.archived {
+    #seex-analysis-workbench .sidebar-group.archived {
       margin-top: 8px;
       margin-bottom: 0;
       border-top: 1px solid var(--border);
       padding-top: 8px;
     }
 
-    #pulseon-analysis-workbench .text-button {
+    #seex-analysis-workbench .text-button {
       border: 0;
       background: transparent;
       color: var(--muted-foreground);
@@ -967,18 +967,18 @@ html&gt;body{padding:0}&lt;/style&gt;
       justify-content: flex-start;
     }
 
-    #pulseon-analysis-workbench .text-button:hover,
-    #pulseon-analysis-workbench .text-button:focus-visible {
+    #seex-analysis-workbench .text-button:hover,
+    #seex-analysis-workbench .text-button:focus-visible {
       background: transparent;
       color: var(--foreground);
     }
 
-    #pulseon-analysis-workbench .sidebar-group-label {
+    #seex-analysis-workbench .sidebar-group-label {
       padding: 3px 7px;
       color: var(--muted-foreground);
     }
 
-    #pulseon-analysis-workbench .icon-button {
+    #seex-analysis-workbench .icon-button {
       border: 0;
       background: transparent;
       color: var(--muted-foreground);
@@ -988,33 +988,33 @@ html&gt;body{padding:0}&lt;/style&gt;
       justify-content: center;
     }
 
-    #pulseon-analysis-workbench .icon-button:hover,
-    #pulseon-analysis-workbench .icon-button:focus-visible {
+    #seex-analysis-workbench .icon-button:hover,
+    #seex-analysis-workbench .icon-button:focus-visible {
       background: transparent;
       color: var(--foreground);
     }
 
-    #pulseon-analysis-workbench .quick-run,
-    #pulseon-analysis-workbench .run-select,
-    #pulseon-analysis-workbench .run-actions {
+    #seex-analysis-workbench .quick-run,
+    #seex-analysis-workbench .run-select,
+    #seex-analysis-workbench .run-actions {
       display: flex;
       align-items: center;
       gap: 6px;
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .quick-run {
+    #seex-analysis-workbench .quick-run {
       padding: 5px 7px;
     }
 
-    #pulseon-analysis-workbench .quick-run span,
-    #pulseon-analysis-workbench .run-select span {
+    #seex-analysis-workbench .quick-run span,
+    #seex-analysis-workbench .run-select span {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    #pulseon-analysis-workbench .project-menu {
+    #seex-analysis-workbench .project-menu {
       position: absolute;
       z-index: 20;
       left: var(--project-menu-x, calc(100% - 3px));
@@ -1023,88 +1023,88 @@ html&gt;body{padding:0}&lt;/style&gt;
       padding: 4px;
     }
 
-    #pulseon-analysis-workbench .project-menu .btn {
+    #seex-analysis-workbench .project-menu .btn {
       width: 100%;
       justify-content: flex-start;
     }
 
-    #pulseon-analysis-workbench .sidebar-reveal {
+    #seex-analysis-workbench .sidebar-reveal {
       display: none;
       flex: 0 0 auto;
     }
 
-    #pulseon-analysis-workbench .shell.sidebar-hidden .sidebar-reveal {
+    #seex-analysis-workbench .shell.sidebar-hidden .sidebar-reveal {
       display: inline-flex;
     }
 
-    #pulseon-analysis-workbench .tree-row,
-    #pulseon-analysis-workbench .run-row {
+    #seex-analysis-workbench .tree-row,
+    #seex-analysis-workbench .run-row {
       padding: 6px 7px;
     }
 
-    #pulseon-analysis-workbench .tree-row span,
-    #pulseon-analysis-workbench .run-row span {
+    #seex-analysis-workbench .tree-row span,
+    #seex-analysis-workbench .run-row span {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    #pulseon-analysis-workbench .run-row {
+    #seex-analysis-workbench .run-row {
       padding-left: 23px;
     }
 
-    #pulseon-analysis-workbench .run-row[hidden] {
+    #seex-analysis-workbench .run-row[hidden] {
       display: none;
     }
 
-    #pulseon-analysis-workbench .run-select {
+    #seex-analysis-workbench .run-select {
       flex: 1;
       overflow: hidden;
     }
 
-    #pulseon-analysis-workbench .run-select .icon-button,
-    #pulseon-analysis-workbench .run-actions,
-    #pulseon-analysis-workbench .run-actions .icon-button {
+    #seex-analysis-workbench .run-select .icon-button,
+    #seex-analysis-workbench .run-actions,
+    #seex-analysis-workbench .run-actions .icon-button {
       flex: 0 0 auto;
     }
 
-    #pulseon-analysis-workbench .run-select &gt; span {
+    #seex-analysis-workbench .run-select &gt; span {
       flex: 1;
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .run-actions {
+    #seex-analysis-workbench .run-actions {
       display: none;
       margin-left: auto;
     }
 
-    #pulseon-analysis-workbench .project-actions {
+    #seex-analysis-workbench .project-actions {
       display: none;
       margin-left: auto;
     }
 
-    #pulseon-analysis-workbench .project-name {
+    #seex-analysis-workbench .project-name {
       flex: 1;
     }
 
-    #pulseon-analysis-workbench .quick-run:hover .run-actions,
-    #pulseon-analysis-workbench .quick-run:focus-within .run-actions,
-    #pulseon-analysis-workbench .run-row:hover .run-actions,
-    #pulseon-analysis-workbench .run-row:focus-within .run-actions {
+    #seex-analysis-workbench .quick-run:hover .run-actions,
+    #seex-analysis-workbench .quick-run:focus-within .run-actions,
+    #seex-analysis-workbench .run-row:hover .run-actions,
+    #seex-analysis-workbench .run-row:focus-within .run-actions {
       display: flex;
     }
 
-    #pulseon-analysis-workbench .project-row:hover .project-actions,
-    #pulseon-analysis-workbench .project-row:focus-within .project-actions {
+    #seex-analysis-workbench .project-row:hover .project-actions,
+    #seex-analysis-workbench .project-row:focus-within .project-actions {
       display: inline-flex;
     }
 
-    #pulseon-analysis-workbench .empty-runs {
+    #seex-analysis-workbench .empty-runs {
       padding: 5px 7px 5px 30px;
       color: var(--muted-foreground);
     }
 
-    #pulseon-analysis-workbench .project-hover-card {
+    #seex-analysis-workbench .project-hover-card {
       position: absolute;
       z-index: 18;
       left: calc(100% - 3px);
@@ -1114,23 +1114,23 @@ html&gt;body{padding:0}&lt;/style&gt;
       pointer-events: none;
     }
 
-    #pulseon-analysis-workbench .project-hover-card[hidden] {
+    #seex-analysis-workbench .project-hover-card[hidden] {
       display: none;
     }
 
-    #pulseon-analysis-workbench .project-hover-row,
-    #pulseon-analysis-workbench .project-hover-status {
+    #seex-analysis-workbench .project-hover-row,
+    #seex-analysis-workbench .project-hover-status {
       display: flex;
       align-items: center;
       gap: 7px;
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .project-hover-row + .project-hover-row {
+    #seex-analysis-workbench .project-hover-row + .project-hover-row {
       margin-top: 7px;
     }
 
-    #pulseon-analysis-workbench .project-hover-title {
+    #seex-analysis-workbench .project-hover-title {
       flex: 1;
       min-width: 0;
       overflow: hidden;
@@ -1138,36 +1138,36 @@ html&gt;body{padding:0}&lt;/style&gt;
       white-space: nowrap;
     }
 
-    #pulseon-analysis-workbench .project-hover-status {
+    #seex-analysis-workbench .project-hover-status {
       color: var(--muted-foreground);
       white-space: nowrap;
     }
 
-    #pulseon-analysis-workbench .project-hover-source {
+    #seex-analysis-workbench .project-hover-source {
       border-top: 1px solid var(--border);
       padding-top: 7px;
     }
 
-    #pulseon-analysis-workbench .popover-surface {
+    #seex-analysis-workbench .popover-surface {
       background: var(--popover);
       color: var(--popover-foreground);
     }
 
-    #pulseon-analysis-workbench .run-row:hover .run-meta,
-    #pulseon-analysis-workbench .run-row:focus-within .run-meta {
+    #seex-analysis-workbench .run-row:hover .run-meta,
+    #seex-analysis-workbench .run-row:focus-within .run-meta {
       display: none;
     }
 
-    #pulseon-analysis-workbench .show-more {
+    #seex-analysis-workbench .show-more {
       margin-left: 23px;
     }
 
-    #pulseon-analysis-workbench .run-meta {
+    #seex-analysis-workbench .run-meta {
       margin-left: auto;
       color: var(--muted-foreground);
     }
 
-    #pulseon-analysis-workbench .analysis {
+    #seex-analysis-workbench .analysis {
       min-width: 0;
       min-height: 0;
       display: flex;
@@ -1176,27 +1176,27 @@ html&gt;body{padding:0}&lt;/style&gt;
       overflow: hidden;
     }
 
-    #pulseon-analysis-workbench .toolbar-spacer {
+    #seex-analysis-workbench .toolbar-spacer {
       flex: 1;
     }
 
-    #pulseon-analysis-workbench .filter-field {
+    #seex-analysis-workbench .filter-field {
       min-width: 160px;
       max-width: 240px;
     }
 
-    #pulseon-analysis-workbench .metric-track {
+    #seex-analysis-workbench .metric-track {
       display: grid;
       grid-template-columns: var(--track-label-width) minmax(0, 1fr);
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .timeline-ruler {
+    #seex-analysis-workbench .timeline-ruler {
       border-bottom: 1px solid var(--border);
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .ruler-scroll {
+    #seex-analysis-workbench .ruler-scroll {
       overflow-x: auto;
       overflow-y: hidden;
       min-width: 0;
@@ -1205,22 +1205,22 @@ html&gt;body{padding:0}&lt;/style&gt;
       cursor: grab;
     }
 
-    #pulseon-analysis-workbench .ruler-scroll.is-panning {
+    #seex-analysis-workbench .ruler-scroll.is-panning {
       cursor: grabbing;
     }
 
-    #pulseon-analysis-workbench .timeline-label,
-    #pulseon-analysis-workbench .track-label {
+    #seex-analysis-workbench .timeline-label,
+    #seex-analysis-workbench .track-label {
       border-right: 1px solid var(--border);
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .timeline-label {
+    #seex-analysis-workbench .timeline-label {
       padding: 7px 10px;
       color: var(--muted-foreground);
     }
 
-    #pulseon-analysis-workbench .ruler {
+    #seex-analysis-workbench .ruler {
       position: relative;
       display: flex;
       min-height: 26px;
@@ -1228,12 +1228,12 @@ html&gt;body{padding:0}&lt;/style&gt;
       min-width: 100%;
     }
 
-    #pulseon-analysis-workbench .ruler-spacer {
+    #seex-analysis-workbench .ruler-spacer {
       flex: 0 0 var(--track-label-width);
       border-right: 1px solid var(--border);
     }
 
-    #pulseon-analysis-workbench .ruler-content {
+    #seex-analysis-workbench .ruler-content {
       position: relative;
       flex: 1 0 auto;
       min-width: 0;
@@ -1246,14 +1246,14 @@ html&gt;body{padding:0}&lt;/style&gt;
       );
     }
 
-    #pulseon-analysis-workbench .ticks {
+    #seex-analysis-workbench .ticks {
       display: flex;
       justify-content: space-between;
       padding: 3px 8px;
       color: var(--muted-foreground);
     }
 
-    #pulseon-analysis-workbench .timeline-brush {
+    #seex-analysis-workbench .timeline-brush {
       display: grid;
       grid-template-columns: var(--track-label-width) minmax(180px, 1fr);
       align-items: stretch;
@@ -1261,7 +1261,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       border-bottom: 1px solid var(--border);
     }
 
-    #pulseon-analysis-workbench .timeline-controls {
+    #seex-analysis-workbench .timeline-controls {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -1271,8 +1271,8 @@ html&gt;body{padding:0}&lt;/style&gt;
       min-width: 0;
     }
 
-    #pulseon-analysis-workbench .brush-plot,
-    #pulseon-analysis-workbench .metric-plot {
+    #seex-analysis-workbench .brush-plot,
+    #seex-analysis-workbench .metric-plot {
       position: relative;
       min-width: 0;
       overflow: hidden;
@@ -1285,7 +1285,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       );
     }
 
-    #pulseon-analysis-workbench .brush-window {
+    #seex-analysis-workbench .brush-window {
       position: absolute;
       left: 21%;
       width: 57%;
@@ -1297,14 +1297,14 @@ html&gt;body{padding:0}&lt;/style&gt;
       pointer-events: none;
     }
 
-    #pulseon-analysis-workbench .tracks {
+    #seex-analysis-workbench .tracks {
       flex: 1 1 auto;
       min-height: 0;
       overflow-y: auto;
       scrollbar-width: thin;
     }
 
-    #pulseon-analysis-workbench .metric-track {
+    #seex-analysis-workbench .metric-track {
       --metric-row-height: 52px;
       height: var(--metric-row-height);
       min-height: 52px;
@@ -1314,7 +1314,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       overflow: visible;
     }
 
-    #pulseon-analysis-workbench .track-label {
+    #seex-analysis-workbench .track-label {
       padding: 5px 10px;
       display: flex;
       gap: 8px;
@@ -1328,35 +1328,35 @@ html&gt;body{padding:0}&lt;/style&gt;
       border-radius: 0;
     }
 
-    #pulseon-analysis-workbench .metric-track.is-selected .track-label {
+    #seex-analysis-workbench .metric-track.is-selected .track-label {
       background: var(--primary);
       color: var(--primary-foreground);
     }
 
-    #pulseon-analysis-workbench .metric-track.is-selected .track-label .track-meta {
+    #seex-analysis-workbench .metric-track.is-selected .track-label .track-meta {
       color: var(--primary-foreground);
       opacity: .78;
     }
 
-    #pulseon-analysis-workbench .track-copy {
+    #seex-analysis-workbench .track-copy {
       min-width: 0;
       flex: 1;
     }
 
-    #pulseon-analysis-workbench .track-copy strong,
-    #pulseon-analysis-workbench .track-copy span {
+    #seex-analysis-workbench .track-copy strong,
+    #seex-analysis-workbench .track-copy span {
       display: block;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    #pulseon-analysis-workbench .track-meta {
+    #seex-analysis-workbench .track-meta {
       color: var(--muted-foreground);
       margin-top: 2px;
     }
 
-    #pulseon-analysis-workbench .series-key {
+    #seex-analysis-workbench .series-key {
       width: 9px;
       height: 9px;
       margin-top: 5px;
@@ -1365,7 +1365,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       background: var(--viz-series-1);
     }
 
-    #pulseon-analysis-workbench .metric-plot {
+    #seex-analysis-workbench .metric-plot {
       border: 0;
       border-radius: 0;
       padding: 0;
@@ -1374,61 +1374,61 @@ html&gt;body{padding:0}&lt;/style&gt;
       color: var(--foreground);
     }
 
-    #pulseon-analysis-workbench .metric-track .track-label,
-    #pulseon-analysis-workbench .metric-track .metric-plot {
+    #seex-analysis-workbench .metric-track .track-label,
+    #seex-analysis-workbench .metric-track .metric-plot {
       height: 100%;
       min-height: 0;
     }
 
-    #pulseon-analysis-workbench .metric-track .chart {
+    #seex-analysis-workbench .metric-track .chart {
       position: absolute;
       inset: 0;
     }
 
-    #pulseon-analysis-workbench .metric-track .metric-plot {
+    #seex-analysis-workbench .metric-track .metric-plot {
       background-color: color-mix(in srgb, var(--accent) 42%, transparent);
     }
 
-    #pulseon-analysis-workbench .chart {
+    #seex-analysis-workbench .chart {
       display: block;
       width: 100%;
       height: 100%;
     }
 
-    #pulseon-analysis-workbench .chart-grid {
+    #seex-analysis-workbench .chart-grid {
       stroke: color-mix(in srgb, var(--border) 72%, transparent);
       stroke-width: 1;
     }
 
-    #pulseon-analysis-workbench .chart-line-primary,
-    #pulseon-analysis-workbench .chart-line-secondary {
+    #seex-analysis-workbench .chart-line-primary,
+    #seex-analysis-workbench .chart-line-secondary {
       fill: none;
       vector-effect: non-scaling-stroke;
     }
 
-    #pulseon-analysis-workbench .chart-line-primary {
+    #seex-analysis-workbench .chart-line-primary {
       stroke: var(--viz-series-1);
       stroke-width: 2.6;
     }
 
-    #pulseon-analysis-workbench .chart-line-secondary {
+    #seex-analysis-workbench .chart-line-secondary {
       stroke: var(--viz-series-2);
       stroke-width: 1.5;
       opacity: .58;
     }
 
-    #pulseon-analysis-workbench.baseline-secondary .chart-line-primary {
+    #seex-analysis-workbench.baseline-secondary .chart-line-primary {
       stroke-width: 1.5;
       opacity: .58;
     }
 
-    #pulseon-analysis-workbench.baseline-secondary .chart-line-secondary {
+    #seex-analysis-workbench.baseline-secondary .chart-line-secondary {
       stroke-width: 2.6;
       opacity: 1;
     }
 
-    #pulseon-analysis-workbench .hover-cursor-line,
-    #pulseon-analysis-workbench .locked-cursor-line {
+    #seex-analysis-workbench .hover-cursor-line,
+    #seex-analysis-workbench .locked-cursor-line {
       position: absolute;
       top: 0;
       bottom: 0;
@@ -1437,24 +1437,24 @@ html&gt;body{padding:0}&lt;/style&gt;
       pointer-events: none;
     }
 
-    #pulseon-analysis-workbench .hover-cursor-line {
+    #seex-analysis-workbench .hover-cursor-line {
       border-left: 1px dashed var(--primary);
     }
 
-    #pulseon-analysis-workbench .locked-cursor-line {
+    #seex-analysis-workbench .locked-cursor-line {
       border-left: 1px solid var(--primary);
     }
 
-    #pulseon-analysis-workbench.hover-cursor-active .hover-cursor-line,
-    #pulseon-analysis-workbench.locked-cursor-active .locked-cursor-line {
+    #seex-analysis-workbench.hover-cursor-active .hover-cursor-line,
+    #seex-analysis-workbench.locked-cursor-active .locked-cursor-line {
       opacity: 1;
     }
 
-    #pulseon-analysis-workbench .ruler-content .locked-cursor-line {
+    #seex-analysis-workbench .ruler-content .locked-cursor-line {
       top: 5px;
     }
 
-    #pulseon-analysis-workbench .ruler-content .locked-cursor-line::before {
+    #seex-analysis-workbench .ruler-content .locked-cursor-line::before {
       content: &quot;&quot;;
       position: absolute;
       top: -5px;
@@ -1464,23 +1464,23 @@ html&gt;body{padding:0}&lt;/style&gt;
       border-top: 5px solid var(--primary);
     }
 
-    #pulseon-analysis-workbench .metric-track .hover-cursor-line {
+    #seex-analysis-workbench .metric-track .hover-cursor-line {
       left: var(--hover-chart-x, 62%);
     }
 
-    #pulseon-analysis-workbench .metric-track .locked-cursor-line {
+    #seex-analysis-workbench .metric-track .locked-cursor-line {
       left: var(--locked-chart-x, 42%);
     }
 
-    #pulseon-analysis-workbench .ruler-content .hover-cursor-line {
+    #seex-analysis-workbench .ruler-content .hover-cursor-line {
       left: var(--hover-ruler-x, 62%);
     }
 
-    #pulseon-analysis-workbench .ruler-content .locked-cursor-line {
+    #seex-analysis-workbench .ruler-content .locked-cursor-line {
       left: var(--locked-ruler-x, 42%);
     }
 
-    #pulseon-analysis-workbench .cursor-label {
+    #seex-analysis-workbench .cursor-label {
       position: absolute;
       left: var(--hover-ruler-x, 62%);
       top: 2px;
@@ -1494,11 +1494,11 @@ html&gt;body{padding:0}&lt;/style&gt;
       opacity: 0;
     }
 
-    #pulseon-analysis-workbench.hover-cursor-active .cursor-label {
+    #seex-analysis-workbench.hover-cursor-active .cursor-label {
       opacity: 1;
     }
 
-    #pulseon-analysis-workbench .value-tag {
+    #seex-analysis-workbench .value-tag {
       position: absolute;
       z-index: 3;
       left: var(--hover-chart-x, 62%);
@@ -1515,27 +1515,27 @@ html&gt;body{padding:0}&lt;/style&gt;
       opacity: 0;
     }
 
-    #pulseon-analysis-workbench .value-tag.align-left {
+    #seex-analysis-workbench .value-tag.align-left {
       transform: translate(-100%, -50%);
       padding-right: 13px;
       padding-left: 7px;
       clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 50%, calc(100% - 8px) 100%, 0 100%);
     }
 
-    #pulseon-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;all&quot;] .value-tag,
-    #pulseon-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;primary&quot;] .value-tag-primary,
-    #pulseon-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;secondary&quot;] .value-tag-secondary {
+    #seex-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;all&quot;] .value-tag,
+    #seex-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;primary&quot;] .value-tag-primary,
+    #seex-analysis-workbench.hover-cursor-active .metric-plot[data-cursor-scope=&quot;secondary&quot;] .value-tag-secondary {
       opacity: 1;
     }
 
-    #pulseon-analysis-workbench.hover-cursor-outside .hover-cursor-line,
-    #pulseon-analysis-workbench.hover-cursor-outside .cursor-label,
-    #pulseon-analysis-workbench.hover-cursor-outside .value-tag,
-    #pulseon-analysis-workbench.locked-cursor-outside .locked-cursor-line {
+    #seex-analysis-workbench.hover-cursor-outside .hover-cursor-line,
+    #seex-analysis-workbench.hover-cursor-outside .cursor-label,
+    #seex-analysis-workbench.hover-cursor-outside .value-tag,
+    #seex-analysis-workbench.locked-cursor-outside .locked-cursor-line {
       opacity: 0;
     }
 
-    #pulseon-analysis-workbench .track-resizer {
+    #seex-analysis-workbench .track-resizer {
       position: absolute;
       z-index: 4;
       left: 0;
@@ -1550,12 +1550,12 @@ html&gt;body{padding:0}&lt;/style&gt;
       cursor: row-resize;
     }
 
-    #pulseon-analysis-workbench .track-resizer:hover,
-    #pulseon-analysis-workbench .track-resizer:focus-visible {
+    #seex-analysis-workbench .track-resizer:hover,
+    #seex-analysis-workbench .track-resizer:focus-visible {
       background: color-mix(in srgb, var(--primary) 24%, transparent);
     }
 
-    #pulseon-analysis-workbench .inspector {
+    #seex-analysis-workbench .inspector {
       border-top: 1px solid var(--border);
       min-height: 176px;
       max-height: 220px;
@@ -1564,11 +1564,11 @@ html&gt;body{padding:0}&lt;/style&gt;
       background: var(--card);
     }
 
-    #pulseon-analysis-workbench .inspector[hidden] {
+    #seex-analysis-workbench .inspector[hidden] {
       display: none;
     }
 
-    #pulseon-analysis-workbench .inspector-head {
+    #seex-analysis-workbench .inspector-head {
       padding: 7px 10px;
       border-bottom: 1px solid var(--border);
       flex-wrap: nowrap;
@@ -1576,13 +1576,13 @@ html&gt;body{padding:0}&lt;/style&gt;
       scrollbar-width: thin;
     }
 
-    #pulseon-analysis-workbench .inspector-tabs {
+    #seex-analysis-workbench .inspector-tabs {
       display: flex;
       gap: 4px;
       flex: 0 0 auto;
     }
 
-    #pulseon-analysis-workbench .inspector-title {
+    #seex-analysis-workbench .inspector-title {
       flex: 1;
       min-width: 150px;
       text-align: right;
@@ -1590,26 +1590,26 @@ html&gt;body{padding:0}&lt;/style&gt;
       white-space: nowrap;
     }
 
-    #pulseon-analysis-workbench .inspector-body {
+    #seex-analysis-workbench .inspector-body {
       padding: 4px 10px 10px;
       overflow-x: auto;
       scrollbar-width: thin;
     }
 
-    #pulseon-analysis-workbench .inspector .table {
+    #seex-analysis-workbench .inspector .table {
       min-width: 780px;
     }
 
-    #pulseon-analysis-workbench .inspector .table th,
-    #pulseon-analysis-workbench .inspector .table td {
+    #seex-analysis-workbench .inspector .table th,
+    #seex-analysis-workbench .inspector .table td {
       white-space: nowrap;
     }
 
-    #pulseon-analysis-workbench .inspector-panel[hidden] {
+    #seex-analysis-workbench .inspector-panel[hidden] {
       display: none;
     }
 
-    #pulseon-analysis-workbench .popover-layer {
+    #seex-analysis-workbench .popover-layer {
       position: absolute;
       top: 84px;
       left: calc(var(--track-label-width) - 34px);
@@ -1617,7 +1617,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       z-index: 10;
     }
 
-    #pulseon-analysis-workbench .axis-popover {
+    #seex-analysis-workbench .axis-popover {
       position: absolute;
       top: 84px;
       left: 8px;
@@ -1628,39 +1628,39 @@ html&gt;body{padding:0}&lt;/style&gt;
       color: var(--popover-foreground);
     }
 
-    #pulseon-analysis-workbench .axis-options {
+    #seex-analysis-workbench .axis-options {
       display: grid;
       gap: 3px;
     }
 
-    #pulseon-analysis-workbench .axis-option {
+    #seex-analysis-workbench .axis-option {
       width: 100%;
       justify-content: flex-start;
     }
 
-    #pulseon-analysis-workbench .axis-option [data-axis-status] {
+    #seex-analysis-workbench .axis-option [data-axis-status] {
       margin-left: auto;
     }
 
-    #pulseon-analysis-workbench .popover-layer[hidden],
-    #pulseon-analysis-workbench .axis-popover[hidden],
-    #pulseon-analysis-workbench .view-menu[hidden] {
+    #seex-analysis-workbench .popover-layer[hidden],
+    #seex-analysis-workbench .axis-popover[hidden],
+    #seex-analysis-workbench .view-menu[hidden] {
       display: none;
     }
 
-    #pulseon-analysis-workbench .metric-picker {
+    #seex-analysis-workbench .metric-picker {
       padding: 10px;
       background: var(--popover);
       color: var(--popover-foreground);
     }
 
-    #pulseon-analysis-workbench .metric-options {
+    #seex-analysis-workbench .metric-options {
       display: grid;
       gap: 3px;
       margin-top: 8px;
     }
 
-    #pulseon-analysis-workbench .metric-option {
+    #seex-analysis-workbench .metric-option {
       display: grid;
       grid-template-columns: 18px minmax(0, 1fr);
       gap: 8px;
@@ -1669,7 +1669,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       white-space: nowrap;
     }
 
-    #pulseon-analysis-workbench .metric-option-copy {
+    #seex-analysis-workbench .metric-option-copy {
       display: flex;
       align-items: baseline;
       gap: 8px;
@@ -1677,13 +1677,13 @@ html&gt;body{padding:0}&lt;/style&gt;
       overflow: hidden;
     }
 
-    #pulseon-analysis-workbench .metric-option-copy strong,
-    #pulseon-analysis-workbench .metric-option-copy span {
+    #seex-analysis-workbench .metric-option-copy strong,
+    #seex-analysis-workbench .metric-option-copy span {
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
-    #pulseon-analysis-workbench .view-menu {
+    #seex-analysis-workbench .view-menu {
       position: absolute;
       top: var(--view-menu-y, 40px);
       left: var(--view-menu-x, 82px);
@@ -1692,101 +1692,101 @@ html&gt;body{padding:0}&lt;/style&gt;
       padding: 6px;
     }
 
-    #pulseon-analysis-workbench .view-menu .btn {
+    #seex-analysis-workbench .view-menu .btn {
       width: 100%;
       justify-content: flex-start;
     }
 
-    #pulseon-analysis-workbench .legend-inline {
+    #seex-analysis-workbench .legend-inline {
       display: flex;
       gap: 12px;
       align-items: center;
       color: var(--muted-foreground);
     }
 
-    #pulseon-analysis-workbench .legend-item {
+    #seex-analysis-workbench .legend-item {
       display: inline-flex;
       align-items: center;
       gap: 5px;
     }
 
-    #pulseon-analysis-workbench .legend-dot {
+    #seex-analysis-workbench .legend-dot {
       width: 8px;
       height: 8px;
       border-radius: 50%;
       background: var(--viz-series-1);
     }
 
-    #pulseon-analysis-workbench .legend-dot.secondary {
+    #seex-analysis-workbench .legend-dot.secondary {
       background: var(--viz-series-2);
     }
 
     @media (max-width: 800px) {
-      #pulseon-analysis-workbench {
+      #seex-analysis-workbench {
         --track-label-width: 150px;
       }
 
-      #pulseon-analysis-workbench .shell {
+      #seex-analysis-workbench .shell {
         grid-template-columns: 150px minmax(0, 1fr);
       }
 
-      #pulseon-analysis-workbench .sources {
+      #seex-analysis-workbench .sources {
         padding-inline: 5px;
       }
 
-      #pulseon-analysis-workbench .run-meta,
-      #pulseon-analysis-workbench .toolbar-spacer,
-      #pulseon-analysis-workbench .legend-inline {
+      #seex-analysis-workbench .run-meta,
+      #seex-analysis-workbench .toolbar-spacer,
+      #seex-analysis-workbench .legend-inline {
         display: none;
       }
     }
 
     @media (max-width: 520px) {
-      #pulseon-analysis-workbench {
+      #seex-analysis-workbench {
         --track-label-width: 108px;
       }
 
-      #pulseon-analysis-workbench .shell {
+      #seex-analysis-workbench .shell {
         display: block;
       }
 
-      #pulseon-analysis-workbench .view-tabs {
+      #seex-analysis-workbench .view-tabs {
         min-width: 0;
       }
 
-      #pulseon-analysis-workbench .timeline-brush {
+      #seex-analysis-workbench .timeline-brush {
         grid-template-columns: var(--track-label-width) minmax(100px, 1fr);
       }
 
-      #pulseon-analysis-workbench .popover-layer {
+      #seex-analysis-workbench .popover-layer {
         left: 8px;
         width: calc(100% - 16px);
       }
 
-      #pulseon-analysis-workbench .filter-field {
+      #seex-analysis-workbench .filter-field {
         max-width: none;
         width: 100%;
       }
 
-      #pulseon-analysis-workbench .track-label {
+      #seex-analysis-workbench .track-label {
         padding-inline: 6px;
       }
 
-      #pulseon-analysis-workbench .track-meta {
+      #seex-analysis-workbench .track-meta {
         display: none;
       }
 
-      #pulseon-analysis-workbench .inspector-title {
+      #seex-analysis-workbench .inspector-title {
         text-align: left;
       }
     }
   &lt;/style&gt;
 
-  &lt;section class=&quot;card workbench&quot; aria-label=&quot;PulseOn analysis workbench redesign&quot;&gt;
+  &lt;section class=&quot;card workbench&quot; aria-label=&quot;Seex analysis workbench redesign&quot;&gt;
     &lt;div id=&quot;workbench-shell&quot; class=&quot;shell&quot;&gt;
       &lt;aside class=&quot;sources&quot; aria-label=&quot;Data sources and Runs&quot;&gt;
         &lt;div class=&quot;section-head&quot;&gt;
-          &lt;strong&gt;PulseOn&lt;/strong&gt;
+          &lt;strong&gt;Seex&lt;/strong&gt;
           &lt;div class=&quot;section-actions&quot;&gt;
             &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost&quot; aria-label=&quot;Import data source&quot; data-tooltip=&quot;Import source&quot;&gt;
               &lt;i data-lucide=&quot;plus&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;
@@ -2062,7 +2062,7 @@ html&gt;body{padding:0}&lt;/style&gt;
 
   &lt;script&gt;
     (() =&gt; {
-      const root = document.getElementById(&#x27;pulseon-analysis-workbench&#x27;);
+      const root = document.getElementById(&#x27;seex-analysis-workbench&#x27;);
       const addMetricButton = root.querySelector(&#x27;#add-metric-button&#x27;);
       const metricPopover = root.querySelector(&#x27;#metric-popover&#x27;);
       const metricSearch = root.querySelector(&#x27;#metric-search&#x27;);

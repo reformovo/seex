@@ -1,10 +1,12 @@
-# PulseOn Glossary
+# Seex Glossary
 
 This glossary defines the native product language. Version-specific
 architecture documents define which terms are contractually required for each
 release.
 
 ## Product Terms
+- **Seex**: The unified SDK, CLI, and desktop application brand, pronounced
+  “six” (`/sɪks/`).
 - **Project**: Lightweight namespace for related runs; metadata stays minimal.
 - **Run**: One training execution with user-supplied or generated `run_id`.
 - **Terminal run**: A run whose lifecycle state is `finished` or `failed`.
@@ -15,29 +17,29 @@ release.
 - **Metric key**: User-facing metric name; path escaping is storage detail.
 - **Metric series**: All points for one `(run_id, metric_key)` pair.
 - **Metric point**: One numeric observation in a metric series.
-- **Metric reporting**: The hot-path handoff from training code to PulseOn.
+- **Metric reporting**: The hot-path handoff from training code to Seex.
   Reporting must not block training progress.
 - **Queued report**: A metric report received by the hot-path API but not yet
   durably admitted. Queued reports may be lost if the process exits before
   admission.
 - **Metric queue**: The bounded in-process handoff used by the hot-path metric
   reporting API. A full metric queue is an admission failure, not a silent drop.
-- **Accepted report**: A metric report that PulseOn has durably admitted and
+- **Accepted report**: A metric report that Seex has durably admitted and
   can recover after process restart. Admission to an in-process buffer alone is
   not acceptance.
 - **Persisted metric point**: A metric point that has been written to the
-  native storage engine and is visible to PulseOn queries under effective-series
+  native storage engine and is visible to Seex queries under effective-series
   semantics.
 - **Data discovery**: Traversal from stored projects to runs, metric series,
   and persisted metric points without requiring their identifiers in advance.
 - **Read surface**: The read-only product boundary through which trainers and
-  agents discover and consume stored PulseOn data. It is not an agent-specific
+  agents discover and consume stored Seex data. It is not an agent-specific
   API or direct access to storage internals.
 - **Native project store**: The authoritative local collection of project
   metadata, run lifecycle state, and persisted metric points, including points
   not yet exported to Parquet.
 - **Parquet dataset**: An open, fact-only representation of flushed metric
-  points that follows the PulseOn Parquet compatibility contract. It is not a
+  points that follows the Seex Parquet compatibility contract. It is not a
   catalog or an authoritative native project store.
 - **Run summary**: Derived per-run values for run lists and comparisons.
 - **Comparison axis**: Requested basis for ordering metric observations across
@@ -70,7 +72,7 @@ release.
   state, not catalog tables.
 
 ## Storage Terms
-- **PulseOn logical schema**: Product-owned project, run, metric, point, and
+- **Seex logical schema**: Product-owned project, run, metric, point, and
   summary schema.
 - **Parquet schema**: The open compatibility boundary for native metric data.
 - **Catalog backend**: The database engine DuckLake uses for metadata in native

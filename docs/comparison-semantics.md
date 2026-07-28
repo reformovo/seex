@@ -1,12 +1,12 @@
 # Comparison Semantics
 
-> Status: renderer-agnostic PulseOn 0.2.x contract. This may change before 1.0 and is not an ADR until 1.0 freezes it.
+> Status: renderer-agnostic Seex 0.1.x contract. This may change before 1.0 and is not an ADR until 1.0 freezes it.
 
 ## Scope
 
 Comparison is a read-only derived layer over Runs and effective metric facts. It adds no stored Run roles, catalog or Parquet fields, renderer policy, research decision, tolerance, significance, or uncertainty claim.
 Effective series use [last-write-wins storage semantics](native-storage-boundary.md), and ownership follows the [crate boundaries](crate-boundaries.md).
-Ordinary metric queries remain half-open. Aligned metric queries use a closed viewport, retain one strict neighbor on each side when present, and support full or screen-budgeted extrema results. PulseOn 0.2.x supports only raw step and elapsed wall time as comparison axes; cumulative-token and normalized-budget axes are out of scope.
+Ordinary metric queries remain half-open. Aligned metric queries use a closed viewport, retain one strict neighbor on each side when present, and support full or screen-budgeted extrema results. Seex 0.1.x supports only raw step and elapsed wall time as comparison axes; cumulative-token and normalized-budget axes are out of scope.
 
 ## Product Language
 
@@ -42,7 +42,7 @@ Evidence is never repaired by interpolation, filling, reordering, clamping, or f
 | Axis | Contract |
 | --- | --- |
 | Raw step | Apply effective-series deduplication, then use ascending `step`; a negative step is invalid. |
-| Elapsed wall time | Use integer `timestamp_millis - Run.started_at_millis`, without rebasing to the first point. Equal values are valid; negative or decreasing values are invalid. Missing Run metadata is `missing_run_start`; pre-0.2 writer-time timestamps are best-effort evidence because their origin cannot be detected or migrated safely. |
+| Elapsed wall time | Use integer `timestamp_millis - Run.started_at_millis`, without rebasing to the first point. Equal values are valid; negative or decreasing values are invalid. Missing Run metadata is `missing_run_start`. |
 
 Axis monotonicity is evaluated in effective objective-step order: a decrease is invalid, while equality on the elapsed axis is retained.
 Screen reduction preserves first, last, minimum, and maximum candidates within

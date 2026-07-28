@@ -20,10 +20,10 @@ from tests import helpers
 _CatalogBackend = Literal["duckdb", "sqlite"]
 _CATALOG_BACKENDS: tuple[_CatalogBackend, ...] = ("duckdb", "sqlite")
 _REQUIRED_ENV = (
-    "PULSEON_MINIO_ENDPOINT",
-    "PULSEON_MINIO_BUCKET",
-    "PULSEON_MINIO_ACCESS_KEY_ID",
-    "PULSEON_MINIO_SECRET_ACCESS_KEY",
+    "SEEX_MINIO_ENDPOINT",
+    "SEEX_MINIO_BUCKET",
+    "SEEX_MINIO_ACCESS_KEY_ID",
+    "SEEX_MINIO_SECRET_ACCESS_KEY",
 )
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 _URL_SAFE = "-_.~"
@@ -45,8 +45,8 @@ def test_minio_s3_data_path_round_trips_catalog_backend(
     catalog_backend: _CatalogBackend,
 ) -> None:
     config = _require_minio_config()
-    root_path = tmp_path / catalog_backend / "pulseon"
-    prefix = f"pulseon-acceptance/{uuid.uuid4().hex}/{catalog_backend}"
+    root_path = tmp_path / catalog_backend / "seex"
+    prefix = f"seex-acceptance/{uuid.uuid4().hex}/{catalog_backend}"
     partition_prefix = prefix + "/main/metric_points/run_id=run-1/metric_key_encoded=train%252Floss/"
     client = _open_minio_client(root_path, config, prefix, catalog_backend)
     project = client.create_project("minio acceptance", project_id="project-1")
@@ -114,9 +114,9 @@ def _open_minio_client(
     prefix: str,
     catalog_backend: _CatalogBackend,
 ):
-    import pulseon
+    import seex
 
-    return pulseon.init(
+    return seex.init(
         root_path,
         data_path=f"s3://{config.bucket}/{prefix.strip('/')}",
         catalog_backend=catalog_backend,
@@ -211,12 +211,12 @@ def _require_minio_config() -> MinioConfig:
         pytest.skip("set MinIO acceptance environment variables: " + ", ".join(missing))
 
     return MinioConfig(
-        endpoint=os.environ["PULSEON_MINIO_ENDPOINT"],
-        bucket=os.environ["PULSEON_MINIO_BUCKET"],
-        access_key_id=os.environ["PULSEON_MINIO_ACCESS_KEY_ID"],
-        secret_access_key=os.environ["PULSEON_MINIO_SECRET_ACCESS_KEY"],
-        region=os.environ.get("PULSEON_MINIO_REGION", "us-east-1"),
-        use_ssl=_parse_bool(os.environ.get("PULSEON_MINIO_USE_SSL", "false")),
+        endpoint=os.environ["SEEX_MINIO_ENDPOINT"],
+        bucket=os.environ["SEEX_MINIO_BUCKET"],
+        access_key_id=os.environ["SEEX_MINIO_ACCESS_KEY_ID"],
+        secret_access_key=os.environ["SEEX_MINIO_SECRET_ACCESS_KEY"],
+        region=os.environ.get("SEEX_MINIO_REGION", "us-east-1"),
+        use_ssl=_parse_bool(os.environ.get("SEEX_MINIO_USE_SSL", "false")),
     )
 
 
@@ -226,4 +226,4 @@ def _parse_bool(value: str) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise AssertionError("PULSEON_MINIO_USE_SSL must be a boolean")
+    raise AssertionError("SEEX_MINIO_USE_SSL must be a boolean")

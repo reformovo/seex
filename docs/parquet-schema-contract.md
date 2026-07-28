@@ -1,6 +1,6 @@
-# PulseOn Parquet Schema Contract
+# Seex Parquet Schema Contract
 
-PulseOn treats the product-owned `metric_points` Parquet data shape as the
+Seex treats the product-owned `metric_points` Parquet data shape as the
 native compatibility boundary. DuckLake catalog metadata, inline data,
 temporary files, indexes, query summaries, and extension state are
 implementation details.
@@ -32,7 +32,7 @@ external format.
 | `step` | int64 | yes | Metric step. |
 | `timestamp` | timestamp | yes | Metric observation timestamp captured when `run.log(...)` enters the enqueue path in 0.2 and later. Earlier writer-time values remain best-effort elapsed evidence. |
 | `value_f64` | float64 | yes | Numeric metric value. |
-| `ingested_at` | timestamp | yes | PulseOn ingestion timestamp. |
+| `ingested_at` | timestamp | yes | Seex ingestion timestamp. |
 
 ## Partition Layout
 
@@ -46,4 +46,4 @@ data/main/metric_points/
 ```
 
 DuckLake may apply additional Hive-style escaping to physical directory names.
-The logical `metric_key_encoded` column value remains the PulseOn contract.
+The logical `metric_key_encoded` column value remains the Seex contract.

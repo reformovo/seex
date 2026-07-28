@@ -110,19 +110,19 @@ Generate the retained multi-track DuckDB fixture once, then launch it with the
 HUD enabled:
 
 ```bash
-PULSEON_VIEWER_TRACE_FIXTURE_ROOT=/tmp/pulseon-viewer-trace \
-  cargo test -p pulseon-viewer --release --features test-support \
+SEEX_APP_TRACE_FIXTURE_ROOT=/tmp/seex-app-trace \
+  cargo test -p seex-app --release --features test-support \
   retained_multi_track_fixture_supports_product_tracing \
   -- --ignored --nocapture
 
 env -i \
-  HOME=/tmp/pulseon-viewer-trace/isolated-home \
+  HOME=/tmp/seex-app-trace/isolated-home \
   USER="$USER" LOGNAME="$LOGNAME" \
   PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
   TMPDIR="${TMPDIR:-/tmp}" LANG="${LANG:-en_US.UTF-8}" \
   MTL_HUD_ENABLED=1 \
-  ./target/release/pulseon-viewer \
-  /tmp/pulseon-viewer-trace/duckdb
+  ./target/release/seex-app \
+  /tmp/seex-app-trace/duckdb
 ```
 
 Fixture generation refuses to overwrite a non-empty backend directory. Reuse
@@ -230,7 +230,7 @@ path implementation. Every p95 remained below 8.33 ms and every maximum
 remained below 16.7 ms across three consecutive runs; the final run is recorded
 in the CPU table above.
 The representative gate is opt-in and was run with
-`cargo test -p pulseon-viewer --release --features test-support
+`cargo test -p seex-app --release --features test-support
 representative_workbench_stays_responsive_while_a_source_is_pending --
 --ignored --nocapture --test-threads=1` so hardware-sensitive GPUI window
 teardown is not part of ordinary debug test runs.
@@ -243,11 +243,11 @@ Passed against implementation commit `f7bc0de` on 2026-07-26:
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `cargo check`
 - `cargo test`
-- `cargo test -p pulseon-viewer --features test-support`
-- `cargo build -p pulseon-viewer --release`
-- `cargo test -p pulseon-viewer --release interactive_chart_cpu_budget --
+- `cargo test -p seex-app --features test-support`
+- `cargo build -p seex-app --release`
+- `cargo test -p seex-app --release interactive_chart_cpu_budget --
   --ignored --nocapture`
-- `cargo test -p pulseon-viewer --release --features test-support
+- `cargo test -p seex-app --release --features test-support
   representative_workbench_stays_responsive_while_a_source_is_pending --
   --ignored --nocapture --test-threads=1`
 - `uv run maturin develop --uv`
@@ -255,7 +255,7 @@ Passed against implementation commit `f7bc0de` on 2026-07-26:
 - `uv run pytest` (106 passed, 2 opt-in MinIO tests skipped)
 - `uv run maturin build --out dist`
 
-The first chained invocation of `cargo test -p pulseon-viewer --features
+The first chained invocation of `cargo test -p seex-app --features
 test-support` reported every test as passed, then the GPUI test process received
 SIGSEGV during process teardown. An immediate standalone rerun of the exact
 command passed, including 43 library tests, 53 binary tests with two ignored
@@ -273,5 +273,5 @@ interaction run contained ten two-period presentations, not because the target
 display was unavailable.
 
 The Rust build emitted existing future-incompatibility warnings for `block`
-0.1.6 and `proc-macro-error2` 2.0.1; warnings were not produced by PulseOn code
+0.1.6 and `proc-macro-error2` 2.0.1; warnings were not produced by Seex code
 and did not bypass the strict Clippy gate.

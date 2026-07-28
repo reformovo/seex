@@ -1,6 +1,6 @@
 # Phase 3 GPUI Curve Viewer
 
-> Status: pre-1.0 PulseOn 0.2.x implementation plan. ADR 0011 accepts the
+> Status: pre-1.0 Seex 0.1.x implementation plan. ADR 0011 accepts the
 > desktop-first renderer boundary; this plan may change during validation.
 
 > Roadmap note: this document preserves the original single-panel baseline.
@@ -9,8 +9,8 @@
 
 ## Outcome
 
-Phase 3 delivers an unsigned macOS ARM64 `pulseon-viewer` binary for comparing
-one metric across at most 10 Runs from one local native PulseOn Project, using
+Phase 3 delivers an unsigned macOS ARM64 `seex-app` binary for comparing
+one metric across at most 10 Runs from one local native Seex Project, using
 Phase 2 axes, evidence completeness, and reason semantics.
 
 A million points is a storage-source scale, not a rendering target. Storage
@@ -27,7 +27,7 @@ synchronization; the viewer coalesces state changes and does not run a custom
 
 The first viewer release:
 
-- opens a local PulseOn Project directory using its existing DuckDB or SQLite
+- opens a local Seex Project directory using its existing DuckDB or SQLite
   catalog and local data path;
 - selects one Project, up to 10 Runs, and one metric from the selected Runs'
   metric union;
@@ -111,7 +111,7 @@ value.
 ### 3A: Renderer-Independent Brush Primitives
 
 - Add brush range resize, pan, anchor zoom, clamp, and reset state to
-  `pulseon-chart-core`.
+  `seex-chart-core`.
 - Add nearest-real-point hit testing and visible y-range calculation.
 - Preserve existing zoom and segment-hit APIs and keep chart-core windowless.
 
@@ -131,7 +131,7 @@ value.
 - Cache GPUI overview and detail paths by series revision, viewport, canvas,
   and theme; GPUI types must not cross into chart-core.
 - Expose Open Project, Refresh, Reset View, Step, Elapsed, and Quit commands.
-  `pulseon-viewer` accepts zero or one Project path; more arguments return usage
+  `seex-app` accepts zero or one Project path; more arguments return usage
   with exit status 2.
 
 ### 3D: Performance and Product Validation
@@ -149,7 +149,7 @@ value.
 - Require the Xcode Metal Toolchain so GPUI embeds a build-time metallib.
 - Add a macOS ARM64 viewer CI job without changing the Python wheel matrix or
   PyPI publication graph.
-- Attach `pulseon-viewer-macos-aarch64`, its SHA-256 file, and attestation to a
+- Attach `seex-app-macos-aarch64`, its SHA-256 file, and attestation to a
   tag's GitHub Release.
 
 ## Validation Gates
@@ -176,7 +176,7 @@ value.
 ## Required Verification
 
 Run `cargo fmt --all --check`, workspace Clippy with warnings denied,
-`cargo check`, `cargo test`, `cargo build -p pulseon-viewer --release`,
+`cargo check`, `cargo test`, `cargo build -p seex-app --release`,
 `uv run maturin develop --uv`, `uv run pyright`, `uv run pytest`, and
 `uv run maturin build --out dist`. Document exact blockers for any command that
 cannot run, including a missing Xcode Metal Toolchain.

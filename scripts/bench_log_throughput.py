@@ -63,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
 def parent_main(args: argparse.Namespace) -> int:
     temp_dir: str | None = None
     if args.path is None:
-        temp_dir = tempfile.mkdtemp(prefix="pulseon-bench-")
+        temp_dir = tempfile.mkdtemp(prefix="seex-bench-")
         project_path = Path(temp_dir)
     else:
         project_path = args.path
@@ -116,9 +116,9 @@ def run_benchmark(
     reports: int,
     queue_capacity: int,
 ) -> dict[str, Any]:
-    import pulseon
+    import seex
 
-    client = pulseon.init(project_path, metric_queue_capacity=queue_capacity)
+    client = seex.init(project_path, metric_queue_capacity=queue_capacity)
     project = client.create_project("benchmark", project_id="bench-project")
     run = client.create_run(project.project_id, "throughput", run_id="bench-run")
 
@@ -134,7 +134,7 @@ def run_benchmark(
         "calls_per_second": reports / elapsed,
         "queue_capacity": queue_capacity,
         "diagnostics_after_log": diagnostics_to_dict(client.diagnostics()),
-        "environment": environment(getattr(pulseon, "__version__", "unknown")),
+        "environment": environment(getattr(seex, "__version__", "unknown")),
         "project_path": str(project_path),
     }
 
@@ -156,14 +156,14 @@ def diagnostics_to_dict(diagnostics: Any) -> dict[str, Any]:
     }
 
 
-def environment(pulseon_version: str) -> dict[str, str]:
+def environment(seex_version: str) -> dict[str, str]:
     return {
         "machine": platform.machine(),
         "platform": platform.platform(),
         "processor": platform.processor(),
         "python": sys.version.replace("\n", " "),
         "python_implementation": platform.python_implementation(),
-        "pulseon_version": pulseon_version,
+        "seex_version": seex_version,
         "working_directory": os.getcwd(),
     }
 

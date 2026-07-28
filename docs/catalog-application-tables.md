@@ -1,16 +1,16 @@
 # Catalog Application Tables
 
-PulseOn stores small control-plane and query-index state in catalog application
+Seex stores small control-plane and query-index state in catalog application
 tables. These tables are not Parquet compatibility contracts and are not
 DuckLake logical data tables.
 
-The table names are prefixed with `pulseon_` because they are owned by PulseOn.
+The table names are prefixed with `seex_` because they are owned by Seex.
 V3 keeps the names stable but stops addressing them through DuckLake's internal
 metadata alias. Backend-specific qualification belongs in the native catalog
 adapter, not in query/write call sites. The tables live in the same catalog
 database file as DuckLake metadata for local DuckDB and SQLite backends.
 
-## `pulseon_projects`
+## `seex_projects`
 
 Projects are lightweight namespaces for related runs.
 
@@ -20,10 +20,10 @@ Projects are lightweight namespaces for related runs.
 | `name` | string | yes | User-facing project name. |
 | `created_at` | timestamp | yes | Project creation timestamp. |
 
-## `pulseon_runs`
+## `seex_runs`
 
 Runs carry lifecycle state and project ownership. Project-scoped queries and
-exports use `pulseon_runs(project_id)` rather than denormalizing `project_id`
+exports use `seex_runs(project_id)` rather than denormalizing `project_id`
 into metric-point Parquet.
 
 | Column | Type | Required | Contract |
@@ -36,7 +36,7 @@ into metric-point Parquet.
 | `started_at` | timestamp | yes | Training start timestamp. |
 | `finished_at` | timestamp | no | Terminal lifecycle timestamp. |
 
-## `pulseon_metric_aggregates`
+## `seex_metric_aggregates`
 
 Metric aggregates are derived query-index state over effective metric series.
 They may be repaired or rebuilt from persisted `metric_points`.

@@ -1,14 +1,14 @@
 # Crate Boundaries
 
-PulseOn workspace crates follow one dependency direction:
+Seex workspace crates follow one dependency direction:
 
 ```text
-pulseon-model <- pulseon-storage <- pulseon-core <- pulseon-python
+seex-model <- seex-storage <- seex-core <- seex-python
        ^                 ^                ^
-       +---------- pulseon-viewer --------+----> pulseon-chart-core
+       +---------- seex-app --------+----> seex-chart-core
 ```
 
-`pulseon-viewer` is the desktop composition root and may depend directly on the
+`seex-app` is the desktop composition root and may depend directly on the
 model, storage, core, and chart crates. Its `WorkbenchSession` owns native read
 coordination and immutable snapshots; independent GPUI entities own the
 sidebar, View bar, analysis workspace, inspector, and charts. All reverse
@@ -16,23 +16,23 @@ dependencies, mutual entity subscriptions, and crate cycles are forbidden.
 
 ## Responsibilities
 
-- **`pulseon-model`** owns projects, runs, metrics, typed identities, query
+- **`seex-model`** owns projects, runs, metrics, typed identities, query
   inputs, reduction policies, and query results. It has no storage, Python, or
   rendering dependencies.
-- **`pulseon-storage`** owns project configuration, DuckDB/DuckLake catalogs,
+- **`seex-storage`** owns project configuration, DuckDB/DuckLake catalogs,
   schema bootstrap and validation, encoding, reads, writes, aggregate repair,
   flush, S3 setup, and storage errors. It exposes a narrow metric-reader
   interface implemented by the native project store and Parquet dataset reader.
-- **`pulseon-core`** owns client and run lifecycle, report admission, the
+- **`seex-core`** owns client and run lifecycle, report admission, the
   background queue, drain and finalization orchestration, shutdown, diagnostics,
   and comparison use cases. It contains no SQL or Python bindings.
-- **`pulseon-python`** owns the PyO3 extension, Python classes and exceptions,
+- **`seex-python`** owns the PyO3 extension, Python classes and exceptions,
   Arrow capsules, argument conversion, and error mapping. It contains no
   product or storage policy.
-- **`pulseon-chart-core`** owns renderer-independent chart series, viewports,
+- **`seex-chart-core`** owns renderer-independent chart series, viewports,
   scales, projected paths, hit testing, and interaction state. Its generic
   chart points intentionally remain distinct from metric points.
-- **`pulseon-viewer`** owns source selection, background query scheduling,
+- **`seex-app`** owns source selection, background query scheduling,
   conversion from metric points to chart points, GPUI state, and rendering.
 
 ## Shared Query Contract
@@ -81,7 +81,7 @@ The refactor removed the root-owned navigation/error swap, chart adapter maps,
 root chart caches, root repaint flags, `TrackDensity`, receiver convenience
 polling, duplicate visible-Run filtering, and the permanent local-error banner.
 It also moved shared GPUI fixtures out of production modules and rejects every
-workbench document version except `pulseon-workbench 3`.
+workbench document version except `seex-workbench 1`.
 
 At the refactor baseline the Viewer contained 16,932 Rust source lines, with
 tests embedded in the 8,905-line `desktop.rs`. The resulting source tree has
