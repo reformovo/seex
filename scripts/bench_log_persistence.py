@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Measure setup, explicit-step admission, background writer drain, "
-            "finalization, and shutdown timing across repeated PulseOn runs."
+            "finalization, and shutdown timing across repeated Seex runs."
         )
     )
     parser.add_argument(
@@ -125,7 +125,7 @@ def benchmark_root(path: Path | None) -> tuple[Path, str | None]:
         path.mkdir(parents=True, exist_ok=True)
         return path, None
 
-    temp_dir = tempfile.mkdtemp(prefix="pulseon-persistence-bench-")
+    temp_dir = tempfile.mkdtemp(prefix="seex-persistence-bench-")
     return Path(temp_dir), temp_dir
 
 
@@ -140,7 +140,7 @@ def run_benchmark(
     metric_key: str,
     object_storage_configs: Sequence[ObjectStorageConfig] = (),
 ) -> dict[str, Any]:
-    import pulseon
+    import seex
 
     targets: list[_StorageTarget] = [
         (project_root, {"kind": "local"}, None),
@@ -165,7 +165,7 @@ def run_benchmark(
             target_root, _, config_path = targets[target_index]
             repeat_results_by_target[target_index].append(
                 run_once(
-                    pulseon_module=pulseon,
+                    seex_module=seex,
                     project_path=target_root / f"repeat-{repeat_index + 1}",
                     config_path=config_path,
                     repeat_index=repeat_index,
@@ -192,7 +192,7 @@ def run_benchmark(
     result["object_storage_results"] = target_results[1:]
     result["environment"] = {
         "python": sys.version.replace("\n", " "),
-        "pulseon_version": getattr(pulseon, "__version__", "unknown"),
+        "seex_version": getattr(seex, "__version__", "unknown"),
     }
     return result
 
@@ -221,7 +221,7 @@ def target_result(
 
 def run_once(
     *,
-    pulseon_module: Any,
+    seex_module: Any,
     project_path: Path,
     config_path: Path | None,
     repeat_index: int,
@@ -234,7 +234,7 @@ def run_once(
     staged_config = stage_config(project_path, config_path)
     setup_started = time.perf_counter()
     try:
-        client = pulseon_module.init(
+        client = seex_module.init(
             project_path,
             metric_queue_capacity=queue_capacity,
         )
@@ -293,7 +293,7 @@ def run_once(
 def stage_config(project_path: Path, config_path: Path | None) -> Path | None:
     if config_path is None:
         return None
-    destination = project_path / ".pulseon" / "config.toml"
+    destination = project_path / ".seex" / "config.toml"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(config_path, destination)
     return destination

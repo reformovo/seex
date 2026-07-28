@@ -1,13 +1,13 @@
 # GPUI Curve Viewer Spike
 
-This is a temporary design note for evaluating a PulseOn-native curve viewer
+This is a temporary design note for evaluating a Seex-native curve viewer
 based on GPUI. It is not an accepted architecture decision.
 
 ## Context
 
-PulseOn's product boundary is the Parquet metric schema, while the core package
+Seex's product boundary is the Parquet metric schema, while the core package
 intentionally avoids built-in plotting dependencies. A curve viewer should
-therefore live outside the Python/Rust SDK surface and consume PulseOn Parquet
+therefore live outside the Python/Rust SDK surface and consume Seex Parquet
 data through a separate query and rendering layer.
 
 The candidate direction is to build a desktop-first curve viewer with GPUI,
@@ -31,7 +31,7 @@ GPUI the data model, query model, or chart algorithm boundary.
 The preferred exploratory split is:
 
 ```text
-pulseon-chart-core
+seex-chart-core
   series model
   viewport model
   scales and ticks
@@ -40,19 +40,19 @@ pulseon-chart-core
   hit testing
   selection and zoom state
 
-pulseon-data
+seex-data
   Parquet/DuckDB query
-  PulseOn schema validation
+  Seex schema validation
   viewport-aware query planning
 
-pulseon-gpui-app
+seex-gpui-app
   desktop layout
   file/directory picking
   panels and commands
   GPUI rendering adapter
 ```
 
-`pulseon-chart-core` must not depend on GPUI, egui, Tauri, React, or a browser
+`seex-chart-core` must not depend on GPUI, egui, Tauri, React, or a browser
 runtime. That boundary keeps the viewer free to target a GPUI desktop app first
 without closing the door on an egui prototype or future web/Tauri viewer.
 
@@ -62,10 +62,10 @@ without closing the door on an egui prototype or future web/Tauri viewer.
 tooltip state are separated clearly enough to learn from. It also has desktop
 components that map well to an experiment analysis workbench.
 
-Direct dependency is premature for PulseOn because the line chart is a generic
-chart widget, while PulseOn needs an experiment-curve engine:
+Direct dependency is premature for Seex because the line chart is a generic
+chart widget, while Seex needs an experiment-curve engine:
 
-- PulseOn x values are usually continuous `step` or `timestamp`, not category
+- Seex x values are usually continuous `step` or `timestamp`, not category
   labels.
 - Large runs require viewport-aware downsampling and cached paths instead of
   rebuilding all geometry from the original data on every paint.
@@ -82,7 +82,7 @@ The useful lesson is the layering, not the dependency.
 
 GPUI is the stronger candidate for a polished native desktop product. It is
 better aligned with a modern, panel-heavy experiment analysis tool, especially
-if PulseOn wants a desktop workbench rather than only a debug utility.
+if Seex wants a desktop workbench rather than only a debug utility.
 
 egui remains useful for quick Rust-native prototypes and possible WASM demos.
 It is simpler to wire up and iterate on, but a refined product UI will likely
@@ -100,7 +100,7 @@ without forcing bad boundaries into the data and chart core.
 
 Minimum scenario:
 
-- Read PulseOn-compatible Parquet metric data with DuckDB.
+- Read Seex-compatible Parquet metric data with DuckDB.
 - Load at least 10 metric series for comparison.
 - Support raw series with 1,000,000 points each.
 - Downsample the visible viewport to 2,000-10,000 points per visible series.
@@ -116,7 +116,7 @@ Out of scope for the spike:
 - Mobile support.
 - Full experiment dashboard workflows.
 - Public Python API changes.
-- Changes to the PulseOn Parquet schema.
+- Changes to the Seex Parquet schema.
 
 ## Validation Gates
 
@@ -141,7 +141,7 @@ The spike should be rejected or narrowed if:
 
 Before promoting this to an ADR, answer these directly:
 
-1. Is PulseOn building a desktop workbench first, or a browser-first viewer?
+1. Is Seex building a desktop workbench first, or a browser-first viewer?
 2. What is the largest first-release dataset that must feel interactive?
 3. Is cloud Parquet a first-release requirement, or can the GPUI spike stay
    local-filesystem only?
@@ -157,6 +157,6 @@ Proceed with a GPUI desktop spike only if the immediate product bet is a native
 desktop experiment analysis tool. Keep the browser/Tauri route separate until
 the product priority is explicit.
 
-For implementation discipline, start with `pulseon-chart-core` and a narrow
+For implementation discipline, start with `seex-chart-core` and a narrow
 GPUI adapter. Treat `gpui-component` as reference material for chart layering,
 not as a dependency.

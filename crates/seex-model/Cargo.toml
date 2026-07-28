@@ -1,0 +1,15 @@
+[package]
+name = "seex-model"
+version = "0.1.0-beta.0"
+edition = "2024"
+description = "Shared product and query types for Seex."
+license = "MIT"
+repository = "https://github.com/reformovo/seex"
+
+[dependencies]
+chrono = "0.4"
+thiserror = "2"
+
+[lib]
+name = "seex_model"
+path = "src/lib.rs"

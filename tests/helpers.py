@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import pulseon
+    import seex
 
 V2_DIAGNOSTIC_FIELDS = (
     "pending_reports",
@@ -30,16 +30,16 @@ V2_REMOVED_DIAGNOSTIC_FIELDS = (
 
 
 def wait_for_metric_points(
-    client: pulseon.Client,
+    client: seex.Client,
     run_id: str,
     metric_key: str,
     expected_count: int,
     *,
     timeout_seconds: float = 5.0,
     sleep_seconds: float = 0.05,
-) -> list[pulseon.MetricPoint]:
+) -> list[seex.MetricPoint]:
     deadline = time.monotonic() + timeout_seconds
-    points: list[pulseon.MetricPoint] = []
+    points: list[seex.MetricPoint] = []
     while time.monotonic() <= deadline:
         points = client.query_metric(run_id, metric_key)
         if len(points) >= expected_count:
@@ -58,7 +58,7 @@ def wait_for_metric_points(
     )
 
 
-def _format_diagnostics(diagnostics: pulseon.Diagnostics) -> str:
+def _format_diagnostics(diagnostics: seex.Diagnostics) -> str:
     return (
         "{"
         f"pending_reports={diagnostics.pending_reports}, "

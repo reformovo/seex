@@ -19,12 +19,12 @@ def test_catalog_backend_round_trips_native_storage_workflow(
     tmp_path: pathlib.Path,
     catalog_backend: _CatalogBackend,
 ) -> None:
-    import pulseon
+    import seex
 
-    root_path = tmp_path / catalog_backend / "pulseon"
+    root_path = tmp_path / catalog_backend / "seex"
     data_path = tmp_path / catalog_backend / "custom-data"
     catalog_path = tmp_path / catalog_backend / "catalog" / "custom-catalog.db"
-    client = pulseon.init(
+    client = seex.init(
         root_path,
         data_path=data_path,
         catalog_backend=catalog_backend,
@@ -62,7 +62,7 @@ def test_catalog_backend_round_trips_native_storage_workflow(
     del run
     del client
 
-    reopened = pulseon.init(
+    reopened = seex.init(
         root_path,
         data_path=data_path,
         catalog_backend=catalog_backend,
@@ -110,11 +110,11 @@ def test_short_run_metrics_flush_from_inline_to_parquet(
     catalog_backend: _CatalogBackend,
     terminal_method: str,
 ) -> None:
-    import pulseon
+    import seex
 
-    root_path = tmp_path / catalog_backend / terminal_method / "pulseon"
+    root_path = tmp_path / catalog_backend / terminal_method / "seex"
     data_path = tmp_path / catalog_backend / terminal_method / "data"
-    client = pulseon.init(
+    client = seex.init(
         root_path,
         data_path=data_path,
         catalog_backend=catalog_backend,
@@ -147,13 +147,13 @@ def test_catalog_backend_rejects_invalid_local_storage_configuration(
     tmp_path: pathlib.Path,
     catalog_backend: _CatalogBackend,
 ) -> None:
-    import pulseon
+    import seex
 
-    with pytest.raises(pulseon.InvalidConfigurationError):
-        pulseon.init(
-            tmp_path / catalog_backend / "pulseon",
+    with pytest.raises(seex.InvalidConfigurationError):
+        seex.init(
+            tmp_path / catalog_backend / "seex",
             catalog_backend=catalog_backend,
-            data_path="http://bucket/pulseon",
+            data_path="http://bucket/seex",
         )
 
 
@@ -162,27 +162,27 @@ def test_catalog_backend_rejects_s3_catalog_path(
     tmp_path: pathlib.Path,
     catalog_backend: _CatalogBackend,
 ) -> None:
-    import pulseon
+    import seex
 
     with pytest.raises(
-        pulseon.InvalidConfigurationError,
+        seex.InvalidConfigurationError,
         match="catalog_path must be a local filesystem path",
     ):
-        pulseon.init(
-            tmp_path / catalog_backend / "pulseon-s3-catalog",
+        seex.init(
+            tmp_path / catalog_backend / "seex-s3-catalog",
             catalog_backend=catalog_backend,
             catalog_path="s3://bucket/catalog.ducklake",
         )
 
 
-def test_sqlite_catalog_file_contains_ducklake_and_pulseon_state(
+def test_sqlite_catalog_file_contains_ducklake_and_seex_state(
     tmp_path: pathlib.Path,
 ) -> None:
-    import pulseon
+    import seex
 
-    root_path = tmp_path / "pulseon"
-    catalog_path = root_path / ".pulseon" / "catalog.sqlite"
-    client = pulseon.init(root_path, catalog_backend="sqlite")
+    root_path = tmp_path / "seex"
+    catalog_path = root_path / ".seex" / "catalog.sqlite"
+    client = seex.init(root_path, catalog_backend="sqlite")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.25)
@@ -197,26 +197,26 @@ def test_sqlite_catalog_file_contains_ducklake_and_pulseon_state(
     inline_tables = [table for table in tables_before_flush if table.startswith("ducklake_inlined_data_")]
     assert "ducklake_metadata" in tables_before_flush
     assert "ducklake_table" in tables_before_flush
-    assert "pulseon_projects" in tables_before_flush
-    assert "pulseon_runs" in tables_before_flush
-    assert "pulseon_metric_aggregates" in tables_before_flush
+    assert "seex_projects" in tables_before_flush
+    assert "seex_runs" in tables_before_flush
+    assert "seex_metric_aggregates" in tables_before_flush
     assert inline_tables
-    assert _sqlite_table_count(catalog_path, "pulseon_projects") == 1
-    assert _sqlite_table_count(catalog_path, "pulseon_runs") == 1
+    assert _sqlite_table_count(catalog_path, "seex_projects") == 1
+    assert _sqlite_table_count(catalog_path, "seex_runs") == 1
     assert sum(_sqlite_table_count(catalog_path, table) for table in inline_tables) >= 1
 
     client.finish_run(run.run_id)
 
-    assert _sqlite_table_count(catalog_path, "pulseon_metric_aggregates") == 1
+    assert _sqlite_table_count(catalog_path, "seex_metric_aggregates") == 1
     assert _sqlite_table_count(catalog_path, "ducklake_data_file") >= 1
 
 
 def test_unknown_catalog_backend_is_rejected(tmp_path: pathlib.Path) -> None:
-    import pulseon
+    import seex
 
-    with pytest.raises(pulseon.InvalidConfigurationError, match="postgres"):
-        pulseon.init(
-            tmp_path / "pulseon",
+    with pytest.raises(seex.InvalidConfigurationError, match="postgres"):
+        seex.init(
+            tmp_path / "seex",
             catalog_backend="postgres",  # type: ignore[reportArgumentType]
         )
 

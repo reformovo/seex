@@ -1,0 +1,29 @@
+[package]
+name = "seex-core"
+version = "0.1.0-beta.0"
+edition = "2024"
+description = "Application orchestration for Seex clients and runs."
+license = "MIT"
+repository = "https://github.com/reformovo/seex"
+readme = "../../README.md"
+
+[lib]
+name = "seex_core"
+
+[dependencies]
+seex-model = { path = "../seex-model" }
+seex-storage = { path = "../seex-storage" }
+
+# Error handling
+thiserror = "2"
+
+# IDs and timestamps
+uuid = { version = "1.0", features = ["v4"] }
+chrono = "0.4"
+
+[dev-dependencies]
+duckdb = { version = "~1.10504.0", features = ["bundled"] }
+
+[features]
+default = ["native"]
+native = []

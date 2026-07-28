@@ -1,15 +1,15 @@
-# PulseOn
+# Seex
 
-PulseOn is a local-first training metrics tracker backed by Rust, PyO3, DuckDB,
-and DuckLake.
+Seex (pronounced “six”, `/sɪks/`) is a local-first training metrics tracker
+backed by Rust, PyO3, DuckDB, and DuckLake.
 
 > [!IMPORTANT]
-> Experimental. PulseOn is in the 0.x line. Pre-1.0 releases do not promise
+> Experimental. Seex is in the 0.x line. Pre-1.0 releases do not promise
 > store, API, or machine-output compatibility; breaking changes between 0.x
 > releases will not preserve compatibility, and compatibility and migration
 > commitments begin with the future 1.x line.
 
-PulseOn 0.1.1 / frozen headless read surface:
+Seex 0.1.0b0 beta surface:
 
 - discover projects, runs, metrics, and persisted metric points
 - query running runs from the writer client after reports reach storage
@@ -18,20 +18,20 @@ PulseOn 0.1.1 / frozen headless read surface:
 - use DuckDB or SQLite catalogs with local or S3-compatible Parquet data
 - keep the Parquet schema as the long-term compatibility boundary
 
-Install with `pip install pulseon`.
+Install the beta with `pip install seex==0.1.0b0`.
 
 Known limit: with the default DuckDB catalog, an independent client may not
 attach or refresh while a writer is active. Use the writer client for live
 queries or open independent readers after writer shutdown. See the
-[0.1.1 release notes](docs/release-notes/0.1.1.md) for validation details
+[0.1.0b0 release notes](docs/release-notes/0.1.0b0.md) for validation details
 and other deferred capabilities.
 
 Quickstart:
 
 ```python
-import pulseon
+import seex
 
-client = pulseon.init()
+client = seex.init()
 project = client.create_project("local training")
 run = client.create_run(project.project_id, "baseline")
 run.log("train/loss", 0, 0.25)
@@ -53,39 +53,46 @@ client.shutdown()
 `ArrowTable` does not require PyArrow, pandas, or Polars. Consumers that support
 the Arrow PyCapsule protocol can import it through `__arrow_c_stream__`.
 
-The `pulseon` command opens an existing store and never creates a missing one:
+The `seex` command opens an existing store and never creates a missing one:
 
 ```console
-pulseon --path runs projects list
-pulseon --path runs runs list <project-id> --status finished --limit 20
-pulseon --path runs metrics list <run-id>
-pulseon --path runs --format json metrics query <run-id> train/loss --all
-pulseon --path runs autoresearch leaderboard <project-id> --metric eval/loss --direction minimize
-pulseon --path runs --format json autoresearch best <project-id> --metric eval/loss --direction minimize
+seex --path runs projects list
+seex --path runs runs list <project-id> --status finished --limit 20
+seex --path runs metrics list <run-id>
+seex --path runs --format json metrics query <run-id> train/loss --all
+seex --path runs autoresearch leaderboard <project-id> --metric eval/loss --direction minimize
+seex --path runs --format json autoresearch best <project-id> --metric eval/loss --direction minimize
 ```
+
+Launch an independently installed desktop app with `seex app`, optionally
+opening one project path with `seex app <project-path>`. The SDK wheel does not
+bundle the `seex-app` binary.
 
 Machine-readable CLI success and error output uses JSON schema version 2.
 Autoresearch rankings may be limited to a repeated `--run <run-id>` subset;
 leaderboards rank the full selection before applying pagination.
 
-By default, PulseOn stores local state under `./.pulseon`. Pass an explicit
+By default, Seex stores local state under `./.seex`. Pass an explicit
 root path when a project should use a different local store:
 
 ```python
-client = pulseon.init("runs")
+client = seex.init("runs")
 ```
+
+Seex does not discover or migrate legacy `.pulseon` state. Existing legacy
+directories remain untouched; initialize a new `.seex` store instead.
 
 The existing storage keywords remain available: `data_path`,
 `catalog_backend`, `catalog_path`, and `metric_queue_capacity`. `catalog_path`
 must be a local filesystem path. `data_path` may be local, or it may use an
 S3-compatible URI such as `s3://bucket/prefix`.
 
-Project-local storage settings can live in `./.pulseon/config.toml`. Relative
+Project-local storage settings can live in `./.seex/config.toml`. Relative
 `data_path` and `catalog_path` values in this file are resolved from the project
-root passed to `pulseon.init(...)` or `pulseon --path`:
+root passed to `seex.init(...)` or `seex --path`:
 
 ```toml
-data_path = "s3://example-bucket/pulseon/demo"
+data_path = "s3://example-bucket/seex/demo"
 
 [s3]
 endpoint = "https://s3.example.com"
@@ -96,12 +103,12 @@ path_style = true
 use_ssl = true
 ```
 
-Do not commit real S3 credentials. Explicit `pulseon.init(...)` keyword
+Do not commit real S3 credentials. Explicit `seex.init(...)` keyword
 arguments override values from `config.toml`:
 
 ```python
-client = pulseon.init(
-    data_path="s3://example-bucket/pulseon/demo",
+client = seex.init(
+    data_path="s3://example-bucket/seex/demo",
     s3_endpoint="https://s3.example.com",
     s3_access_key_id="<access-key-id>",
     s3_secret_access_key="<secret-access-key>",
@@ -110,7 +117,7 @@ client = pulseon.init(
 ```
 
 For bounded teardown, stop active logging threads before calling
-`client.shutdown(timeout=...)`; PulseOn keeps admission open while bounded
+`client.shutdown(timeout=...)`; Seex keeps admission open while bounded
 shutdown is draining, so concurrent `run.log(...)` calls can prevent that drain
 from completing before the timeout.
 
@@ -126,17 +133,17 @@ Runtime extensions:
 
 - DuckLake is installed and loaded by the native engine because it is required
   for native storage.
-- DuckDB LTTB is optional and is not bundled into PulseOn wheels. Downsampling
+- DuckDB LTTB is optional and is not bundled into Seex wheels. Downsampling
   first uses an already installed `lttb` extension. The CLI automatically runs
   the official `INSTALL lttb FROM community; LOAD lttb;` flow when its default
   200-point limit first requires downsampling. Python SDK queries remain
-  download-free unless `PULSEON_LTTB_AUTO_INSTALL=1` is set explicitly.
-- PulseOn embeds DuckDB 1.5.4 and delegates signed community-extension
+  download-free unless `SEEX_LTTB_AUTO_INSTALL=1` is set explicitly.
+- Seex embeds DuckDB 1.5.4 and delegates signed community-extension
   compatibility to DuckDB and the community extension repository rather than
-  duplicating their platform matrix in PulseOn's generated CI. DuckDB extension
+  duplicating their platform matrix in Seex's generated CI. DuckDB extension
   binaries are specific to a DuckDB version and platform; for offline
   deployment, set
-  `PULSEON_LTTB_EXTENSION_PATH=/path/to/lttb.duckdb_extension` to a compatible,
+  `SEEX_LTTB_EXTENSION_PATH=/path/to/lttb.duckdb_extension` to a compatible,
   signed binary rather than reusing one built for another DuckDB version. If no
   upstream build exists, use `--all`. CLI JSON failures use the
   `lttb_extension_unavailable` code and include machine-readable guidance for

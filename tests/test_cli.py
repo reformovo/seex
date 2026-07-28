@@ -1,4 +1,4 @@
-"""Verify the dependency-free read-only PulseOn CLI."""
+"""Verify the dependency-free read-only Seex CLI."""
 
 from __future__ import annotations
 
@@ -6,13 +6,45 @@ import json
 import math
 import os
 import pathlib
+import shutil
 import typing
 from unittest import mock
 
 import pytest
-from pulseon import cli
+from seex import cli
 
 from tests import helpers
+
+
+def test_cli_app_replaces_process_with_seex_app(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_path = tmp_path / "project"
+    monkeypatch.setattr(shutil, "which", lambda _: "/Applications/Seex.app/Contents/MacOS/seex-app")
+
+    class ExecCalled(Exception):
+        pass
+
+    def execv(path: str, arguments: list[str]) -> typing.NoReturn:
+        assert path == "/Applications/Seex.app/Contents/MacOS/seex-app"
+        assert arguments == [path, os.fspath(project_path)]
+        raise ExecCalled
+
+    monkeypatch.setattr(os, "execv", execv)
+
+    with pytest.raises(ExecCalled):
+        cli.main(["app", os.fspath(project_path)])
+
+
+def test_cli_app_reports_missing_binary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+
+    assert cli.main(["app"]) == 1
+    assert "seex-app was not found on PATH" in capsys.readouterr().err
 
 
 def test_cli_discovers_running_metric_points_through_all_read_commands(
@@ -20,10 +52,10 @@ def test_cli_discovers_running_metric_points_through_all_read_commands(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.5)
@@ -90,10 +122,10 @@ def test_cli_comparison_reports_require_baseline_and_preserve_candidate_order(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     first_project = client.create_project("first", project_id="project-1")
     second_project = client.create_project("second", project_id="project-2")
     baseline = client.create_run(first_project.project_id, "baseline", "baseline")
@@ -180,10 +212,10 @@ def test_cli_autoresearch_compare_uses_explicit_or_best_incumbent(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("research", project_id="project-1")
     runs = [client.create_run(project.project_id, name, run_id=name) for name in ("candidate", "best", "worse")]
     for run, value in zip(runs, (2.0, 1.0, 3.0), strict=True):
@@ -233,10 +265,10 @@ def test_cli_autoresearch_compare_reports_no_eligible_incumbent(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("research", project_id="project-1")
     candidate = client.create_run(project.project_id, "candidate", "candidate")
     candidate.log("loss", 0, 1.0)
@@ -311,10 +343,10 @@ def test_cli_autoresearch_leaderboard_keeps_structured_ineligible_evidence(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("research", project_id="project-1")
     specifications = (
         ("tied-a", 1.0, "finished"),
@@ -397,10 +429,10 @@ def test_cli_autoresearch_leaderboard_paginates_after_ranking(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("research", project_id="project-1")
     for index in range(51):
         run = client.create_run(project.project_id, str(index), run_id=f"run-{index}")
@@ -443,10 +475,10 @@ def test_cli_autoresearch_best_uses_stable_tie_break_and_returns_null(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("research", project_id="project-1")
     for run_id, value in (("zeta", 1.0), ("alpha", 1.0), ("worse", 2.0)):
         run = client.create_run(project.project_id, run_id, run_id=run_id)
@@ -496,10 +528,10 @@ def test_cli_autoresearch_ranking_rejects_invalid_run_scopes(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     client.create_project("first", project_id="project-1")
     second = client.create_project("second", project_id="project-2")
     client.create_run(second.project_id, "foreign", run_id="foreign")
@@ -539,10 +571,10 @@ def test_cli_comparison_reports_partial_and_per_metric_evidence(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("evidence", project_id="project-1")
     run_ids = ("baseline", "running", "failed", "missing", "invalid-secondary")
     runs = {run_id: client.create_run(project.project_id, run_id, run_id) for run_id in run_ids}
@@ -612,10 +644,10 @@ def test_cli_comparison_reports_reject_unknown_run(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("evidence", project_id="project-1")
     baseline = client.create_run(project.project_id, "baseline", "baseline")
     baseline.log("loss", 0, 1.0)
@@ -659,7 +691,7 @@ def test_cli_missing_store_fails_without_creating_it(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "catalog not found: catalog.ducklake\n"
-    assert not (root_path / ".pulseon").exists()
+    assert not (root_path / ".seex").exists()
 
 
 def test_cli_json_operation_errors_are_structured(
@@ -688,10 +720,10 @@ def test_cli_resolves_global_path_overrides_against_project(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "workspace" / "project"
-    client = pulseon.init(
+    client = seex.init(
         root_path,
         catalog_backend="sqlite",
         catalog_path=root_path / "storage" / "catalog.sqlite",
@@ -738,10 +770,10 @@ def test_cli_json_includes_pagination_and_metric_query_metadata(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("training", project_id="project-1")
     first_run = client.create_run(project.project_id, "first", run_id="run-1")
     first_run.log("loss", 0, 0.5)
@@ -782,10 +814,10 @@ def test_cli_json_normalizes_non_finite_metric_values(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("training", project_id="project-1")
     run = client.create_run(project.project_id, "non-finite", run_id="run-1")
     for step, value in enumerate((math.nan, math.inf, -math.inf)):
@@ -811,7 +843,7 @@ def test_cli_preserves_symlinked_project_path(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     real_path = tmp_path / "real-project"
     real_path.mkdir()
@@ -820,7 +852,7 @@ def test_cli_preserves_symlinked_project_path(
         linked_path.symlink_to(real_path, target_is_directory=True)
     except OSError as error:
         pytest.skip(f"directory symlinks are unavailable: {error}")
-    client = pulseon.init(linked_path)
+    client = seex.init(linked_path)
     client.create_project("linked", project_id="project-1")
     client.shutdown()
 
@@ -859,30 +891,30 @@ def test_cli_metric_query_point_limits_are_mutually_exclusive() -> None:
 def test_cli_enables_lttb_auto_install_only_during_metric_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("PULSEON_LTTB_AUTO_INSTALL", "disabled")
+    monkeypatch.setenv("SEEX_LTTB_AUTO_INSTALL", "disabled")
     client = mock.Mock()
     point = mock.Mock(step=0, value_f64=0.5, timestamp="2026-07-15T00:00:00Z")
     client.query_metric.side_effect = lambda *args, **kwargs: (
         [point]
-        if os.environ.get("PULSEON_LTTB_AUTO_INSTALL") == "1"
+        if os.environ.get("SEEX_LTTB_AUTO_INSTALL") == "1"
         else pytest.fail("CLI query did not enable LTTB auto-install")
     )
     args = cli._build_parser().parse_args(["metrics", "query", "run-1", "loss"])
 
     cli._run(
         typing.cast(
-            cli._pulseon.Client,  # type: ignore[reportPrivateImportUsage]
+            cli._seex.Client,  # type: ignore[reportPrivateImportUsage]
             client,
         ),
         args,
     )
 
-    assert os.environ["PULSEON_LTTB_AUTO_INSTALL"] == "disabled"
+    assert os.environ["SEEX_LTTB_AUTO_INSTALL"] == "disabled"
 
-    monkeypatch.delenv("PULSEON_LTTB_AUTO_INSTALL")
+    monkeypatch.delenv("SEEX_LTTB_AUTO_INSTALL")
     with cli._enable_lttb_auto_install():
-        assert os.environ["PULSEON_LTTB_AUTO_INSTALL"] == "1"
-    assert "PULSEON_LTTB_AUTO_INSTALL" not in os.environ
+        assert os.environ["SEEX_LTTB_AUTO_INSTALL"] == "1"
+    assert "SEEX_LTTB_AUTO_INSTALL" not in os.environ
 
 
 @pytest.mark.parametrize(
@@ -967,7 +999,7 @@ def test_cli_sanitizes_config_credentials_and_catalog_paths(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     root_path = tmp_path / "project"
-    config_path = root_path / ".pulseon" / "config.toml"
+    config_path = root_path / ".seex" / "config.toml"
     config_path.parent.mkdir(parents=True)
     secret = "credential-must-not-leak"
     config_path.write_text(
@@ -1009,10 +1041,10 @@ def test_cli_json_sanitizes_lttb_extension_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import pulseon
+    import seex
 
     root_path = tmp_path / "project"
-    client = pulseon.init(root_path)
+    client = seex.init(root_path)
     project = client.create_project("training", project_id="project-1")
     run = client.create_run(project.project_id, "long", run_id="run-1")
     for step in range(201):
@@ -1020,7 +1052,7 @@ def test_cli_json_sanitizes_lttb_extension_path(
     client.finish_run(run.run_id)
     client.shutdown()
     private_extension = tmp_path / "private" / "tenant" / "missing-lttb.duckdb_extension"
-    monkeypatch.setenv("PULSEON_LTTB_EXTENSION_PATH", str(private_extension))
+    monkeypatch.setenv("SEEX_LTTB_EXTENSION_PATH", str(private_extension))
 
     status = cli.main(
         [
@@ -1044,7 +1076,7 @@ def test_cli_json_sanitizes_lttb_extension_path(
         {"action": "query_all", "argument": "--all"},
         {
             "action": "load_local_extension",
-            "environment_variable": "PULSEON_LTTB_EXTENSION_PATH",
+            "environment_variable": "SEEX_LTTB_EXTENSION_PATH",
         },
     ]
     assert private_extension.name in error["message"]

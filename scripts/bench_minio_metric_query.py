@@ -20,10 +20,10 @@ _CatalogBackend = Literal["duckdb", "sqlite"]
 _BACKENDS: tuple[_CatalogBackend, ...] = ("duckdb", "sqlite")
 _LOGICAL_POINT_BYTES = 24
 _REQUIRED_ENV = (
-    "PULSEON_MINIO_ENDPOINT",
-    "PULSEON_MINIO_BUCKET",
-    "PULSEON_MINIO_ACCESS_KEY_ID",
-    "PULSEON_MINIO_SECRET_ACCESS_KEY",
+    "SEEX_MINIO_ENDPOINT",
+    "SEEX_MINIO_BUCKET",
+    "SEEX_MINIO_ACCESS_KEY_ID",
+    "SEEX_MINIO_SECRET_ACCESS_KEY",
 )
 
 
@@ -68,12 +68,12 @@ def run_backend(
     valid_range = 0 <= args.start_step < args.end_step <= args.steps
     if not valid_range:
         raise ValueError("step range must satisfy 0 <= start < end <= steps")
-    prefix = f"pulseon-query-bench/{uuid.uuid4().hex}/{catalog_backend}"
+    prefix = f"seex-query-bench/{uuid.uuid4().hex}/{catalog_backend}"
     target_run_id = f"run-{args.run_count // 2}"
     target_key_index = args.metric_key_count // 2
     target_metric_key = f"metric/{target_key_index}"
     try:
-        with tempfile.TemporaryDirectory(prefix="pulseon-query-bench-") as root:
+        with tempfile.TemporaryDirectory(prefix="seex-query-bench-") as root:
             latencies, observed_points, remote = _populate_and_query(
                 pathlib.Path(root),
                 config,
@@ -116,12 +116,12 @@ def _populate_and_query(
     target_run_id: str,
     target_metric_key: str,
 ) -> tuple[list[float], int, dict[str, Any]]:
-    import pulseon
+    import seex
 
     latencies: list[float] = []
-    points: list[pulseon.MetricPoint] = []
+    points: list[seex.MetricPoint] = []
     events: list[dict[str, Any]] = []
-    with pulseon.init(
+    with seex.init(
         root,
         data_path=f"s3://{config.bucket}/{prefix}",
         catalog_backend=catalog_backend,
@@ -166,7 +166,7 @@ def _start_trace(config: MinioConfig, prefix: str) -> subprocess.Popen[str]:
             "--json",
             "--path",
             f"{config.bucket}/{prefix}/*",
-            "pulseon",
+            "seex",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -244,12 +244,12 @@ def _mc_environment(config: MinioConfig) -> dict[str, str]:
     scheme = "https" if config.use_ssl else "http"
     user = urllib.parse.quote(config.access_key_id, safe="")
     password = urllib.parse.quote(config.secret_access_key, safe="")
-    env["MC_HOST_pulseon"] = f"{scheme}://{user}:{password}@{config.endpoint}"
+    env["MC_HOST_seex"] = f"{scheme}://{user}:{password}@{config.endpoint}"
     return env
 
 
 def _mc_target(config: MinioConfig, prefix: str) -> str:
-    return f"pulseon/{config.bucket}/{prefix}/main/metric_points/"
+    return f"seex/{config.bucket}/{prefix}/main/metric_points/"
 
 
 def _config_from_environment() -> MinioConfig:
@@ -257,12 +257,12 @@ def _config_from_environment() -> MinioConfig:
     if missing:
         raise RuntimeError("set MinIO environment variables: " + ", ".join(missing))
     return MinioConfig(
-        endpoint=os.environ["PULSEON_MINIO_ENDPOINT"],
-        bucket=os.environ["PULSEON_MINIO_BUCKET"],
-        access_key_id=os.environ["PULSEON_MINIO_ACCESS_KEY_ID"],
-        secret_access_key=os.environ["PULSEON_MINIO_SECRET_ACCESS_KEY"],
-        region=os.environ.get("PULSEON_MINIO_REGION", "us-east-1"),
-        use_ssl=os.environ.get("PULSEON_MINIO_USE_SSL", "false").lower() == "true",
+        endpoint=os.environ["SEEX_MINIO_ENDPOINT"],
+        bucket=os.environ["SEEX_MINIO_BUCKET"],
+        access_key_id=os.environ["SEEX_MINIO_ACCESS_KEY_ID"],
+        secret_access_key=os.environ["SEEX_MINIO_SECRET_ACCESS_KEY"],
+        region=os.environ.get("SEEX_MINIO_REGION", "us-east-1"),
+        use_ssl=os.environ.get("SEEX_MINIO_USE_SSL", "false").lower() == "true",
     )
 
 

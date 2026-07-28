@@ -3,13 +3,13 @@ requires = ["maturin>=1.13.3,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "pulseon"
+name = "seex"
 description = "Local-first training metrics tracker backed by Rust, PyO3, DuckDB, and DuckLake."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 authors = [
-    { name = "PulseOn contributors" },
+    { name = "Seex contributors" },
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -30,13 +30,13 @@ classifiers = [
 dynamic = ["version"]
 
 [project.scripts]
-pulseon = "pulseon.cli:main"
+seex = "seex.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/reformovo/pulseon"
-Repository = "https://github.com/reformovo/pulseon"
-Issues = "https://github.com/reformovo/pulseon/issues"
-Documentation = "https://github.com/reformovo/pulseon#readme"
+Homepage = "https://seex.dev"
+Repository = "https://github.com/reformovo/seex"
+Issues = "https://github.com/reformovo/seex/issues"
+Documentation = "https://github.com/reformovo/seex#readme"
 
 [dependency-groups]
 dev = ["maturin"]
@@ -62,10 +62,10 @@ cache-keys = [
 config-settings = { build-args = '--profile=dev' }
 
 [tool.maturin]
-manifest-path = "crates/pulseon-python/Cargo.toml"
+manifest-path = "crates/seex-python/Cargo.toml"
 include = [{ path = ".cargo/config.toml", format = "sdist" }]
 python-source = "python"
-module-name = "pulseon._pulseon"
+module-name = "seex._seex"
 bindings = "pyo3"
 
 [tool.maturin.generate-ci.github]

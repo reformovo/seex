@@ -23,7 +23,7 @@ series. Product code must not introduce `Experiment` as a synonym.
 
 This draft proposes three additional terms:
 
-- **Data source**: one imported local native PulseOn store, possibly containing
+- **Data source**: one imported local native Seex store, possibly containing
   multiple Projects.
 - **Analysis View**: a named workspace tab containing a Run selection, metric
   panels, alignment settings, and presentation state.
@@ -36,7 +36,7 @@ These definitions are recorded without implementation details in `CONTEXT.md`.
 
 ```text
 + Project / Run sidebar + Analysis workspace --------------------------+
-| PulseOn   + import    | View tabs ...              inspector/refresh |
+| Seex   + import    | View tabs ...              inspector/refresh |
 | Projects              + axis/+ Metric + selected-metric global brush |
 | v Project A           |          scrollable Step or Time ruler       |
 |   [x] baseline        + metric label + linked viewport chart         |
@@ -71,9 +71,9 @@ interaction language. The initial reference is Zed commit
 [`40dc154a`](https://github.com/zed-industries/zed/commit/40dc154a7cc28270d2319873b0881ef053dc22b9),
 including its `theme`, `ui`, `title_bar`, `project_panel`, and `workspace`
 boundaries. Reference updates must be explicit so a moving upstream `main`
-cannot silently change PulseOn's acceptance target.
+cannot silently change Seex's acceptance target.
 
-Zed is also the direct implementation reference, while PulseOn retains a local
+Zed is also the direct implementation reference, while Seex retains a local
 component boundary compatible with its pinned GPUI runtime:
 
 - directly adapt relevant Zed component structure, theme tokens, icons, and
@@ -108,7 +108,7 @@ the pinned reference at representative window sizes and display scale factors.
 - Show a searchable, collapsible Project tree following Zed project-panel row,
   disclosure, hover, selection, focus, and context-menu behavior. Flatten
   healthy sources while retaining source identity for errors and disambiguation.
-- Label the sidebar `PulseOn` and its searchable resource region `Projects`.
+- Label the sidebar `Seex` and its searchable resource region `Projects`.
   Render `Projects` with the same compact, muted group-label treatment as
   `Pinned` and `Archived`; omit redundant headings and selected-Run counts from
   the permanent chrome.
@@ -461,9 +461,8 @@ connections, or renderer geometry.
 
 Loading tolerates unavailable sources, removed Projects or Runs, and unknown
 metrics without mutating source data. The viewer owns a dependency-free,
-length-safe hexadecimal text document headed by `pulseon-workbench 3`, stored
-at `~/Library/Application Support/PulseOn Viewer/workbench.state` on macOS.
-`PULSEON_VIEWER_WORKBENCH_PATH` overrides the location for controlled testing.
+length-safe hexadecimal text document headed by `seex-workbench 1`, stored
+at `~/Library/Application Support/Seex/viewer.workbench` on macOS.
 Writes replace a temporary sibling atomically. Unsupported versions are
 reported and left untouched; earlier documents have no implicit migration path.
 
@@ -546,7 +545,5 @@ enter source paths, modules, functions, tests, environment variables, or comment
 - Restart; imported sources and View definitions return while query snapshots
   rebuild from native storage.
 
-## Open Questions
-
-- What explicit migration command should be introduced if a future workbench
-  document version cannot be read losslessly?
+Future incompatible workbench versions are rejected rather than migrated by
+ordinary application startup.

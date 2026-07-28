@@ -1,0 +1,33 @@
+[package]
+name = "seex-app"
+version = "0.1.0-beta.0"
+edition = "2024"
+description = "Native desktop curve viewer for Seex."
+license = "MIT"
+repository = "https://github.com/reformovo/seex"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:gpui"]
+test-support = ["desktop", "gpui/test-support"]
+
+[dependencies]
+seex-chart-core = { path = "../seex-chart-core" }
+seex-core = { path = "../seex-core" }
+seex-model = { path = "../seex-model" }
+seex-storage = { path = "../seex-storage" }
+thiserror = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "seex_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "seex-app"
+path = "src/main.rs"

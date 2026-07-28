@@ -1,9 +1,13 @@
-# PulseOn Context
+# Seex Context
 
-PulseOn tracks local-first training runs and numeric metric series. This
+Seex tracks local-first training runs and numeric metric series. This
 context defines the product language used across native architecture decisions.
 
 ## Language
+
+**Seex**:
+The unified product name for the SDK, CLI, and desktop application, pronounced
+“six” (`/sɪks/`).
 
 **Project**:
 A lightweight namespace for related training runs.
@@ -57,18 +61,18 @@ All metric points for one run and metric key.
 One numeric observation in a metric series.
 
 **Metric reporting**:
-The hot-path handoff from training code to PulseOn.
+The hot-path handoff from training code to Seex.
 
 **Queued report**:
-A metric report received by PulseOn but not yet durably admitted.
+A metric report received by Seex but not yet durably admitted.
 
 **Accepted report**:
-A metric report that PulseOn has durably admitted and can recover after process
+A metric report that Seex has durably admitted and can recover after process
 restart.
 
 **Persisted metric point**:
 A metric point that has been written to native storage and is visible to
-PulseOn queries.
+Seex queries.
 
 **Data discovery**:
 The traversal from stored projects to runs, metric series, and persisted metric
@@ -76,7 +80,7 @@ points without requiring their identifiers in advance.
 
 **Read surface**:
 The read-only product boundary through which trainers and agents discover and
-consume stored PulseOn data.
+consume stored Seex data.
 _Avoid_: Agent API, storage API
 
 **Native project store**:
@@ -86,7 +90,7 @@ _Avoid_: Parquet directory, viewer database
 
 **Parquet dataset**:
 An open, fact-only representation of flushed metric points that follows the
-PulseOn Parquet compatibility contract.
+Seex Parquet compatibility contract.
 _Avoid_: Native project store, catalog
 
 **Closed run**:
@@ -120,7 +124,7 @@ _Avoid_: Cross-Project leaderboard
 The database engine used for native storage metadata.
 
 **Catalog application table**:
-A PulseOn-owned catalog table for control-plane or query-index state.
+A Seex-owned catalog table for control-plane or query-index state.
 _Avoid_: DuckLake logical table, DuckLake internal table
 
 **Data path**:

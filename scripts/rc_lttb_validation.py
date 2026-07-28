@@ -10,20 +10,20 @@ import sys
 import tempfile
 import typing
 
-import pulseon
+import seex
 
 _POINT_COUNT = 256
 
 
 def main() -> None:
     """Checks CLI online installation and explicit local-extension loading."""
-    with tempfile.TemporaryDirectory(prefix="pulseon-rc-lttb-") as directory:
+    with tempfile.TemporaryDirectory(prefix="seex-rc-lttb-") as directory:
         root = pathlib.Path(directory)
         duckdb_home = root / "duckdb-home"
         duckdb_home.mkdir()
         environment = os.environ.copy()
         environment["HOME"] = str(duckdb_home)
-        environment.pop("PULSEON_LTTB_EXTENSION_PATH", None)
+        environment.pop("SEEX_LTTB_EXTENSION_PATH", None)
 
         online_root = root / "online"
         _seed_store(online_root)
@@ -32,14 +32,14 @@ def main() -> None:
 
         offline_root = root / "offline"
         _seed_store(offline_root)
-        environment["PULSEON_LTTB_EXTENSION_PATH"] = str(extension_path)
+        environment["SEEX_LTTB_EXTENSION_PATH"] = str(extension_path)
         _assert_downsampled(_query_cli(offline_root, environment))
 
     print("validated online and explicit offline LTTB paths")
 
 
 def _seed_store(project_root: pathlib.Path) -> None:
-    with pulseon.init(project_root) as client:
+    with seex.init(project_root) as client:
         project = client.create_project("RC LTTB", project_id="project-1")
         run = client.create_run(project.project_id, "curve", run_id="run-1")
         for step in range(_POINT_COUNT):
@@ -52,7 +52,7 @@ def _query_cli(project_root: pathlib.Path, environment: dict[str, str]) -> dict[
         [
             sys.executable,
             "-m",
-            "pulseon.cli",
+            "seex.cli",
             "--path",
             str(project_root),
             "--format",

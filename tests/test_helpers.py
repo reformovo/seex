@@ -10,7 +10,7 @@ import pytest
 from tests import helpers
 
 if TYPE_CHECKING:
-    import pulseon
+    import seex
 
 
 @dataclasses.dataclass(frozen=True)
@@ -30,7 +30,7 @@ class _FakeClient:
         self,
         run_id: str,
         metric_key: str,
-    ) -> list[pulseon.MetricPoint]:
+    ) -> list[seex.MetricPoint]:
         del run_id, metric_key
         return []
 
@@ -39,7 +39,7 @@ class _FakeClient:
 
 
 def test_wait_for_metric_points_timeout_includes_context() -> None:
-    client = cast("pulseon.Client", _FakeClient())
+    client = cast("seex.Client", _FakeClient())
 
     with pytest.raises(AssertionError) as error:
         helpers.wait_for_metric_points(

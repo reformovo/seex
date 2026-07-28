@@ -12,9 +12,9 @@ from tests import helpers
 def test_v2_api_contract_requires_explicit_step_and_reports_diagnostics(
     tmp_path: pathlib.Path,
 ) -> None:
-    import pulseon
+    import seex
 
-    client = pulseon.init(tmp_path / "pulseon")
+    client = seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
 
@@ -23,7 +23,7 @@ def test_v2_api_contract_requires_explicit_step_and_reports_diagnostics(
         run.log("train/loss", 0.125)  # type: ignore[reportCallIssue]
     diagnostics = client.diagnostics()
 
-    assert isinstance(diagnostics, pulseon.Diagnostics)
+    assert isinstance(diagnostics, seex.Diagnostics)
     assert diagnostics.pending_reports >= 0
     assert diagnostics.queue_full_errors == 0
     assert diagnostics.persisted_reports >= 0

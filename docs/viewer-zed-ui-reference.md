@@ -2,7 +2,7 @@
 
 ## Reference Pin
 
-PulseOn's analysis workbench uses
+Seex's analysis workbench uses
 [Zed](https://github.com/zed-industries/zed) as its direct visual,
 interaction, and component-implementation reference.
 
@@ -18,7 +18,7 @@ review and validation.
 
 ## Upstream Sources
 
-| Concern | Zed source at the pinned commit | PulseOn use |
+| Concern | Zed source at the pinned commit | Seex use |
 | --- | --- | --- |
 | Theme roles | `crates/theme/src/styles.rs`, `crates/theme/src/styles/` | Semantic color roles and appearance hierarchy |
 | UI density | `crates/theme/src/ui_density.rs` | Compact/default/comfortable spacing model |
@@ -48,7 +48,7 @@ GPUI release.
   paint state inside `OverviewChart` and `DetailChart` entities while consuming
   theme-owned chart, brush, and series colors without a second visual system.
 
-The local modules keep stable PulseOn names and compile against GPUI 0.2.2;
+The local modules keep stable Seex names and compile against GPUI 0.2.2;
 they do not import Zed's application dependency graph.
 
 ## Initial Geometry
@@ -61,7 +61,7 @@ The pinned Zed implementation establishes the starting density:
 - controls use compact spacing and restrained corner radii;
 - panel hierarchy relies on semantic surfaces and borders, not heavy shadows.
 
-PulseOn changes these values only when chart readability, platform behavior, or
+Seex changes these values only when chart readability, platform behavior, or
 accessibility provides concrete evidence. Changes remain token-driven rather
 than feature-level constants.
 
@@ -88,7 +88,7 @@ than making indentation decorative.
 1. Resolve the intended Zed commit explicitly.
 2. Review changes in every upstream source listed above between the old and new
    pins.
-3. Record which PulseOn tokens or primitives should change and which should
+3. Record which Seex tokens or primitives should change and which should
    remain stable.
 4. Update the pin in this document, the Roadmap, and the workbench design draft.
 5. Run GPUI interaction tests and the visual comparison matrix before accepting

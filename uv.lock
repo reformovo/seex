@@ -69,7 +69,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pulseon"
+name = "seex"
 source = { editable = "." }
 
 [package.dev-dependencies]
