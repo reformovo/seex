@@ -6,6 +6,12 @@ description = "Native desktop curve viewer for Seex."
 license = "MIT"
 repository = "https://github.com/reformovo/seex"
 
+[package.metadata.bundle]
+name = "Seex"
+identifier = "dev.seex.Seex"
+icon = ["resources/app-icon@2x.png", "resources/app-icon.png"]
+osx_minimum_system_version = "10.15.7"
+
 [features]
 default = ["desktop"]
 desktop = ["dep:gpui"]
