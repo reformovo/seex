@@ -10,7 +10,7 @@ mod resize_handle;
 mod text_input;
 
 pub(super) use popover::{popover, popover_menu_item};
-pub(super) use resize_handle::{horizontal_resize_handle, vertical_resize_handle};
+pub(super) use resize_handle::{ResizeEdge, resize_handle};
 pub(super) use text_input::TextInput;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

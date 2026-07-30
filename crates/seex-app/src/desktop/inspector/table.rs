@@ -11,7 +11,7 @@ use crate::data::query::{InspectorRunSnapshot, InspectorSnapshot};
 use crate::domain::RunRef;
 use crate::workbench::MetricPanel;
 
-use super::super::components::{self, IconName, vertical_resize_handle};
+use super::super::components::{self, IconName, ResizeEdge, resize_handle};
 use super::super::project_sidebar::run_status;
 use super::super::theme::ViewerTheme;
 use super::super::{format_signed_delta, reasons_label};
@@ -147,7 +147,7 @@ pub(crate) fn inspector_header_cell(
         .child(column.label())
         .children(indicator)
         .children(column.owns_resize_boundary().then(|| {
-            vertical_resize_handle(resize_id, theme, boundary_active, true)
+            resize_handle(resize_id, theme, boundary_active, ResizeEdge::Right)
                 .debug_selector(move || format!("inspector-column-resize:{}", column.key()))
                 .on_mouse_down(
                     MouseButton::Left,

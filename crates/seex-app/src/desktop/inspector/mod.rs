@@ -12,7 +12,7 @@ use crate::workbench::panel_reads::MetricPanelId;
 use super::ViewerApp;
 use super::chart;
 use super::command::WorkbenchCommand;
-use super::components::horizontal_resize_handle;
+use super::components::{ResizeEdge, resize_handle};
 use super::interaction::InteractionSnapshot;
 use super::project_sidebar::RunHoverExitPolicy;
 use super::session::SessionSnapshot;
@@ -271,7 +271,7 @@ impl BottomInspector {
             .overflow_hidden()
             .bg(theme.colors.surface)
             .border_t_1()
-            .border_color(theme.colors.border)
+            .border_color(theme.colors.transparent)
             .child(
                 body.id("bottom-inspector-scroll")
                     .debug_selector(|| "bottom-inspector-scroll".to_owned())
@@ -282,11 +282,11 @@ impl BottomInspector {
                     .text_color(theme.colors.text_muted),
             )
             .child(
-                horizontal_resize_handle(
+                resize_handle(
                     SharedString::from("bottom-inspector-resize"),
                     theme,
                     resizing,
-                    true,
+                    ResizeEdge::Top,
                 )
                 .debug_selector(|| "bottom-inspector-resize".to_owned())
                 .on_mouse_down(

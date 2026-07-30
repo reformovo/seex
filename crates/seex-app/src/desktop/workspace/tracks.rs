@@ -89,7 +89,7 @@ use seex_model::metric::MetricKey;
 
 use super::super::chart;
 use super::super::command::WorkbenchCommand;
-use super::super::components::{self, IconName, horizontal_resize_handle};
+use super::super::components::{self, IconName, ResizeEdge, resize_handle};
 use super::{baseline_delta, hover_value_label, track_chart_frame, track_tooltip_width};
 
 impl super::AnalysisWorkspace {
@@ -730,7 +730,7 @@ impl super::AnalysisWorkspace {
             .h(row_height)
             .min_h(row_height)
             .border_b_1()
-            .border_color(theme.colors.border)
+            .border_color(theme.colors.transparent)
             .child(
                 div()
                     .id(SharedString::from(format!(
@@ -860,11 +860,11 @@ impl super::AnalysisWorkspace {
                     .child(track),
             )
             .child(
-                horizontal_resize_handle(
+                resize_handle(
                     SharedString::from(format!("metric-resize:{}", resize_id.as_str())),
                     theme,
                     resizing,
-                    false,
+                    ResizeEdge::Bottom,
                 )
                 .debug_selector({
                     let resize_id = resize_id.clone();

@@ -15,9 +15,7 @@ use crate::workbench::panel_reads::AnalysisViewId;
 
 use super::ViewerApp;
 use super::command::WorkbenchCommand;
-use super::components::{
-    self, IconName, TextInput, horizontal_resize_handle, vertical_resize_handle,
-};
+use super::components::{self, IconName, ResizeEdge, TextInput, resize_handle};
 use super::interaction::InteractionSnapshot;
 use super::session::SessionSnapshot;
 use super::theme::ViewerTheme;
@@ -310,7 +308,7 @@ impl ProjectSidebar {
             .relative()
             .overflow_y_scroll()
             .border_t_1()
-            .border_color(theme.colors.border)
+            .border_color(theme.colors.transparent)
             .px(theme.spacing.panel_padding)
             .pb_3()
             .child(sidebar_group_label("Archived", theme));
@@ -351,11 +349,11 @@ impl ProjectSidebar {
             );
         }
         archived_resources = archived_resources.child(
-            horizontal_resize_handle(
+            resize_handle(
                 SharedString::from("archived-sidebar-resize"),
                 theme,
                 archived_resizing,
-                true,
+                ResizeEdge::Top,
             )
             .debug_selector(|| "archived-sidebar-resize".to_owned())
             .on_mouse_down(
@@ -390,7 +388,7 @@ impl ProjectSidebar {
             .text_xs()
             .bg(theme.colors.panel)
             .border_r_1()
-            .border_color(theme.colors.border)
+            .border_color(theme.colors.transparent)
             .child(
                 div()
                     .id("project-sidebar-header")
@@ -524,11 +522,11 @@ impl ProjectSidebar {
             .child(resources)
             .child(archived_resources)
             .child(
-                vertical_resize_handle(
+                resize_handle(
                     SharedString::from("project-sidebar-resize"),
                     theme,
                     sidebar_resizing,
-                    false,
+                    ResizeEdge::Right,
                 )
                 .debug_selector(|| "project-sidebar-resize".to_owned())
                 .on_mouse_down(
