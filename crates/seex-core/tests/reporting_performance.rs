@@ -11,8 +11,12 @@ use seex_core::engine::client::{NativeClient, NativeRun};
 use seex_model::types::ProjectId;
 
 const SAMPLES: usize = 7;
-const CALIBRATION_TARGET: Duration = Duration::from_millis(10);
+const CALIBRATION_TARGET: Duration = Duration::from_millis(50);
+const DECIDING_SAMPLE_MINIMUM: Duration = Duration::from_millis(10);
 const QUEUE_CAPACITY: usize = 1_048_576;
+const MAPPING_KEYS: [&str; 8] = [
+    "metric-0", "metric-1", "metric-2", "metric-3", "metric-4", "metric-5", "metric-6", "metric-7",
+];
 
 fn fixture_path(label: &str) -> Result<PathBuf, Box<dyn Error>> {
     let nonce = SystemTime::now()
@@ -69,6 +73,7 @@ fn measure(
     label: &str,
     points_per_call: usize,
     mut operation: impl FnMut(usize) -> Result<(), Box<dyn Error>>,
+    mut settle: impl FnMut() -> Result<(), Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
     for index in 0..20 {
         operation(index)?;
@@ -84,6 +89,7 @@ fn measure(
         }
         batch_iterations *= 2;
     }
+    settle()?;
     let mut samples = Vec::with_capacity(SAMPLES);
     for sample in 0..SAMPLES {
         let started = Instant::now();
@@ -91,8 +97,20 @@ fn measure(
             operation(sample * batch_iterations + index)?;
         }
         samples.push((batch_iterations * points_per_call) as f64 / started.elapsed().as_secs_f64());
+        settle()?;
     }
     emit_metric(label, batch_iterations * points_per_call, samples);
+    Ok(())
+}
+
+fn wait_for_drain(client: &NativeClient) -> Result<(), Box<dyn Error>> {
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while client.diagnostics().pending_reports != 0 {
+        if Instant::now() >= deadline {
+            return Err("reporting admission drain timed out".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
     Ok(())
 }
 
@@ -109,7 +127,7 @@ fn emit_queue_check(client: &NativeClient) {
 
 fn emit_duration(label: &str, elapsed: Duration) {
     let value = elapsed.as_nanos();
-    let reliable = elapsed >= CALIBRATION_TARGET;
+    let reliable = elapsed >= DECIDING_SAMPLE_MINIMUM;
     println!(
         "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
          \"domain\":\"reporting\",\"metric\":\"rust.{label}\",\
@@ -129,23 +147,28 @@ fn reporting_admission_modes() -> Result<(), Box<dyn Error>> {
     for label in ["explicit_single", "implicit_single", "mapping_8"] {
         let (root, client, run) = run_for_mode(label)?;
         let mut implicit_step = 0_i64;
-        measure(label, usize::from(label == "mapping_8") * 7 + 1, |index| {
-            if label == "mapping_8" {
-                for metric in 0..8 {
-                    run.log_metric_at_step(&format!("metric-{metric}"), index as i64, 1.0)?;
-                }
-            } else {
-                let step = if label == "implicit_single" {
-                    let step = implicit_step;
-                    implicit_step += 1;
-                    step
+        measure(
+            label,
+            usize::from(label == "mapping_8") * 7 + 1,
+            |index| {
+                if label == "mapping_8" {
+                    for metric in MAPPING_KEYS {
+                        run.log_metric_at_step(metric, index as i64, 1.0)?;
+                    }
                 } else {
-                    index as i64
-                };
-                run.log_metric_at_step("loss", step, 1.0)?;
-            }
-            Ok(())
-        })?;
+                    let step = if label == "implicit_single" {
+                        let step = implicit_step;
+                        implicit_step += 1;
+                        step
+                    } else {
+                        index as i64
+                    };
+                    run.log_metric_at_step("loss", step, 1.0)?;
+                }
+                Ok(())
+            },
+            || wait_for_drain(&client),
+        )?;
         emit_queue_check(&client);
         client.shutdown(None)?;
         fs::remove_dir_all(root)?;
