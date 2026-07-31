@@ -1,3 +1,8 @@
+#![expect(
+    dead_code,
+    reason = "legacy parser helpers are removed in the next cleanup slice"
+)]
+
 use std::path::PathBuf;
 
 use seex_chart_core::AxisRange;
@@ -67,149 +72,6 @@ pub enum WorkbenchDocumentError {
     UnsupportedVersion(String),
     #[error("invalid workbench document at line {line}: {message}")]
     Invalid { line: usize, message: String },
-}
-
-impl WorkbenchDocument {
-    pub fn decode(raw: &str) -> Result<Self, WorkbenchDocumentError> {
-        let mut lines = raw.lines().enumerate();
-        let header = lines.next().map(|(_, line)| line).unwrap_or_default();
-        if header != HEADER {
-            return Err(WorkbenchDocumentError::UnsupportedVersion(
-                header.to_owned(),
-            ));
-        }
-        let mut document = Self {
-            sources: Vec::new(),
-            pinned_projects: Vec::new(),
-            archived_projects: Vec::new(),
-            removed_projects: Vec::new(),
-            archived_runs: Vec::new(),
-            views: Vec::new(),
-            active_view: 0,
-            project_sidebar_visible: true,
-            project_sidebar_width: 190.,
-            metric_sidebar_compact: false,
-            bottom_inspector_visible: false,
-            bottom_inspector_height: 220.,
-        };
-        let mut current: Option<SavedAnalysisView> = None;
-        for (index, line) in lines {
-            let line_number = index + 1;
-            let fields = line.split_whitespace().collect::<Vec<_>>();
-            let invalid = |message: &str| WorkbenchDocumentError::Invalid {
-                line: line_number,
-                message: message.to_owned(),
-            };
-            match fields.as_slice() {
-                [
-                    "dock",
-                    project,
-                    project_width,
-                    metric,
-                    inspector,
-                    inspector_height,
-                ] => {
-                    document.project_sidebar_visible = parse_bool(project, line_number)?;
-                    document.project_sidebar_width =
-                        f32::from_bits(parse(project_width, line_number)?);
-                    document.metric_sidebar_compact = parse_bool(metric, line_number)?;
-                    document.bottom_inspector_visible = parse_bool(inspector, line_number)?;
-                    document.bottom_inspector_height =
-                        f32::from_bits(parse(inspector_height, line_number)?);
-                }
-                ["active", active] => document.active_view = parse(active, line_number)?,
-                ["source", path] => document
-                    .sources
-                    .push(PathBuf::from(decode(path, line_number)?)),
-                ["view", name, axis, selected, start, end] => {
-                    if let Some(view) = current.take() {
-                        document.views.push(view);
-                    }
-                    current = Some(SavedAnalysisView {
-                        name: decode(name, line_number)?,
-                        runs: Vec::new(),
-                        baseline: None,
-                        pinned_runs: Vec::new(),
-                        metrics: Vec::new(),
-                        metric_heights: Vec::new(),
-                        selected_metric: (*selected != "-")
-                            .then(|| decode(selected, line_number))
-                            .transpose()?,
-                        axis: parse_axis(axis, line_number)?,
-                        viewport: if *start == "-" && *end == "-" {
-                            None
-                        } else {
-                            Some(
-                                AxisRange::new(
-                                    f64::from_bits(parse(start, line_number)?),
-                                    f64::from_bits(parse(end, line_number)?),
-                                )
-                                .map_err(|error| invalid(&error.to_string()))?,
-                            )
-                        },
-                    });
-                }
-                ["run", source, project, run] => current
-                    .as_mut()
-                    .ok_or_else(|| invalid("run appears outside a view"))?
-                    .runs
-                    .push(SavedRunRef {
-                        source_path: PathBuf::from(decode(source, line_number)?),
-                        project_id: ProjectId::from_string(decode(project, line_number)?),
-                        run_id: RunId::from_string(decode(run, line_number)?),
-                    }),
-                ["baseline-run", source, project, run] => {
-                    let baseline = decode_run_ref(source, project, run, line_number)?;
-                    current
-                        .as_mut()
-                        .ok_or_else(|| invalid("baseline-run appears outside a view"))?
-                        .baseline = Some(baseline);
-                }
-                ["pinned-run", source, project, run] => current
-                    .as_mut()
-                    .ok_or_else(|| invalid("pinned-run appears outside a view"))?
-                    .pinned_runs
-                    .push(decode_run_ref(source, project, run, line_number)?),
-                ["archived-run", source, project, run] => document
-                    .archived_runs
-                    .push(decode_run_ref(source, project, run, line_number)?),
-                ["pinned-project", source, project] => document
-                    .pinned_projects
-                    .push(decode_project_ref(source, project, line_number)?),
-                ["archived-project", source, project] => document
-                    .archived_projects
-                    .push(decode_project_ref(source, project, line_number)?),
-                ["removed-project", source, project] => document
-                    .removed_projects
-                    .push(decode_project_ref(source, project, line_number)?),
-                ["metric", metric] => current
-                    .as_mut()
-                    .ok_or_else(|| invalid("metric appears outside a view"))?
-                    .metrics
-                    .push(decode(metric, line_number)?),
-                ["metric-height", metric, height] => current
-                    .as_mut()
-                    .ok_or_else(|| invalid("metric-height appears outside a view"))?
-                    .metric_heights
-                    .push((
-                        decode(metric, line_number)?,
-                        f32::from_bits(parse(height, line_number)?),
-                    )),
-                ["end"] => {
-                    let view = current
-                        .take()
-                        .ok_or_else(|| invalid("end appears outside a view"))?;
-                    document.views.push(view);
-                }
-                [] => {}
-                _ => return Err(invalid("unknown or malformed record")),
-            }
-        }
-        if let Some(view) = current {
-            document.views.push(view);
-        }
-        Ok(document)
-    }
 }
 
 fn decode_project_ref(
