@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod config;
 pub mod data;
 #[cfg(all(feature = "desktop", target_os = "macos"))]
 pub mod desktop;
