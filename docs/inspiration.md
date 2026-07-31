@@ -1,1 +1,5 @@
+# Inspiration
+
 1. 将 seex-app 的前端状态保存为 JSON/TOML/YAML 文件或记录到数据库中（通常来讲是状态保存到数据库中，设置保存为一个单独的文件），以便在不同的环境中共享和恢复状态（这里要区分设置和状态，设置类似 zed 的 settings.json, 状态类似编辑器中打开的文件，各组件的打开/关闭、折叠展开的状态）
+
+   Draft design: [Viewer Configuration and Workbench State](./drafts/viewer-configuration-and-workbench-state.md).
