@@ -1,6 +1,10 @@
 //! Schema-v1 TOML workbench model.
 
 use std::collections::HashSet;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use seex_chart_core::AxisRange;
 use seex_model::alignment::AlignmentAxis;
@@ -11,6 +15,7 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 use crate::domain::SourceAlias;
 
 pub const WORKBENCH_SCHEMA_VERSION: i64 = 1;
+static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TomlWorkbenchDocument {
@@ -24,6 +29,26 @@ pub struct TomlWorkbenchDocument {
 }
 
 impl TomlWorkbenchDocument {
+    /// Loads a workbench document when it exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TomlWorkbenchError`] for I/O, TOML, schema, or validation
+    /// failures.
+    pub fn load(path: &Path) -> Result<Option<Self>, TomlWorkbenchError> {
+        let raw = match fs::read_to_string(path) {
+            Ok(raw) => raw,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(TomlWorkbenchError::Read {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        };
+        Self::decode(&raw).map(Some)
+    }
+
     /// Decodes a schema-v1 TOML workbench document.
     ///
     /// # Errors
@@ -98,6 +123,42 @@ impl TomlWorkbenchDocument {
         self.views.iter().try_for_each(validate_view)
     }
 
+    /// Atomically saves a validated workbench through a same-directory file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TomlWorkbenchError`] for invalid state or I/O failures.
+    pub fn save(&self, path: &Path) -> Result<(), TomlWorkbenchError> {
+        self.validate()?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent).map_err(|source| TomlWorkbenchError::Write {
+                path: path.to_owned(),
+                source,
+            })?;
+        }
+        let temporary = temporary_path(path);
+        let write = || -> Result<(), io::Error> {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(self.encode().as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, path)
+        };
+        if let Err(source) = write() {
+            let _ = fs::remove_file(&temporary);
+            return Err(TomlWorkbenchError::Write {
+                path: path.to_owned(),
+                source,
+            });
+        }
+        Ok(())
+    }
+
     pub fn encode(&self) -> String {
         let mut document = DocumentMut::new();
         document["schema_version"] = value(WORKBENCH_SCHEMA_VERSION);
@@ -120,6 +181,18 @@ impl TomlWorkbenchDocument {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TomlWorkbenchError {
+    #[error("failed to read workbench document at {path}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to write workbench document at {path}")]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("legacy seex-workbench 1 documents are unsupported")]
     LegacyFormat,
     #[error("workbench schema_version must be 1")]
@@ -128,6 +201,12 @@ pub enum TomlWorkbenchError {
     InvalidField(&'static str),
     #[error("invalid workbench TOML: {0}")]
     Parse(#[from] toml_edit::TomlError),
+}
+
+fn temporary_path(path: &Path) -> PathBuf {
+    let id = TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    path.with_file_name(format!(".{name}.{}.{id}.tmp", std::process::id()))
 }
 
 fn layout(item: Option<&Item>) -> Result<SavedLayout, TomlWorkbenchError> {
@@ -586,5 +665,42 @@ mod tests {
             document.validate(),
             Err(TomlWorkbenchError::InvalidField("runs"))
         ));
+    }
+
+    #[test]
+    fn schema_v1_file_round_trips_without_temporary_residue()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join(".seex/workbench.toml");
+
+        assert_eq!(TomlWorkbenchDocument::load(&path)?, None);
+        document().save(&path)?;
+
+        assert_eq!(TomlWorkbenchDocument::load(&path)?, Some(document()));
+        assert_eq!(
+            fs::read_dir(path.parent().ok_or("missing parent")?)?.count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_state_does_not_overwrite_existing_file() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("workbench.toml");
+        fs::write(&path, "existing invalid document")?;
+        let mut invalid = document();
+        invalid.active_view = 1;
+
+        let error = invalid
+            .save(&path)
+            .expect_err("invalid workbench should not be saved");
+
+        assert!(matches!(
+            error,
+            TomlWorkbenchError::InvalidField("active_view")
+        ));
+        assert_eq!(fs::read_to_string(path)?, "existing invalid document");
+        Ok(())
     }
 }
