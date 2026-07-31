@@ -1,7 +1,10 @@
 use seex_chart_core::AxisRange;
 use seex_model::alignment::AlignmentAxis;
 
-use crate::workbench::document::{SavedAnalysisView, SavedProjectRef, SavedRunRef};
+use crate::domain::SourceAlias;
+use crate::workbench::toml_document::{
+    SavedAnalysisView, SavedLayout, SavedProjectRef, SavedRunRef, TomlWorkbenchDocument,
+};
 
 use super::*;
 
@@ -217,19 +220,21 @@ fn metric_panel_heights_use_the_compact_bounded_range() {
 
 #[test]
 fn restore_reports_duplicate_identities_and_unknown_selection() {
+    let source_alias = SourceAlias::new("source").expect("test alias should be valid");
     let saved_run = SavedRunRef {
-        source_path: "/tmp/source".into(),
+        source_alias: source_alias.clone(),
         project_id: ProjectId::from_string("project"),
         run_id: RunId::from_string("run"),
     };
-    let document = WorkbenchDocument {
-        sources: vec![saved_run.source_path.clone()],
+    let document = TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout::default(),
+        expanded_projects: Vec::new(),
         pinned_projects: vec![SavedProjectRef {
-            source_path: saved_run.source_path.clone(),
+            source_alias,
             project_id: ProjectId::from_string("project"),
         }],
         archived_projects: Vec::new(),
-        removed_projects: Vec::new(),
         archived_runs: Vec::new(),
         views: vec![SavedAnalysisView {
             name: "Duplicates".to_owned(),
@@ -242,15 +247,9 @@ fn restore_reports_duplicate_identities_and_unknown_selection() {
             axis: AlignmentAxis::Step,
             viewport: Some(AxisRange::new(0., 1.).expect("viewport should be valid")),
         }],
-        active_view: 0,
-        project_sidebar_visible: true,
-        project_sidebar_width: 320.,
-        metric_sidebar_compact: false,
-        bottom_inspector_visible: false,
-        bottom_inspector_height: 220.,
     };
 
-    let (views, issues) = AnalysisViews::restore(&document);
+    let (views, issues) = AnalysisViews::restore_toml(&document);
 
     assert_eq!(views.active().runs.len(), 1);
     assert_eq!(views.active().panels.len(), 1);
@@ -261,20 +260,21 @@ fn restore_reports_duplicate_identities_and_unknown_selection() {
 
 #[test]
 fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
-    let source_path = std::path::PathBuf::from("/tmp/offline-source");
+    let source_alias = SourceAlias::new("offline-source").expect("test alias should be valid");
     let project_id = ProjectId::from_string("project");
     let runs = (0..25)
         .map(|index| SavedRunRef {
-            source_path: source_path.clone(),
+            source_alias: source_alias.clone(),
             project_id: project_id.clone(),
             run_id: RunId::from_string(format!("run-{index}")),
         })
         .collect::<Vec<_>>();
-    let document = WorkbenchDocument {
-        sources: vec![source_path],
+    let document = TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout::default(),
+        expanded_projects: Vec::new(),
         pinned_projects: Vec::new(),
         archived_projects: Vec::new(),
-        removed_projects: Vec::new(),
         archived_runs: Vec::new(),
         views: vec![SavedAnalysisView {
             name: "Over limit".to_owned(),
@@ -287,17 +287,11 @@ fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
             axis: AlignmentAxis::Step,
             viewport: None,
         }],
-        active_view: 0,
-        project_sidebar_visible: true,
-        project_sidebar_width: 280.,
-        metric_sidebar_compact: false,
-        bottom_inspector_visible: false,
-        bottom_inspector_height: 220.,
     };
 
-    let decoded = WorkbenchDocument::decode(&document.encode())
-        .expect("v3 workbench document should round-trip");
-    let (views, issues) = AnalysisViews::restore(&decoded);
+    let decoded = TomlWorkbenchDocument::decode(&document.encode())
+        .expect("schema-v1 workbench document should round-trip");
+    let (views, issues) = AnalysisViews::restore_toml(&decoded);
 
     assert!(issues.is_empty());
     assert_eq!(decoded.views[0].runs.len(), 25);
@@ -308,25 +302,20 @@ fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
 fn restored_organization_uses_composite_source_identities() {
     let project_id = ProjectId::from_string("shared-project");
     let saved_project = |source: &str| SavedProjectRef {
-        source_path: source.into(),
+        source_alias: SourceAlias::new(source).expect("test alias should be valid"),
         project_id: project_id.clone(),
     };
-    let document = WorkbenchDocument {
-        sources: vec!["/tmp/source-a".into(), "/tmp/source-b".into()],
-        pinned_projects: vec![saved_project("/tmp/source-a")],
-        archived_projects: vec![saved_project("/tmp/source-b")],
-        removed_projects: Vec::new(),
+    let document = TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout::default(),
+        expanded_projects: Vec::new(),
+        pinned_projects: vec![saved_project("source-a")],
+        archived_projects: vec![saved_project("source-b")],
         archived_runs: Vec::new(),
         views: Vec::new(),
-        active_view: 0,
-        project_sidebar_visible: true,
-        project_sidebar_width: 320.,
-        metric_sidebar_compact: false,
-        bottom_inspector_visible: false,
-        bottom_inspector_height: 220.,
     };
 
-    let (views, issues) = AnalysisViews::restore(&document);
+    let (views, issues) = AnalysisViews::restore_toml(&document);
 
     assert!(issues.is_empty());
     assert_ne!(views.pinned_projects()[0], views.archived_projects()[0]);

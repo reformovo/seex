@@ -9,10 +9,14 @@ use seex_model::types::ProjectId;
 use crate::data::query::{CurveSnapshot, InspectorSnapshot};
 use crate::data::worker::{Generation, ReadKind};
 use crate::domain::{DataSourceId, RunRef, SelectionError, ViewNavigation};
-use crate::workbench::document::WorkbenchDocument;
+use crate::workbench::document::{
+    SavedAnalysisView as LegacyAnalysisView, SavedProjectRef as LegacyProjectRef,
+    SavedRunRef as LegacyRunRef, WorkbenchDocument,
+};
 use crate::workbench::panel_reads::{
     AnalysisViewId, MetricPanelId, PanelReadMode, SourceReadFailure,
 };
+use crate::workbench::toml_document::{SavedRunRef, TomlWorkbenchDocument};
 
 pub const DEFAULT_METRIC_ROW_HEIGHT: f32 = 52.;
 const MAX_METRIC_ROW_HEIGHT: f32 = 180.;
@@ -270,6 +274,47 @@ impl AnalysisViews {
             ));
         }
         (restored, issues)
+    }
+
+    pub fn restore_toml(document: &TomlWorkbenchDocument) -> (Self, Vec<String>) {
+        let project = |saved: &crate::workbench::toml_document::SavedProjectRef| LegacyProjectRef {
+            source_path: saved.source_alias.as_str().into(),
+            project_id: saved.project_id.clone(),
+        };
+        let run = |saved: &SavedRunRef| LegacyRunRef {
+            source_path: saved.source_alias.as_str().into(),
+            project_id: saved.project_id.clone(),
+            run_id: saved.run_id.clone(),
+        };
+        let legacy = WorkbenchDocument {
+            sources: Vec::new(),
+            pinned_projects: document.pinned_projects.iter().map(project).collect(),
+            archived_projects: document.archived_projects.iter().map(project).collect(),
+            removed_projects: Vec::new(),
+            archived_runs: document.archived_runs.iter().map(run).collect(),
+            views: document
+                .views
+                .iter()
+                .map(|view| LegacyAnalysisView {
+                    name: view.name.clone(),
+                    runs: view.runs.iter().map(run).collect(),
+                    baseline: view.baseline.as_ref().map(run),
+                    pinned_runs: view.pinned_runs.iter().map(run).collect(),
+                    metrics: view.metrics.clone(),
+                    metric_heights: view.metric_heights.clone(),
+                    selected_metric: view.selected_metric.clone(),
+                    axis: view.axis,
+                    viewport: view.viewport,
+                })
+                .collect(),
+            active_view: document.active_view,
+            project_sidebar_visible: document.layout.project_sidebar_visible,
+            project_sidebar_width: document.layout.project_sidebar_width,
+            metric_sidebar_compact: document.layout.metric_sidebar_compact,
+            bottom_inspector_visible: document.layout.bottom_inspector_visible,
+            bottom_inspector_height: document.layout.bottom_inspector_height,
+        };
+        Self::restore(&legacy)
     }
 
     pub fn views(&self) -> &[AnalysisView] {
