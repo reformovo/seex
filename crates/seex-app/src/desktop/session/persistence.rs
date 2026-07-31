@@ -43,10 +43,7 @@ impl WorkbenchSession {
         self.persistence_dirty || self.layout != layout
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "retained until legacy Viewer tests migrate")
-    )]
+    #[expect(dead_code, reason = "removed with the legacy workbench codec")]
     pub(crate) fn restore_document(
         &mut self,
         document: WorkbenchDocument,

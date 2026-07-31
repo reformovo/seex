@@ -12,8 +12,10 @@ use seex_model::run::RunId;
 use seex_model::types::ProjectId;
 
 use crate::data::worker::ReadKind;
-use crate::domain::{DataSourceId, RunRef};
-use crate::workbench::document::{SavedAnalysisView, SavedRunRef, WorkbenchDocument};
+use crate::domain::{DataSourceId, RunRef, SourceAlias};
+use crate::workbench::toml_document::{
+    SavedAnalysisView, SavedLayout, SavedRunRef, TomlWorkbenchDocument,
+};
 
 use super::ViewerApp;
 use super::command::WorkbenchCommand;
@@ -131,23 +133,30 @@ pub(super) fn fixture_with_extent(end_step: i64) -> (tempfile::TempDir, ProjectI
 }
 
 pub(super) fn saved_workbench(
-    source_path: PathBuf,
+    source_alias: SourceAlias,
     project_id: ProjectId,
     runs: Vec<RunId>,
     metric: &str,
-) -> WorkbenchDocument {
-    WorkbenchDocument {
-        sources: vec![source_path.clone()],
+) -> TomlWorkbenchDocument {
+    TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout {
+            project_sidebar_visible: false,
+            project_sidebar_width: 280.,
+            metric_sidebar_compact: true,
+            bottom_inspector_visible: true,
+            bottom_inspector_height: 260.,
+        },
+        expanded_projects: Vec::new(),
         pinned_projects: Vec::new(),
         archived_projects: Vec::new(),
-        removed_projects: Vec::new(),
         archived_runs: Vec::new(),
         views: vec![SavedAnalysisView {
             name: "Restored".to_owned(),
             runs: runs
                 .into_iter()
                 .map(|run_id| SavedRunRef {
-                    source_path: source_path.clone(),
+                    source_alias: source_alias.clone(),
                     project_id: project_id.clone(),
                     run_id,
                 })
@@ -162,12 +171,6 @@ pub(super) fn saved_workbench(
                 seex_chart_core::AxisRange::new(0., 10.).expect("test viewport should be valid"),
             ),
         }],
-        active_view: 0,
-        project_sidebar_visible: false,
-        project_sidebar_width: 280.,
-        metric_sidebar_compact: true,
-        bottom_inspector_visible: true,
-        bottom_inspector_height: 260.,
     }
 }
 

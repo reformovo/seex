@@ -13,8 +13,6 @@ use crate::domain::{DataSourceId, RunRef};
 #[cfg(feature = "test-support")]
 use crate::workbench::ProjectRef;
 #[cfg(feature = "test-support")]
-use crate::workbench::document::SavedProjectRef;
-#[cfg(feature = "test-support")]
 use crate::workbench::panel_reads::MetricPanelId;
 #[cfg(feature = "test-support")]
 use crate::workbench::toml_document::TomlWorkbenchDocument as WorkbenchDocument;

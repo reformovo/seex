@@ -239,10 +239,7 @@ impl ViewerApp {
         });
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "retained until legacy Viewer tests migrate")
-    )]
+    #[expect(dead_code, reason = "removed with the legacy workbench codec")]
     pub(in crate::desktop::app) fn restore_workbench(
         &mut self,
         document: WorkbenchDocument,
