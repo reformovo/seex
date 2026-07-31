@@ -69,6 +69,11 @@ pub enum InitConfigError {
         source: toml::de::Error,
     },
 
+    #[error(
+        "global config.toml containing S3 credentials must have owner-only read/write permissions"
+    )]
+    InsecureGlobalSecretPermissions,
+
     #[error("{0}")]
     Invalid(String),
 }
@@ -171,6 +176,9 @@ fn load_config_document(
     let table = content
         .parse::<Table>()
         .map_err(|source| InitConfigError::ParseConfig { scope, source })?;
+    if scope == "global" && contains_s3_credentials(&table) {
+        validate_global_secret_permissions(config_path)?;
+    }
     match table
         .get("schema_version")
         .and_then(toml::Value::as_integer)
@@ -183,6 +191,39 @@ fn load_config_document(
             "{scope} config.toml schema_version must be {CONFIG_SCHEMA_VERSION}"
         ))),
     }
+}
+
+fn contains_s3_credentials(config: &Table) -> bool {
+    config
+        .get("s3")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|s3| {
+            ["access_key_id", "secret_access_key", "session_token"]
+                .into_iter()
+                .any(|key| s3.contains_key(key))
+        })
+}
+
+#[cfg(unix)]
+fn validate_global_secret_permissions(config_path: &Path) -> Result<(), InitConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(config_path)
+        .map_err(|source| InitConfigError::ReadConfig {
+            scope: "global",
+            source,
+        })?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 || mode & 0o600 != 0o600 {
+        return Err(InitConfigError::InsecureGlobalSecretPermissions);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_global_secret_permissions(_config_path: &Path) -> Result<(), InitConfigError> {
+    Ok(())
 }
 
 fn resolve_layered_data_path(
@@ -505,6 +546,15 @@ mod tests {
             home.join(".seex/config.toml"),
             include_str!("../../../tests/fixtures/config/v1-global.toml"),
         )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(
+                home.join(".seex/config.toml"),
+                fs::Permissions::from_mode(0o600),
+            )?;
+        }
         fs::write(
             root.join(".seex/config.toml"),
             include_str!("../../../tests/fixtures/config/v1-project.toml"),
@@ -528,6 +578,39 @@ mod tests {
             Some(home.join(".seex/global-catalog.ducklake"))
         );
         fs::remove_dir_all(base)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_s3_credentials_require_owner_only_permissions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = test_directory("global-secret-permissions");
+        let config_path = home.join(".seex/config.toml");
+        fs::create_dir_all(
+            config_path
+                .parent()
+                .ok_or("config path should have a parent")?,
+        )?;
+        fs::write(
+            &config_path,
+            include_str!("../../../tests/fixtures/config/v1-global.toml"),
+        )?;
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o644))?;
+
+        let error = load_config_layers_from(&home.join("project"), Some(&home))
+            .err()
+            .ok_or("shared secret permissions should fail")?;
+        assert!(matches!(
+            error,
+            InitConfigError::InsecureGlobalSecretPermissions
+        ));
+
+        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
+        assert!(load_config_layers_from(&home.join("project"), Some(&home)).is_ok());
+        fs::remove_dir_all(home)?;
         Ok(())
     }
 
