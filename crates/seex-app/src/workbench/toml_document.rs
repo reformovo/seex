@@ -22,6 +22,43 @@ pub struct TomlWorkbenchDocument {
 }
 
 impl TomlWorkbenchDocument {
+    /// Decodes a schema-v1 TOML workbench document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TomlWorkbenchError`] when the TOML, schema version, or a typed
+    /// workbench field is invalid.
+    pub fn decode(raw: &str) -> Result<Self, TomlWorkbenchError> {
+        let document = raw.parse::<DocumentMut>()?;
+        if document["schema_version"].as_integer() != Some(WORKBENCH_SCHEMA_VERSION) {
+            return Err(TomlWorkbenchError::UnsupportedSchema);
+        }
+        Ok(Self {
+            active_view: document["active_view"]
+                .as_integer()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or(TomlWorkbenchError::InvalidField("active_view"))?,
+            layout: layout(document.get("layout"))?,
+            expanded_projects: table_array(
+                document.get("expanded_projects"),
+                "expanded_projects",
+                project_ref,
+            )?,
+            pinned_projects: table_array(
+                document.get("pinned_projects"),
+                "pinned_projects",
+                project_ref,
+            )?,
+            archived_projects: table_array(
+                document.get("archived_projects"),
+                "archived_projects",
+                project_ref,
+            )?,
+            archived_runs: table_array(document.get("archived_runs"), "archived_runs", run_ref)?,
+            views: table_array(document.get("views"), "views", view)?,
+        })
+    }
+
     pub fn encode(&self) -> String {
         let mut document = DocumentMut::new();
         document["schema_version"] = value(WORKBENCH_SCHEMA_VERSION);
@@ -40,6 +77,165 @@ impl TomlWorkbenchDocument {
         document["views"] = Item::ArrayOfTables(views);
         document.to_string()
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum TomlWorkbenchError {
+    #[error("workbench schema_version must be 1")]
+    UnsupportedSchema,
+    #[error("invalid workbench field {0}")]
+    InvalidField(&'static str),
+    #[error("invalid workbench TOML: {0}")]
+    Parse(#[from] toml_edit::TomlError),
+}
+
+fn layout(item: Option<&Item>) -> Result<SavedLayout, TomlWorkbenchError> {
+    let table = item
+        .and_then(Item::as_table)
+        .ok_or(TomlWorkbenchError::InvalidField("layout"))?;
+    Ok(SavedLayout {
+        project_sidebar_visible: bool_field(table, "project_sidebar_visible")?,
+        project_sidebar_width: float_field(table, "project_sidebar_width")?,
+        metric_sidebar_compact: bool_field(table, "metric_sidebar_compact")?,
+        bottom_inspector_visible: bool_field(table, "bottom_inspector_visible")?,
+        bottom_inspector_height: float_field(table, "bottom_inspector_height")?,
+    })
+}
+
+fn table_array<T>(
+    item: Option<&Item>,
+    field: &'static str,
+    parse: fn(&Table) -> Result<T, TomlWorkbenchError>,
+) -> Result<Vec<T>, TomlWorkbenchError> {
+    match item {
+        None => Ok(Vec::new()),
+        Some(item) => item
+            .as_array_of_tables()
+            .ok_or(TomlWorkbenchError::InvalidField(field))?
+            .iter()
+            .map(parse)
+            .collect(),
+    }
+}
+
+fn view(table: &Table) -> Result<SavedAnalysisView, TomlWorkbenchError> {
+    let metrics = strings(table.get("metrics"), "metrics")?;
+    Ok(SavedAnalysisView {
+        name: string(table, "name")?.to_owned(),
+        runs: table_array(table.get("runs"), "runs", run_ref)?,
+        baseline: optional(table.get("baseline"), "baseline", Item::as_table)?
+            .map(run_ref)
+            .transpose()?,
+        pinned_runs: table_array(table.get("pinned_runs"), "pinned_runs", run_ref)?,
+        metrics,
+        metric_heights: metric_heights(table.get("metric_heights"))?,
+        selected_metric: optional(table.get("selected_metric"), "selected_metric", |item| {
+            item.as_str().map(str::to_owned)
+        })?,
+        axis: match string(table, "axis")? {
+            "step" => AlignmentAxis::Step,
+            "timestamp" => AlignmentAxis::ElapsedTime,
+            _ => return Err(TomlWorkbenchError::InvalidField("axis")),
+        },
+        viewport: viewport(table.get("viewport"))?,
+    })
+}
+
+fn project_ref(table: &Table) -> Result<SavedProjectRef, TomlWorkbenchError> {
+    Ok(SavedProjectRef {
+        source_alias: SourceAlias::new(string(table, "source")?)
+            .map_err(|_| TomlWorkbenchError::InvalidField("source"))?,
+        project_id: ProjectId::from_string(string(table, "project_id")?),
+    })
+}
+
+fn run_ref(table: &Table) -> Result<SavedRunRef, TomlWorkbenchError> {
+    let project = project_ref(table)?;
+    Ok(SavedRunRef {
+        source_alias: project.source_alias,
+        project_id: project.project_id,
+        run_id: RunId::from_string(string(table, "run_id")?),
+    })
+}
+
+fn strings(item: Option<&Item>, field: &'static str) -> Result<Vec<String>, TomlWorkbenchError> {
+    item.and_then(Item::as_array)
+        .ok_or(TomlWorkbenchError::InvalidField(field))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or(TomlWorkbenchError::InvalidField(field))
+        })
+        .collect()
+}
+
+fn metric_heights(item: Option<&Item>) -> Result<Vec<(String, f32)>, TomlWorkbenchError> {
+    let Some(table) = optional(item, "metric_heights", Item::as_table)? else {
+        return Ok(Vec::new());
+    };
+    table
+        .iter()
+        .map(|(metric, item)| {
+            item.as_float()
+                .map(|height| (metric.to_owned(), height as f32))
+                .ok_or(TomlWorkbenchError::InvalidField("metric_heights"))
+        })
+        .collect()
+}
+
+fn viewport(item: Option<&Item>) -> Result<Option<AxisRange>, TomlWorkbenchError> {
+    let Some(item) = item else {
+        return Ok(None);
+    };
+    let array = item
+        .as_array()
+        .ok_or(TomlWorkbenchError::InvalidField("viewport"))?;
+    let mut values = array.iter();
+    let (Some(start), Some(end), None) = (values.next(), values.next(), values.next()) else {
+        return Err(TomlWorkbenchError::InvalidField("viewport"));
+    };
+    AxisRange::new(
+        start
+            .as_float()
+            .ok_or(TomlWorkbenchError::InvalidField("viewport"))?,
+        end.as_float()
+            .ok_or(TomlWorkbenchError::InvalidField("viewport"))?,
+    )
+    .map(Some)
+    .map_err(|_| TomlWorkbenchError::InvalidField("viewport"))
+}
+
+fn string<'a>(table: &'a Table, field: &'static str) -> Result<&'a str, TomlWorkbenchError> {
+    table
+        .get(field)
+        .and_then(Item::as_str)
+        .ok_or(TomlWorkbenchError::InvalidField(field))
+}
+
+fn bool_field(table: &Table, field: &'static str) -> Result<bool, TomlWorkbenchError> {
+    table
+        .get(field)
+        .and_then(Item::as_bool)
+        .ok_or(TomlWorkbenchError::InvalidField(field))
+}
+
+fn float_field(table: &Table, field: &'static str) -> Result<f32, TomlWorkbenchError> {
+    table
+        .get(field)
+        .and_then(Item::as_float)
+        .map(|value| value as f32)
+        .ok_or(TomlWorkbenchError::InvalidField(field))
+}
+
+fn optional<'a, T>(
+    item: Option<&'a Item>,
+    field: &'static str,
+    parse: impl FnOnce(&'a Item) -> Option<T>,
+) -> Result<Option<T>, TomlWorkbenchError> {
+    item.map(|item| parse(item).ok_or(TomlWorkbenchError::InvalidField(field)))
+        .transpose()
 }
 
 fn layout_table(layout: SavedLayout) -> Table {
@@ -223,10 +419,13 @@ mod tests {
         };
 
         let encoded = document.encode();
+        let decoded =
+            TomlWorkbenchDocument::decode(&encoded).expect("encoded workbench should decode");
         let parsed = encoded
             .parse::<DocumentMut>()
             .expect("encoded workbench should be valid TOML");
 
+        assert_eq!(decoded, document);
         assert_eq!(parsed["schema_version"].as_integer(), Some(1));
         assert_eq!(
             parsed["views"][0]["runs"][0]["source"].as_str(),
