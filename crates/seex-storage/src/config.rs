@@ -81,14 +81,18 @@ pub fn resolve_init_config(
     metric_queue_capacity: i64,
     s3_overrides: S3ConnectionOverrides,
 ) -> Result<ResolvedInitConfig, InitConfigError> {
-    let storage = resolve_storage_config(root_path, data_path, catalog_backend, catalog_path)?;
+    let layers = load_config_layers(root_path)?;
+    let storage = resolve_storage_config_from_layers(
+        root_path,
+        data_path,
+        catalog_backend,
+        catalog_path,
+        &layers,
+    )?;
     let metric_queue_capacity = validate_metric_queue_capacity(metric_queue_capacity)?;
     let s3_connection = if storage.data_path.as_deref().is_some_and(is_s3_data_path) {
-        let layers = load_config_layers(root_path)?;
-        Some(resolve_s3_connection(
-            layers.project.as_ref().map(|config| &config.table),
-            s3_overrides,
-        )?)
+        let s3 = merge_s3_tables(&layers)?;
+        Some(resolve_s3_connection_from_table(s3.as_ref(), s3_overrides)?)
     } else {
         None
     };
@@ -115,9 +119,19 @@ pub fn resolve_storage_config(
     catalog_path: Option<PathBuf>,
 ) -> Result<ResolvedStorageConfig, InitConfigError> {
     let layers = load_config_layers(root_path)?;
-    let data_path = resolve_layered_data_path(root_path, data_path, &layers)?;
-    let catalog_backend = resolve_layered_catalog_backend(catalog_backend, &layers)?;
-    let catalog_path = resolve_layered_catalog_path(root_path, catalog_path, &layers)?;
+    resolve_storage_config_from_layers(root_path, data_path, catalog_backend, catalog_path, &layers)
+}
+
+fn resolve_storage_config_from_layers(
+    root_path: &Path,
+    data_path: Option<PathBuf>,
+    catalog_backend: Option<&str>,
+    catalog_path: Option<PathBuf>,
+    layers: &ConfigLayers,
+) -> Result<ResolvedStorageConfig, InitConfigError> {
+    let data_path = resolve_layered_data_path(root_path, data_path, layers)?;
+    let catalog_backend = resolve_layered_catalog_backend(catalog_backend, layers)?;
+    let catalog_path = resolve_layered_catalog_path(root_path, catalog_path, layers)?;
     validate_path_configuration(data_path.as_deref(), catalog_path.as_deref())?;
 
     Ok(ResolvedStorageConfig {
@@ -308,11 +322,10 @@ fn validate_metric_queue_capacity(value: i64) -> Result<usize, InitConfigError> 
         .map_err(|_| invalid("metric_queue_capacity must be between 1 and 1048576"))
 }
 
-fn resolve_s3_connection(
-    config: Option<&Table>,
+fn resolve_s3_connection_from_table(
+    s3: Option<&Table>,
     explicit: S3ConnectionOverrides,
 ) -> Result<S3ConnectionConfig, InitConfigError> {
-    let s3 = s3_table(config)?;
     Ok(S3ConnectionConfig::new(
         required_s3_string(
             optional_s3_string(explicit.endpoint, s3, "endpoint", "s3_endpoint")?,
@@ -351,6 +364,24 @@ fn resolve_s3_connection(
         )?,
         optional_bool(explicit.use_ssl, s3, "use_ssl", "config.toml s3.use_ssl")?,
     ))
+}
+
+fn merge_s3_tables(layers: &ConfigLayers) -> Result<Option<Table>, InitConfigError> {
+    let mut merged = Table::new();
+    let mut found = false;
+    for document in [layers.global.as_ref(), layers.project.as_ref()]
+        .into_iter()
+        .flatten()
+    {
+        let Some(table) = s3_table(Some(&document.table))? else {
+            continue;
+        };
+        found = true;
+        for (key, value) in table {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(found.then_some(merged))
 }
 
 fn s3_table(config: Option<&Table>) -> Result<Option<&Table>, InitConfigError> {
@@ -519,6 +550,40 @@ mod tests {
     }
 
     #[test]
+    fn schema_v1_s3_tables_merge_global_project_and_explicit_fields() -> Result<(), InitConfigError>
+    {
+        let layers = ConfigLayers {
+            global: Some(ConfigDocument {
+                table: parse_config(include_str!(
+                    "../../../tests/fixtures/config/v1-global.toml"
+                )),
+                base_path: PathBuf::from("home"),
+            }),
+            project: Some(ConfigDocument {
+                table: parse_config(include_str!(
+                    "../../../tests/fixtures/config/v1-project.toml"
+                )),
+                base_path: PathBuf::from("project"),
+            }),
+        };
+        let merged = merge_s3_tables(&layers)?;
+        let resolved = resolve_s3_connection_from_table(
+            merged.as_ref(),
+            S3ConnectionOverrides {
+                endpoint: Some("explicit.example.com".to_owned()),
+                ..S3ConnectionOverrides::default()
+            },
+        )?;
+
+        assert_eq!(resolved.endpoint, "explicit.example.com");
+        assert_eq!(resolved.access_key_id, "global-access-key");
+        assert_eq!(resolved.secret_access_key, "global-secret");
+        assert_eq!(resolved.region.as_deref(), Some("eu-west-1"));
+        assert_eq!(resolved.path_style, Some(false));
+        Ok(())
+    }
+
+    #[test]
     fn s3_config_merges_explicit_keywords_over_file_values() {
         let config = parse_config(
             r#"
@@ -533,8 +598,8 @@ mod tests {
             "#,
         );
 
-        let resolved = resolve_s3_connection(
-            Some(&config),
+        let resolved = resolve_s3_connection_from_table(
+            s3_table(Some(&config)).expect("s3 table should resolve"),
             S3ConnectionOverrides {
                 endpoint: Some("override:9000".to_owned()),
                 path_style: Some(true),
@@ -563,8 +628,8 @@ mod tests {
             "#,
         );
 
-        let resolved = resolve_s3_connection(
-            Some(&config),
+        let resolved = resolve_s3_connection_from_table(
+            s3_table(Some(&config)).expect("s3 table should resolve"),
             S3ConnectionOverrides {
                 endpoint: Some("override:9000".to_owned()),
                 path_style: Some(true),
