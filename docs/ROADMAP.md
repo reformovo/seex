@@ -138,23 +138,23 @@ and the shipped Python API remains unchanged until U4.
 
 #### U1.1: Configuration and document foundation
 
-- [ ] Define schema version 1 for global `~/.seex/config.toml` and project
+- [x] Define schema version 1 for global `~/.seex/config.toml` and project
   `<root>/.seex/config.toml`. Resolve explicit SDK arguments, project config,
   global config, and built-in defaults in that order; merge S3 tables field by
   field and ignore inherited credentials when effective `data_path` is local.
-- [ ] Keep field-level ownership explicit: the SDK reads storage and S3 keys;
+- [x] Keep field-level ownership explicit: the SDK reads storage and S3 keys;
   Desktop reads and edits Sources. Share contract fixtures without exposing
   Desktop configuration types through the public SDK.
-- [ ] Introduce stable Source aliases and represent Viewer Project and Run
+- [x] Introduce stable Source aliases and represent Viewer Project and Run
   references by alias rather than path. Validate alias conflicts and Source
   Project allowlists, and load Runs only for allowed Projects.
-- [ ] Implement schema version 1 TOML workbench encoding, decoding, and
+- [x] Implement schema version 1 TOML workbench encoding, decoding, and
   validation. Reject the legacy `seex-workbench 1` format without migration.
-- [ ] Use the approved direct `toml_edit` dependency for Desktop
+- [x] Use the approved direct `toml_edit` dependency for Desktop
   read-modify-write. Preserve comments, unknown fields, native storage fields,
   and secrets; require owner-only permissions for global secrets; write through
   a same-directory temporary file and reject a stale read fingerprint.
-- [ ] Prove SDK `init`, `log`, `finish`, and `shutdown` may read effective
+- [x] Prove SDK `init`, `log`, `finish`, and `shutdown` may read effective
   configuration but never rewrite either config or workbench file.
 
 #### U1.2: Facade and Reader migration
