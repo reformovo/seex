@@ -159,17 +159,17 @@ and the shipped Python API remains unchanged until U4.
 
 #### U1.2: Facade and Reader migration
 
-- [ ] Create unpublished `crates/seex` as a facade over the current
+- [x] Create unpublished `crates/seex` as a facade over the current
   `seex-model`, `seex-storage`, and `seex-core` crates. Keep every workspace
   target buildable.
-- [ ] Define public `Reader`/`ReaderBuilder`, `MetricAxis`, typed half-open
+- [x] Define public `Reader`/`ReaderBuilder`, `MetricAxis`, typed half-open
   ranges, strict caller-selected `max_points`, and `MetricSeries`.
 - [ ] Keep pixels out of public Rust and Python queries. Desktop alone converts
   a closed viewport into crate-private options for one real neighbor on each
   side, without weakening the public point bound.
 - [ ] Make `MetricSeries` retain real samples, source count, downsampled state,
   completeness, and reasons, and expose an Arrow PyCapsule stream directly.
-- [ ] Keep `ProjectConnection`, `ProjectMetricReader`, `NativeQueryStore`,
+- [x] Keep `ProjectConnection`, `ProjectMetricReader`, `NativeQueryStore`,
   storage errors, DuckDB types, and local-only source policy private.
 - [ ] Migrate Desktop discovery and curve reads to Reader over configured
   Source aliases and Project allowlists. Preserve four-way scheduling,
