@@ -10,8 +10,9 @@ use std::time::{Duration, Instant, SystemTime};
 use seex_core::engine::client::{NativeClient, NativeRun};
 use seex_model::types::ProjectId;
 
-const SAMPLES: usize = 7;
-const CALIBRATION_TARGET: Duration = Duration::from_millis(50);
+// Candidate reliability comes from the seven independent AB/BA process pairs.
+const SAMPLES: usize = 1;
+const CALIBRATION_TARGET: Duration = Duration::from_millis(10);
 const DECIDING_SAMPLE_MINIMUM: Duration = Duration::from_millis(10);
 const QUEUE_CAPACITY: usize = 1_048_576;
 const MAPPING_KEYS: [&str; 8] = [
