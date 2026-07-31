@@ -3,6 +3,22 @@
 //! During U1 this unpublished facade introduces the stable read surface over
 //! the existing workspace crates. Storage engines, their errors, and native
 //! connection types remain implementation details.
+//!
+//! ```compile_fail
+//! use seex::ProjectConnection;
+//! ```
+//!
+//! ```compile_fail
+//! use seex::ProjectMetricReader;
+//! ```
+//!
+//! ```compile_fail
+//! use seex::StorageError;
+//! ```
+//!
+//! ```compile_fail
+//! use seex::NativeQueryStore;
+//! ```
 
 #![forbid(unsafe_code)]
 
