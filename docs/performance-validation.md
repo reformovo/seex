@@ -90,5 +90,54 @@ python scripts/performance_gate.py compare-v2 \
   --rolling /tmp/seex-perf/u0/query-pair-9610248.json
 ```
 
-Viewer and ordinary-release instrumentation isolation remain open. U1 must not
-begin until those sections and the complete three-domain self-comparison close.
+## Viewer baseline
+
+The retained Viewer fixture is DuckDB with 10 Runs, six Metrics, and 1,000,000
+effective points per series. Its v2 manifest SHA-256 is
+`7883a5597abd69c7d1fb6b169ed81f9a22be2becb6eec5cd2d326f1e6a13f827`.
+The read-only resource capture validated all 30 requested-budget, source-point,
+returned-point, snapshot-point, and snapshot-byte metrics.
+
+The release CPU workload passed the unchanged p95 8.33 ms and single-operation
+16.7 ms floors. Reliable p95 values ranged from 25 ns for brush zoom to
+2.030 ms for uncached path preparation; the maximum observed single operation
+was 2.277 ms. Brush resize and pan were non-deciding because relative MAD was
+above 2%, and single-operation metrics are hard-floor evidence rather than
+timing decisions because they do not form 10 ms batches.
+
+Single and dual View matrix checks both passed with 10 Runs, six Metrics,
+1x/2x/3x physical width assertions, peak query concurrency 4, and zero retained
+stale snapshots. Fresh processes completed 30 zoom-in/out cycles. Single View
+warm/peak/final RSS was 169,213,952/173,260,800/169,213,952 bytes; dual View was
+168,378,368/172,376,064/168,378,368 bytes. Both RSS verdicts were `pass` with
+no monotonic growth.
+
+An ordinary release binary from the baseline revision produced a 10.835-second
+Metal System Trace with Instruments 16.0 (17F113). The exported trace records
+57 presented handlers and zero hang risks, potential hangs, or drawable waits.
+It enumerated the built-in 3024x1964 120 Hz display and two external 3840x2160
+60 Hz displays. Non-interactive launch did not establish which display owned
+the window, and the 280 Hz display used by the historical Viewer trace was not
+connected. Therefore this capture proves trace reproducibility and metadata,
+but high-refresh behavior remains an explicit non-deciding blocker.
+
+Representative commands:
+
+```bash
+python scripts/performance_gate.py rss --interval 0.05 \
+  --output /tmp/seex-perf/u0/viewer-dual-rss-9610248.json -- \
+  env CARGO_TARGET_DIR=/tmp/seex-perf/targets/u0-original \
+  SEEX_VIEWER_PERF_VIEWS=2 cargo test --release -p seex-app \
+  --features test-support \
+  representative_workbench_stays_responsive_while_a_source_is_pending \
+  -- --ignored --nocapture
+
+xcrun xctrace record --template 'Metal System Trace' --time-limit 10s \
+  --output /tmp/seex-perf/u0/viewer-metal-60hz-9610248.trace \
+  --launch -- /tmp/seex-perf/targets/u0-product/release/seex-app \
+  /tmp/seex-perf/fixtures/viewer-v2-9610248/duckdb
+```
+
+Ordinary-release instrumentation isolation and the complete three-domain
+self-comparison remain open. U1 must not begin until both close and the 280 Hz
+environmental limitation is accepted or reproduced.

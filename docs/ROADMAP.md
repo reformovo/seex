@@ -89,10 +89,10 @@ It changes no production behavior and requires no performance improvement.
   neighbors, duplicates, spikes, last-write-wins, completeness, and reasons.
 - [x] Use identical read-only fixtures, independent release binaries, and
   alternating execution order for baseline and candidate query samples.
-- [ ] Cover Viewer with 10 Runs and at least six visible Metrics: single and
+- [x] Cover Viewer with 10 Runs and at least six visible Metrics: single and
   dual View, sparse/dense windows, 1x/2x/3x, 30 zoom cycles, stale generation,
   query concurrency, snapshot/path counters, CPU, RSS, and Metal trace metadata.
-- [ ] Run automated RSS workloads in a fresh process. Record warm, peak, final,
+- [x] Run automated RSS workloads in a fresh process. Record warm, peak, final,
   phase trend, and retained stale-snapshot counts from an external sampler.
 
 #### Baseline freeze and exit
@@ -100,7 +100,7 @@ It changes no production behavior and requires no performance improvement.
 - [ ] Freeze the pre-migration worktree as the permanent original baseline and
   first rolling baseline. Preserve the current accepted logical-budget,
   compact-snapshot, bounded-geometry, and shared-DuckDB improvements.
-- [ ] Record exact machine, OS, Rust toolchain, display/scale, fixture identity,
+- [x] Record exact machine, OS, Rust toolchain, display/scale, fixture identity,
   sample count, commands, and known environmental blockers in the performance
   validation document.
 - [ ] Verify gate instrumentation does not change ordinary release API,
