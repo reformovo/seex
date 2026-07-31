@@ -6,6 +6,7 @@ import argparse
 import datetime
 import itertools
 import json
+import math
 import pathlib
 import platform
 import queue
@@ -15,11 +16,17 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from typing import TypedDict, cast
+from typing import Literal, TypedDict, cast
 
 _PREFIX = "SEEX_PERF "
 _REQUIRED_PAIRS = 7
 _RSS_TREND_NOISE_FLOOR_BYTES = 1024 * 1024
+_DOMAINS = frozenset({"reporting", "query", "viewer"})
+_DIRECTIONS = frozenset({"higher", "lower", "neutral"})
+_UNITS = frozenset({"bytes", "count", "ns", "ns/op", "points/s"})
+
+Domain = Literal["reporting", "query", "viewer"]
+Direction = Literal["higher", "lower", "neutral"]
 
 
 class MetricSample(TypedDict):
@@ -72,6 +79,119 @@ class RssResult(TypedDict):
     allowed_final_rss_bytes: int
     monotonic_growth: bool
     verdict: str
+
+
+class V2Metric(TypedDict):
+    """One deciding or informational metric emitted by a workload."""
+
+    domain: Domain
+    metric: str
+    unit: str
+    direction: Direction
+    batch_iterations: int
+    samples: int
+    raw_samples: list[float]
+    mad: float
+    relative_mad: float
+    p50: float
+    p95: float
+    maximum: float
+    reliable: bool
+
+
+class V2Check(TypedDict):
+    """One correctness or resource invariant emitted by a workload."""
+
+    domain: Domain
+    check: str
+    passed: bool
+    detail: str
+
+
+class V2Output(TypedDict):
+    """Validated records emitted by one workload invocation."""
+
+    metrics: dict[str, V2Metric]
+    checks: list[V2Check]
+
+
+def _finite_number(record: dict[str, object], field: str) -> float:
+    value = record.get(field)
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise TypeError(f"SEEX_PERF {field} must be a finite number")
+    return float(value)
+
+
+def _domain(record: dict[str, object]) -> Domain:
+    domain = record.get("domain")
+    if domain not in _DOMAINS:
+        raise ValueError(f"SEEX_PERF domain must be one of {sorted(_DOMAINS)}")
+    return cast(Domain, domain)
+
+
+def parse_v2_output(output: str) -> V2Output:
+    """Parses strict schema-v2 metric and correctness records."""
+    metrics: dict[str, V2Metric] = {}
+    checks: list[V2Check] = []
+    for line in output.splitlines():
+        if not line.startswith(_PREFIX):
+            continue
+        decoded = json.loads(line.removeprefix(_PREFIX))
+        if not isinstance(decoded, dict):
+            raise TypeError("SEEX_PERF record must be a JSON object")
+        if decoded.get("schema_version") != 2:
+            raise ValueError("deciding captures require SEEX_PERF schema_version 2")
+        domain = _domain(decoded)
+        record_type = decoded.get("record_type")
+        if record_type == "check":
+            name, passed, detail = decoded.get("check"), decoded.get("passed"), decoded.get("detail")
+            if not isinstance(name, str) or not name or not isinstance(passed, bool) or not isinstance(detail, str):
+                raise TypeError("SEEX_PERF check requires check, passed, and detail")
+            checks.append(V2Check(domain=domain, check=name, passed=passed, detail=detail))
+            continue
+        if record_type != "metric":
+            raise ValueError("SEEX_PERF record_type must be metric or check")
+        metric, unit, direction = decoded.get("metric"), decoded.get("unit"), decoded.get("direction")
+        batch_iterations, sample_count = decoded.get("batch_iterations"), decoded.get("samples")
+        raw_samples, reliable = decoded.get("raw_samples"), decoded.get("reliable")
+        if not isinstance(metric, str) or not metric:
+            raise ValueError("SEEX_PERF metric must be a non-empty string")
+        if unit not in _UNITS or direction not in _DIRECTIONS:
+            raise ValueError("SEEX_PERF metric has an unsupported unit or direction")
+        if not isinstance(batch_iterations, int) or isinstance(batch_iterations, bool) or batch_iterations <= 0:
+            raise ValueError("SEEX_PERF batch_iterations must be positive")
+        if not isinstance(sample_count, int) or isinstance(sample_count, bool) or sample_count <= 0:
+            raise ValueError("SEEX_PERF samples must be positive")
+        if not isinstance(raw_samples, list) or len(raw_samples) != sample_count:
+            raise ValueError("SEEX_PERF raw_samples must match samples")
+        parsed = [
+            float(value) for value in raw_samples if isinstance(value, int | float) and not isinstance(value, bool)
+        ]
+        if len(parsed) != sample_count or any(not math.isfinite(value) for value in parsed):
+            raise TypeError("SEEX_PERF raw_samples must contain only finite numbers")
+        if not isinstance(reliable, bool):
+            raise TypeError("SEEX_PERF reliable must be boolean")
+        key = f"{domain}.{metric}"
+        if key in metrics:
+            raise ValueError(f"duplicate SEEX_PERF metric {key!r}")
+        metrics[key] = V2Metric(
+            domain=domain,
+            metric=metric,
+            unit=cast(str, unit),
+            direction=cast(Direction, direction),
+            batch_iterations=batch_iterations,
+            samples=sample_count,
+            raw_samples=parsed,
+            mad=_finite_number(decoded, "mad"),
+            relative_mad=_finite_number(decoded, "relative_mad"),
+            p50=_finite_number(decoded, "p50"),
+            p95=_finite_number(decoded, "p95"),
+            maximum=_finite_number(decoded, "max"),
+            reliable=reliable,
+        )
+    if not metrics and not checks:
+        raise ValueError("benchmark output contained no schema-v2 SEEX_PERF records")
+    return V2Output(metrics=metrics, checks=checks)
 
 
 def parse_output(output: str) -> dict[str, MetricSample]:

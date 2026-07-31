@@ -45,6 +45,54 @@ def test_parse_output_extracts_machine_records() -> None:
     assert parsed["path"]["p95"] == 45.0
 
 
+def _v2_metric(**updates: object) -> str:
+    record: dict[str, object] = {
+        "schema_version": 2,
+        "record_type": "metric",
+        "domain": "query",
+        "metric": "duckdb.step.full",
+        "unit": "ns/op",
+        "direction": "lower",
+        "batch_iterations": 2,
+        "samples": 3,
+        "raw_samples": [10.0, 11.0, 12.0],
+        "mad": 1.0,
+        "relative_mad": 1.0 / 11.0,
+        "p50": 11.0,
+        "p95": 12.0,
+        "max": 12.0,
+        "reliable": False,
+    }
+    record.update(updates)
+    return "SEEX_PERF " + __import__("json").dumps(record)
+
+
+def test_parse_v2_output_validates_metrics_and_checks() -> None:
+    check = (
+        'SEEX_PERF {"schema_version":2,"record_type":"check","domain":"query",'
+        '"check":"parity","passed":true,"detail":"matched"}'
+    )
+
+    parsed = performance_gate.parse_v2_output(f"{_v2_metric()}\n{check}")
+
+    assert parsed["metrics"]["query.duckdb.step.full"]["batch_iterations"] == 2
+    assert parsed["checks"] == [performance_gate.V2Check(domain="query", check="parity", passed=True, detail="matched")]
+
+
+@pytest.mark.parametrize(
+    "updates, message",
+    [
+        ({"schema_version": 1}, "schema_version 2"),
+        ({"unit": "milliseconds"}, "unsupported"),
+        ({"raw_samples": [10.0]}, "must match"),
+        ({"raw_samples": [10.0, float("nan"), 12.0]}, "finite"),
+    ],
+)
+def test_parse_v2_output_rejects_invalid_deciding_records(updates: dict[str, object], message: str) -> None:
+    with pytest.raises((TypeError, ValueError), match=message):
+        performance_gate.parse_v2_output(_v2_metric(**updates))
+
+
 def test_compare_accepts_consistent_improvement() -> None:
     verdict = performance_gate.compare_captures(
         _capture(100.0),
