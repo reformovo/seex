@@ -4,12 +4,12 @@ import pathlib
 
 import pytest
 
-from scripts import viewer_perf_gate
+from scripts import performance_gate
 
 
-def _capture(p50: float, *, reliable: bool = True, protected: float = 100.0) -> viewer_perf_gate.Capture:
-    def sample(metric: str, value: float, metric_reliable: bool = True) -> viewer_perf_gate.MetricSample:
-        return viewer_perf_gate.MetricSample(
+def _capture(p50: float, *, reliable: bool = True, protected: float = 100.0) -> performance_gate.Capture:
+    def sample(metric: str, value: float, metric_reliable: bool = True) -> performance_gate.MetricSample:
+        return performance_gate.MetricSample(
             metric=metric,
             unit="ns/op",
             batch_iterations=1,
@@ -23,10 +23,10 @@ def _capture(p50: float, *, reliable: bool = True, protected: float = 100.0) -> 
             reliable=metric_reliable,
         )
 
-    runs: list[dict[str, viewer_perf_gate.MetricSample]] = []
+    runs: list[dict[str, performance_gate.MetricSample]] = []
     for _ in range(7):
         runs.append({"primary": sample("primary", p50, reliable), "protected": sample("protected", protected)})
-    return viewer_perf_gate.Capture(
+    return performance_gate.Capture(
         schema_version=1,
         environment={},
         command=["benchmark"],
@@ -35,7 +35,7 @@ def _capture(p50: float, *, reliable: bool = True, protected: float = 100.0) -> 
 
 
 def test_parse_output_extracts_machine_records() -> None:
-    parsed = viewer_perf_gate.parse_output(
+    parsed = performance_gate.parse_output(
         'noise\nSEEX_PERF {"metric":"path","unit":"ns/op","batch_iterations":2,'
         '"samples":2,"raw_samples":[40.0,45.0],"p50":42.5,"p95":45.0,'
         '"max_batch":45.0,"max_single":46.0,"relative_mad":0.01,"reliable":true}\n'
@@ -46,7 +46,7 @@ def test_parse_output_extracts_machine_records() -> None:
 
 
 def test_compare_accepts_consistent_improvement() -> None:
-    verdict = viewer_perf_gate.compare_captures(
+    verdict = performance_gate.compare_captures(
         _capture(100.0),
         _capture(90.0),
         "primary",
@@ -58,8 +58,8 @@ def test_compare_accepts_consistent_improvement() -> None:
 
 
 def test_compare_rejects_no_change_and_unreliable_samples() -> None:
-    unchanged = viewer_perf_gate.compare_captures(_capture(100.0), _capture(96.0), "primary")
-    unreliable = viewer_perf_gate.compare_captures(
+    unchanged = performance_gate.compare_captures(_capture(100.0), _capture(96.0), "primary")
+    unreliable = performance_gate.compare_captures(
         _capture(100.0),
         _capture(80.0, reliable=False),
         "primary",
@@ -70,7 +70,7 @@ def test_compare_rejects_no_change_and_unreliable_samples() -> None:
 
 
 def test_compare_rejects_protected_regression() -> None:
-    verdict = viewer_perf_gate.compare_captures(
+    verdict = performance_gate.compare_captures(
         _capture(100.0),
         _capture(90.0, protected=104.0),
         "primary",
@@ -84,22 +84,22 @@ def test_compare_rejects_protected_regression() -> None:
 def test_capture_cli_strips_remainder_separator(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
     captured: list[list[str]] = []
 
-    def fake_capture(command: list[str], repeats: int) -> viewer_perf_gate.Capture:
+    def fake_capture(command: list[str], repeats: int) -> performance_gate.Capture:
         captured.append(command)
-        return viewer_perf_gate.Capture(schema_version=1, environment={}, command=command, runs=[])
+        return performance_gate.Capture(schema_version=1, environment={}, command=command, runs=[])
 
-    monkeypatch.setattr(viewer_perf_gate, "capture", fake_capture)
+    monkeypatch.setattr(performance_gate, "capture", fake_capture)
     output = tmp_path / "capture.json"
 
-    assert viewer_perf_gate.main(["capture", "--output", str(output), "--", "benchmark"]) == 0
+    assert performance_gate.main(["capture", "--output", str(output), "--", "benchmark"]) == 0
     assert captured == [["benchmark"]]
 
 
 def test_rss_gate_accepts_stable_memory_and_rejects_growth() -> None:
-    stable = viewer_perf_gate.evaluate_rss([100_000_000, 110_000_000, 105_000_000, 103_000_000], 0, 3)
-    flat = viewer_perf_gate.evaluate_rss([100_000_000] * 10, 0, 9)
-    lazy_page = viewer_perf_gate.evaluate_rss([100_000_000] * 5 + [100_016_384] * 5, 0, 9)
-    growing = viewer_perf_gate.evaluate_rss([100_000_000 + index * 2_000_000 for index in range(10)], 0, 9)
+    stable = performance_gate.evaluate_rss([100_000_000, 110_000_000, 105_000_000, 103_000_000], 0, 3)
+    flat = performance_gate.evaluate_rss([100_000_000] * 10, 0, 9)
+    lazy_page = performance_gate.evaluate_rss([100_000_000] * 5 + [100_016_384] * 5, 0, 9)
+    growing = performance_gate.evaluate_rss([100_000_000 + index * 2_000_000 for index in range(10)], 0, 9)
 
     assert stable["verdict"] == "pass"
     assert stable["samples"] == [100_000_000, 110_000_000, 105_000_000, 103_000_000]
@@ -114,7 +114,7 @@ def test_rss_gate_accepts_stable_memory_and_rejects_growth() -> None:
 
 
 def test_rss_trend_excludes_final_settle_allocation() -> None:
-    result = viewer_perf_gate.evaluate_rss(
+    result = performance_gate.evaluate_rss(
         [100_000_000] * 10 + [110_000_000],
         0,
         10,
@@ -126,4 +126,4 @@ def test_rss_trend_excludes_final_settle_allocation() -> None:
     assert result["final_rss_bytes"] == 110_000_000
 
     with pytest.raises(ValueError, match="positive"):
-        viewer_perf_gate.evaluate_rss([100_000_000, 0], 0, 1)
+        performance_gate.evaluate_rss([100_000_000, 0], 0, 1)
