@@ -36,41 +36,53 @@ const TRACE_METRICS: [&str; 6] = [
 ];
 const QUERY_TIMEOUT: Duration = Duration::from_secs(300);
 
-fn fixture_root(
-    backend: CatalogBackend,
-    root_variable: &str,
-) -> Result<(PathBuf, bool), Box<dyn Error>> {
+fn fixture_path(backend: CatalogBackend, root_variable: &str) -> Result<PathBuf, Box<dyn Error>> {
     let name = match backend {
         CatalogBackend::DuckDb => "duckdb",
         CatalogBackend::Sqlite => "sqlite",
     };
     let base = std::env::var_os(root_variable)
         .ok_or_else(|| format!("{root_variable} must name a retained fixture directory"))?;
-    let path = PathBuf::from(base).join(name);
-    if path.exists() && fs::read_dir(&path)?.next().is_some() {
-        let config = path.join(".seex/config.toml");
-        if !config.is_file() {
-            return Err(format!("fixture directory has no Seex config: {}", path.display()).into());
-        }
-        return Ok((path, true));
-    }
-    fs::create_dir_all(&path)?;
-    Ok((path, false))
+    Ok(PathBuf::from(base).join(name))
 }
 
-fn build_fixture(
+fn run_ids() -> Vec<RunId> {
+    (0..RUNS)
+        .map(|index| RunId::from_string(format!("run-{index}")))
+        .collect()
+}
+
+fn read_fixture(
+    backend: CatalogBackend,
+    root_variable: &str,
+) -> Result<(PathBuf, Vec<RunId>), Box<dyn Error>> {
+    let root = fixture_path(backend, root_variable)?;
+    let config = root.join(".seex/config.toml");
+    if !config.is_file() {
+        return Err(format!(
+            "retained fixture is missing {}; run prepare_large_native_series_fixture first",
+            config.display()
+        )
+        .into());
+    }
+    Ok((root, run_ids()))
+}
+
+fn prepare_fixture(
     backend: CatalogBackend,
     root_variable: &str,
     metrics: &[&str],
     source_points: i64,
 ) -> Result<(PathBuf, Vec<RunId>), Box<dyn Error>> {
-    let (root, reused) = fixture_root(backend, root_variable)?;
-    let run_ids = (0..RUNS)
-        .map(|index| RunId::from_string(format!("run-{index}")))
-        .collect::<Vec<_>>();
-    if reused {
+    let root = fixture_path(backend, root_variable)?;
+    let run_ids = run_ids();
+    if root.join(".seex/config.toml").is_file() {
         return Ok((root, run_ids));
     }
+    if root.exists() && fs::read_dir(&root)?.next().is_some() {
+        return Err(format!("refusing to replace incomplete fixture: {}", root.display()).into());
+    }
+    fs::create_dir_all(&root)?;
     let seex_dir = root.join(".seex");
     fs::create_dir_all(&seex_dir)?;
     let catalog_name = match backend {
@@ -249,12 +261,7 @@ fn assert_snapshot(
 }
 
 fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
-    let (root, run_ids) = build_fixture(
-        backend,
-        "SEEX_APP_SCALE_FIXTURE_ROOT",
-        &["loss"],
-        SOURCE_POINTS,
-    )?;
+    let (root, run_ids) = read_fixture(backend, "SEEX_APP_SCALE_FIXTURE_ROOT")?;
     let mut worker = ReadWorker::spawn(&root)?;
     let events = worker
         .take_event_receiver()
@@ -355,6 +362,28 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+#[ignore = "creates retained DuckDB and SQLite fixtures for release query validation"]
+fn prepare_large_native_series_fixture() -> Result<(), Box<dyn Error>> {
+    assert!(
+        std::hint::black_box(!cfg!(debug_assertions)),
+        "fixture preparation requires --release"
+    );
+    prepare_fixture(
+        CatalogBackend::DuckDb,
+        "SEEX_APP_SCALE_FIXTURE_ROOT",
+        &["loss"],
+        SOURCE_POINTS,
+    )?;
+    prepare_fixture(
+        CatalogBackend::Sqlite,
+        "SEEX_APP_SCALE_FIXTURE_ROOT",
+        &["loss"],
+        SOURCE_POINTS,
+    )?;
+    Ok(())
+}
+
+#[test]
 #[ignore = "creates and queries twenty million source points; run explicitly in release mode"]
 fn large_native_series_respect_viewer_query_budgets() -> Result<(), Box<dyn Error>> {
     assert!(
@@ -372,7 +401,7 @@ fn retained_multi_track_fixture_supports_product_tracing() -> Result<(), Box<dyn
         std::hint::black_box(!cfg!(debug_assertions)),
         "trace fixture generation requires --release"
     );
-    let (root, run_ids) = build_fixture(
+    let (root, run_ids) = prepare_fixture(
         CatalogBackend::DuckDb,
         "SEEX_APP_TRACE_FIXTURE_ROOT",
         &TRACE_METRICS,
