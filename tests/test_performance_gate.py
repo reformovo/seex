@@ -286,6 +286,8 @@ def test_rss_gate_accepts_stable_memory_and_rejects_growth() -> None:
     growing = performance_gate.evaluate_rss([100_000_000 + index * 2_000_000 for index in range(10)], 0, 9)
 
     assert stable["verdict"] == "pass"
+    assert stable["schema_version"] == 2
+    assert stable["record_type"] == "rss"
     assert stable["samples"] == [100_000_000, 110_000_000, 105_000_000, 103_000_000]
     assert (stable["warm_index"], stable["final_index"]) == (0, 3)
     assert stable["peak_rss_bytes"] == 110_000_000
@@ -295,6 +297,19 @@ def test_rss_gate_accepts_stable_memory_and_rejects_growth() -> None:
     assert not lazy_page["monotonic_growth"]
     assert growing["verdict"] == "regression"
     assert growing["monotonic_growth"]
+
+
+def test_rss_gate_records_named_phases() -> None:
+    result = performance_gate.evaluate_rss(
+        [100_000_000, 102_000_000, 104_000_000, 103_000_000],
+        0,
+        3,
+        trend_end_index=2,
+        phase_indexes={"warm": 0, "dual_view": 1, "cycles_done": 2, "final": 3},
+    )
+
+    assert result["phase_indexes"]["dual_view"] == 1
+    assert result["phase_rss_bytes"]["dual_view"] == 102_000_000
 
 
 def test_rss_trend_excludes_final_settle_allocation() -> None:

@@ -68,8 +68,11 @@ class Verdict(TypedDict):
 class RssResult(TypedDict):
     """RSS stability result for a phase-marked child process."""
 
-    schema_version: int
+    schema_version: Literal[2]
+    record_type: Literal["rss"]
     samples: list[int]
+    phase_indexes: dict[str, int]
+    phase_rss_bytes: dict[str, int]
     warm_index: int
     trend_end_index: int
     final_index: int
@@ -631,6 +634,7 @@ def evaluate_rss(
     final_index: int,
     *,
     trend_end_index: int | None = None,
+    phase_indexes: dict[str, int] | None = None,
 ) -> RssResult:
     """Evaluates the warm/peak/final RSS contract."""
     if trend_end_index is None:
@@ -651,9 +655,16 @@ def evaluate_rss(
     )
     allowed = max(int(warm * 1.05), warm + 32 * 1024 * 1024)
     verdict = "pass" if final <= allowed and not monotonic else "regression"
+    phases = dict(phase_indexes or {})
+    phases.update(warm=warm_index, cycles_done=trend_end_index, final=final_index)
+    if any(not warm_index <= index <= final_index for index in phases.values()):
+        raise ValueError("RSS phase indexes must fall between warm and final")
     return RssResult(
-        schema_version=1,
+        schema_version=2,
+        record_type="rss",
         samples=list(samples),
+        phase_indexes=phases,
+        phase_rss_bytes={name: samples[index] for name, index in phases.items()},
         warm_index=warm_index,
         trend_end_index=trend_end_index,
         final_index=final_index,
@@ -677,7 +688,7 @@ def _rss_bytes(process_id: int) -> int:
 
 
 def sample_rss(command: Sequence[str], interval: float) -> RssResult:
-    """Samples a child that emits warm/cycles_done/final phase markers."""
+    """Samples a child that emits named RSS phases from a fresh process."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if process.stdout is None:
         raise RuntimeError("RSS child stdout pipe was not created")
@@ -692,9 +703,7 @@ def sample_rss(command: Sequence[str], interval: float) -> RssResult:
     reader = threading.Thread(target=read_output, name="seex-rss-output", daemon=True)
     reader.start()
     samples: list[int] = []
-    warm_index: int | None = None
-    trend_end_index: int | None = None
-    final_seen = False
+    phases: dict[str, int] = {}
     output_closed = False
     while process.poll() is None or not output_closed:
         while True:
@@ -706,12 +715,11 @@ def sample_rss(command: Sequence[str], interval: float) -> RssResult:
                 output_closed = True
                 break
             sys.stdout.write(line)
-            if "SEEX_RSS_PHASE warm" in line:
-                warm_index = len(samples)
-            elif "SEEX_RSS_PHASE cycles_done" in line:
-                trend_end_index = len(samples) - 1
-            elif "SEEX_RSS_PHASE final" in line:
-                final_seen = True
+            marker = line.partition("SEEX_RSS_PHASE ")[2].strip()
+            if marker:
+                if marker in phases:
+                    raise ValueError(f"RSS child emitted duplicate phase {marker!r}")
+                phases[marker] = max(len(samples) - 1, 0)
         if process.poll() is None:
             try:
                 samples.append(_rss_bytes(process.pid))
@@ -722,13 +730,17 @@ def sample_rss(command: Sequence[str], interval: float) -> RssResult:
     reader.join()
     if process.returncode != 0:
         raise subprocess.CalledProcessError(process.returncode, command)
-    if warm_index is None or trend_end_index is None or not final_seen:
+    if not {"warm", "cycles_done", "final"}.issubset(phases):
         raise ValueError("RSS child did not emit warm, cycles_done, and final phase markers")
+    warm_index = phases["warm"]
+    trend_end_index = phases["cycles_done"]
+    phases["final"] = len(samples) - 1
     return evaluate_rss(
         samples,
         warm_index,
         len(samples) - 1,
         trend_end_index=trend_end_index,
+        phase_indexes=phases,
     )
 
 
