@@ -475,6 +475,10 @@ def compare_v2_baselines(
 ) -> dict[str, V2Verdict | str]:
     """Reports both baselines while using rolling as the acceptance decision."""
     validate_candidate_spec(spec)
+    for role, pair in (("original", original), ("rolling", rolling)):
+        validate_candidate_spec(pair["candidate_spec"])
+        if pair["candidate_spec"] != spec:
+            raise ValueError(f"{role} pair candidate_spec does not match comparison spec")
     results = {
         role: compare_v2_captures(
             pair["baseline"]["runs"],

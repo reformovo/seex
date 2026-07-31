@@ -220,6 +220,38 @@ def test_candidate_spec_enforces_scope_and_optimization_primary() -> None:
         performance_gate.validate_candidate_spec(spec)
 
 
+def test_compare_v2_requires_the_captured_candidate_spec() -> None:
+    spec = performance_gate.CandidateSpec(
+        name="migration",
+        candidate_type="migration",
+        primary=None,
+        protected=[],
+        hard_floors=[],
+        fixture="fixture-v2",
+        commands=[["benchmark"]],
+        changed_files=[],
+    )
+    capture = performance_gate.V2Capture(
+        schema_version=2,
+        record_type="capture",
+        environment={},
+        command=["benchmark"],
+        runs=_v2_runs(100.0),
+    )
+    pair = performance_gate.V2Pair(
+        schema_version=2,
+        record_type="pair",
+        candidate_spec=spec,
+        execution_order=[],
+        baseline=capture,
+        candidate=capture,
+    )
+    different = performance_gate.CandidateSpec(**{**spec, "protected": ["query.duckdb.step.full"]})
+
+    with pytest.raises(ValueError, match="original pair candidate_spec"):
+        performance_gate.compare_v2_baselines(pair, pair, different)
+
+
 def test_compare_accepts_consistent_improvement() -> None:
     verdict = performance_gate.compare_captures(
         _capture(100.0),
