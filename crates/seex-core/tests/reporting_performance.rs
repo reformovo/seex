@@ -84,12 +84,14 @@ fn measure(
         for index in 0..batch_iterations {
             operation(index)?;
         }
-        if started.elapsed() >= CALIBRATION_TARGET {
+        let elapsed = started.elapsed();
+        settle()?;
+        if elapsed >= CALIBRATION_TARGET || batch_iterations * points_per_call >= QUEUE_CAPACITY / 2
+        {
             break;
         }
         batch_iterations *= 2;
     }
-    settle()?;
     let mut samples = Vec::with_capacity(SAMPLES);
     for sample in 0..SAMPLES {
         let started = Instant::now();
