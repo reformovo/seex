@@ -11,7 +11,9 @@ use seex_app::data::worker::{
 };
 use seex_app::domain::{DataSourceId, RunRef};
 use seex_core::engine::client::NativeClient;
-use seex_model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentReduction, AlignmentViewport};
+use seex_model::alignment::{
+    AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction, AlignmentViewport,
+};
 use seex_model::metric::{MetricKey, MetricQuery, ReductionPolicy, Step};
 use seex_model::run::RunId;
 use seex_model::types::ProjectId;
@@ -20,7 +22,7 @@ use seex_storage::bootstrap::{
     open_native_connection_with_config,
 };
 use seex_storage::config::resolve_storage_config;
-use seex_storage::{ProjectConnection, ProjectMetricReader};
+use seex_storage::{ParquetMetricReader, ParquetSource, ProjectConnection, ProjectMetricReader};
 
 mod support;
 
@@ -49,7 +51,7 @@ fn backend_name(backend: CatalogBackend) -> &'static str {
 
 fn fixture_manifest(backend: CatalogBackend, metrics: &[&str], source_points: i64) -> String {
     format!(
-        "schema=v2\nbackend={}\nruns={RUNS}\nmetrics={}\neffective_points_per_series={source_points}\n",
+        "schema=v2\nsemantics=lww-spikes-v1\nbackend={}\nruns={RUNS}\nmetrics={}\neffective_points_per_series={source_points}\n",
         backend_name(backend),
         metrics.join(",")
     )
@@ -208,7 +210,8 @@ fn prepare_fixture(
                      (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
                  SELECT ?, ?, ?, step,
                         epoch_ms(1700000000000 + step),
-                        ((step % 1000) + ?)::DOUBLE / 1000,
+                        CASE WHEN step = 500000 THEN 1000 + ?
+                             ELSE ((step % 1000) + ?)::DOUBLE / 1000 END,
                         epoch_ms(1700000000000 + step)
                  FROM range(?) AS points(step)",
                 (
@@ -216,7 +219,20 @@ fn prepare_fixture(
                     *metric_key,
                     *metric_key,
                     (run_index + metric_index) as i64,
+                    (run_index + metric_index) as i64,
                     source_points,
+                ),
+            )?;
+            connection.execute(
+                "INSERT INTO dl.metric_points
+                     (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
+                 VALUES (?, ?, ?, 250000, epoch_ms(?), 42.0, epoch_ms(?))",
+                (
+                    run_id.as_str(),
+                    *metric_key,
+                    *metric_key,
+                    FIXTURE_EPOCH_MILLIS + 250_000,
+                    FIXTURE_EPOCH_MILLIS + source_points + 1,
                 ),
             )?;
         }
@@ -562,6 +578,39 @@ fn measure_reader_axis(
     Ok(())
 }
 
+fn parquet_reader<'connection>(
+    connection: &'connection ProjectConnection,
+    root: &Path,
+) -> Result<ParquetMetricReader<'connection>, Box<dyn Error>> {
+    let source = root
+        .join("custom/data/main/metric_points/**/*.parquet")
+        .to_string_lossy()
+        .into_owned();
+    Ok(ParquetMetricReader::open(
+        connection,
+        ParquetSource::new(source)?,
+    )?)
+}
+
+fn semantic_points(
+    reader: &impl seex_storage::MetricReader,
+    run_id: &RunId,
+) -> Result<Vec<(i64, f64)>, Box<dyn Error>> {
+    let result = reader.query_metric(&MetricQuery::new(
+        run_id.clone(),
+        MetricKey::from_string("loss"),
+        Some(Step::new(249_999)),
+        Some(Step::new(500_002)),
+        ReductionPolicy::Full,
+    )?)?;
+    Ok(result
+        .points
+        .into_iter()
+        .filter(|point| matches!(point.step.value(), 249_999 | 250_000 | 500_000 | 500_001))
+        .map(|point| (point.step.value(), point.value_f64))
+        .collect())
+}
+
 #[test]
 #[ignore = "creates retained DuckDB and SQLite fixtures for release query validation"]
 fn prepare_large_native_series_fixture() -> Result<(), Box<dyn Error>> {
@@ -635,6 +684,61 @@ fn reader_equivalent_axes_and_ranges() -> Result<(), Box<dyn Error>> {
             )?;
         }
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "validates adversarial semantics on the immutable scale fixture"]
+fn scale_fixture_preserves_reader_semantics() -> Result<(), Box<dyn Error>> {
+    let mut native_results = Vec::new();
+    for backend in [CatalogBackend::DuckDb, CatalogBackend::Sqlite] {
+        let (root, run_ids) = read_fixture(
+            backend,
+            "SEEX_APP_SCALE_FIXTURE_ROOT",
+            &["loss"],
+            SOURCE_POINTS,
+        )?;
+        let connection = open_fixture_connection(&root)?;
+        let native = ProjectMetricReader::new(&connection);
+        let expected = semantic_points(&native, &run_ids[0])?;
+        assert_eq!(expected[1], (250_000, 42.0));
+        assert_eq!(expected[2], (500_000, 1000.0));
+        let neighbors = native.query_aligned_metric(&AlignmentQuery {
+            run_id: run_ids[0].clone(),
+            metric_key: MetricKey::from_string("loss"),
+            axis: AlignmentAxis::Step,
+            viewport: AlignmentViewport::new(250_000, 250_000)?,
+            reduction: AlignmentReduction::Full,
+        })?;
+        assert_eq!(
+            neighbors
+                .points
+                .iter()
+                .map(|point| point.axis_value)
+                .collect::<Vec<_>>(),
+            [249_999, 250_000, 250_001]
+        );
+        assert!(neighbors.reasons.is_empty());
+
+        let parquet = parquet_reader(&connection, &root)?;
+        assert_eq!(semantic_points(&parquet, &run_ids[0])?, expected);
+        let missing_start = parquet.query_aligned_metric(&AlignmentQuery {
+            run_id: run_ids[0].clone(),
+            metric_key: MetricKey::from_string("loss"),
+            axis: AlignmentAxis::ElapsedTime,
+            viewport: AlignmentViewport::new(0, 1)?,
+            reduction: AlignmentReduction::Full,
+        })?;
+        assert_eq!(missing_start.reasons, [AlignmentReason::MissingRunStart]);
+        native_results.push(expected);
+    }
+    let passed = native_results[0] == native_results[1];
+    println!(
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"check\",\
+         \"domain\":\"query\",\"check\":\"reader_parity_and_semantics\",\
+         \"passed\":{passed},\"detail\":\"lww,spikes,neighbors,standalone\"}}"
+    );
+    assert!(passed);
     Ok(())
 }
 
