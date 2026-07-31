@@ -3,6 +3,20 @@ use gpui::{TestAppContext, px, size};
 use super::super::test_support::*;
 use super::*;
 
+fn active_panel_details_are_settled(viewer: &ViewerApp, cx: &App) -> bool {
+    let Some(viewport) = viewer.active_navigation(cx).selected_viewport() else {
+        return false;
+    };
+    let snapshot = viewer.session_snapshot(cx);
+    let active = snapshot.views.active();
+    !active.panels.is_empty()
+        && active.panels.iter().all(|panel| {
+            panel.detail.is_some()
+                && !panel.is_pending(ReadKind::Detail)
+                && panel.requested_detail_viewport == Some(viewport)
+        })
+}
+
 #[gpui::test]
 #[ignore = "hardware-sensitive representative release workbench validation"]
 fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut TestAppContext) {
@@ -205,19 +219,20 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
         }
     );
     for _ in 0..30 {
-        window
-            .update(&mut cx, |viewer, _, cx| {
-                viewer.zoom_from_keyboard(1.25, cx);
-                viewer.zoom_from_keyboard(1. / 1.25, cx);
-            })
-            .expect("viewer should remain open");
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        for factor in [1.25, 1. / 1.25] {
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.zoom_from_keyboard(factor, cx);
+                })
+                .expect("viewer should remain open");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(101));
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            wait_for_viewer(window, &cx, active_panel_details_are_settled);
+        }
     }
     println!("SEEX_RSS_PHASE cycles_done");
-    cx.executor()
-        .advance_clock(std::time::Duration::from_millis(101));
-    cx.run_until_parked();
-    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
     let (runs, panels) = window
         .read_with(&cx, |viewer, cx| {
             let snapshot = viewer.session_snapshot(cx);
