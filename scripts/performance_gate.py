@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from typing import Literal, TypedDict, cast
 
 _PREFIX = "SEEX_PERF "
+_MIGRATION_PAIRS = 3
 _REQUIRED_PAIRS = 7
 _RSS_TREND_NOISE_FLOOR_BYTES = 1024 * 1024
 _DOMAINS = frozenset({"reporting", "query", "viewer"})
@@ -434,12 +435,14 @@ def pair_v2(
     baseline_command: Sequence[str],
     candidate_command: Sequence[str],
     spec: CandidateSpec,
-    repeats: int = _REQUIRED_PAIRS,
+    repeats: int | None = None,
 ) -> V2Pair:
     """Captures AB/BA process pairs so fixed execution order cannot decide a result."""
-    if repeats < _REQUIRED_PAIRS:
-        raise ValueError(f"paired capture requires at least {_REQUIRED_PAIRS} runs")
     validate_candidate_spec(spec)
+    required = _REQUIRED_PAIRS if spec["candidate_type"] == "optimization" else _MIGRATION_PAIRS
+    repeats = required if repeats is None else repeats
+    if repeats < required:
+        raise ValueError(f"{spec['candidate_type']} paired capture requires at least {required} runs")
     baseline_runs: list[V2Output] = []
     candidate_runs: list[V2Output] = []
     execution_order: list[list[Literal["baseline", "candidate"]]] = []
@@ -824,6 +827,7 @@ def _parser() -> argparse.ArgumentParser:
     pair_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
     pair_v2_parser.add_argument("--baseline-command", required=True)
     pair_v2_parser.add_argument("--candidate-command", required=True)
+    pair_v2_parser.add_argument("--runs", type=int)
     pair_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
     compare_v2_parser = commands.add_parser("compare-v2")
     compare_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
@@ -852,7 +856,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.action == "pair-v2":
         spec = _read_candidate_spec(args.spec)
-        result = pair_v2(shlex.split(args.baseline_command), shlex.split(args.candidate_command), spec)
+        result = pair_v2(
+            shlex.split(args.baseline_command),
+            shlex.split(args.candidate_command),
+            spec,
+            args.runs,
+        )
         _write_json(args.output, result)
         return 0
     if args.action == "compare-v2":

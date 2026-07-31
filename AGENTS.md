@@ -16,6 +16,9 @@
 - Type-check all Python code under `python/`, `scripts/`, and `tests/`; keep suppressions narrow and inline for deliberate type-contract violations.
 - Add or update tests for new behavior. Rust logic should have Rust tests where possible; Python-facing behavior should have `pytest` coverage.
 - Run the relevant verification commands after edits and report any command you could not run.
+- Match performance verification to risk: scoped checks for routine items, three
+  AB/BA pairs for migration checkpoints, and seven pairs for optimizations and
+  milestone exit gates.
 - Update this file in the same change when project conventions or required commands change.
 
 ## Must Never
@@ -40,6 +43,8 @@
 - Python lint: `uv run --group linting ruff check python scripts tests`
 - Python type-check: `uv run pyright`
 - Python tests: `uv run pytest`
+- Migration performance pair: `python scripts/performance_gate.py pair-v2 --runs 3 ...`
+- Optimization/exit performance pair: `python scripts/performance_gate.py pair-v2 --runs 7 ...`
 - Develop install: `uv run maturin develop --uv`
 - Wheel build: `uv run maturin build --out dist`
 

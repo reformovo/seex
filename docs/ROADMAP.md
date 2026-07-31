@@ -35,20 +35,30 @@ begin only after Desktop uses Reader.
 
 ### Execution Contract
 
-- [ ] Before every candidate, record its type, primary metric, protected
-  metrics, fixture, commands, and no more than five files. Target no more than
-  200 changed lines; mechanical source moves and this roadmap archive are the
-  declared exceptions.
+- [ ] Keep routine implementation items fast: declare no more than five files,
+  target no more than 200 changed lines, and run formatting, type, lint, and
+  affected correctness tests. Add a single release smoke when the item changes
+  startup, packaging, or a performance-sensitive path; routine items do not
+  require paired performance capture.
+- [ ] Before every migration or optimization checkpoint, record its type,
+  primary metric, protected metrics, fixture, commands, and no more than five
+  directly affected files. Mechanical source moves and this roadmap archive
+  are the declared scope exceptions.
 - [ ] Keep mechanical migration and performance optimization in separate
   candidates. Use Git renames for source moves and leave the workspace buildable
   after every accepted candidate.
-- [ ] Accept a migration candidate only when correctness and hard floors pass
-  and every reliable protected metric regresses by no more than 3%. It need not
-  improve performance.
+- [ ] Run migration checkpoints at boundary switches and after a coherent
+  migration slice, not after every scaffolding commit. Accept them only when
+  correctness and hard floors pass and three alternating baseline/candidate
+  pairs keep every reliable protected median within 3%. They need not improve
+  performance.
 - [ ] Accept an optimization candidate only when correctness and hard floors
   pass; at least 6 of 7 alternating baseline/candidate pairs improve; the
   primary median improves by at least 5%; protected medians regress by no more
   than 3%; and each deciding metric has relative MAD no greater than 2%.
+- [ ] Keep milestone exit gates at seven alternating pairs across every affected
+  domain. The original baseline is permanent; update the rolling baseline only
+  after an accepted migration checkpoint, optimization, or milestone exit.
 - [ ] Treat an improvement below 5%, an unreliable metric, or inconsistent
   pairs as no change. Reject correctness, schema, API parity, and hard-gate
   failures immediately.

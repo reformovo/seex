@@ -223,7 +223,31 @@ def test_v2_pair_alternates_execution_order(monkeypatch: pytest.MonkeyPatch) -> 
     pair = performance_gate.pair_v2(["baseline"], ["candidate"], spec)
 
     assert pair["execution_order"][:2] == [["baseline", "candidate"], ["candidate", "baseline"]]
+    assert len(pair["execution_order"]) == 3
     assert commands[:4] == [["baseline"], ["candidate"], ["candidate"], ["baseline"]]
+    with pytest.raises(ValueError, match="at least 3"):
+        performance_gate.pair_v2(["baseline"], ["candidate"], spec, repeats=2)
+
+
+def test_v2_pair_keeps_seven_runs_for_optimizations(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(performance_gate, "_command_output", lambda command: _v2_metric())
+    monkeypatch.setattr(performance_gate, "_environment", dict)
+    spec = performance_gate.CandidateSpec(
+        name="optimization",
+        candidate_type="optimization",
+        primary="query.duckdb.step.full",
+        protected=[],
+        hard_floors=[],
+        fixture="fixture-v2",
+        commands=[["benchmark"]],
+        changed_files=[],
+    )
+
+    pair = performance_gate.pair_v2(["baseline"], ["candidate"], spec)
+
+    assert len(pair["execution_order"]) == 7
+    with pytest.raises(ValueError, match="at least 7"):
+        performance_gate.pair_v2(["baseline"], ["candidate"], spec, repeats=3)
 
 
 def test_candidate_spec_enforces_scope_and_optimization_primary() -> None:
@@ -345,7 +369,12 @@ def test_pair_v2_cli_requires_and_records_candidate_spec(
     monkeypatch.setattr(
         performance_gate,
         "pair_v2",
-        lambda baseline, candidate, spec: {"baseline": baseline, "candidate": candidate, "spec": spec["name"]},
+        lambda baseline, candidate, spec, repeats: {
+            "baseline": baseline,
+            "candidate": candidate,
+            "spec": spec["name"],
+            "runs": repeats,
+        },
     )
 
     status = performance_gate.main(
@@ -357,6 +386,8 @@ def test_pair_v2_cli_requires_and_records_candidate_spec(
             "old binary",
             "--candidate-command",
             "new binary",
+            "--runs",
+            "3",
             "--output",
             str(output),
         ]
@@ -367,6 +398,7 @@ def test_pair_v2_cli_requires_and_records_candidate_spec(
         "baseline": ["old", "binary"],
         "candidate": ["new", "binary"],
         "spec": "migration",
+        "runs": 3,
     }
 
 
