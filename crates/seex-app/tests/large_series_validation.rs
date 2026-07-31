@@ -329,13 +329,17 @@ fn assert_snapshot(
         assert_eq!(curve.source_row_count, source_rows);
         let chart = curve.chart_series.as_ref().expect("series should draw");
         assert_eq!(chart.points().len() as u64, curve.returned_point_count);
-        if let Some(point) = chart.points().iter().find(|point| {
-            point.y
-                != ((point.x as i64 % 1_000) + run_index as i64 + value_offset as i64) as f64
-                    / 1_000.
-        }) {
-            let expected =
-                ((point.x as i64 % 1_000) + run_index as i64 + value_offset as i64) as f64 / 1_000.;
+        let expected_value = |step: i64| match step {
+            250_000 => 42.0,
+            500_000 => 1000.0 + run_index as f64 + value_offset as f64,
+            _ => ((step % 1_000) + run_index as i64 + value_offset as i64) as f64 / 1_000.,
+        };
+        if let Some(point) = chart
+            .points()
+            .iter()
+            .find(|point| point.y != expected_value(point.x as i64))
+        {
+            let expected = expected_value(point.x as i64);
             panic!(
                 "{label} {} point x={} has y={}, expected {expected}",
                 curve.run_ref.run_id.as_str(),
