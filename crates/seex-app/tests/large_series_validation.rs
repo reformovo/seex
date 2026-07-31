@@ -537,7 +537,6 @@ fn query_reader_equivalent(
                         let value = point.axis_value + offset;
                         start <= value && value < end
                     })
-                    .take(max_points)
                     .count()
             }
         };
