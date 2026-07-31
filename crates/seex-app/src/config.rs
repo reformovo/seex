@@ -1,11 +1,15 @@
 //! Desktop-owned, syntax-preserving configuration updates.
 
+use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use toml_edit::{DocumentMut, value};
+use seex_model::types::ProjectId;
+use toml_edit::{Array, DocumentMut, value};
+
+use crate::domain::SourceAlias;
 
 const SCHEMA_VERSION: i64 = 1;
 static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
@@ -54,6 +58,31 @@ impl EditableConfig {
             original,
             document,
         })
+    }
+
+    /// Sets the Desktop-owned definition for one Source alias.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigEditError`] for a non-UTF-8 path or an empty or duplicate
+    /// Project allowlist.
+    pub fn set_source(
+        &mut self,
+        alias: &SourceAlias,
+        root_path: &Path,
+        projects: &[ProjectId],
+    ) -> Result<(), ConfigEditError> {
+        let root_path = root_path.to_str().ok_or(ConfigEditError::NonUtf8Path)?;
+        let mut seen = HashSet::with_capacity(projects.len());
+        if projects.is_empty() || !projects.iter().all(|project| seen.insert(project.as_str())) {
+            return Err(ConfigEditError::InvalidProjectAllowlist);
+        }
+        let source = &mut self.document["sources"][alias.as_str()];
+        source["path"] = value(root_path);
+        let mut allowlist = Array::new();
+        allowlist.extend(projects.iter().map(|project| project.as_str()));
+        source["projects"] = value(allowlist);
+        Ok(())
     }
 
     /// Atomically saves the document if its original bytes are still current.
@@ -113,6 +142,10 @@ pub enum ConfigEditError {
     InvalidUtf8,
     #[error("configuration schema_version must be 1")]
     UnsupportedSchema,
+    #[error("Source path must be UTF-8")]
+    NonUtf8Path,
+    #[error("Source Project allowlist must be non-empty and contain no duplicates")]
+    InvalidProjectAllowlist,
     #[error("configuration path has no parent directory")]
     MissingParent,
     #[error("configuration changed since it was read")]
@@ -126,6 +159,57 @@ pub enum ConfigEditError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_update_preserves_unowned_content() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            include_str!("../../../tests/fixtures/config/v1-global.toml"),
+        )?;
+        let mut config = EditableConfig::load(&path, ConfigScope::Global)?;
+        let alias = SourceAlias::new("new-source")?;
+        let project = ProjectId::from_string("project-1");
+        assert!(matches!(
+            config.set_source(&alias, Path::new("/tmp/new-source"), &[]),
+            Err(ConfigEditError::InvalidProjectAllowlist)
+        ));
+        assert!(matches!(
+            config.set_source(
+                &alias,
+                Path::new("/tmp/new-source"),
+                &[project.clone(), project.clone()],
+            ),
+            Err(ConfigEditError::InvalidProjectAllowlist)
+        ));
+        config.set_source(&alias, Path::new("/tmp/new-source"), &[project])?;
+
+        config.save()?;
+
+        let saved = fs::read_to_string(&path)?;
+        assert!(saved.contains("# Shared schema-v1 fixture"));
+        assert!(saved.contains("catalog_path = \".seex/global-catalog.ducklake\""));
+        assert!(saved.contains("secret_access_key = \"global-secret\""));
+        assert!(saved.contains("preserved = \"unknown application setting\""));
+        let parsed = saved.parse::<DocumentMut>()?;
+        assert_eq!(
+            parsed["sources"]["new-source"]["path"].as_str(),
+            Some("/tmp/new-source")
+        );
+        assert_eq!(
+            parsed["sources"]["new-source"]["projects"]
+                .as_array()
+                .map(Array::len),
+            Some(1)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
+        }
+        Ok(())
+    }
 
     #[test]
     fn new_document_saves_schema_version_one() -> Result<(), Box<dyn std::error::Error>> {
