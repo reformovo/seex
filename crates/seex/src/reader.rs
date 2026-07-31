@@ -2,7 +2,8 @@
 
 use std::fmt;
 
-use seex_model::metric::Step;
+use seex_model::comparison::{EvidenceCompleteness, EvidenceReason};
+use seex_model::metric::{MetricPoint, Step};
 
 /// Horizontal coordinate requested for a metric series.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -140,9 +141,138 @@ impl fmt::Display for MetricQueryError {
 
 impl std::error::Error for MetricQueryError {}
 
+/// Typed horizontal coordinate retained with one real metric sample.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MetricCoordinate {
+    Step(Step),
+    RelativeTime(RelativeTime),
+    Timestamp(Timestamp),
+}
+
+impl MetricCoordinate {
+    pub const fn axis(self) -> MetricAxis {
+        match self {
+            Self::Step(_) => MetricAxis::Step,
+            Self::RelativeTime(_) => MetricAxis::RelativeTime,
+            Self::Timestamp(_) => MetricAxis::Timestamp,
+        }
+    }
+}
+
+/// One persisted real sample and its selected horizontal coordinate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetricSample {
+    pub point: MetricPoint,
+    pub coordinate: MetricCoordinate,
+}
+
+/// One qualified, optionally reduced metric series returned by Reader.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetricSeries {
+    axis: MetricAxis,
+    samples: Vec<MetricSample>,
+    source_count: u64,
+    completeness: EvidenceCompleteness,
+    reasons: Vec<EvidenceReason>,
+}
+
+impl MetricSeries {
+    /// Builds a series from real samples while checking its metadata invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MetricSeriesError`] when a sample uses a different axis or the
+    /// source count is smaller than the returned sample count.
+    pub fn from_samples(
+        axis: MetricAxis,
+        samples: Vec<MetricSample>,
+        source_count: u64,
+        completeness: EvidenceCompleteness,
+        reasons: Vec<EvidenceReason>,
+    ) -> Result<Self, MetricSeriesError> {
+        if samples
+            .iter()
+            .any(|sample| sample.coordinate.axis() != axis)
+        {
+            return Err(MetricSeriesError::MixedAxes);
+        }
+        if source_count < samples.len() as u64 {
+            return Err(MetricSeriesError::InvalidSourceCount);
+        }
+        Ok(Self {
+            axis,
+            samples,
+            source_count,
+            completeness,
+            reasons,
+        })
+    }
+
+    pub const fn axis(&self) -> MetricAxis {
+        self.axis
+    }
+
+    pub fn samples(&self) -> &[MetricSample] {
+        &self.samples
+    }
+
+    pub const fn source_count(&self) -> u64 {
+        self.source_count
+    }
+
+    pub fn downsampled(&self) -> bool {
+        self.source_count > self.samples.len() as u64
+    }
+
+    pub const fn completeness(&self) -> EvidenceCompleteness {
+        self.completeness
+    }
+
+    pub fn reasons(&self) -> &[EvidenceReason] {
+        &self.reasons
+    }
+}
+
+/// Invalid metadata supplied while constructing a metric series.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MetricSeriesError {
+    MixedAxes,
+    InvalidSourceCount,
+}
+
+impl fmt::Display for MetricSeriesError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MixedAxes => formatter.write_str("MetricSeries samples must use one axis"),
+            Self::InvalidSourceCount => {
+                formatter.write_str("MetricSeries source_count is smaller than its samples")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MetricSeriesError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample(coordinate: MetricCoordinate) -> MetricSample {
+        let timestamp = "2026-01-01T00:00:00Z"
+            .parse()
+            .expect("test timestamp should parse");
+        MetricSample {
+            point: MetricPoint {
+                run_id: seex_model::run::RunId::from_string("run-1"),
+                metric_key: seex_model::metric::MetricKey::from_string("loss"),
+                step: Step::new(7),
+                timestamp,
+                value_f64: 0.5,
+                ingested_at: timestamp,
+            },
+            coordinate,
+        }
+    }
 
     #[test]
     fn typed_ranges_select_their_axis_and_reject_empty_bounds() {
@@ -176,5 +306,49 @@ mod tests {
             Err(MetricQueryError::MaxPointsTooSmall { max_points: 1 })
         );
         assert!(MetricQuery::new(MetricRange::All(MetricAxis::Step), Some(2)).is_ok());
+    }
+
+    #[test]
+    fn metric_series_retains_real_samples_and_qualified_metadata() -> Result<(), MetricSeriesError>
+    {
+        let series = MetricSeries::from_samples(
+            MetricAxis::Step,
+            vec![sample(MetricCoordinate::Step(Step::new(7)))],
+            10,
+            EvidenceCompleteness::Partial,
+            vec![EvidenceReason::RunRunning],
+        )?;
+
+        assert_eq!(series.samples()[0].point.step, Step::new(7));
+        assert_eq!(series.source_count(), 10);
+        assert!(series.downsampled());
+        assert_eq!(series.completeness(), EvidenceCompleteness::Partial);
+        assert_eq!(series.reasons(), [EvidenceReason::RunRunning]);
+        Ok(())
+    }
+
+    #[test]
+    fn metric_series_rejects_mixed_axes_and_impossible_source_counts() {
+        let relative = sample(MetricCoordinate::RelativeTime(RelativeTime::from_millis(7)));
+        assert_eq!(
+            MetricSeries::from_samples(
+                MetricAxis::Step,
+                vec![relative],
+                1,
+                EvidenceCompleteness::Complete,
+                Vec::new(),
+            ),
+            Err(MetricSeriesError::MixedAxes)
+        );
+        assert_eq!(
+            MetricSeries::from_samples(
+                MetricAxis::Step,
+                vec![sample(MetricCoordinate::Step(Step::new(7)))],
+                0,
+                EvidenceCompleteness::Complete,
+                Vec::new(),
+            ),
+            Err(MetricSeriesError::InvalidSourceCount)
+        );
     }
 }

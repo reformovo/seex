@@ -8,7 +8,10 @@
 
 mod reader;
 
-pub use reader::{MetricAxis, MetricQuery, MetricQueryError, MetricRange, RelativeTime, Timestamp};
+pub use reader::{
+    MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, MetricSample,
+    MetricSeries, MetricSeriesError, RelativeTime, Timestamp,
+};
 pub use seex_model::comparison::{
     ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
     EvidenceCompleteness, EvidenceReason, MetricComparisonResult, ObjectiveDirection,
