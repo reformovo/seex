@@ -608,6 +608,19 @@ def _read_capture(path: pathlib.Path) -> Capture:
     return cast(Capture, json.loads(path.read_text(encoding="utf-8")))
 
 
+def _read_candidate_spec(path: pathlib.Path) -> CandidateSpec:
+    value = cast(CandidateSpec, json.loads(path.read_text(encoding="utf-8")))
+    validate_candidate_spec(value)
+    return value
+
+
+def _read_v2_pair(path: pathlib.Path) -> V2Pair:
+    value = cast(V2Pair, json.loads(path.read_text(encoding="utf-8")))
+    if value.get("schema_version") != 2 or value.get("record_type") != "pair":
+        raise ValueError(f"{path} is not a schema-v2 pair")
+    return value
+
+
 def _write_json(path: pathlib.Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -726,6 +739,10 @@ def _parser() -> argparse.ArgumentParser:
     capture_parser.add_argument("--output", type=pathlib.Path, required=True)
     capture_parser.add_argument("--runs", type=int, default=_REQUIRED_PAIRS)
     capture_parser.add_argument("command", nargs=argparse.REMAINDER)
+    capture_v2_parser = commands.add_parser("capture-v2")
+    capture_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
+    capture_v2_parser.add_argument("--runs", type=int, default=_REQUIRED_PAIRS)
+    capture_v2_parser.add_argument("command", nargs=argparse.REMAINDER)
     compare_parser = commands.add_parser("compare")
     compare_parser.add_argument("--baseline", type=pathlib.Path, required=True)
     compare_parser.add_argument("--candidate", type=pathlib.Path, required=True)
@@ -737,6 +754,15 @@ def _parser() -> argparse.ArgumentParser:
     pair_parser.add_argument("--primary", required=True)
     pair_parser.add_argument("--protected", action="append", default=[])
     pair_parser.add_argument("--output", type=pathlib.Path, required=True)
+    pair_v2_parser = commands.add_parser("pair-v2")
+    pair_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
+    pair_v2_parser.add_argument("--baseline-command", required=True)
+    pair_v2_parser.add_argument("--candidate-command", required=True)
+    pair_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
+    compare_v2_parser = commands.add_parser("compare-v2")
+    compare_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
+    compare_v2_parser.add_argument("--original", type=pathlib.Path, required=True)
+    compare_v2_parser.add_argument("--rolling", type=pathlib.Path, required=True)
     rss_parser = commands.add_parser("rss")
     rss_parser.add_argument("--output", type=pathlib.Path, required=True)
     rss_parser.add_argument("--interval", type=float, default=0.05)
@@ -748,13 +774,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Runs capture or comparison and returns a stable process status."""
     args = _parser().parse_args(argv)
     command: list[str] = []
-    if args.action in {"capture", "rss"}:
+    if args.action in {"capture", "capture-v2", "rss"}:
         command = args.command[1:] if args.command[:1] == ["--"] else args.command
         if not command:
             raise ValueError(f"{args.action} requires a command after --")
     if args.action == "capture":
         _write_json(args.output, capture(command, args.runs))
         return 0
+    if args.action == "capture-v2":
+        _write_json(args.output, capture_v2(command, args.runs))
+        return 0
+    if args.action == "pair-v2":
+        _read_candidate_spec(args.spec)
+        result = pair_v2(shlex.split(args.baseline_command), shlex.split(args.candidate_command))
+        _write_json(args.output, result)
+        return 0
+    if args.action == "compare-v2":
+        result = compare_v2_baselines(
+            _read_v2_pair(args.original),
+            _read_v2_pair(args.rolling),
+            _read_candidate_spec(args.spec),
+        )
+        print(json.dumps(result, sort_keys=True))
+        return {"pass": 0, "no_change": 2, "regression": 3}[cast(str, result["verdict"])]
     if args.action == "rss":
         result = sample_rss(command, args.interval)
         _write_json(args.output, result)

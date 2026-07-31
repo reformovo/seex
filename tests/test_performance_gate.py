@@ -1,5 +1,6 @@
 """Verify the Viewer performance comparison contract."""
 
+import json
 import pathlib
 
 import pytest
@@ -234,6 +235,48 @@ def test_capture_cli_strips_remainder_separator(monkeypatch: pytest.MonkeyPatch,
 
     assert performance_gate.main(["capture", "--output", str(output), "--", "benchmark"]) == 0
     assert captured == [["benchmark"]]
+
+
+def test_pair_v2_cli_requires_and_records_candidate_spec(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    spec = {
+        "name": "migration",
+        "candidate_type": "migration",
+        "primary": None,
+        "protected": [],
+        "hard_floors": [],
+        "fixture": "fixture-v2",
+        "commands": [["benchmark"]],
+        "changed_files": ["file.rs"],
+    }
+    spec_path, output = tmp_path / "spec.json", tmp_path / "pair.json"
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    monkeypatch.setattr(
+        performance_gate,
+        "pair_v2",
+        lambda baseline, candidate: {"baseline": baseline, "candidate": candidate},
+    )
+
+    status = performance_gate.main(
+        [
+            "pair-v2",
+            "--spec",
+            str(spec_path),
+            "--baseline-command",
+            "old binary",
+            "--candidate-command",
+            "new binary",
+            "--output",
+            str(output),
+        ]
+    )
+
+    assert status == 0
+    assert json.loads(output.read_text(encoding="utf-8")) == {
+        "baseline": ["old", "binary"],
+        "candidate": ["new", "binary"],
+    }
 
 
 def test_rss_gate_accepts_stable_memory_and_rejects_growth() -> None:
