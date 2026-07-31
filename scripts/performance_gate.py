@@ -7,6 +7,7 @@ import datetime
 import itertools
 import json
 import math
+import os
 import pathlib
 import platform
 import queue
@@ -169,6 +170,7 @@ class V2Pair(TypedDict):
 
     schema_version: Literal[2]
     record_type: Literal["pair"]
+    candidate_spec: CandidateSpec
     execution_order: list[list[Literal["baseline", "candidate"]]]
     baseline: V2Capture
     candidate: V2Capture
@@ -389,11 +391,13 @@ def capture_v2(command: Sequence[str], repeats: int = _REQUIRED_PAIRS) -> V2Capt
 def pair_v2(
     baseline_command: Sequence[str],
     candidate_command: Sequence[str],
+    spec: CandidateSpec,
     repeats: int = _REQUIRED_PAIRS,
 ) -> V2Pair:
     """Captures AB/BA process pairs so fixed execution order cannot decide a result."""
     if repeats < _REQUIRED_PAIRS:
         raise ValueError(f"paired capture requires at least {_REQUIRED_PAIRS} runs")
+    validate_candidate_spec(spec)
     baseline_runs: list[V2Output] = []
     candidate_runs: list[V2Output] = []
     execution_order: list[list[Literal["baseline", "candidate"]]] = []
@@ -410,6 +414,7 @@ def pair_v2(
     return V2Pair(
         schema_version=2,
         record_type="pair",
+        candidate_spec=spec,
         execution_order=execution_order,
         baseline=V2Capture(
             schema_version=2,
@@ -520,6 +525,9 @@ def _environment() -> dict[str, str | bool]:
         "platform": platform.platform(),
         "machine": platform.machine(),
         "rustc": _command_output(("rustc", "--version")).strip(),
+        "python": platform.python_version(),
+        "uv": _command_output(("uv", "--version")).strip(),
+        "display": os.environ.get("SEEX_PERF_DISPLAY", "unrecorded"),
         "git_revision": revision,
         "dirty": dirty,
     }
@@ -797,8 +805,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_json(args.output, capture_v2(command, args.runs))
         return 0
     if args.action == "pair-v2":
-        _read_candidate_spec(args.spec)
-        result = pair_v2(shlex.split(args.baseline_command), shlex.split(args.candidate_command))
+        spec = _read_candidate_spec(args.spec)
+        result = pair_v2(shlex.split(args.baseline_command), shlex.split(args.candidate_command), spec)
         _write_json(args.output, result)
         return 0
     if args.action == "compare-v2":

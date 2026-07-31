@@ -162,7 +162,17 @@ def test_v2_pair_alternates_execution_order(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(performance_gate, "_command_output", fake_output)
     monkeypatch.setattr(performance_gate, "_environment", dict)
 
-    pair = performance_gate.pair_v2(["baseline"], ["candidate"])
+    spec = performance_gate.CandidateSpec(
+        name="migration",
+        candidate_type="migration",
+        primary=None,
+        protected=[],
+        hard_floors=[],
+        fixture="fixture-v2",
+        commands=[["benchmark"]],
+        changed_files=[],
+    )
+    pair = performance_gate.pair_v2(["baseline"], ["candidate"], spec)
 
     assert pair["execution_order"][:2] == [["baseline", "candidate"], ["candidate", "baseline"]]
     assert commands[:4] == [["baseline"], ["candidate"], ["candidate"], ["baseline"]]
@@ -255,7 +265,7 @@ def test_pair_v2_cli_requires_and_records_candidate_spec(
     monkeypatch.setattr(
         performance_gate,
         "pair_v2",
-        lambda baseline, candidate: {"baseline": baseline, "candidate": candidate},
+        lambda baseline, candidate, spec: {"baseline": baseline, "candidate": candidate, "spec": spec["name"]},
     )
 
     status = performance_gate.main(
@@ -276,6 +286,7 @@ def test_pair_v2_cli_requires_and_records_candidate_spec(
     assert json.loads(output.read_text(encoding="utf-8")) == {
         "baseline": ["old", "binary"],
         "candidate": ["new", "binary"],
+        "spec": "migration",
     }
 
 
