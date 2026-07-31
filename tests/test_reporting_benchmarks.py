@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from scripts import bench_log_throughput, performance_gate
+from scripts import bench_log_persistence, bench_log_throughput, performance_gate
 
 
 class FakeRun:
@@ -44,3 +44,28 @@ def test_throughput_result_emits_v2_metric(capsys: pytest.CaptureFixture[str]) -
 def test_mapping_mode_requires_complete_groups() -> None:
     with pytest.raises(ValueError, match="divisible"):
         bench_log_throughput.log_reports(FakeRun(), "mapping_8", 9)
+
+
+def test_persistence_result_emits_phase_metrics_and_check(capsys: pytest.CaptureFixture[str]) -> None:
+    diagnostics = {
+        "pending_reports": 0,
+        "persisted_reports": 1_000,
+        "queue_full_errors": 0,
+        "last_flush_status": "succeeded",
+        "writer_state": "closed",
+    }
+    repeat = {
+        "admission_seconds": 0.001,
+        "drain_seconds": 0.002,
+        "finalization_seconds": 0.003,
+        "shutdown_seconds": 0.0001,
+        "diagnostics_after_drain": diagnostics,
+        "diagnostics_after_finalization": diagnostics,
+        "diagnostics_after_shutdown": diagnostics,
+    }
+
+    bench_log_persistence.emit_performance_records({"reports_per_repeat": 1_000, "repeat_results": [repeat]})
+
+    parsed = performance_gate.parse_v2_output(capsys.readouterr().out)
+    assert parsed["metrics"]["reporting.python.drain_persistence"]["p50"] == 2_000_000.0
+    assert parsed["checks"][0]["passed"]
