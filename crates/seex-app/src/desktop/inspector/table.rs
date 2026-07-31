@@ -296,15 +296,12 @@ pub(crate) fn inspector_cursor_point(
         .series
         .iter()
         .find(|series| &series.run_ref == run_ref)?
-        .evidence
-        .points
+        .chart_series
+        .as_ref()?
+        .points()
         .iter()
-        .min_by(|left, right| {
-            (left.axis_value as f64 - axis)
-                .abs()
-                .total_cmp(&(right.axis_value as f64 - axis).abs())
-        })
-        .map(|point| (point.axis_value, point.point.value_f64))
+        .min_by(|left, right| (left.x - axis).abs().total_cmp(&(right.x - axis).abs()))
+        .map(|point| (point.x as i64, point.y))
 }
 
 pub(crate) const fn inspector_row_group(row: &InspectorRow) -> u8 {

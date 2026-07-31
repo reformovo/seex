@@ -1,544 +1,304 @@
 # Seex Roadmap
 
-> This roadmap tracks current and future work. Shipped release details live in
-> `docs/release-notes/`; durable product boundaries live in
-> `docs/native-storage-boundary.md` and accepted ADRs in `docs/adr/`.
-
-Pre-1.0 releases do not promise store, API, or machine-output compatibility;
-compatibility and migration commitments begin with the future 1.0 release.
-
-## 0.1.x / Local SDK and Desktop App
-
-Seex 0.1.x establishes the renamed headless SDK and interactive desktop app,
-including the comparison alignment semantics consumed by the app.
-See [ADR 0011](adr/0011-desktop-first-curve-viewer.md) for the desktop-first
-decision and [ADR 0012](adr/0012-defer-remote-training.md) for the remote
-training deferral.
-
-### Phase 1: Workspace Migration and Renderer-Agnostic Chart Core
-
-- [x] One-time workspace migration to a virtual Cargo workspace (root `Cargo.toml`
-  holds only `[workspace]`, no `[package]`): move `src/` to
-  `crates/seex-core/src/`, set `members = ["crates/*"]`, update
-  `pyproject.toml`/maturin `manifest-path` and any CI `cargo` invocations. No
-  behavior change; `cargo check`, `cargo test`, `uv run maturin develop`,
-  `uv run pyright`, and `uv run pytest` must still pass after the move.
-- [x] `crates/seex-chart-core`: series model, viewport, scales, ticks,
-  path projection, path cache, hit testing, selection and zoom state. Must not
-  depend on GPUI, egui, Tauri, React, or a browser runtime, and must be unit
-  testable without a window.
-- [x] `crates/seex-data`: Parquet/DuckDB query and Seex schema validation,
-  viewport-aware query planning, and screen-budgeted point reduction. Reuses the
-  existing Parquet schema contract; no schema changes.
-
-### Phase 1.5: Crate Responsibility Realignment
-
-- [x] Extract shared domain and query contracts into `seex-model`.
-- [x] Split the PyO3 artifact into `seex-python`, leaving `seex-core` as a
-  reusable application library.
-- [x] Rename `seex-data` to `seex-storage` and consolidate native project
-  and standalone Parquet reads behind one metric query contract.
-- [x] Move DuckDB/DuckLake bootstrap, reads, writes, flush, configuration, and
-  storage errors out of Core. Preserve the Python API and Parquet contract.
-- [x] Enforce the dependency direction in `docs/crate-boundaries.md` before
-  adding the GPUI viewer.
-
-### Phase 2: Comparison Alignment Semantics
-
-Phase 2 is a read-only derived layer over existing Runs and metric facts. It
-does not add catalog or Parquet fields, persisted research context or decisions,
-source/Git mutation, repetition or significance policy, runtime dependencies,
-or a renderer dependency. It may add typed Rust/Python read APIs and replaces
-the pre-1.0 CLI JSON envelope with version 2.
-
-#### Phase 2A: Contract and Product Language
-
-- [x] Write `docs/comparison-semantics.md` as the renderer-agnostic 0.1.x
-  contract, explicitly marked as changeable before 1.0. Define comparison axis,
-  objective metric, comparison evidence, completeness, outcome, and preference
-  as general product terms. Candidate and incumbent remain request roles, not
-  stored Run identities. Do not create an ADR before 1.0 freezes the contract.
-- [x] Lock two axes: raw step and elapsed wall time from `Run.started_at`.
-  Elapsed values may repeat but not decrease; negative or non-monotonic axes
-  are invalid, and missing Run start metadata is unavailable.
-- [x] Define invalid and partial evidence without repairing it. Preserve usable
-  numeric evidence from running and failed Runs while keeping their preference
-  inconclusive; do not reorder, interpolate, clamp, or replace invalid values.
-- [x] Define scalar comparison from the last effective value at the greatest
-  step. Raw delta is `candidate - reference`; relative delta divides by the
-  absolute reference and is absent for a zero reference. Direction-normalized
-  improvement is positive when better. No tolerance, significance, or
-  uncertainty claim is made in 0.1.x.
-
-#### Phase 2B: Observation Time and Aligned Query Foundation
-
-- [x] Capture a metric's observation timestamp on the `run.log(...)` enqueue
-  path while leaving `ingested_at` on the background writer. Preserve the
-  logging signature, queue admission, drain/finalization behavior, and metric
-  schema. Seex stores observation time at the logging boundary and does not
-  migrate timestamps from pre-Seex stores.
-- [x] Add shared alignment request/result types and axis-aware storage queries
-  for the native project store and standalone Parquet facts. Alignment uses a
-  closed viewport plus one neighboring point on each side. Both axes support
-  full and screen-budgeted extrema queries; elapsed queries do not use LTTB.
-- [x] Keep standalone Parquet fact-only: step alignment remains available,
-  while elapsed alignment reports `missing_run_start` rather than treating the
-  first point as the Run origin.
-
-#### Phase 2C: Typed Shared Read API
-
-- [x] Expose typed, renderer-independent alignment, objective, comparison,
-  ranking, evidence, and result value objects from the shared Rust
-  model/Core boundary. Keep storage execution behind the metric-reader
-  contract and rendering conversion outside Core.
-- [x] Expose matching read-only Python value objects and Client methods for
-  aligned metric queries, Run comparison, and ranking; update the type stub and
-  Python type-check fixtures. Do not add autoresearch-specific SDK types: the
-  SDK language remains Project, Run, metric, comparison, and ranking.
-
-#### Phase 2D: Generic and Autoresearch Comparison Reports
-
-- [x] Upgrade `metrics compare` to require an explicit baseline contained in
-  the requested Run set and an explicit `minimize` or `maximize` direction.
-  Permit cross-Project comparison. Preserve input order for candidate reports.
-- [x] Add `autoresearch compare` as a role-oriented view over the same Core
-  report. Its incumbent is either explicit or the direction-aware best eligible
-  Run from an explicit comparator pool; it is never inferred from project
-  history. No eligible incumbent yields insufficient evidence, not mutation.
-- [x] Report primary and secondary last values, raw and relative deltas,
-  normalized improvement, structured completeness/reasons, numeric outcome,
-  and compute-only preference. Secondary metrics never affect outcome,
-  preference, ranking, or tie-breaking in 0.1.x.
-- [x] Allow running and failed Runs to expose available numeric evidence but
-  mark their report partial and preference inconclusive. Unknown or duplicate
-  Run identities are request errors; missing metrics and non-finite values are
-  per-item unavailable/invalid evidence.
-
-#### Phase 2E: Ranking and Machine Output
-
-- [x] Add `autoresearch leaderboard` and `autoresearch best` over a required
-  Project with an optional explicit Run subset. Only finished Runs with a
-  finite primary objective are eligible; other Runs remain visible with a null
-  rank and structured reason.
-- [x] Use direction-aware competition ranking (`1, 1, 3`). Exact ties share a
-  rank; selecting one best/incumbent prefers the earlier `created_at`, then
-  lexical `run_id`. An empty eligible set is a successful `best = null` result.
-- [x] Default leaderboard output to 50 entries with limit/offset pagination and
-  an explicit all-results option. Compute ranks over the full eligible set
-  before pagination.
-- [x] Bump every CLI success and error JSON envelope to schema version 2. Keep
-  deterministic kinds, ordering, reason codes, pagination metadata, standard
-  JSON encoding for non-finite metric values, and null relative deltas when the
-  reference is zero. CLI comparison output stays bounded evidence; aligned
-  curve points remain on the typed Rust/Python read surface.
-
-#### Phase 2 Validation Gates
-
-- [x] Preserve the native storage and crate dependency boundaries, effective
-  last-write-wins series, half-open ordinary step queries, Parquet schema, and
-  non-blocking metric-reporting contract.
-- [x] Cover native/Parquet alignment parity, negative and decreasing elapsed
-  axes, missing Run starts, viewport neighbors, screen budgets, both objective
-  directions, zero/non-finite values, partial Runs, cross-Project pairs,
-  incumbent pools, ranking ties, empty best, pagination, typed Python use, and
-  deterministic JSON.
-- [x] Pass `cargo check`, `cargo test`, `uv run maturin develop --uv`,
-  `uv run pyright`, and `uv run pytest`; run the logging throughput benchmark
-  after moving timestamp capture and document any measurable regression.
-
-### Phase 3: GPUI Desktop Viewer
-
-The original single-panel implementation and validation contract lives in
-[`docs/phase3-gpui-curve-viewer.md`](phase3-gpui-curve-viewer.md). The
-multi-project workbench extension is defined in
-[`docs/drafts/multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md).
-A million points is a storage-source scale; GPUI renders only fixed-budget
-storage reductions selected through a shared viewport.
-
-#### Phase 3A: Renderer-Independent Brush Contract
-
-- [x] Add a chart-core brush state with home and selected x ranges, one-axis-unit
-  minimum width, handle resize, selected-window pan, cursor-anchored zoom,
-  home clamping, and reset. Keep the existing zoom API intact.
-- [x] Add nearest-rendered-real-point hit testing with stable point indexes and
-  screen-distance ties; keep the existing segment interpolation API intact.
-- [x] Add visible finite y-range calculation with 5% padding and a defined
-  constant-value fallback. Do not add query, reduction, or renderer policy to
-  chart-core.
-- [x] Cover brush transforms, invalid inputs, range boundaries, repeated x
-  values, hit-test ties, empty inputs, and constant y values with windowless
-  chart-core tests.
-
-#### Phase 3B: Native Read Session and Query Pipeline
-
-- [x] Add `seex-app` as a workspace binary with model, storage, Core, and
-  chart-core dependencies. Pin GPUI 0.2.2 only for macOS; keep a non-macOS
-  unsupported entrypoint so Linux workspace checks continue to compile.
-- [x] Open existing local native Projects through the shared configuration and
-  storage bootstrap. Support DuckDB/SQLite and custom local paths; reject S3
-  before credential resolution and do not construct a writable `NativeClient`.
-- [x] Add one background worker that owns `ProjectConnection`, discovers
-  Projects/Runs/metrics, coalesces pending requests, and returns immutable
-  generation-tagged snapshots. The GPUI thread must never execute storage work.
-- [x] Add separate overview and detail query requests. Overview uses the full
-  non-negative axis and a 500-2,000 point budget; detail uses the brush's closed
-  viewport and a 2,000-10,000 point budget. Both reuse Phase 2 aligned evidence
-  and storage-side extrema reduction without retaining raw full series.
-- [x] Reconcile manual Refresh results, discard stale generations, retain the
-  current detail snapshot while a replacement is pending, and cover source
-  errors, both catalog backends, fixed budgets, neighbors, and evidence states.
-
-#### Phase 3C: GPUI Curve Comparison Experience
-
-- [x] Add the macOS application shell, zero-or-one-path command-line contract,
-  native directory picker, Open/Refresh/Reset/Step/Elapsed commands, and clear
-  empty, loading, pending, and error states.
-- [x] Add one-Project selection, a virtualized newest-first Run browser with
-  name/id/status filtering and a 10-Run hard limit, plus a one-metric selector
-  over the selected Runs' metric union.
-- [x] Add the detail chart renderer with axes, grid, evidence-aware legend,
-  fixed series colors, path caching, automatic visible y range, and nearest
-  real-point tooltip. Draw partial evidence explicitly; do not draw invalid or
-  unavailable evidence.
-- [x] Add the fixed-height overview renderer, selection shade, two handles,
-  selected-window drag, main-chart pan/zoom synchronization, and reset. Commit
-  drag queries on release and wheel/pinch queries after 100 ms idle.
-- [x] Verify GPUI types stay inside the adapter and test selection transitions,
-  picker cancellation, command behavior, resize budgets, brush synchronization,
-  pending results, hover, and stale-result rejection.
-
-#### Phase 3D: Scale and Automated Performance Baseline
-
-- [x] Build a deterministic fixture with 10 Runs and 1,000,000 effective source
-  points per series. Assert that the viewer receives only the requested
-  overview/detail budgets plus contract-defined neighbors.
-- [x] Validate that narrowing the brush keeps the detail budget fixed, narrows
-  the storage viewport, and never crops or resamples viewer-owned points.
-- [x] Measure DuckDB and SQLite overview, full-detail, and narrow-detail query
-  latency separately from rendering, including cold and warm samples.
-- [x] In a macOS ARM64 release build, verify cached brush, pan, zoom, path
-  preparation, and hit testing at p95 <= 8.33 ms with no sample above 16.7 ms.
-- [x] Pass formatting, workspace Clippy, Rust tests, viewer release build,
-  maturin develop/build, Pyright, and pytest; document any exact environmental
-  blocker, including a missing Xcode Metal Toolchain.
-
-Automated measurements are recorded in
-[`viewer-performance-validation.md`](viewer-performance-validation.md). The
-single-panel UI is no longer the durable product surface, so its outstanding
-manual display trace is carried into Phase 3E and must validate the final
-shared-timeline, multi-panel interaction path.
-
-#### Phase 3E: Multi-Project Analysis Workbench
-
-The workbench implements the product and architecture contract in
-[`multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md).
-It does not change the public Python API, native catalog or Parquet schemas,
-comparison semantics, runtime dependency set, CI, or release behavior without
-separate approval. Product code uses durable workbench terminology and never
-roadmap phase identifiers.
-
-##### Zed-Aligned Visual Foundation
-
-- [x] Use [Zed](https://github.com/zed-industries/zed) as the visual and
-  interaction reference, initially pinned to commit
-  [`40dc154a`](https://github.com/zed-industries/zed/commit/40dc154a7cc28270d2319873b0881ef053dc22b9).
-  Record any deliberate reference update. Do not follow a moving `main` during
-  implementation. The durable source map and update procedure live in
-  [`viewer-zed-ui-reference.md`](viewer-zed-ui-reference.md).
-- [x] Add viewer-owned semantic theme and spacing tokens modeled on Zed's UI
-  roles: window, panel, elevated surface, border, text, muted text, hover,
-  active, focus, disabled, accent, and status. Remove feature-level hard-coded
-  RGB values and preserve the same hierarchy in light and dark appearance.
-- [x] Build viewer-owned tab bar, sidebar tree row, toolbar/icon button,
-  popover, tooltip, status badge, empty state, and focus-ring primitives with
-  Zed-consistent compact geometry, typography, one-pixel separators, selected
-  surfaces, and complete hover/active/focused/disabled states.
-- [x] Use Zed's `theme`, `ui`, `title_bar`, `project_panel`, and `workspace`
-  crates as direct implementation references. Adapt relevant component
-  structure, tokens, icons, and interaction logic into viewer-owned code. Do
-  not depend on whole Zed application crates because their GPUI revision and
-  dependency graph differ from the viewer's pinned runtime.
-
-##### Workbench Identity and Multi-Source Reads
-
-- [x] Add viewer-local `DataSourceId` and composite
-  `RunRef = DataSourceId + ProjectId + RunId` identities. Use the full identity
-  for selection, series colors, caches, hover, requests, and stale-result
-  reconciliation while preserving existing storage/model identities.
-- [x] Add a retained source registry and bounded read coordination for multiple
-  local native stores. Support DuckDB and SQLite together, keep each native
-  connection worker-owned, lazily activate source sessions, and preserve
-  source-specific loading and error state.
-- [x] Fan panel reads out by source and merge immutable evidence at the viewer
-  boundary. One source failure must not erase another source's drawable
-  results, and inactive or superseded View/panel generations must be ignored.
-
-##### Project and Run Sidebar
-
-- [x] Replace the single-source selectors with a searchable, collapsible
-  Project/Run sidebar over all imported sources. Keep it as an independent,
-  full-height application-shell region outside the Analysis workspace, qualify
-  name collisions with source identity, and retain unavailable sources with
-  actionable state.
-- [x] Add Import Source, reveal path, refresh, and remove-from-workbench
-  actions plus `ToggleProjectSidebar`. Removing an import must never delete or
-  mutate native data; hiding the sidebar expands the complete Analysis
-  workspace.
-- [x] Make Run checkboxes reflect the active Analysis View and retain the
-  existing limit of 10 selected Runs per View across Project/source boundaries.
-
-##### Analysis Views
-
-- [x] Add top tabs for creating an empty View, duplicating the active View,
-  activating, renaming, and closing Views. Place this bar inside the Analysis
-  workspace so it never spans the independent Project/Run sidebar. Closing the
-  last View creates a new empty View.
-- [x] Give each View independent ordered Runs and metrics, alignment axis, track
-  density, shared viewport, snapshots, pending generations, and errors. View
-  switching must not share mutable selection or brush state implicitly.
-
-##### Metric Sidebar, Shared Timeline, and Tracks
-
-- [x] Render one sticky shared timeline brush per View. Its home range is the
-  union of valid selected Run/metric extents; it renders navigation ticks and
-  selection rather than a synthetic metric aggregation and spans only the
-  chart-track column.
-- [x] Support handle resize, selected-window pan, wheel/pinch zoom,
-  `Command-+`, `Command--`, and `Command-0`. Reproject cached evidence
-  immediately, then use one View-level 100 ms trailing debounce before
-  requesting visible-track detail.
-- [x] Render a Metric sidebar inside the Analysis workspace and one aligned
-  detail chart track per selected metric. Synchronize row heights and vertical
-  scrolling, keep horizontal navigation in the chart column, and preserve
-  unavailable evidence, independent y ranges, hover, errors, ordering, and
-  removal.
-- [x] Derive each visible track's storage budget from its own physical plot
-  width and independently reduce every Run/metric series. Prepare visible
-  tracks plus one viewport of overscan; off-screen tracks contribute extents
-  but do not issue detail queries or prepare GPUI paths.
-
-##### Bottom Inspector and Dock Visibility
-
-- [x] Add a resizable Bottom inspector inside the Analysis workspace, spanning
-  the Metric sidebar and chart column but not the independent Project/Run
-  sidebar. A click without a drag on a Metric row or chart track selects it and
-  opens `Summary`, `Ranking`, and `Evidence`; pan/zoom/brush gestures never
-  toggle the inspector.
-- [x] Query whole-effective-series Metric summaries and Objective evidence in
-  the background through the same Core semantics exposed by the Python and CLI
-  read surfaces. Summary reports count, last step/value, minimum, and maximum;
-  Ranking requires an explicit direction, uses canonical competition ranking,
-  and remains grouped by Project for cross-Project Views. Tag inspector results
-  for stale-result rejection, and do not refresh them for viewport navigation.
-- [x] Hide and restore Project sidebar and Bottom inspector independently,
-  retain their previous width/height, and let the Metric sidebar resize or
-  collapse compactly without clearing selections. Expose durable toggle/show
-  actions and keep focus restoration keyboard-accessible.
-
-##### Persistence and Recovery
-
-- [x] Persist a versioned, viewer-owned workbench document containing imported
-  source paths, Views, composite selections, selected Metric/inspector tab,
-  dock visibility and dimensions, and presentation settings. Do not persist
-  metric points, query snapshots, credentials, native connections, or renderer
-  geometry.
-- [x] Restore state without mutating native stores and reconcile moved or
-  missing sources, removed Projects/Runs, duplicate identifiers, unknown
-  metrics, and unsupported document versions explicitly.
-
-##### Design Convergence and Viewer-Only Organization
-
-The completed items above record the first multi-project workbench delivery.
-The following checklist converges that implementation on the durable
-interaction design in
-[`multi-project-analysis-workbench.md`](drafts/multi-project-analysis-workbench.md)
-before release work begins.
-
-- [x] Replace the transitional application layout with the compact Analysis
-  workspace: no global viewer title bar, an independently hidden Project
-  sidebar, scrollable View tabs, a selected-Metric global brush, a separate
-  Step/Time ruler, compact resizable Metric tracks, and a fixed Bottom
-  inspector. Keep resource regions independently scrollable as they grow.
-- [x] Converge the Project/Run sidebar on folder/folder-open disclosure,
-  five-item `Show more` pagination, explicit `No runs`, anchored Project
-  information and action popovers, binary Run visibility eyes, and three
-  non-shrinking Run actions. Use one opaque Zed-aligned popover treatment
-  throughout.
-- [x] Add viewer-only sidebar organization. Each View owns its baseline,
-  Pinned Runs, and Project Run visibility; Archived Runs are workbench-wide.
-  Identify Pinned and Archived Projects by `DataSourceId + ProjectId` and move
-  their complete tree entries between `Projects`, `Pinned`, and `Archived`
-  without mutating native stores or child Run state.
-- [x] Converge View and Metric behavior: keep all View state isolated, show only
-  unselected metrics in Add Metric, use a fixed Metric label column, support
-  compact per-track height adjustment, give every plot the same background,
-  and express selection through the label cell and accessibility state.
-- [x] Implement the final navigation model. The brush always renders the
-  selected Metric's complete overview; brush, ruler, and tracks share one
-  viewport; ruler pan and zoom clamp exactly to the first and final coordinate;
-  cached evidence reprojects immediately and detail reads retain the 100 ms
-  View-level trailing debounce.
-- [x] Add a viewer-owned Absolute Time presentation mode alongside Step. Query
-  by metric observation timestamp through the existing worker, storage
-  reduction, and immutable-snapshot boundaries without extending Phase 2
-  comparison axes or the public Python API.
-- [x] Add independent hover and locked cursors. The dashed hover cursor carries
-  the Step/Time capsule and pointed value callouts; clicking a chart or ruler
-  places a separate solid cursor with a ruler-edge triangle and no tooltip.
-  Candidate callouts show the signed raw `candidate - baseline` delta, for
-  example `1.00(+0.55)`.
-- [x] Integrate the View baseline with curve emphasis, hover deltas,
-  Project-scoped Ranking, and the Bottom inspector. Keep Summary, Ranking, and
-  Evidence on the existing Core/CLI/Python whole-series semantics; never derive
-  them from viewport or renderer-owned points.
-- [x] Persist Project placement, Archived Runs, each View's
-  baseline/Pinned/visible Runs, axis mode, Metric order, row heights, and dock
-  dimensions in the canonical `seex-workbench 1` document. Earlier viewer
-  documents are rejected without migration; loading and saving never mutate
-  native data.
-
-##### Resource Efficiency and Memory Boundaries
-
-The Viewer currently bounds returned points per Run/Metric series, but that
-query budget is not an end-to-end memory bound. The following stages align
-storage reduction with final logical-pixel rendering, remove duplicate point
-ownership, bound GPUI geometry, and reduce native-query working memory. All
-stages are Phase 3E release gates and must preserve interaction fidelity.
-
-###### Stage 1: Baseline and Budget Calibration
-
-- [ ] Add release/test-support resource counters for each panel/generation:
-  requested budget, source and returned points, projected and compacted points,
-  path vertices, concurrent reads, and stale reads. Record the baseline in the
-  existing performance report without adding permanent production logging.
-- [ ] Derive Overview and Detail budgets from logical plot width `L`. Use
-  `clamp(L, 256, 2_000)` for Overview and `clamp(2L, 512, 5_000)` for Detail,
-  while continuing to permit at most two contract-defined viewport neighbors.
-- [ ] Keep budgets independent of Run/Metric count, visibility, and
-  Pin/Baseline/Archive state so organizational actions never trigger a curve
-  reload solely to change sampling density.
-
-###### Stage 2: Compact Immutable Snapshots
-
-- [ ] Let each `CurveSeriesSnapshot` retain one chart `Series` plus series-level
-  Run metadata, completeness, reasons, and `source_row_count`. Convert Phase 2
-  aligned evidence immediately and release per-point RunId, MetricKey,
-  timestamp, and other fields unused by the Viewer.
-- [ ] Remove duplicate `AlignedMetricPoint`/`DataPoint` ownership from Viewer
-  snapshots. Hover, locked cursor, baseline delta, and inspector cursor values
-  must read the same retained real sample without interpolation or fabricated
-  evidence.
-- [ ] Preserve Phase 2 aligned queries, the public Python API, native catalog,
-  Parquet schema, storage reduction, and comparison semantics.
-
-###### Stage 3: Bounded GPUI Rendering Memory
-
-- [ ] Preallocate render compaction from logical canvas bucket count rather than
-  input point count, and evict projection/path entries for removed Runs and
-  Metrics.
-- [ ] Reduce long-lived `Path<Pixels>` ownership and deep copies. Retain only
-  the latest projected geometry, produce a one-shot paint path, and select the
-  lower-vertex stroke/triangle implementation that still passes every Phase 3D
-  CPU threshold.
-- [ ] Preserve visible tracks plus one viewport of overscan. Off-screen tracks
-  must not prepare paths, and hover emphasis must not issue queries or replace
-  immutable snapshots.
-
-###### Stage 4: Lower Native Query Peaks
-
-- [ ] Separate whole-series diagnostics from viewport reduction, narrow DuckDB
-  materialized rows, and apply safe Step/Time viewport and neighbor filtering
-  as early as possible. Preserve last-write-wins, negative/decreasing-axis
-  diagnostics, and DuckDB/SQLite parity.
-- [ ] Keep four-way bounded reads and the 100 ms trailing debounce so multiple
-  Metrics do not regress to sequential loading. Add superseded-generation
-  checks before execution and between Runs; stale results must not enter a
-  merged snapshot.
-- [ ] Do not reduce visible Metric count, selected Run count, or interaction
-  refresh rate to obtain lower memory use.
-
-###### Stage 5: Resource and Release Validation
-
-- [ ] Cover 1x/2x/3x display scale, sparse/dense windows, spikes, viewport
-  neighbors, Step/Absolute Time, and nearest-real-point tooltips. Detail
-  projection error must stay within one two-logical-pixel render bucket.
-- [ ] With 10 Runs and at least six visible Metrics, repeat zoom, brush, scroll,
-  and View switching. At 2x scale, halve Detail return points approximately,
-  reduce compact-snapshot point storage by at least 60%, and reduce peak RSS by
-  at least 25% from the Stage 1 baseline.
-- [ ] After warm-up, run 30 zoom-in/zoom-out cycles without monotonic memory
-  growth. Final RSS must remain within `max(5%, 32 MiB)` of the warm steady
-  state, and stale reads must retain no snapshot.
-- [ ] Re-run Viewer tests, Clippy, check, the release build, every Phase 3D CPU
-  threshold, and the active-display Metal System Trace. Record RSS, allocation
-  high-water marks, and Metal instance-buffer growth; Phase 3F remains blocked
-  until every resource gate passes.
-
-##### Validation Gates
-
-- [x] Cover mixed DuckDB/SQLite sources, duplicate Project/Run identifiers,
-  partial source failure, cross-Project selection, View isolation, shared
-  viewport synchronization, keyboard zoom, query coalescing, panel visibility,
-  synchronized Metric tracks, click-versus-drag inspector behavior,
-  whole-series Summary and Objective evidence, canonical Project-scoped
-  Ranking, independent dock visibility, stale results,
-  persistence round trips, and unavailable-source recovery.
-- [x] Compare the application shell, tabs, Project tree, toolbars, popovers,
-  interaction states, typography, spacing, and light/dark hierarchy against the
-  pinned Zed reference at representative window sizes and display scales.
-- [x] Validate a representative View with 10 Runs and at least six visible
-  Metric tracks plus the Bottom inspector. Preserve storage point budgets, the
-  Phase 3D CPU thresholds,
-  bounded query concurrency, and responsive interaction while sources are
-  pending.
-- [x] Cover the converged state model with View isolation, Project/Run
-  placement, v1 missing-record defaults, persistence round trips, source
-  reconciliation, and proof that viewer-only organization never writes native
-  data.
-- [x] Cover the converged GPUI interaction with menu anchors and opaque
-  popovers, pagination and empty states, fixed Run icon widths, Metric
-  add/resize behavior, ruler boundaries, independent cursors, baseline deltas,
-  and a single-line horizontally scrollable inspector.
-- [x] Re-run the representative 10-Run, six-track workload against the final
-  layout. Preserve fixed storage budgets, visible-track scheduling, bounded
-  query merging, the 100 ms debounce, and every Phase 3D CPU threshold.
-- [ ] On the active high-refresh display, record its configured refresh rate
-  and, after every resource-efficiency stage passes, a Metal System Trace for
-  the converged shared-brush resize/pan, ruler and chart pan, wheel/pinch and
-  keyboard zoom, dual-cursor hover/locking, track scrolling, View switching,
-  and Bottom inspector path. Record RSS, allocation high-water marks, and Metal
-  instance-buffer growth. Sustain the configured rate after warm-up with no
-  viewer-caused presentation spanning two refresh periods; at 280 Hz that
-  boundary is approximately 7.14 ms. This is the final Phase 3E gate.
-- [x] Pass formatting, workspace Clippy, Rust tests, viewer release build,
-  maturin develop/build, Pyright, and pytest, and update the persistent
-  performance record with exact commands, machine, display, and conclusions.
-
-#### Phase 3F: macOS ARM64 Release
-
-Phase 3F starts only after every Phase 3E design-convergence and validation
-item, including the active-display Metal trace, is complete.
-
-- [ ] Add a macOS ARM64 viewer CI job that installs or verifies the Xcode Metal
-  Toolchain, runs viewer tests, and builds the unsigned release binary without
-  changing the Python wheel matrix or PyPI dependency graph.
-- [ ] On tags, produce `seex-app-macos-aarch64` and its SHA-256 checksum,
-  attest both artifacts, and attach them to the corresponding GitHub Release.
-- [ ] Preserve the existing Python wheel and sdist release behavior and verify
-  the release job cannot publish a viewer artifact to PyPI accidentally.
-
-### Out of 0.1.x Scope
-
-- Cumulative-token and normalized-budget comparison axes.
-- Stable Contract / compatibility ADR / schema version marker / deprecation
-  policy (deferred to 1.0).
-- Migration from pre-Seex stores; legacy state remains out of scope.
-- Persisted research decisions / durable research context / lineage / decisions
-  in catalog state (ADR-gated, later).
-- Research driver with Git/source mutation (ADR-gated, later).
-- Remote training service delivery (deferred per ADR 0012).
-- Repetition / significance / uncertainty policies (after deterministic
-  policies are validated).
+> This file contains only current and future work. Completed 0.1.x phases and
+> their original metrics are archived in
+> [`roadmap/0.1.x-completed.md`](roadmap/0.1.x-completed.md). Shipped release
+> details live in `release-notes/`.
+
+Pre-1.0 releases do not promise store, API, or machine-output compatibility.
+The next coordinated milestone is Cargo `0.1.0-beta.1`, Python `0.1.0b1`, and
+tag `v0.1.0-beta.1`, all built from the same source.
+
+## 0.1.0 Beta / Unified SDK and Bounded Native Queries
+
+This milestone implements the accepted
+[single-crate SDK](single-crate-rust-sdk.md) and completes the outstanding
+Viewer query, RSS, and Metal work. [ADR 0015](adr/0015-unified-rust-sdk-performance-preserving-migration.md)
+defines the architecture; this roadmap defines implementation order and exit
+criteria.
+
+The order is fixed:
+
+```text
+U0 gates -> U1 Reader -> U2 storage/query -> U3 reporting/Run SDK
+         -> U4 Python API -> U5 crate/package convergence -> U6 release gates
+```
+
+No later phase may remove a boundary or baseline needed by an earlier phase.
+U1 may begin only after U0 freezes the original baseline. Physical source moves
+begin only after Desktop uses Reader.
+
+### Execution Contract
+
+- [ ] Before every candidate, record its type, primary metric, protected
+  metrics, fixture, commands, and no more than five files. Target no more than
+  200 changed lines; mechanical source moves and this roadmap archive are the
+  declared exceptions.
+- [ ] Keep mechanical migration and performance optimization in separate
+  candidates. Use Git renames for source moves and leave the workspace buildable
+  after every accepted candidate.
+- [ ] Accept a migration candidate only when correctness and hard floors pass
+  and every reliable protected metric regresses by no more than 3%. It need not
+  improve performance.
+- [ ] Accept an optimization candidate only when correctness and hard floors
+  pass; at least 6 of 7 alternating baseline/candidate pairs improve; the
+  primary median improves by at least 5%; protected medians regress by no more
+  than 3%; and each deciding metric has relative MAD no greater than 2%.
+- [ ] Treat an improvement below 5%, an unreliable metric, or inconsistent
+  pairs as no change. Reject correctness, schema, API parity, and hard-gate
+  failures immediately.
+- [ ] Revert only the rejected candidate's declared hunks. Do not use
+  `git reset` or `git checkout`, and do not touch user or accepted changes.
+  Profile a no-change or regression with DuckDB plans, RSS, `heap`/`vmmap`,
+  allocation stacks, or Metal evidence before opening another candidate.
+- [ ] Preserve the catalog and Parquet schemas, DuckLake as a required native
+  dependency, four-way Viewer read concurrency, and the 100 ms trailing
+  debounce. Add no runtime dependency without separate approval.
+
+### U0: Unified Performance Gates and Migration Baseline
+
+U0 generalizes the existing Viewer performance work into one migration gate.
+It changes no production behavior and requires no performance improvement.
+
+#### Gate format and comparator
+
+- [ ] Define version 2 performance JSON with `reporting`, `query`, and `viewer`
+  domains. Record environment, commit and dirty-worktree identity, fixture,
+  commands, units, batch size, raw samples, MAD, p50, p95, max, RSS phases, and
+  original/rolling comparison results.
+- [ ] Implement the typed collector and comparator with the standard libraries
+  already available to the repository. Keep raw traces and per-iteration trace
+  artifacts outside the repository; commit only stable statistics and human
+  conclusions.
+- [ ] Calibrate each timing batch until one sample lasts at least 10 ms. Mark a
+  metric with relative MAD above 2% as non-deciding; it cannot accept a
+  migration or optimization candidate.
+- [ ] Encode migration and optimization policies from the Execution Contract,
+  including hard floors, Pass, No-change, and Regression outcomes.
+- [ ] Keep resource counters behind test-support/release test configuration and
+  prove an ordinary release build contains no counter state or production log.
+
+#### Workloads
+
+- [ ] Cover reporting at the Rust engine and Python/PyO3 boundaries: explicit
+  step, implicit single metric, multi-metric Mapping, queue admission,
+  drain/persistence, finalization, and peak RSS.
+- [ ] Cover Reader queries on DuckDB and SQLite with 10 Runs and 1,000,000
+  points per series: full and narrow ranges, Step/relative-time/timestamp axes,
+  neighbors, duplicates, spikes, last-write-wins, completeness, and reasons.
+- [ ] Use identical read-only fixtures, independent release binaries, and
+  alternating execution order for baseline and candidate query samples.
+- [ ] Cover Viewer with 10 Runs and at least six visible Metrics: single and
+  dual View, sparse/dense windows, 1x/2x/3x, 30 zoom cycles, stale generation,
+  query concurrency, snapshot/path counters, CPU, RSS, and Metal trace metadata.
+- [ ] Run automated RSS workloads in a fresh process. Record warm, peak, final,
+  phase trend, and retained stale-snapshot counts from an external sampler.
+
+#### Baseline freeze and exit
+
+- [ ] Freeze the pre-migration worktree as the permanent original baseline and
+  first rolling baseline. Preserve the current accepted logical-budget,
+  compact-snapshot, bounded-geometry, and shared-DuckDB improvements.
+- [ ] Record exact machine, OS, Rust toolchain, display/scale, fixture identity,
+  sample count, commands, and known environmental blockers in the performance
+  validation document.
+- [ ] Verify gate instrumentation does not change ordinary release API,
+  behavior, binary dependencies, or reliable CPU results by more than 3%.
+- [ ] Exit U0 only when all three domains can compare a candidate against both
+  baselines and reproduce correctness and resource results.
+
+### U1: Public `seex` Facade and Reader First
+
+U1 is a migration phase. It introduces the destination without moving storage
+source or changing the public Python API.
+
+- [ ] Create unpublished `crates/seex` as a facade over the current
+  `seex-model`, `seex-storage`, and `seex-core` crates. Keep every workspace
+  target buildable.
+- [ ] Define public `Reader`/`ReaderBuilder`, `MetricAxis`, typed half-open
+  ranges, strict caller-selected `max_points`, and `MetricSeries`.
+- [ ] Keep pixels out of public Rust and Python queries. Desktop alone converts
+  a closed viewport into crate-private options for one real neighbor on each
+  side, without weakening the public point bound.
+- [ ] Make `MetricSeries` retain real samples, source count, downsampled state,
+  completeness, and reasons, and expose an Arrow PyCapsule stream directly.
+- [ ] Keep `ProjectConnection`, `ProjectMetricReader`, `NativeQueryStore`,
+  storage errors, DuckDB types, and local-only source policy private.
+- [ ] Migrate Desktop discovery and curve reads to Reader. Preserve four-way
+  scheduling, generation reconciliation, hover/locked-cursor real-sample
+  semantics, and source-specific failures.
+- [ ] Route PyO3 through a temporary compatibility adapter without changing the
+  shipped Python surface; defer the breaking public API switch to U4.
+- [ ] Cover Reader/native/standalone parity, all axes and range types, strict
+  bounds, Desktop neighbors, missing metadata, and Arrow output.
+- [ ] Exit U1 only when query, reporting, Viewer CPU, and RSS protected metrics
+  are reliable and regress by no more than 3% from the rolling baseline.
+
+### U2: Storage Migration and Query Peak Reduction
+
+Profiling identifies DuckDB window/sort materialization and allocator churn as
+the remaining peak-memory path. Full-span and narrow queries therefore use
+different execution plans; one universal SQL plan is not a goal.
+
+#### U2.1: Mechanical storage move
+
+- [ ] Move model, storage, and query implementation into private
+  `seex::{model, storage}` modules with Git renames. Leave the old unpublished
+  crates as re-exports until all consumers migrate.
+- [ ] Run the migration gate without SQL, reduction, allocation, schema, or
+  behavior changes. Reject reliable protected-metric regression above 3%.
+
+#### U2.2: Split query plans
+
+- [ ] Preserve the incumbent Overview/full-span SQL and its materialized
+  ordered plan. Protect its reliable latency and RSS metrics from regression
+  above 3%.
+- [ ] Add a narrow Step plan that filters the viewport before expensive
+  materialization and bucket windows while retaining every same-step
+  replacement until last-write-wins.
+- [ ] Return one real effective neighbor on each side and reduce only the
+  cropped effective rows. Preserve duplicates, spikes, strict point budgets,
+  evidence reasons, and DuckDB/SQLite parity.
+- [ ] Initially keep relative-time and timestamp queries on the incumbent plan;
+  a replacement may change its timestamp, so time filtering cannot precede
+  last-write-wins without a separate proof.
+
+#### U2.3: Diagnostics and cancellation
+
+- [ ] Separate whole-series negative/decreasing/completeness diagnostics from
+  viewport selection. Finished Runs cache by source/project/run/metric;
+  Running Runs invalidate on refresh or storage-generation change.
+- [ ] Propagate diagnostics failure as incomplete evidence with an explicit
+  reason. Never manufacture complete evidence or silently repair an axis.
+- [ ] Give every cloned DuckDB connection an interrupt handle and request token.
+  A superseded generation interrupts only its current request; interruption is
+  stale cancellation and never becomes an error snapshot.
+- [ ] Check supersession before query execution and between Runs. Stale results
+  must not enter a merged snapshot or retain their query working set.
+
+#### U2.4: Evidence-driven fallbacks
+
+- [ ] If narrow Step SQL improves real-workload RSS by less than 5%, profile it
+  and test a separate narrow-only bounded reducer: DuckDB performs early
+  filtering, last-write-wins, and one Step order; Rust retains only
+  first/last/min/max candidates for each bucket.
+- [ ] If the bounded reducer still misses the RSS target, profile Parquet
+  physical ordering and row-group sizing as the next independent candidate.
+  Preserve the Parquet schema and partition contract.
+- [ ] Do not retry generic `HASH_GROUP_BY` extrema, memory limits, DuckDB thread
+  caps, allocator relief scheduling, or removal of the beneficial full-span
+  ordered window without new contradictory profile evidence.
+
+#### U2 exit gates
+
+- [ ] Pass full/narrow correctness, DuckDB/SQLite parity, last-write-wins,
+  neighbors, diagnostics, and nearest-real-sample hover tests.
+- [ ] Keep every reliable full-query protected metric within 3% of the rolling
+  baseline. Improve the narrow primary metric by at least 5% with 6 of 7 pairs.
+- [ ] Reduce peak RSS for the frozen single- and dual-View real workload by at
+  least 25% from the U0 original baseline.
+- [ ] Prove superseded queries merge no snapshot and retain no working set.
+
+### U3: Engine Migration and Rust Run SDK
+
+Mechanical engine movement and reporting behavior changes are separate
+candidates.
+
+- [ ] Move lifecycle, queue, writer, diagnostics, comparison, and ranking into
+  private `seex::engine`; keep `seex-core` as an unpublished re-export until
+  consumers migrate. Pass the migration gate within 3%.
+- [ ] Implement public `Client`/`ClientBuilder`, `RunHandle`, `RunOptions`,
+  `LogOptions`, `ResumePolicy`, and matchable `Error`/`Result`.
+- [ ] Make `RunHandle: Clone + Send + Sync`; clones share one admission lock,
+  step cursor, queue, and terminal state.
+- [ ] Admit a non-empty Mapping atomically with at most 8,192 numeric metrics.
+  Failure admits no subset and does not advance the cursor; queue capacity and
+  diagnostics count points consistently.
+- [ ] Default explicit-step `commit` to false and implicit-step `commit` to
+  true. Start a new Run at step zero, resume from the greatest persisted step,
+  and reject committed-step regression.
+- [ ] Make matching terminal operations retry incomplete drain/flush work.
+  Return a typed error for a conflicting terminal outcome and never hide a
+  finalization error in `Drop`.
+- [ ] Cover Project get-or-create races, resume modes, cloned-handle races,
+  atomic queue failure, cursor/commit cases, finalization barriers, and
+  persistence without lost reports or partial Mappings.
+- [ ] Require explicit single-metric admission of at least 100,000 calls/s.
+  Across five runs, implicit single-metric median throughput must be at least
+  90% of explicit throughput; multi-metric throughput is counted per point.
+- [ ] Exit U3 only when reporting p50/p95, drain latency, persistence, and peak
+  RSS meet hard floors and regress by no more than 3% during migration.
+
+### U4: Python Run, Api, CLI, and Arrow Surface
+
+U4 is the planned beta API reset. It does not retain the shipped public Client
+as a compatibility layer.
+
+- [ ] Implement typed `seex.init(...) -> seex.Run` with the accepted
+  project/id/name/resume/settings semantics and secret-redacted configuration.
+- [ ] Implement Mapping `Run.log`, context management, `finish(exit_code)`, and
+  advanced diagnostics over the Rust Run SDK. Preserve an original context
+  exception and attach finalization failure as context.
+- [ ] Add read-only `seex.Api`, `RunRecord.history()`, metrics, summary,
+  comparison, and ranking over Reader. Start no writer for read-only use.
+- [ ] Limit `history()` axes to step, relative time, and timestamp. Require
+  matching typed bounds and a caller-selected strict `max_points`; reject
+  coercion and arbitrary metric x-axis joins.
+- [ ] Make Python `MetricSeries` implement Arrow PyCapsule streaming directly.
+  Remove separate public table-query methods after every consumer migrates.
+- [ ] Move the CLI to public Rust/Python facades and remove calls to private
+  underscore PyO3 APIs. Preserve deterministic versioned JSON contracts.
+- [ ] Update Python type stubs and cover init/resume, Mapping validation,
+  context outcomes, Api discovery, range errors, evidence, Arrow, Reader parity,
+  CLI JSON, and packaging smoke tests.
+- [ ] Pass Python formatting/lint, Pyright, pytest, Rust/PyO3 parity, wheel and
+  sdist smoke tests, and the reporting/query migration gates.
+
+### U5: Single-Crate Convergence and Packaging
+
+- [ ] After every consumer migrates, delete the temporary `seex-model`,
+  `seex-storage`, and `seex-core` crates and re-exports.
+- [ ] Mechanically rename `seex-chart-core` to unpublished `seex-plot` without
+  behavior or performance changes. Keep it free of SDK, storage, PyO3, and GPUI
+  dependencies.
+- [ ] Make `seex` the only publishable workspace crate. Set `publish = false`
+  for `seex-python`, `seex-app`, and `seex-plot`.
+- [ ] Verify `cargo package -p seex` contains no path dependency or PyO3, GPUI,
+  Desktop, or plot source; unpack and build/test it in an independent directory.
+- [ ] Align Cargo `0.1.0-beta.1`, Python `0.1.0b1`, and tag
+  `v0.1.0-beta.1` to one source without changing catalog/Parquet schemas or
+  adding a runtime dependency.
+- [ ] Run warning-free Rust formatting, Clippy, check, tests, doc tests, docs,
+  package verification, Python gates, and all three performance domains.
+
+### U6: Final Resource, Metal, and Release Qualification
+
+U6 begins after U0–U5 pass. CI/release workflow changes remain a separate
+review slice and require explicit approval under the repository boundary.
+
+- [ ] Re-run complete Reader, reporting, Python, package, Viewer correctness,
+  CPU, RSS, and stale-generation gates against original and rolling baselines.
+- [ ] With 10 Runs and at least six visible Metrics, verify 2x Detail returned
+  points are approximately halved and compact snapshot storage is at least 60%
+  below the original baseline.
+- [ ] Reduce real single- and dual-View peak RSS by at least 25% from the U0
+  original baseline. Record automated warm, peak, final, and phase trend.
+- [ ] After warm-up, complete 30 zoom-in/out cycles without monotonic RSS
+  growth. Final RSS must remain within `max(5%, 32 MiB)` of warm steady state,
+  and stale reads must retain no snapshot or query working set.
+- [ ] On the active 280 Hz display, trace the converged brush/ruler/chart pan,
+  wheel/pinch and keyboard zoom, hover/locked cursors, track scroll, View switch,
+  and inspector path. No Viewer-caused presentation may span two refresh
+  periods; at 280 Hz the two-period boundary is approximately 7.14 ms.
+- [ ] Record RSS, allocation high-water marks, Metal instance-buffer growth,
+  exact commands, environment, fixtures, raw/rolling deltas, and conclusion.
+- [ ] Only after every resource gate passes, add a separately reviewed macOS
+  ARM64 CI job that verifies the Xcode Metal Toolchain and builds the unsigned
+  Viewer without changing the Python wheel matrix.
+- [ ] On matching tags, produce `seex-app-macos-aarch64`, SHA-256 checksum, and
+  attestations, while proving Desktop artifacts cannot publish to PyPI.
+- [ ] Publish crates.io before PyPI. If the `seex` crate name cannot be claimed,
+  stop and revisit the naming decision rather than silently choosing a fallback.
 
 ## Later Backlog
 
@@ -553,29 +313,31 @@ item, including the active-display Metal trace, is complete.
   credentials when explicit config-file credentials are insufficient.
 - [ ] Revisit the [remote control-service boundary](drafts/remote-training-architecture-notes.md)
   when local training is complete and a real rented-GPU workflow exists, per
-  [ADR 0012](adr/0012-defer-remote-training.md). Produce a remote training ADR
+  [ADR 0012](adr/0012-defer-remote-training.md). Produce a remote-training ADR
   before adding remote writers or shared catalog coordination.
-- [ ] Consider PostgreSQL catalog support only when remote service scale or
+- [ ] Consider PostgreSQL catalog support only when service scale or
   availability requires it.
 
 ### Analysis and Agent Workflows
 
 - [ ] Evaluate the [research driver](drafts/autoresearch-control-loop-notes.md)
-  without moving source or Git mutation into Seex Core.
-- [ ] Design config/tag filtering, export, Web UI, MCP, and other agent-facing
-  surfaces as independently reviewable roadmap phases after the local analysis
-  workbench is validated.
+  without moving source or Git mutation into Seex engine.
+- [ ] Design config/tag filtering, export, Web UI, MCP, and agent-facing
+  surfaces as independently reviewable phases after the beta is qualified.
+- [ ] Revisit cumulative-token and normalized-budget comparison axes,
+  repetition/significance policy, and persisted research context as separate
+  product and schema decisions.
 
 ## 1.0 / Stable Contract
 
-1.0 freezes the surfaces proven by 0.1.x. It is the first release with a
-compatibility commitment; pre-1.0 releases make none.
+1.0 freezes surfaces proven by pre-1.0 releases. It is the first compatibility
+commitment; pre-1.0 stores and APIs remain unsupported unless explicitly named.
 
-- [ ] Accept an ADR defining 1.0 compatibility for the typed Python API,
+- [ ] Accept an ADR defining compatibility for the typed Rust/Python APIs,
   versioned CLI JSON, catalog application schema, and Parquet schema.
 - [ ] Add an explicit store schema/version marker without changing the metric
   point Parquet compatibility boundary.
 - [ ] Document additive changes, deprecation, breaking changes, and the support
   window for stable stores and machine-readable output.
 - [ ] Define migration policy only for stores created after the stable 1.0
-  compatibility boundary; pre-Seex stores remain unsupported.
+  boundary; pre-Seex stores remain unsupported.

@@ -246,7 +246,7 @@ impl ViewerApp {
             self.request_panel_detail(
                 &request.panel_id,
                 request.viewport,
-                request.physical_width,
+                request.logical_width,
                 cx,
             );
         }

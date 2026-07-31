@@ -18,7 +18,10 @@ pub(super) fn compact_render_points(points: &[ScreenPoint], bucket_width: f64) -
     if points.len() <= 2 {
         return points.to_vec();
     }
-    let mut compact = Vec::with_capacity(points.len());
+    let bucket_capacity = points.last().map_or(2, |point| {
+        (point.x.max(0.) / bucket_width).ceil() as usize * 2 + 2
+    });
+    let mut compact = Vec::with_capacity(points.len().min(bucket_capacity));
     compact.push(points[0]);
     let mut start = 0;
     while start < points.len() {

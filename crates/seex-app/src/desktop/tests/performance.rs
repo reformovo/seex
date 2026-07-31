@@ -57,9 +57,9 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
                     panel.detail.as_ref().is_some_and(|detail| {
                         detail.series.len() == 20
                             && detail.point_budget
-                                == panel.physical_width.saturating_mul(2).clamp(2_000, 10_000)
+                                == panel.logical_width.saturating_mul(2).clamp(512, 5_000)
                             && detail.series.iter().all(|series| {
-                                series.evidence.points.len() <= detail.point_budget as usize + 2
+                                series.returned_point_count <= u64::from(detail.point_budget) + 2
                             })
                     })
                 })
@@ -118,4 +118,45 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
             .find(|source| source.source_id == pending_source_id)
             .is_some_and(|source| source.status == SourceStatus::Ready)
     });
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(101));
+    cx.run_until_parked();
+    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.zoom_from_keyboard(1.25, cx);
+            viewer.zoom_from_keyboard(1. / 1.25, cx);
+        })
+        .expect("viewer should remain open");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(101));
+    cx.run_until_parked();
+    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    println!("SEEX_RSS_PHASE warm");
+    for _ in 0..30 {
+        window
+            .update(&mut cx, |viewer, _, cx| {
+                viewer.zoom_from_keyboard(1.25, cx);
+                viewer.zoom_from_keyboard(1. / 1.25, cx);
+            })
+            .expect("viewer should remain open");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    println!("SEEX_RSS_PHASE cycles_done");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(101));
+    cx.run_until_parked();
+    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+    let (runs, panels) = window
+        .read_with(&cx, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let active = snapshot.views.active();
+            (active.runs.len(), active.panels.len())
+        })
+        .expect("viewer should remain open");
+    assert_eq!((runs, panels), (20, 6));
+    println!("SEEX_RSS_PHASE final");
+    std::thread::sleep(std::time::Duration::from_millis(200));
 }

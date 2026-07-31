@@ -39,11 +39,26 @@ struct GpuiPathKey {
 #[derive(Default)]
 pub struct ChartAdapter {
     detail_projection_cache: PathCache,
-    detail_gpui_paths: HashMap<String, (GpuiPathKey, Path<Pixels>)>,
+    detail_gpui_paths: HashMap<String, CachedGpuiPath>,
     detail_bounds: Option<Bounds<Pixels>>,
     overview_bounds: Option<Bounds<Pixels>>,
     #[cfg(all(test, feature = "test-support"))]
     detail_prepare_count: usize,
+}
+
+#[cfg_attr(
+    all(not(test), feature = "test-support"),
+    expect(dead_code, reason = "release test-support reads retained geometry")
+)]
+struct CachedGpuiPath {
+    key: GpuiPathKey,
+    path: Path<Pixels>,
+    #[cfg(feature = "test-support")]
+    projected_points: u64,
+    #[cfg(feature = "test-support")]
+    compacted_points: u64,
+    #[cfg(feature = "test-support")]
+    path_vertices: u64,
 }
 
 struct PreparedChart {
@@ -99,6 +114,25 @@ impl ChartAdapter {
         }
         let theme = ViewerTheme::for_appearance(appearance);
         self.detail_bounds = Some(bounds);
+        let removed = self
+            .detail_gpui_paths
+            .keys()
+            .filter(|cache_id| {
+                !snapshot.series.iter().any(|curve| {
+                    curve
+                        .chart_series
+                        .as_ref()
+                        .is_some_and(|series| series.id().as_str() == cache_id.as_str())
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for cache_id in removed {
+            self.detail_gpui_paths.remove(&cache_id);
+            if let Ok(series_id) = seex_chart_core::SeriesId::new(cache_id) {
+                self.detail_projection_cache.invalidate_series(&series_id);
+            }
+        }
         let Ok(canvas) =
             CanvasSize::new(f64::from(bounds.size.width), f64::from(bounds.size.height))
         else {
@@ -118,7 +152,7 @@ impl ChartAdapter {
             let Some(series) = curve.chart_series.as_ref() else {
                 continue;
             };
-            let partial = curve.evidence.completeness == EvidenceCompleteness::Partial;
+            let partial = curve.completeness == EvidenceCompleteness::Partial;
             let baseline = runs.baseline == Some(&curve.run_ref);
             let emphasized = runs.emphasized == Some(&curve.run_ref);
             let highlighted = baseline || emphasized;
@@ -143,18 +177,22 @@ impl ChartAdapter {
             let projection_cache = &mut self.detail_projection_cache;
             let gpui_paths = &mut self.detail_gpui_paths;
             let cache_id = series.id().as_str();
-            let path = if let Some((cached_key, path)) = gpui_paths.get(cache_id)
-                && cached_key == &key
+            let path = if let Some(cached) = gpui_paths.get(cache_id)
+                && cached.key == key
             {
                 // PERF: GPUI consumes Path during paint, so retaining cached commands
                 // requires a clone but still avoids projection and PathBuilder work.
-                path.clone()
+                cached.path.clone()
             } else {
                 let Ok(points) = projection_cache.path_for(series, revision, viewport, canvas)
                 else {
                     continue;
                 };
+                #[cfg(feature = "test-support")]
+                let projected_points = points.len() as u64;
                 let points = compact_render_points(&points, RENDER_BUCKET_WIDTH);
+                #[cfg(feature = "test-support")]
+                let compacted_points = points.len() as u64;
                 let width = px(if highlighted {
                     HIGHLIGHTED_CURVE_STROKE_WIDTH
                 } else {
@@ -180,7 +218,25 @@ impl ChartAdapter {
                     };
                     path
                 };
-                gpui_paths.insert(cache_id.to_owned(), (key, path.clone()));
+                #[cfg(feature = "test-support")]
+                let path_vertices = if partial {
+                    compacted_points
+                } else {
+                    solid_path_vertices(&points, bounds)
+                };
+                gpui_paths.insert(
+                    cache_id.to_owned(),
+                    CachedGpuiPath {
+                        key,
+                        path: path.clone(),
+                        #[cfg(feature = "test-support")]
+                        projected_points,
+                        #[cfg(feature = "test-support")]
+                        compacted_points,
+                        #[cfg(feature = "test-support")]
+                        path_vertices,
+                    },
+                );
                 path
             };
             let mut color = theme
@@ -196,6 +252,33 @@ impl ChartAdapter {
             paths.push((path, color));
         }
         PreparedChart { paths, theme }
+    }
+
+    #[cfg(feature = "test-support")]
+    #[cfg_attr(
+        all(not(test), feature = "test-support"),
+        expect(dead_code, reason = "release test-support reads retained geometry")
+    )]
+    pub fn resource_snapshot(&self) -> crate::performance::CurveResourceSnapshot {
+        crate::performance::CurveResourceSnapshot {
+            projected_points: self
+                .detail_gpui_paths
+                .values()
+                .map(|cached| cached.projected_points)
+                .sum(),
+            compacted_points: self
+                .detail_gpui_paths
+                .values()
+                .map(|cached| cached.compacted_points)
+                .sum(),
+            path_vertices: self
+                .detail_gpui_paths
+                .values()
+                .map(|cached| cached.path_vertices)
+                .sum(),
+            path_entries: self.detail_gpui_paths.len() as u64,
+            ..crate::performance::CurveResourceSnapshot::default()
+        }
     }
 
     pub fn hit_test(
@@ -229,13 +312,13 @@ impl ChartAdapter {
             {
                 continue;
             }
-            let aligned = curve.evidence.points.get(hit.point_index)?;
+            let sample = series.points().get(hit.point_index)?;
             nearest = Some((
                 hit.distance,
                 HoverPoint {
                     run_ref: curve.run_ref.clone(),
-                    axis_value: aligned.axis_value,
-                    value: aligned.point.value_f64,
+                    axis_value: sample.x as i64,
+                    value: sample.y,
                     canvas_position: point(px(hit.position.x as f32), px(hit.position.y as f32)),
                     align_left: hit.position.x > canvas.width() * 0.72,
                 },
@@ -278,14 +361,14 @@ impl ChartAdapter {
                         .abs()
                         .total_cmp(&(points[*right].x - axis).abs())
                 })?;
-                let aligned = curve.evidence.points.get(point_index)?;
+                let sample = points.get(point_index)?;
                 Some(HoverPoint {
                     run_ref: curve.run_ref.clone(),
-                    axis_value: aligned.axis_value,
-                    value: aligned.point.value_f64,
+                    axis_value: sample.x as i64,
+                    value: sample.y,
                     canvas_position: point(
                         px(x_scale.map(axis) as f32),
-                        px(y_scale.map(aligned.point.value_f64) as f32),
+                        px(y_scale.map(sample.y) as f32),
                     ),
                     align_left: x_scale.map(axis) > f64::from(bounds.size.width) * 0.72,
                 })
@@ -361,6 +444,23 @@ impl ChartAdapter {
             None
         }
     }
+}
+
+#[cfg(feature = "test-support")]
+fn solid_path_vertices(points: &[ScreenPoint], bounds: Bounds<Pixels>) -> u64 {
+    let mut vertices = 0;
+    let mut has_previous = false;
+    for segment in points.windows(2) {
+        let start = projected_point(bounds, segment[0]);
+        let end = projected_point(bounds, segment[1]);
+        let length = f32::from(end.x - start.x).hypot(f32::from(end.y - start.y));
+        if length <= f32::EPSILON {
+            continue;
+        }
+        vertices += if has_previous { 12 } else { 6 };
+        has_previous = true;
+    }
+    vertices
 }
 
 #[cfg(test)]

@@ -20,7 +20,7 @@ use super::{WorkbenchSession, WorkbenchSessionEvent};
 struct PanelDetailQuery {
     panel_id: MetricPanelId,
     viewport: AlignmentViewport,
-    physical_width: u32,
+    logical_width: u32,
     runs: Vec<RunRef>,
     axis: CurveAxis,
     mode: PanelReadMode,
@@ -57,7 +57,7 @@ impl WorkbenchSession {
         panel_id: &MetricPanelId,
         runs: Vec<RunRef>,
         axis: CurveAxis,
-        physical_width: u32,
+        logical_width: u32,
         mode: PanelReadMode,
         cx: &mut Context<Self>,
     ) {
@@ -76,7 +76,7 @@ impl WorkbenchSession {
             runs,
             metric_key,
             axis,
-            physical_width,
+            logical_width,
         };
         self.begin_panel_read(panel_id, mode, request, None, cx);
     }
@@ -98,13 +98,13 @@ impl WorkbenchSession {
             metric_key,
             axis: query.axis,
             viewport: query.viewport,
-            physical_width: query.physical_width,
+            logical_width: query.logical_width,
         };
         self.begin_panel_read(
             &query.panel_id,
             query.mode,
             request,
-            Some((query.viewport, query.physical_width)),
+            Some((query.viewport, query.logical_width)),
             cx,
         );
     }
@@ -193,9 +193,9 @@ impl WorkbenchSession {
                 return;
             }
         };
-        if let Some((viewport, physical_width)) = detail {
+        if let Some((viewport, logical_width)) = detail {
             self.views
-                .begin_active_panel_detail(panel_id, generation, viewport, physical_width);
+                .begin_active_panel_detail(panel_id, generation, viewport, logical_width);
         } else {
             self.views
                 .begin_active_panel_read(panel_id, kind, generation);
@@ -353,10 +353,15 @@ impl ViewerApp {
         if runs.is_empty() {
             return;
         }
-        let physical_width = self.workspace.read(cx).overview_width;
+        let logical_width = self
+            .workspace
+            .read(cx)
+            .overview_logical_width
+            .ceil()
+            .max(1.) as u32;
         let axis = self.curve_axis(cx);
         self.session.update(cx, |session, cx| {
-            session.request_panel_overview(panel_id, runs, axis, physical_width, mode, cx);
+            session.request_panel_overview(panel_id, runs, axis, logical_width, mode, cx);
         });
     }
 
@@ -377,7 +382,9 @@ impl ViewerApp {
             self.request_panel_detail(
                 &panel_id,
                 viewport,
-                viewport_state.physical_width.max(1),
+                f32::from_bits(viewport_state.logical_width_bits)
+                    .ceil()
+                    .max(1.) as u32,
                 cx,
             );
         }
@@ -406,13 +413,13 @@ impl ViewerApp {
         &mut self,
         panel_id: &MetricPanelId,
         viewport: AlignmentViewport,
-        physical_width: u32,
+        logical_width: u32,
         cx: &mut Context<Self>,
     ) {
         self.request_panel_detail_for_runs(
             panel_id,
             viewport,
-            physical_width,
+            logical_width,
             self.active_visible_runs(cx),
             PanelReadMode::Replace,
             cx,
@@ -423,7 +430,7 @@ impl ViewerApp {
         &mut self,
         panel_id: &MetricPanelId,
         viewport: AlignmentViewport,
-        physical_width: u32,
+        logical_width: u32,
         runs: Vec<RunRef>,
         mode: PanelReadMode,
         cx: &mut Context<Self>,
@@ -437,7 +444,7 @@ impl ViewerApp {
                 PanelDetailQuery {
                     panel_id: panel_id.clone(),
                     viewport,
-                    physical_width,
+                    logical_width,
                     runs,
                     axis,
                     mode,
@@ -490,7 +497,9 @@ impl ViewerApp {
                 self.request_panel_detail_for_runs(
                     &panel.panel_id,
                     viewport,
-                    viewport_state.physical_width.max(1),
+                    f32::from_bits(viewport_state.logical_width_bits)
+                        .ceil()
+                        .max(1.) as u32,
                     missing_detail,
                     PanelReadMode::Merge,
                     cx,

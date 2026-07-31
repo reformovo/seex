@@ -177,11 +177,12 @@ pub(crate) fn baseline_delta(
         .iter()
         .find(|curve| &curve.run_ref == baseline)?;
     let point = curve
-        .evidence
-        .points
+        .chart_series
+        .as_ref()?
+        .points()
         .iter()
-        .min_by_key(|point| point.axis_value.abs_diff(hover.axis_value))?;
-    Some(hover.value - point.point.value_f64)
+        .min_by_key(|point| (point.x as i64).abs_diff(hover.axis_value))?;
+    Some(hover.value - point.y)
 }
 
 pub(crate) fn reasons_label(reasons: &[EvidenceReason]) -> String {

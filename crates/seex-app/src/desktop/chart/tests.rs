@@ -8,7 +8,7 @@ use crate::data::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker, rec
 use crate::domain::DataSourceId;
 use seex_chart_core::{DataPoint, Series, SeriesId};
 use seex_core::engine::client::NativeClient;
-use seex_model::alignment::{AlignedMetricPoint, AlignedMetricResult, AlignmentViewport};
+use seex_model::alignment::{AlignedMetricPoint, AlignmentViewport};
 use seex_model::comparison::EvidenceCompleteness;
 use seex_model::metric::{MetricKey, MetricPoint, Step};
 use seex_model::run::{Run, RunId, RunStatus};
@@ -90,6 +90,85 @@ fn render_compaction_caps_dense_paths_by_logical_width() {
     let compact = compact_render_points(&points, RENDER_BUCKET_WIDTH);
 
     assert!(compact.len() <= 2_504, "{} points remained", compact.len());
+    assert!(
+        compact.capacity() <= 2_504,
+        "capacity was {}",
+        compact.capacity()
+    );
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn render_resource_snapshot_counts_retained_geometry() {
+    let snapshot = synthetic_snapshot(2, 10_002);
+    let viewport = detail_viewport(&snapshot, None, None).expect("snapshot should draw");
+    let bounds = Bounds::new(point(px(0.), px(0.)), size(px(2_500.), px(800.)));
+    let mut adapter = ChartAdapter::default();
+    let runs = RenderRuns {
+        baseline: None,
+        emphasized: None,
+        visible: None,
+    };
+
+    adapter.prepare(
+        &snapshot,
+        1,
+        viewport,
+        bounds,
+        WindowAppearance::Light,
+        runs,
+    );
+    let first = adapter.resource_snapshot();
+    adapter.prepare(
+        &snapshot,
+        1,
+        viewport,
+        bounds,
+        WindowAppearance::Light,
+        runs,
+    );
+
+    assert_eq!(adapter.resource_snapshot(), first);
+    assert_eq!(first.projected_points, 20_004);
+    assert!(first.compacted_points <= 5_008);
+    assert_eq!(first.path_entries, 2);
+    assert!(first.path_vertices > first.compacted_points);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn removed_series_evict_projection_and_gpui_path_entries() {
+    let mut snapshot = synthetic_snapshot(2, 100);
+    let viewport = detail_viewport(&snapshot, None, None).expect("snapshot should draw");
+    let bounds = Bounds::new(point(px(0.), px(0.)), size(px(500.), px(200.)));
+    let mut adapter = ChartAdapter::default();
+    let runs = RenderRuns {
+        baseline: None,
+        emphasized: None,
+        visible: None,
+    };
+    adapter.prepare(
+        &snapshot,
+        1,
+        viewport,
+        bounds,
+        WindowAppearance::Light,
+        runs,
+    );
+    assert_eq!(adapter.detail_projection_cache.len(), 2);
+
+    snapshot.series.pop();
+    adapter.prepare(
+        &snapshot,
+        2,
+        viewport,
+        bounds,
+        WindowAppearance::Light,
+        runs,
+    );
+
+    assert_eq!(adapter.detail_projection_cache.len(), 1);
+    assert_eq!(adapter.resource_snapshot().path_entries, 1);
 }
 
 #[test]
@@ -206,7 +285,7 @@ fn hover_maps_a_rendered_point_back_to_stored_evidence() -> Result<(), Box<dyn s
                 axis: CurveAxis::Step,
             },
             viewport: AlignmentViewport::new(7, 8)?,
-            physical_width: 100,
+            logical_width: 100,
         }),
     )?;
     let event = recv_event_for_test(&events, Duration::from_secs(10))
@@ -279,12 +358,10 @@ fn synthetic_snapshot(series_count: usize, point_count: i64) -> CurveSnapshot {
                     started_at: timestamp,
                     finished_at: Some(timestamp),
                 },
-                evidence: AlignedMetricResult {
-                    source_row_count: points.len() as u64,
-                    points,
-                    completeness: EvidenceCompleteness::Complete,
-                    reasons: Vec::new(),
-                },
+                completeness: EvidenceCompleteness::Complete,
+                reasons: Vec::new(),
+                source_row_count: points.len() as u64,
+                returned_point_count: points.len() as u64,
                 chart_series: Some(chart_series),
             }
         })
@@ -337,34 +414,73 @@ fn ruler_hover_maps_each_curve_to_nearest_stored_evidence() {
     assert_ne!(points[0].canvas_position.y, points[1].canvas_position.y);
 }
 
-fn measure_cpu_budget(label: &str, warmups: usize, samples: usize, mut operation: impl FnMut()) {
-    for _ in 0..warmups {
+fn measure_cpu_budget(label: &str, mut operation: impl FnMut()) {
+    const CALIBRATION_TARGET: Duration = Duration::from_millis(50);
+    const SAMPLES: usize = 31;
+    const SINGLE_SAMPLES: usize = 200;
+
+    for _ in 0..20 {
         operation();
     }
-    let mut elapsed = Vec::with_capacity(samples);
-    for _ in 0..samples {
+    let mut maximum_single = Duration::ZERO;
+    for _ in 0..SINGLE_SAMPLES {
         let started = std::time::Instant::now();
         operation();
-        elapsed.push(started.elapsed());
+        maximum_single = maximum_single.max(started.elapsed());
     }
-    elapsed.sort_unstable();
-    let percentile = |percent: usize| elapsed[(samples * percent).div_ceil(100) - 1];
-    let p50 = percentile(50);
-    let p95 = percentile(95);
-    let maximum = elapsed[samples - 1];
+
+    let mut batch_iterations = 1_u32;
+    loop {
+        let started = std::time::Instant::now();
+        for _ in 0..batch_iterations {
+            operation();
+        }
+        if started.elapsed() >= CALIBRATION_TARGET || batch_iterations >= 1 << 24 {
+            break;
+        }
+        batch_iterations *= 2;
+    }
+    let mut elapsed_ns = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let started = std::time::Instant::now();
+        for _ in 0..batch_iterations {
+            operation();
+        }
+        elapsed_ns.push(started.elapsed().as_nanos() as f64 / f64::from(batch_iterations));
+    }
+    let raw_samples = elapsed_ns.clone();
+    elapsed_ns.sort_by(f64::total_cmp);
+    let percentile = |percent: usize| elapsed_ns[(SAMPLES * percent).div_ceil(100) - 1];
+    let p50_ns = percentile(50);
+    let p95_ns = percentile(95);
+    let maximum_ns = elapsed_ns[SAMPLES - 1];
+    let mut deviations = elapsed_ns
+        .iter()
+        .map(|sample| (sample - p50_ns).abs())
+        .collect::<Vec<_>>();
+    deviations.sort_by(f64::total_cmp);
+    let relative_mad = deviations[SAMPLES / 2] / p50_ns;
+    let reliable = relative_mad <= 0.02;
     println!(
-        "{label}: samples={samples}, p50={:.3} ms, p95={:.3} ms, max={:.3} ms",
-        p50.as_secs_f64() * 1_000.,
-        p95.as_secs_f64() * 1_000.,
-        maximum.as_secs_f64() * 1_000.,
+        "{label}: batch={batch_iterations}, samples={SAMPLES}, p50={:.3} ms, p95={:.3} ms, max={:.3} ms, single-max={:.3} ms, relative-mad={relative_mad:.4}",
+        p50_ns / 1_000_000.,
+        p95_ns / 1_000_000.,
+        maximum_ns / 1_000_000.,
+        maximum_single.as_secs_f64() * 1_000.,
+    );
+    println!(
+        "SEEX_PERF {{\"schema_version\":1,\"metric\":\"{label}\",\"unit\":\"ns/op\",\"batch_iterations\":{batch_iterations},\"samples\":{SAMPLES},\"raw_samples\":{:?},\"p50\":{p50_ns:.3},\"p95\":{p95_ns:.3},\"max_batch\":{maximum_ns:.3},\"max_single\":{:.3},\"relative_mad\":{relative_mad:.6},\"reliable\":{reliable}}}",
+        raw_samples,
+        maximum_single.as_nanos(),
     );
     assert!(
-        p95 <= Duration::from_micros(8_330),
-        "{label} p95 was {p95:?}"
+        p95_ns <= Duration::from_micros(8_330).as_nanos() as f64,
+        "{label} p95 was {:.3} ms",
+        p95_ns / 1_000_000.,
     );
     assert!(
-        maximum <= Duration::from_micros(16_700),
-        "{label} maximum was {maximum:?}"
+        maximum_single <= Duration::from_micros(16_700),
+        "{label} single-operation maximum was {maximum_single:?}"
     );
 }
 
@@ -379,17 +495,17 @@ fn interactive_chart_cpu_budget() {
     let mut brush = BrushState::new(home).expect("brush should initialize");
     brush.resize_start(2_000.).expect("brush should resize");
     brush.resize_end(8_000.).expect("brush should resize");
-    measure_cpu_budget("brush resize", 100, 1_000, || {
+    measure_cpu_budget("brush resize", || {
         brush.resize_start(2_001.).expect("brush should resize");
         brush.resize_start(2_000.).expect("brush should resize");
         black_box(brush);
     });
-    measure_cpu_budget("brush pan", 100, 1_000, || {
+    measure_cpu_budget("brush pan", || {
         brush.pan_by(1.).expect("brush should pan");
         brush.pan_by(-1.).expect("brush should pan");
         black_box(brush);
     });
-    measure_cpu_budget("brush zoom", 100, 1_000, || {
+    measure_cpu_budget("brush zoom", || {
         brush.zoom_at(5_000., 1.01).expect("brush should zoom");
         brush.zoom_at(5_000., 1. / 1.01).expect("brush should zoom");
         black_box(brush);
@@ -416,7 +532,7 @@ fn interactive_chart_cpu_budget() {
             visible: None,
         },
     ));
-    measure_cpu_budget("cached path preparation", 20, 200, || {
+    measure_cpu_budget("cached path preparation", || {
         black_box(adapter.prepare(
             &snapshot,
             1,
@@ -431,7 +547,7 @@ fn interactive_chart_cpu_budget() {
         ));
     });
     let mut revision = 2;
-    measure_cpu_budget("uncached path preparation", 20, 200, || {
+    measure_cpu_budget("uncached path preparation", || {
         black_box(adapter.prepare(
             &snapshot,
             revision,
@@ -446,10 +562,10 @@ fn interactive_chart_cpu_budget() {
         ));
         revision += 1;
     });
-    measure_cpu_budget("hit testing", 20, 200, || {
+    measure_cpu_budget("hit testing", || {
         black_box(adapter.hit_test(&snapshot, viewport, point(px(1_250.), px(400.)), &visible));
     });
-    measure_cpu_budget("ruler hover evidence", 100, 1_000, || {
+    measure_cpu_budget("ruler hover evidence", || {
         black_box(adapter.points_at_axis(&snapshot, viewport, 5_000.5, &visible));
     });
 }
