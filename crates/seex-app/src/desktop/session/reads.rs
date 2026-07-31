@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use gpui::{Context, px};
 use seex_model::alignment::AlignmentViewport;
 
+use crate::config::ConfiguredSource;
 use crate::data::DiscoveryRequest;
 use crate::data::query::CurveAxis;
 use crate::data::registry::SourceStatus;
@@ -27,6 +28,18 @@ struct PanelDetailQuery {
 }
 
 impl WorkbenchSession {
+    pub(crate) fn configure_sources(
+        &mut self,
+        sources: Vec<ConfiguredSource>,
+        visible_runs: &[RunRef],
+        cx: &mut Context<Self>,
+    ) {
+        for source in sources {
+            let source_id = self.sources.configure(source);
+            self.request_discovery(source_id, visible_runs, cx);
+        }
+    }
+
     pub(crate) fn import_source(
         &mut self,
         path: PathBuf,
@@ -213,6 +226,17 @@ impl WorkbenchSession {
 }
 
 impl ViewerApp {
+    pub(in crate::desktop::app) fn open_configured_sources(
+        &mut self,
+        sources: Vec<ConfiguredSource>,
+        cx: &mut Context<Self>,
+    ) {
+        let visible_runs = self.active_visible_runs(cx);
+        self.session.update(cx, |session, cx| {
+            session.configure_sources(sources, &visible_runs, cx);
+        });
+    }
+
     pub(in crate::desktop::app) fn restore_workbench(
         &mut self,
         document: WorkbenchDocument,

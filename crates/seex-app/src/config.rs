@@ -67,6 +67,27 @@ pub fn load_sources(
     Ok(merged.into_values().collect())
 }
 
+/// Loads Sources for the Viewer scope selected by an optional project root.
+pub fn load_sources_for_scope(
+    project_root: Option<&Path>,
+) -> Result<Vec<ConfiguredSource>, ConfigEditError> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    load_sources_for_scope_at(project_root, home.as_deref())
+}
+
+fn load_sources_for_scope_at(
+    project_root: Option<&Path>,
+    home: Option<&Path>,
+) -> Result<Vec<ConfiguredSource>, ConfigEditError> {
+    let global_base = home.or(project_root).unwrap_or_else(|| Path::new("."));
+    let global_path = global_base.join(".seex/config.toml");
+    let project_base = project_root.unwrap_or(global_base);
+    let project_path = project_root
+        .map(|root| root.join(".seex/config.toml"))
+        .unwrap_or_else(|| global_path.clone());
+    load_sources(&global_path, global_base, &project_path, project_base)
+}
+
 fn parse_sources(
     document: &DocumentMut,
     base_path: &Path,
@@ -292,6 +313,8 @@ mod tests {
         assert_eq!(sources[0].alias.as_str(), "local-benchmarks");
         assert_eq!(sources[0].projects[0].as_str(), "reader-benchmarks");
         assert_eq!(sources[1].root_path, home.join("experiments"));
+        let scoped = load_sources_for_scope_at(Some(&project), Some(&home))?;
+        assert_eq!(scoped.len(), 2);
 
         fs::write(
             &project_path,
