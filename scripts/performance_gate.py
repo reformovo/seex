@@ -328,7 +328,11 @@ def compare_v2_captures(
         raise ValueError("optimization requires a primary metric")
 
     failed_checks = [
-        f"{check['domain']}.{check['check']}" for run in candidate for check in run["checks"] if not check["passed"]
+        f"{check['domain']}.{check['check']}"
+        for runs in (baseline, candidate)
+        for run in runs
+        for check in run["checks"]
+        if not check["passed"]
     ]
     failed_floors: list[str] = []
     for floor in hard_floors:

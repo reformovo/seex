@@ -164,6 +164,23 @@ def test_v2_migration_checks_hard_floors_and_protected_regressions() -> None:
     assert verdict["regressions"]["query.duckdb.step.full"] > 0.03
 
 
+def test_v2_migration_rejects_baseline_check_failures() -> None:
+    baseline = _v2_runs(100.0)
+    baseline[0]["checks"].append(
+        performance_gate.V2Check(domain="query", check="parity", passed=False, detail="mismatch")
+    )
+
+    verdict = performance_gate.compare_v2_captures(
+        baseline,
+        _v2_runs(100.0),
+        "migration",
+        primary=None,
+    )
+
+    assert verdict["verdict"] == "regression"
+    assert verdict["failed_checks"] == ["query.parity"]
+
+
 def test_v2_unreliable_primary_is_no_change() -> None:
     candidate = _v2_runs(80.0, reliable=False)
 
