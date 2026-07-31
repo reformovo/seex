@@ -112,14 +112,20 @@ warm/peak/final RSS was 169,213,952/173,260,800/169,213,952 bytes; dual View was
 168,378,368/172,376,064/168,378,368 bytes. Both RSS verdicts were `pass` with
 no monotonic growth.
 
-An ordinary release binary from the baseline revision produced a 10.835-second
-Metal System Trace with Instruments 16.0 (17F113). The exported trace records
-57 presented handlers and zero hang risks, potential hangs, or drawable waits.
-It enumerated the built-in 3024x1964 120 Hz display and two external 3840x2160
-60 Hz displays. Non-interactive launch did not establish which display owned
-the window, and the 280 Hz display used by the historical Viewer trace was not
-connected. Therefore this capture proves trace reproducibility and metadata,
-but high-refresh behavior remains an explicit non-deciding blocker.
+An ordinary release binary from the baseline revision produced a 25.652-second
+launch-mode Metal System Trace with Instruments 16.0 (17F113). Computer Use
+confirmed the real product window contained 10 Runs and the six retained
+Metrics, and verified `cmd-=` changed the viewport before the traced keyboard
+zoom-in/out sequence. The trace identifies XG27AQWMG at 2560x1440 and 280 Hz as
+the main display and records 253 presented handlers.
+
+After the first two seconds, 68 of 70 presentations used one approximately
+3.572 ms refresh period and two used two periods; the 7.144 ms maximum did not
+exceed two periods. Two post-warm drawable waits exceeded 7.15 ms, the maximum
+was 12.510 ms, and none exceeded 16.7 ms. Instruments reported no hang risks
+and one startup potential hang at 0.846 seconds for 137.65 ms. These remain
+explicit original-baseline evidence rather than being hidden by the passing
+CPU hard floors and resource gates.
 
 Representative commands:
 
@@ -132,12 +138,31 @@ python scripts/performance_gate.py rss --interval 0.05 \
   representative_workbench_stays_responsive_while_a_source_is_pending \
   -- --ignored --nocapture
 
-xcrun xctrace record --template 'Metal System Trace' --time-limit 10s \
-  --output /tmp/seex-perf/u0/viewer-metal-60hz-9610248.trace \
-  --launch -- /tmp/seex-perf/targets/u0-product/release/seex-app \
+xcrun xctrace record --template 'Metal System Trace' --time-limit 25s \
+  --output /tmp/seex-perf/u0/viewer-metal-280hz-interactive-9610248.trace \
+  --launch -- /tmp/seex-perf/u0/Seex-9610248-280hz.app/Contents/MacOS/seex-app \
   /tmp/seex-perf/fixtures/viewer-v2-9610248/duckdb
 ```
 
-Ordinary-release instrumentation isolation and the complete three-domain
-self-comparison remain open. U1 must not begin until both close and the 280 Hz
-environmental limitation is accepted or reproduced.
+## U0 gate closure
+
+Reporting, query, and Viewer each ran seven alternating AB/BA process pairs
+from independent release targets at revision
+`961024801569e28507041e079e4d47c413f728a5`. Original and rolling comparisons
+both returned `pass` in all three domains, with no failed correctness checks,
+hard floors, or reliable protected regressions. Non-deciding metrics remain
+listed in their captures rather than being promoted to evidence.
+
+The alternating instrumentation comparison also passed. Six reliable query
+metrics had test-support overhead from -1.139% to +0.609%; three reliable
+Viewer CPU metrics had overhead from +0.535% to +1.593%. An ordinary release
+feature graph contained only `default` and `desktop`; its dynamic dependencies
+were unchanged system frameworks and libraries. A stripped binary scan found
+no `SEEX_PERF`, RSS phase, or resource-counter strings.
+
+The final gates passed: Rust fmt, Clippy for all targets/features with warnings
+denied, check and tests; Ruff format/check, Pyright, and 134 Python tests with
+two opt-in MinIO tests skipped; release maturin develop install and wheel
+build. `cargo test` retained one existing default-feature test-only unused
+import warning, while the required all-feature Clippy warnings-as-errors gate
+passed. U0 is closed; U1 may begin from the frozen original/rolling baseline.

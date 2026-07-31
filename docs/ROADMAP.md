@@ -76,7 +76,7 @@ It changes no production behavior and requires no performance improvement.
   migration or optimization candidate.
 - [x] Encode migration and optimization policies from the Execution Contract,
   including hard floors, Pass, No-change, and Regression outcomes.
-- [ ] Keep resource counters behind test-support/release test configuration and
+- [x] Keep resource counters behind test-support/release test configuration and
   prove an ordinary release build contains no counter state or production log.
 
 #### Workloads
@@ -97,15 +97,15 @@ It changes no production behavior and requires no performance improvement.
 
 #### Baseline freeze and exit
 
-- [ ] Freeze the pre-migration worktree as the permanent original baseline and
+- [x] Freeze the pre-migration worktree as the permanent original baseline and
   first rolling baseline. Preserve the current accepted logical-budget,
   compact-snapshot, bounded-geometry, and shared-DuckDB improvements.
 - [x] Record exact machine, OS, Rust toolchain, display/scale, fixture identity,
   sample count, commands, and known environmental blockers in the performance
   validation document.
-- [ ] Verify gate instrumentation does not change ordinary release API,
+- [x] Verify gate instrumentation does not change ordinary release API,
   behavior, binary dependencies, or reliable CPU results by more than 3%.
-- [ ] Exit U0 only when all three domains can compare a candidate against both
+- [x] Exit U0 only when all three domains can compare a candidate against both
   baselines and reproduce correctness and resource results.
 
 ### U1: Public `seex` Facade and Reader First

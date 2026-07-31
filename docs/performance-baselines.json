@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "status": "u0-partial",
+  "status": "u0-complete",
   "original": {
     "source_revision": "961024801569e28507041e079e4d47c413f728a5",
     "rolling_revision": "961024801569e28507041e079e4d47c413f728a5",
@@ -13,7 +13,7 @@
       "python": "3.13.2",
       "uv": "0.8.12",
       "instruments": "16.0 (17F113)",
-      "displays": "built-in 3024x1964 at 120 Hz; two external 3840x2160 at 60 Hz"
+      "displays": "XG27AQWMG 2560x1440 at 280 Hz main; built-in 3024x1964 at 120 Hz"
     },
     "domains": {
       "reporting": {
@@ -121,15 +121,39 @@
           "dual_verdict": "pass"
         },
         "metal": {
-          "capture": "60/120 Hz connected-display metadata; 10.835 s Metal System Trace",
-          "presented_handlers": 57,
+          "capture": "XG27AQWMG 2560x1440 at 280 Hz; 25.652 s launch-mode Metal System Trace",
+          "presented_handlers": 253,
+          "post_warm_presented_handlers": 70,
+          "post_warm_max_presented_ns": 7143916,
+          "post_warm_two_period_presentations": 2,
+          "post_warm_max_drawable_wait_ns": 12509667,
+          "post_warm_drawable_waits_over_16_7_ms": 0,
           "hang_risks": 0,
-          "potential_hangs": 0,
-          "drawable_waits": 0,
-          "high_refresh_blocker": "280 Hz display unavailable; historical trace remains non-deciding evidence"
+          "potential_hangs": ["0.846 s: 137.65 ms startup"],
+          "manual_conclusion": "68 post-warm presentations used one 280 Hz period and 2 used two periods; none exceeded two periods"
         },
         "correctness": "pass: six-metric resources, four-way concurrency, supersession, stale retention, budgets, CPU floors and RSS"
       }
+    },
+    "gate_close": {
+      "self_comparison": {
+        "reporting": "pass: original and rolling, 7 AB/BA pairs",
+        "query": "pass: original and rolling, 7 AB/BA pairs",
+        "viewer": "pass: original and rolling, 7 AB/BA pairs"
+      },
+      "instrumentation_isolation": {
+        "query_max_reliable_overhead": 0.00609,
+        "viewer_cpu_max_reliable_overhead": 0.01593,
+        "verdict": "pass: both below 3%"
+      },
+      "ordinary_release": {
+        "features": ["default", "desktop"],
+        "test_support_present": false,
+        "marker_scan": "pass: no SEEX_PERF, RSS phase, or resource-counter strings",
+        "stripped_binary_sha256": "31299227049f951ed764e8bfc943d6b798ba074a39c3c461f8cabc22eddac707",
+        "dependencies": "unchanged macOS system frameworks and libraries"
+      },
+      "verification": "pass: fmt, Clippy, check, Rust/Python tests, Ruff, Pyright, release develop install and wheel build"
     },
     "raw_artifacts": {
       "reporting_rust": {
@@ -205,12 +229,28 @@
         "sha256": "220c740bfd5ffcc9e40d856acd2ba2e4d8b0b0246f4cdac33dc3c13e48baf74e"
       },
       "viewer_metal_toc": {
-        "path": "/tmp/seex-perf/u0/viewer-metal-60hz-9610248-toc.xml",
-        "sha256": "df1e8a351b28e951b98d01b668eb9393746c08a0e5cc600bc56b5eef6087b959"
+        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-interactive-9610248-toc.xml",
+        "sha256": "737945eac9217cb8eceb9787444bc92b674c80d4e135b33ee231e5ec15c4829b"
       },
       "viewer_metal_file_manifest": {
-        "path": "/tmp/seex-perf/u0/viewer-metal-60hz-9610248-files.sha256",
-        "sha256": "137515fe5a236e020bafa5a936e2b2b744fbdcf522b3eee645a3d5cb06956d37"
+        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-interactive-9610248-files.sha256",
+        "sha256": "267b55c192a6d09633db4e72e36042cfcc8c6e552af42abda919f7c0159c6f01"
+      },
+      "reporting_pair": {
+        "path": "/tmp/seex-perf/u0/reporting-pair-9610248.json",
+        "sha256": "db1fe1d1f90540d5d46eec4f96823efbf7ba2f38441b734b55ae89c5785cb91f"
+      },
+      "viewer_pair": {
+        "path": "/tmp/seex-perf/u0/viewer-pair-9610248.json",
+        "sha256": "45ae5685c6bacb80f4a88de781c68c704d077a74501c887c062a133b313c9915"
+      },
+      "instrumentation_query_pair": {
+        "path": "/tmp/seex-perf/u0/instrumentation-query-pair-9610248.json",
+        "sha256": "bbcdc07b14536e985f562683b5318c3ba73f46e578bf1f4eb6e954ded062aab1"
+      },
+      "instrumentation_cpu_pair": {
+        "path": "/tmp/seex-perf/u0/instrumentation-cpu-pair-9610248.json",
+        "sha256": "62a2606509f8d06e3a7b888b43339846680b926ff299e560586748161deebe36"
       }
     }
   }
