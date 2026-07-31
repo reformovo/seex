@@ -6,6 +6,53 @@ use seex_model::types::ProjectId;
 
 pub const MAX_SELECTED_RUNS: usize = 20;
 
+/// Stable portable identity assigned to one imported Data source.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct SourceAlias(String);
+
+impl SourceAlias {
+    /// Creates a lowercase portable alias.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceAliasError::Invalid`] unless the alias starts with an
+    /// ASCII lowercase letter or digit and contains only lowercase letters,
+    /// digits, dots, hyphens, or underscores.
+    pub fn new(value: impl Into<String>) -> Result<Self, SourceAliasError> {
+        let value = value.into();
+        let mut characters = value.chars();
+        let starts_portably = characters
+            .next()
+            .is_some_and(|character| character.is_ascii_lowercase() || character.is_ascii_digit());
+        let remains_portable = characters.all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '-' | '_')
+        });
+        if !starts_portably || !remains_portable {
+            return Err(SourceAliasError::Invalid);
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SourceAlias {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// Invalid stable Source alias.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SourceAliasError {
+    #[error("Source alias must be a lowercase portable identifier")]
+    Invalid,
+}
+
 /// Stable viewer-local identity for one imported native source.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct DataSourceId(String);
@@ -90,7 +137,10 @@ mod tests {
     use seex_model::run::{Run, RunId, RunStatus};
     use seex_model::types::ProjectId;
 
-    use super::{DataSourceId, MAX_SELECTED_RUNS, RunRef, SelectionError, run_matches_filter};
+    use super::{
+        DataSourceId, MAX_SELECTED_RUNS, RunRef, SelectionError, SourceAlias, SourceAliasError,
+        run_matches_filter,
+    };
 
     fn run_ref(source: &str, project: &str, run: &str) -> RunRef {
         RunRef::new(
@@ -107,6 +157,16 @@ mod tests {
             SelectionError::RunLimit.to_string(),
             "at most 20 Runs can be selected"
         );
+    }
+
+    #[test]
+    fn source_alias_accepts_portable_names_and_rejects_paths_or_display_names() {
+        let alias = SourceAlias::new("local-benchmarks").expect("portable alias should be valid");
+
+        assert_eq!(alias.as_str(), "local-benchmarks");
+        for invalid in ["", "Research", ".hidden", "/tmp/research", "source alias"] {
+            assert_eq!(SourceAlias::new(invalid), Err(SourceAliasError::Invalid));
+        }
     }
 
     #[test]
