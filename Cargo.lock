@@ -5439,6 +5439,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "seex"
+version = "0.1.0-beta.0"
+dependencies = [
+ "seex-core",
+ "seex-model",
+ "seex-storage",
+]
+
+[[package]]
 name = "seex-app"
 version = "0.1.0-beta.0"
 dependencies = [
