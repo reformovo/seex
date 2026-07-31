@@ -138,6 +138,39 @@ class V2Verdict(TypedDict):
     reason: str
 
 
+class CandidateSpec(TypedDict):
+    """Scope and policy declared before running one candidate."""
+
+    name: str
+    candidate_type: Literal["migration", "optimization"]
+    primary: str | None
+    protected: list[str]
+    hard_floors: list[HardFloor]
+    fixture: str
+    commands: list[list[str]]
+    changed_files: list[str]
+
+
+class V2Capture(TypedDict):
+    """Repeated schema-v2 workload invocations from one binary."""
+
+    schema_version: Literal[2]
+    record_type: Literal["capture"]
+    environment: dict[str, str | bool]
+    command: list[str]
+    runs: list[V2Output]
+
+
+class V2Pair(TypedDict):
+    """Alternating baseline and candidate captures."""
+
+    schema_version: Literal[2]
+    record_type: Literal["pair"]
+    execution_order: list[list[Literal["baseline", "candidate"]]]
+    baseline: V2Capture
+    candidate: V2Capture
+
+
 def _finite_number(record: dict[str, object], field: str) -> float:
     value = record.get(field)
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
@@ -325,6 +358,92 @@ def compare_v2_captures(
         failed_floors=failed_floors,
         reason=reason,
     )
+
+
+def validate_candidate_spec(spec: CandidateSpec) -> None:
+    """Validates the bounded scope declared for a performance candidate."""
+    if not spec["name"].strip() or not spec["fixture"].strip() or not spec["commands"]:
+        raise ValueError("candidate name, fixture, and commands are required")
+    if len(spec["changed_files"]) > 5:
+        raise ValueError("ordinary candidates may declare no more than five changed files")
+    if spec["candidate_type"] == "optimization" and spec["primary"] is None:
+        raise ValueError("optimization candidates require a primary metric")
+
+
+def capture_v2(command: Sequence[str], repeats: int = _REQUIRED_PAIRS) -> V2Capture:
+    """Runs one schema-v2 workload repeatedly in independent processes."""
+    if repeats <= 0:
+        raise ValueError("performance capture requires at least one run")
+    return V2Capture(
+        schema_version=2,
+        record_type="capture",
+        environment=_environment(),
+        command=list(command),
+        runs=[parse_v2_output(_command_output(command)) for _ in range(repeats)],
+    )
+
+
+def pair_v2(
+    baseline_command: Sequence[str],
+    candidate_command: Sequence[str],
+    repeats: int = _REQUIRED_PAIRS,
+) -> V2Pair:
+    """Captures AB/BA process pairs so fixed execution order cannot decide a result."""
+    if repeats < _REQUIRED_PAIRS:
+        raise ValueError(f"paired capture requires at least {_REQUIRED_PAIRS} runs")
+    baseline_runs: list[V2Output] = []
+    candidate_runs: list[V2Output] = []
+    execution_order: list[list[Literal["baseline", "candidate"]]] = []
+    for index in range(repeats):
+        order: list[Literal["baseline", "candidate"]] = (
+            ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
+        )
+        execution_order.append(order)
+        for role in order:
+            command = baseline_command if role == "baseline" else candidate_command
+            output = parse_v2_output(_command_output(command))
+            (baseline_runs if role == "baseline" else candidate_runs).append(output)
+    environment = _environment()
+    return V2Pair(
+        schema_version=2,
+        record_type="pair",
+        execution_order=execution_order,
+        baseline=V2Capture(
+            schema_version=2,
+            record_type="capture",
+            environment=environment,
+            command=list(baseline_command),
+            runs=baseline_runs,
+        ),
+        candidate=V2Capture(
+            schema_version=2,
+            record_type="capture",
+            environment=environment,
+            command=list(candidate_command),
+            runs=candidate_runs,
+        ),
+    )
+
+
+def compare_v2_baselines(
+    original: V2Pair,
+    rolling: V2Pair,
+    spec: CandidateSpec,
+) -> dict[str, V2Verdict | str]:
+    """Reports both baselines while using rolling as the acceptance decision."""
+    validate_candidate_spec(spec)
+    results = {
+        role: compare_v2_captures(
+            pair["baseline"]["runs"],
+            pair["candidate"]["runs"],
+            spec["candidate_type"],
+            primary=spec["primary"],
+            protected=spec["protected"],
+            hard_floors=spec["hard_floors"],
+        )
+        for role, pair in (("original", original), ("rolling", rolling))
+    }
+    return {**results, "verdict": results["rolling"]["verdict"]}
 
 
 def parse_output(output: str) -> dict[str, MetricSample]:

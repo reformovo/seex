@@ -151,6 +151,41 @@ def test_v2_unreliable_primary_is_no_change() -> None:
     assert verdict["unreliable"] == ["query.duckdb.step.full"]
 
 
+def test_v2_pair_alternates_execution_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+
+    def fake_output(command: list[str]) -> str:
+        commands.append(command)
+        return _v2_metric(relative_mad=0.0, reliable=True)
+
+    monkeypatch.setattr(performance_gate, "_command_output", fake_output)
+    monkeypatch.setattr(performance_gate, "_environment", dict)
+
+    pair = performance_gate.pair_v2(["baseline"], ["candidate"])
+
+    assert pair["execution_order"][:2] == [["baseline", "candidate"], ["candidate", "baseline"]]
+    assert commands[:4] == [["baseline"], ["candidate"], ["candidate"], ["baseline"]]
+
+
+def test_candidate_spec_enforces_scope_and_optimization_primary() -> None:
+    spec = performance_gate.CandidateSpec(
+        name="candidate",
+        candidate_type="optimization",
+        primary=None,
+        protected=[],
+        hard_floors=[],
+        fixture="fixture-v2",
+        commands=[["benchmark"]],
+        changed_files=[],
+    )
+    with pytest.raises(ValueError, match="primary"):
+        performance_gate.validate_candidate_spec(spec)
+    spec["primary"] = "query.duckdb.step.full"
+    spec["changed_files"] = [f"file-{index}" for index in range(6)]
+    with pytest.raises(ValueError, match="five"):
+        performance_gate.validate_candidate_spec(spec)
+
+
 def test_compare_accepts_consistent_improvement() -> None:
     verdict = performance_gate.compare_captures(
         _capture(100.0),
