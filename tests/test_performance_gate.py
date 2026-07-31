@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+import statistics
 
 import pytest
 
@@ -47,6 +48,12 @@ def test_parse_output_extracts_machine_records() -> None:
 
 
 def _v2_metric(**updates: object) -> str:
+    raw_samples = updates.get("raw_samples", [10.0, 11.0, 12.0])
+    assert isinstance(raw_samples, list)
+    ordered = sorted(float(value) for value in raw_samples)
+    p50 = statistics.median(ordered)
+    deviations = [abs(sample - p50) for sample in ordered]
+    mad = statistics.median(deviations)
     record: dict[str, object] = {
         "schema_version": 2,
         "record_type": "metric",
@@ -56,12 +63,12 @@ def _v2_metric(**updates: object) -> str:
         "direction": "lower",
         "batch_iterations": 2,
         "samples": 3,
-        "raw_samples": [10.0, 11.0, 12.0],
-        "mad": 1.0,
-        "relative_mad": 1.0 / 11.0,
-        "p50": 11.0,
-        "p95": 12.0,
-        "max": 12.0,
+        "raw_samples": raw_samples,
+        "mad": mad,
+        "relative_mad": mad / p50 if p50 else 0.0,
+        "p50": p50,
+        "p95": ordered[(len(ordered) * 95 + 99) // 100 - 1],
+        "max": ordered[-1],
         "reliable": False,
     }
     record.update(updates)
@@ -99,6 +106,11 @@ def test_v2_timing_below_ten_milliseconds_is_non_deciding() -> None:
         ({"unit": "milliseconds"}, "unsupported"),
         ({"raw_samples": [10.0]}, "must match"),
         ({"raw_samples": [10.0, float("nan"), 12.0]}, "finite"),
+        ({"p50": 10.0}, "p50 does not match"),
+        ({"p95": 11.0}, "p95 does not match"),
+        ({"max": 11.0}, "max does not match"),
+        ({"mad": 2.0}, "mad does not match"),
+        ({"relative_mad": 0.0}, "relative_mad does not match"),
     ],
 )
 def test_parse_v2_output_rejects_invalid_deciding_records(updates: dict[str, object], message: str) -> None:
@@ -110,8 +122,6 @@ def _v2_runs(value: float, **updates: object) -> list[performance_gate.V2Output]
     values: dict[str, object] = {
         "batch_iterations": 200_000,
         "raw_samples": [value] * 3,
-        "p50": value,
-        "relative_mad": 0.0,
         "reliable": True,
     }
     values.update(updates)
@@ -134,7 +144,7 @@ def test_v2_migration_checks_hard_floors_and_protected_regressions() -> None:
     floor = performance_gate.HardFloor(
         metric="query.duckdb.step.full", statistic="p95", operator="at_most", value=110.0
     )
-    candidate = _v2_runs(104.0, p95=111.0)
+    candidate = _v2_runs(104.0, raw_samples=[104.0, 104.0, 111.0])
     candidate[0]["checks"].append(
         performance_gate.V2Check(domain="query", check="parity", passed=False, detail="mismatch")
     )
@@ -155,7 +165,7 @@ def test_v2_migration_checks_hard_floors_and_protected_regressions() -> None:
 
 
 def test_v2_unreliable_primary_is_no_change() -> None:
-    candidate = _v2_runs(80.0, relative_mad=0.021, reliable=False)
+    candidate = _v2_runs(80.0, reliable=False)
 
     verdict = performance_gate.compare_v2_captures(
         _v2_runs(100.0), candidate, "optimization", primary="query.duckdb.step.full"
@@ -170,7 +180,7 @@ def test_v2_pair_alternates_execution_order(monkeypatch: pytest.MonkeyPatch) -> 
 
     def fake_output(command: list[str]) -> str:
         commands.append(command)
-        return _v2_metric(relative_mad=0.0, reliable=True)
+        return _v2_metric()
 
     monkeypatch.setattr(performance_gate, "_command_output", fake_output)
     monkeypatch.setattr(performance_gate, "_environment", dict)

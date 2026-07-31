@@ -12,6 +12,7 @@ import pathlib
 import platform
 import queue
 import shlex
+import statistics
 import subprocess
 import sys
 import threading
@@ -202,6 +203,27 @@ def _calibrated(unit: str, batch_iterations: int, raw_samples: Sequence[float]) 
     return all(sample >= 10_000_000 for sample in elapsed)
 
 
+def _validate_metric_summary(record: dict[str, object], raw_samples: Sequence[float]) -> dict[str, float]:
+    ordered = sorted(raw_samples)
+    p50 = float(statistics.median(ordered))
+    deviations = [abs(sample - p50) for sample in ordered]
+    expected = {
+        "mad": float(statistics.median(deviations)),
+        "relative_mad": _relative_mad(ordered),
+        "p50": p50,
+        "p95": ordered[(len(ordered) * 95 + 99) // 100 - 1],
+        "max": ordered[-1],
+    }
+    parsed: dict[str, float] = {}
+    for field, expected_value in expected.items():
+        value = _finite_number(record, field)
+        absolute_tolerance = 1e-6 if field == "relative_mad" else 1e-3
+        if not math.isclose(value, expected_value, rel_tol=1e-9, abs_tol=absolute_tolerance):
+            raise ValueError(f"SEEX_PERF {field} does not match raw_samples")
+        parsed[field] = value
+    return parsed
+
+
 def parse_v2_output(output: str) -> V2Output:
     """Parses strict schema-v2 metric and correctness records."""
     metrics: dict[str, V2Metric] = {}
@@ -244,6 +266,7 @@ def parse_v2_output(output: str) -> V2Output:
             raise TypeError("SEEX_PERF raw_samples must contain only finite numbers")
         if not isinstance(reliable, bool):
             raise TypeError("SEEX_PERF reliable must be boolean")
+        summary = _validate_metric_summary(decoded, parsed)
         key = f"{domain}.{metric}"
         if key in metrics:
             raise ValueError(f"duplicate SEEX_PERF metric {key!r}")
@@ -255,11 +278,11 @@ def parse_v2_output(output: str) -> V2Output:
             batch_iterations=batch_iterations,
             samples=sample_count,
             raw_samples=parsed,
-            mad=_finite_number(decoded, "mad"),
-            relative_mad=_finite_number(decoded, "relative_mad"),
-            p50=_finite_number(decoded, "p50"),
-            p95=_finite_number(decoded, "p95"),
-            maximum=_finite_number(decoded, "max"),
+            mad=summary["mad"],
+            relative_mad=summary["relative_mad"],
+            p50=summary["p50"],
+            p95=summary["p95"],
+            maximum=summary["max"],
             reliable=reliable and _calibrated(cast(str, unit), batch_iterations, parsed),
         )
     if not metrics and not checks:
