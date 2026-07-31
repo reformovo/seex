@@ -101,7 +101,8 @@ It changes no production behavior and requires no performance improvement.
 
 - [x] Freeze the pre-migration worktree as the permanent original baseline and
   first rolling baseline. Preserve the current accepted logical-budget,
-  compact-snapshot, bounded-geometry, and shared-DuckDB improvements.
+  compact-snapshot, bounded-geometry, and shared-DuckDB improvements. The
+  corrected U0 code baseline is `e1f248fbb66eed7c49d36ef393e263f6c72df721`.
 - [x] Record exact machine, OS, Rust toolchain, display/scale, fixture identity,
   sample count, commands, and known environmental blockers in the performance
   validation document.

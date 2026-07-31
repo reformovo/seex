@@ -2,15 +2,15 @@
   "schema_version": 2,
   "status": "u0-complete",
   "original": {
-    "source_revision": "961024801569e28507041e079e4d47c413f728a5",
-    "rolling_revision": "961024801569e28507041e079e4d47c413f728a5",
+    "source_revision": "e1f248fbb66eed7c49d36ef393e263f6c72df721",
+    "rolling_revision": "e1f248fbb66eed7c49d36ef393e263f6c72df721",
     "environment": {
       "captured_at": "2026-07-31",
       "dirty": false,
       "machine": "arm64",
       "os": "macOS 26.3",
       "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
-      "python": "3.13.2",
+      "python": "3.14.6 gate driver; 3.13.2 project virtual environment",
       "uv": "0.8.12",
       "instruments": "16.0 (17F113)",
       "displays": "system_profiler: XG27AQWMG 2560x1440 at 280 Hz main; built-in 3024x1964 at 120 Hz"
@@ -57,13 +57,14 @@
           "metrics": ["loss"],
           "effective_points_per_series": 1000000,
           "semantics": "lww-spikes-v1",
-          "duckdb_manifest_sha256": "61e9975cc2a3f8e0ba042e66942f24ebe86e7ee5f9b11235451fce931de6afd5",
-          "sqlite_manifest_sha256": "4d219bb2d9cae3eae4713ea8bafa21977d0c7ab5c5bade9fc44f563c2b6f2558"
+          "physical_rows_per_backend": 10000010,
+          "data_files_per_backend": 20,
+          "duckdb_manifest_sha256": "3bb681c78258b17bc9a96d64d37c06dd2cd433eee349f3158520f72a272c680b",
+          "sqlite_manifest_sha256": "49c4625ac9d18ab0c1c72d4777592477770c924e578b16e5ab6acd08e3ce11cd"
         },
         "reliable_protected_p50_ns": {
-          "duckdb.reader.step.full": 2240429792,
-          "duckdb.reader.timestamp.narrow": 530043250,
-          "sqlite.reader.step.full": 2263255333
+          "duckdb.reader.step.narrow": 385271500,
+          "sqlite.reader.step.narrow": 406074083
         },
         "viewer_equivalent_p50_ns": {
           "duckdb.overview": 1318411583,
@@ -74,7 +75,7 @@
           "sqlite.narrow.detail": 552188250
         },
         "non_deciding_metrics": {
-          "reader_axes": "9 of 12 protected metrics had cross-process relative MAD above 2%",
+          "reader_axes": "10 of 12 protected metrics had cross-process relative MAD above 2%",
           "rss": "warm marker precedes lazy native initialization"
         },
         "rss": {
@@ -93,34 +94,35 @@
           "runs": 10,
           "metrics": ["loss", "accuracy", "latency", "memory", "throughput", "error"],
           "effective_points_per_series": 1000000,
-          "manifest_sha256": "7883a5597abd69c7d1fb6b169ed81f9a22be2becb6eec5cd2d326f1e6a13f827"
+          "physical_rows": 60000060,
+          "data_files": 120,
+          "manifest_sha256": "59e48cc44180520f4723cb957a9de95e98a8ed594839045a5a26fe8bd2e4188d"
         },
         "reliable_cpu_p95_ns": {
-          "brush.zoom": 25,
-          "cached.path.preparation": 163184,
-          "uncached.path.preparation": 2029612,
-          "hit.testing": 201682,
-          "ruler.hover.evidence": 1853
+          "brush.zoom": 27.932,
+          "uncached.path.preparation": 2158830.75,
+          "ruler.hover.evidence": 2114.942
         },
         "hard_floors": {
           "p95_at_most_ns": 8330000,
           "single_operation_at_most_ns": 16700000,
-          "maximum_observed_single_ns": 2276792,
+          "maximum_observed_single_ns": 5741583,
           "verdict": "pass"
         },
         "matrix": {
-          "single_view": "pass: concurrency=4, superseded=31, stale=1, retained=0",
-          "dual_view": "pass: concurrency=4, superseded=47, stale=1, retained=0",
+          "single_view": "pass: concurrency=4, superseded=56, stale=0, retained=0",
+          "dual_view": "pass: concurrency=4, superseded=45, stale=0, retained=0",
           "physical_scales": [1, 2, 3],
           "zoom_cycles": 30
         },
         "rss": {
-          "single_warm_peak_final_bytes": [169213952, 173260800, 169213952],
-          "dual_warm_peak_final_bytes": [168378368, 172376064, 168378368],
+          "single_warm_peak_final_bytes": [171540480, 175849472, 171524096],
+          "dual_warm_peak_final_bytes": [170164224, 174145536, 170147840],
           "single_verdict": "pass",
           "dual_verdict": "pass"
         },
         "metal": {
+          "source_revision": "961024801569e28507041e079e4d47c413f728a5",
           "capture": "XG27AQWMG 2560x1440 at 280 Hz; 90.781 s launch-mode Metal System Trace with user-performed zoom",
           "warmup_seconds": 5,
           "presented_handlers": 10613,
@@ -134,16 +136,17 @@
           "hang_risks": 0,
           "potential_hangs": ["3.398 s: 1.041 s startup/loading before warmup"],
           "display_metadata_note": "system_profiler reported XG27AQWMG as main; xctrace device-display-info marked the built-in display as main but recorded the external display at 280 Hz",
-          "manual_conclusion": "after a 5 s warmup, all 4976 timed presentations in the trace containing user-performed zoom used one approximately 3.572 ms period"
+          "manual_conclusion": "after a 5 s warmup, all 4976 timed presentations in the trace containing user-performed zoom used one approximately 3.572 ms period",
+          "retention_reason": "subsequent corrections changed only test workloads and gate validation; the ordinary product binary is behavior-equivalent"
         },
         "correctness": "pass: six-metric resources, four-way concurrency, supersession, stale retention, budgets, CPU floors and RSS"
       }
     },
     "gate_close": {
       "self_comparison": {
-        "reporting": "pass: original and rolling, 7 AB/BA pairs",
-        "query": "pass: original and rolling, 7 AB/BA pairs",
-        "viewer": "pass: original and rolling, 7 AB/BA pairs"
+        "reporting": "pass: original and rolling, 7 AB/BA pairs; 0/6 protected metrics reliable",
+        "query": "pass: original and rolling, 7 AB/BA pairs; 2/12 protected metrics reliable",
+        "viewer": "pass: original and rolling, 7 AB/BA pairs; 3/7 protected metrics reliable"
       },
       "instrumentation_isolation": {
         "query_max_reliable_overhead": 0.00609,
@@ -189,12 +192,12 @@
         "sha256": "7eba849d8cbd803b58587fb3d79d3f68294de7804eda75e49f314dc911a75a61"
       },
       "query_semantics": {
-        "path": "/tmp/seex-perf/u0/query-semantics-9610248.json",
-        "sha256": "4488ed606da1fcfabca836abdb76a269bb39704e3762c6f5c50dbeba61102e93"
+        "path": "/tmp/seex-perf/u0/query-semantics-e1f248f.json",
+        "sha256": "85b175e87e510df679cbd470f1cf37e5bcb94b7ed80c5c28f6cf11636af3e6f9"
       },
       "query_axes": {
-        "path": "/tmp/seex-perf/u0/query-axes-9610248.json",
-        "sha256": "1df27d42b91fbfc14b40ecbfa69abbb6010de148813fe7f0e5be0c7c81a7f85b"
+        "path": "/tmp/seex-perf/u0/query-axes-e1f248f.json",
+        "sha256": "a088fe9d9a45af7cd5c30dc0d02554e4fbc8ec7073157e61be75148fe32c5e8e"
       },
       "query_viewer_equivalent": {
         "path": "/tmp/seex-perf/u0/query-viewer-9610248.json",
@@ -205,8 +208,8 @@
         "sha256": "8cfea4545769eca17dba5fef31a5c8f37458771913725d419ca8a5ff4dd9cebb"
       },
       "query_pair": {
-        "path": "/tmp/seex-perf/u0/query-pair-9610248.json",
-        "sha256": "c68b0347a66027a84eb628bc4991e75d96601bc7a93d64ae0140222172d3d97d"
+        "path": "/tmp/seex-perf/u0/query-pair-e1f248f.json",
+        "sha256": "e1e5c3310905c7fe728ed398d44dce9dbe1dc10febe9c6701d4ec5b9360b2475"
       },
       "viewer_cpu": {
         "path": "/tmp/seex-perf/u0/viewer-cpu-9610248.json",
@@ -225,12 +228,12 @@
         "sha256": "d156e3f4b53843da5ebb3fcca4619cb6533f5bd00b259324ac80be165037f908"
       },
       "viewer_single_rss": {
-        "path": "/tmp/seex-perf/u0/viewer-single-rss-9610248.json",
-        "sha256": "8da10e2c13c89afea8a3fedd63124cf0f4a7a7f66bbe043a152fe8bcf15519da"
+        "path": "/tmp/seex-perf/u0/viewer-single-rss-e1f248f.json",
+        "sha256": "777897f0bedac292244c146668a37736e408323c328105a5887160affcad5c23"
       },
       "viewer_dual_rss": {
-        "path": "/tmp/seex-perf/u0/viewer-dual-rss-9610248.json",
-        "sha256": "220c740bfd5ffcc9e40d856acd2ba2e4d8b0b0246f4cdac33dc3c13e48baf74e"
+        "path": "/tmp/seex-perf/u0/viewer-dual-rss-e1f248f.json",
+        "sha256": "d9985acec663ac7cb5ed01eb10563d44f20ba8bcfb52f2ba9d6e2ba68f7ec561"
       },
       "viewer_metal_toc": {
         "path": "/tmp/seex-perf/u0/viewer-metal-280hz-10x6-manual-9610248-toc.xml",
@@ -245,12 +248,12 @@
         "sha256": "c9797a732d7cdbb2b534beb3977193fd4ebf73767614eafb4bf3b592450ab93b"
       },
       "reporting_pair": {
-        "path": "/tmp/seex-perf/u0/reporting-pair-9610248.json",
-        "sha256": "db1fe1d1f90540d5d46eec4f96823efbf7ba2f38441b734b55ae89c5785cb91f"
+        "path": "/tmp/seex-perf/u0/reporting-pair-e1f248f.json",
+        "sha256": "301153829599db32cc7005ecbd9311383b8d370a33ad6db1b34da524b5b9ccc3"
       },
       "viewer_pair": {
-        "path": "/tmp/seex-perf/u0/viewer-pair-9610248.json",
-        "sha256": "45ae5685c6bacb80f4a88de781c68c704d077a74501c887c062a133b313c9915"
+        "path": "/tmp/seex-perf/u0/viewer-pair-e1f248f.json",
+        "sha256": "321a1f278f21f2d4f808c40251ccbe7cc2c7eb472a3d1c2d8f8ed3c3567ac989"
       },
       "instrumentation_query_pair": {
         "path": "/tmp/seex-perf/u0/instrumentation-query-pair-9610248.json",
