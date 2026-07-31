@@ -6,6 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+mod reader;
+
+pub use reader::{MetricAxis, MetricQuery, MetricQueryError, MetricRange, RelativeTime, Timestamp};
 pub use seex_model::comparison::{
     ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
     EvidenceCompleteness, EvidenceReason, MetricComparisonResult, ObjectiveDirection,
