@@ -95,7 +95,7 @@ impl Reader {
             .map_err(|_| Error::Storage)
     }
 
-    /// Queries a Step series with a strict caller-selected point bound.
+    /// Queries one axis with a strict caller-selected point bound.
     pub fn query_metric(
         &self,
         run_id: &RunId,
@@ -106,10 +106,39 @@ impl Reader {
             .connection
             .get_run(run_id)
             .map_err(|_| Error::Storage)?;
-        let bounds = match query.range() {
-            MetricRange::All(MetricAxis::Step) => None,
-            MetricRange::Steps { start, end } => Some((start.value(), end.value())),
-            _ => return Err(Error::UnsupportedQuery),
+        let run_start = run.started_at.timestamp_millis();
+        let (axis, storage_axis, bounds) = match query.range() {
+            MetricRange::All(axis) => (
+                *axis,
+                match axis {
+                    MetricAxis::Step => AlignmentAxis::Step,
+                    MetricAxis::RelativeTime | MetricAxis::Timestamp => AlignmentAxis::ElapsedTime,
+                },
+                None,
+            ),
+            MetricRange::Steps { start, end } => (
+                MetricAxis::Step,
+                AlignmentAxis::Step,
+                Some((start.value(), end.value())),
+            ),
+            MetricRange::RelativeTime { start, end } => (
+                MetricAxis::RelativeTime,
+                AlignmentAxis::ElapsedTime,
+                Some((start.as_millis(), end.as_millis())),
+            ),
+            MetricRange::Timestamps { start, end } => (
+                MetricAxis::Timestamp,
+                AlignmentAxis::ElapsedTime,
+                Some((
+                    start
+                        .as_millis()
+                        .checked_sub(run_start)
+                        .ok_or(Error::UnsupportedQuery)?,
+                    end.as_millis()
+                        .checked_sub(run_start)
+                        .ok_or(Error::UnsupportedQuery)?,
+                )),
+            ),
         };
         let viewport = match bounds {
             Some((start, end)) => AlignmentViewport::new(start, end - 1),
@@ -126,7 +155,7 @@ impl Reader {
             .query_aligned_metric(&AlignmentQuery {
                 run_id: run_id.clone(),
                 metric_key: metric_key.clone(),
-                axis: AlignmentAxis::Step,
+                axis: storage_axis,
                 viewport,
                 reduction,
             })
@@ -140,9 +169,20 @@ impl Reader {
             .points
             .into_iter()
             .filter(|point| in_half_open_range(point.axis_value, bounds))
-            .map(|point| MetricSample {
-                coordinate: MetricCoordinate::Step(Step::new(point.axis_value)),
-                point: point.point,
+            .map(|point| {
+                let coordinate = match axis {
+                    MetricAxis::Step => MetricCoordinate::Step(Step::new(point.axis_value)),
+                    MetricAxis::RelativeTime => {
+                        MetricCoordinate::RelativeTime(RelativeTime::from_millis(point.axis_value))
+                    }
+                    MetricAxis::Timestamp => MetricCoordinate::Timestamp(Timestamp::from_millis(
+                        point.point.timestamp.timestamp_millis(),
+                    )),
+                };
+                MetricSample {
+                    coordinate,
+                    point: point.point,
+                }
             })
             .collect::<Vec<_>>();
         if let Some(max_points) = query.max_points() {
@@ -150,14 +190,8 @@ impl Reader {
         }
         let source_count = result.source_row_count.saturating_sub(neighbor_count);
         let (completeness, reasons) = qualify_series(&samples, result.reasons, run.status);
-        MetricSeries::from_samples(
-            MetricAxis::Step,
-            samples,
-            source_count,
-            completeness,
-            reasons,
-        )
-        .map_err(|_| Error::Storage)
+        MetricSeries::from_samples(axis, samples, source_count, completeness, reasons)
+            .map_err(|_| Error::Storage)
     }
 }
 
@@ -613,6 +647,29 @@ mod tests {
                 Some(2),
             )?,
         )?;
+        let relative = reader.query_metric(
+            &runs[0].run_id,
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(
+                MetricRange::RelativeTime {
+                    start: RelativeTime::from_millis(0),
+                    end: RelativeTime::from_millis(60_000),
+                },
+                Some(3),
+            )?,
+        )?;
+        let started_at = runs[0].started_at.timestamp_millis();
+        let timestamps = reader.query_metric(
+            &runs[0].run_id,
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(
+                MetricRange::Timestamps {
+                    start: Timestamp::from_millis(started_at),
+                    end: Timestamp::from_millis(started_at + 60_000),
+                },
+                Some(3),
+            )?,
+        )?;
 
         assert_eq!(projects, [project]);
         assert_eq!(reader.project(&project_id)?, projects.first().cloned());
@@ -625,6 +682,19 @@ mod tests {
             (1..4).contains(&step)
         }));
         assert_eq!(series.completeness(), EvidenceCompleteness::Complete);
+        assert_eq!(relative.axis(), MetricAxis::RelativeTime);
+        assert!(relative.samples().len() <= 3);
+        assert!(relative.samples().iter().all(|sample| matches!(
+            sample.coordinate,
+            MetricCoordinate::RelativeTime(value) if (0..60_000).contains(&value.as_millis())
+        )));
+        assert_eq!(timestamps.axis(), MetricAxis::Timestamp);
+        assert!(timestamps.samples().len() <= 3);
+        assert!(timestamps.samples().iter().all(|sample| matches!(
+            sample.coordinate,
+            MetricCoordinate::Timestamp(value)
+                if (started_at..started_at + 60_000).contains(&value.as_millis())
+        )));
         Ok(())
     }
 }
