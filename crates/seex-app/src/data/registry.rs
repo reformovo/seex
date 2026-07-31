@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::config::ConfiguredSource;
 use crate::data::CatalogSnapshot;
 use crate::data::worker::{
     Generation, ReadConcurrencyGate, ReadEvent, ReadEventReceiver, ReadRequest, ReadWorker,
@@ -26,6 +27,7 @@ pub enum SourceStatus {
 pub struct ImportedSource {
     pub source_id: DataSourceId,
     pub root_path: PathBuf,
+    pub project_allowlist: Vec<ProjectId>,
     pub status: SourceStatus,
     pub catalog: CatalogSnapshot,
 }
@@ -68,6 +70,7 @@ impl SourceRegistry {
                 source: ImportedSource {
                     source_id: source_id.clone(),
                     root_path,
+                    project_allowlist: Vec::new(),
                     status: SourceStatus::Dormant,
                     catalog: CatalogSnapshot {
                         projects: Vec::new(),
@@ -75,6 +78,38 @@ impl SourceRegistry {
                         metric_keys: Vec::new(),
                     },
                 },
+                worker: None,
+                catalog_requests: HashMap::new(),
+            });
+        }
+        source_id
+    }
+
+    /// Installs or replaces one validated configured Source by stable alias.
+    pub fn configure(&mut self, configured: ConfiguredSource) -> DataSourceId {
+        let source_id = DataSourceId::from_alias(&configured.alias);
+        let source = ImportedSource {
+            source_id: source_id.clone(),
+            root_path: configured.root_path,
+            project_allowlist: configured.projects,
+            status: SourceStatus::Dormant,
+            catalog: CatalogSnapshot {
+                projects: Vec::new(),
+                runs: Vec::new(),
+                metric_keys: Vec::new(),
+            },
+        };
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.source.source_id == source_id)
+        {
+            entry.source = source;
+            entry.worker = None;
+            entry.catalog_requests.clear();
+        } else {
+            self.entries.push(SourceEntry {
+                source,
                 worker: None,
                 catalog_requests: HashMap::new(),
             });
@@ -166,14 +201,17 @@ impl SourceRegistry {
         &mut self,
         source_id: &DataSourceId,
         generation: Generation,
-        request: ReadRequest,
+        mut request: ReadRequest,
     ) -> Result<(), SourceRegistryError> {
         let entry = self.entry_mut(source_id)?;
         let Some(worker) = entry.worker.as_ref() else {
             return Err(SourceRegistryError::Inactive(source_id.clone()));
         };
         entry.source.status = SourceStatus::Loading;
-        if let ReadRequest::Discover(discovery) = &request {
+        if let ReadRequest::Discover(discovery) = &mut request {
+            if !entry.source.project_allowlist.is_empty() {
+                discovery.project_allowlist = Some(entry.source.project_allowlist.clone());
+            }
             entry.source.catalog.metric_keys.clear();
             entry
                 .catalog_requests
@@ -277,8 +315,10 @@ mod tests {
     use seex_model::run::{Run, RunId, RunStatus};
     use seex_model::types::{Project, ProjectId};
 
+    use crate::config::ConfiguredSource;
     use crate::data::CatalogSnapshot;
     use crate::data::worker::{ReadKind, ReadSnapshot};
+    use crate::domain::SourceAlias;
 
     use super::{
         DataSourceId, Generation, ReadEvent, ReadRequest, SourceRegistry, SourceRegistryError,
@@ -303,6 +343,32 @@ mod tests {
             ]
         );
         assert!(registry.entries.iter().all(|entry| entry.worker.is_none()));
+    }
+
+    #[test]
+    fn configured_source_keeps_alias_identity_when_its_path_changes() {
+        let mut registry = SourceRegistry::default();
+        let alias = SourceAlias::new("research").expect("test alias should be valid");
+        let source_id = registry.configure(ConfiguredSource {
+            alias: alias.clone(),
+            root_path: Path::new("first").to_path_buf(),
+            projects: vec![ProjectId::from_string("project-1")],
+        });
+        let configured_again = registry.configure(ConfiguredSource {
+            alias,
+            root_path: Path::new("second").to_path_buf(),
+            projects: vec![ProjectId::from_string("project-2")],
+        });
+
+        assert_eq!(source_id, DataSourceId::from_string("research"));
+        assert_eq!(configured_again, source_id);
+        assert_eq!(registry.entries.len(), 1);
+        assert_eq!(registry.entries[0].source.root_path, Path::new("second"));
+        assert_eq!(
+            registry.entries[0].source.project_allowlist[0].as_str(),
+            "project-2"
+        );
+        assert!(registry.entries[0].worker.is_none());
     }
 
     #[test]

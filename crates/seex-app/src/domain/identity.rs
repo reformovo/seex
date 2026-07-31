@@ -66,6 +66,10 @@ impl DataSourceId {
         Self(path.to_string_lossy().into_owned())
     }
 
+    pub fn from_alias(alias: &SourceAlias) -> Self {
+        Self(alias.as_str().to_owned())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
