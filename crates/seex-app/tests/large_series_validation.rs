@@ -654,8 +654,12 @@ fn large_native_series_respect_viewer_query_budgets() -> Result<(), Box<dyn Erro
         std::hint::black_box(!cfg!(debug_assertions)),
         "scale validation requires --release"
     );
+    println!("SEEX_RSS_PHASE warm");
     validate_backend(CatalogBackend::DuckDb)?;
-    validate_backend(CatalogBackend::Sqlite)
+    validate_backend(CatalogBackend::Sqlite)?;
+    println!("SEEX_RSS_PHASE cycles_done");
+    println!("SEEX_RSS_PHASE final");
+    Ok(())
 }
 
 #[test]
