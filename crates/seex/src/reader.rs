@@ -3,9 +3,12 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use seex_model::alignment::{
+    AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction, AlignmentViewport,
+};
 use seex_model::comparison::{EvidenceCompleteness, EvidenceReason};
-use seex_model::metric::{MetricAggregate, MetricPoint, Step};
-use seex_model::run::Run;
+use seex_model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
+use seex_model::run::{Run, RunId, RunStatus};
 use seex_model::types::{Project, ProjectId};
 use seex_storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
 use seex_storage::config::{S3ConnectionOverrides, resolve_init_config};
@@ -91,6 +94,134 @@ impl Reader {
             .list_metrics(&run.run_id, run.status)
             .map_err(|_| Error::Storage)
     }
+
+    /// Queries a Step series with a strict caller-selected point bound.
+    pub fn query_metric(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+    ) -> SdkResult<MetricSeries> {
+        let run = self
+            .connection
+            .get_run(run_id)
+            .map_err(|_| Error::Storage)?;
+        let bounds = match query.range() {
+            MetricRange::All(MetricAxis::Step) => None,
+            MetricRange::Steps { start, end } => Some((start.value(), end.value())),
+            _ => return Err(Error::UnsupportedQuery),
+        };
+        let viewport = match bounds {
+            Some((start, end)) => AlignmentViewport::new(start, end - 1),
+            None => AlignmentViewport::new(i64::MIN, i64::MAX),
+        }
+        .map_err(|_| Error::UnsupportedQuery)?;
+        let reduction = query
+            .max_points()
+            .map_or(Ok(AlignmentReduction::Full), |limit| {
+                AlignmentReduction::screen_budget(u32::try_from(limit).unwrap_or(u32::MAX), 1)
+            })
+            .map_err(|_| Error::UnsupportedQuery)?;
+        let result = ProjectMetricReader::new(&self.connection)
+            .query_aligned_metric(&AlignmentQuery {
+                run_id: run_id.clone(),
+                metric_key: metric_key.clone(),
+                axis: AlignmentAxis::Step,
+                viewport,
+                reduction,
+            })
+            .map_err(|_| Error::Storage)?;
+        let neighbor_count = result
+            .points
+            .iter()
+            .filter(|point| !in_half_open_range(point.axis_value, bounds))
+            .count() as u64;
+        let mut samples = result
+            .points
+            .into_iter()
+            .filter(|point| in_half_open_range(point.axis_value, bounds))
+            .map(|point| MetricSample {
+                coordinate: MetricCoordinate::Step(Step::new(point.axis_value)),
+                point: point.point,
+            })
+            .collect::<Vec<_>>();
+        if let Some(max_points) = query.max_points() {
+            samples = enforce_point_bound(samples, max_points);
+        }
+        let source_count = result.source_row_count.saturating_sub(neighbor_count);
+        let (completeness, reasons) = qualify_series(&samples, result.reasons, run.status);
+        MetricSeries::from_samples(
+            MetricAxis::Step,
+            samples,
+            source_count,
+            completeness,
+            reasons,
+        )
+        .map_err(|_| Error::Storage)
+    }
+}
+
+fn in_half_open_range(value: i64, bounds: Option<(i64, i64)>) -> bool {
+    bounds.is_none_or(|(start, end)| start <= value && value < end)
+}
+
+fn enforce_point_bound(samples: Vec<MetricSample>, max_points: usize) -> Vec<MetricSample> {
+    if samples.len() <= max_points {
+        return samples;
+    }
+    let last = samples.len() - 1;
+    (0..max_points)
+        .map(|index| samples[index * last / (max_points - 1)].clone())
+        .collect()
+}
+
+fn qualify_series(
+    samples: &[MetricSample],
+    alignment_reasons: Vec<AlignmentReason>,
+    run_status: RunStatus,
+) -> (EvidenceCompleteness, Vec<EvidenceReason>) {
+    let mut reasons = alignment_reasons
+        .into_iter()
+        .map(|reason| match reason {
+            AlignmentReason::MissingRunStart => EvidenceReason::MissingRunStart,
+            AlignmentReason::NegativeAxis => EvidenceReason::NegativeAxis,
+            AlignmentReason::DecreasingAxis => EvidenceReason::DecreasingAxis,
+        })
+        .collect::<Vec<_>>();
+    if samples
+        .iter()
+        .any(|sample| !sample.point.value_f64.is_finite())
+    {
+        reasons.push(EvidenceReason::NonFiniteValue);
+    }
+    if samples.is_empty() && reasons.is_empty() {
+        reasons.push(EvidenceReason::MissingMetric);
+    }
+    let invalid = reasons.iter().any(|reason| {
+        matches!(
+            reason,
+            EvidenceReason::NegativeAxis
+                | EvidenceReason::DecreasingAxis
+                | EvidenceReason::NonFiniteValue
+        )
+    });
+    let mut completeness = if invalid {
+        EvidenceCompleteness::Invalid
+    } else if samples.is_empty() {
+        EvidenceCompleteness::Unavailable
+    } else {
+        EvidenceCompleteness::Complete
+    };
+    let lifecycle_reason = match run_status {
+        RunStatus::Running => Some(EvidenceReason::RunRunning),
+        RunStatus::Failed => Some(EvidenceReason::RunFailed),
+        RunStatus::Finished => None,
+    };
+    if let Some(reason) = lifecycle_reason {
+        completeness = completeness.max(EvidenceCompleteness::Partial);
+        reasons.push(reason);
+    }
+    (completeness, reasons)
 }
 
 /// Horizontal coordinate requested for a metric series.
@@ -455,9 +586,10 @@ mod tests {
             "baseline",
             Some(RunId::from_string("run-1")),
         )?;
-        client
-            .run_handle(run.clone())
-            .log_metric_at_step("loss", 0, 1.0)?;
+        let handle = client.run_handle(run.clone());
+        for step in 0..5 {
+            handle.log_metric_at_step("loss", step, step as f64)?;
+        }
         client.finish_run(&run.run_id)?;
         client.shutdown(None)?;
         std::fs::write(
@@ -470,11 +602,29 @@ mod tests {
         let projects = reader.projects()?;
         let runs = reader.runs(&project_id)?;
         let metrics = reader.metrics(&runs[0])?;
+        let series = reader.query_metric(
+            &runs[0].run_id,
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(
+                MetricRange::Steps {
+                    start: Step::new(1),
+                    end: Step::new(4),
+                },
+                Some(2),
+            )?,
+        )?;
 
         assert_eq!(projects, [project]);
         assert_eq!(reader.project(&project_id)?, projects.first().cloned());
         assert_eq!(runs[0].run_id.as_str(), "run-1");
         assert_eq!(metrics[0].metric_key.as_str(), "loss");
+        assert_eq!(series.source_count(), 3);
+        assert_eq!(series.samples().len(), 2);
+        assert!(series.samples().iter().all(|sample| {
+            let step = sample.point.step.value();
+            (1..4).contains(&step)
+        }));
+        assert_eq!(series.completeness(), EvidenceCompleteness::Complete);
         Ok(())
     }
 }
