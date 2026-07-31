@@ -86,6 +86,25 @@ impl SourceRegistry {
         self.entries.iter().map(|entry| &entry.source)
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn resource_snapshot(&self) -> crate::performance::ReadSchedulingSnapshot {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.worker.as_ref())
+            .map(ReadWorker::resource_snapshot)
+            .fold(
+                crate::performance::ReadSchedulingSnapshot::default(),
+                |mut total, snapshot| {
+                    total.concurrent_reads = total.concurrent_reads.max(snapshot.concurrent_reads);
+                    total.peak_concurrent_reads = total
+                        .peak_concurrent_reads
+                        .max(snapshot.peak_concurrent_reads);
+                    total.superseded_reads += snapshot.superseded_reads;
+                    total
+                },
+            )
+    }
+
     pub fn source(&self, source_id: &DataSourceId) -> Option<&ImportedSource> {
         self.entry(source_id).map(|entry| &entry.source)
     }

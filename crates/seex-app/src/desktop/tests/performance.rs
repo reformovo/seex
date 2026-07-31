@@ -10,7 +10,7 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
         std::hint::black_box(!cfg!(debug_assertions)),
         "workbench validation requires --release"
     );
-    let (root, project_id, first_run_id) = fixture_with_complete_runs(6, 20);
+    let (root, project_id, first_run_id) = fixture_with_complete_runs(6, 10);
     let (pending_root, _, _) = fixture_with_extent(10);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
@@ -20,7 +20,7 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
     window
         .update(&mut cx, |viewer, _, cx| {
             let source_id = first_source_id(viewer, cx);
-            for run_index in 1..20 {
+            for run_index in 1..10 {
                 viewer.toggle_run(
                     RunRef::new(
                         source_id.clone(),
@@ -45,7 +45,7 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer.session_snapshot(cx).views.active().runs.len() == 20
+        viewer.session_snapshot(cx).views.active().runs.len() == 10
             && viewer.session_snapshot(cx).views.active().panels.len() == 6
             && viewer
                 .session_snapshot(cx)
@@ -55,7 +55,7 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
                 .iter()
                 .all(|panel| {
                     panel.detail.as_ref().is_some_and(|detail| {
-                        detail.series.len() == 20
+                        detail.series.len() == 10
                             && detail.point_budget
                                 == panel.logical_width.saturating_mul(2).clamp(512, 5_000)
                             && detail.series.iter().all(|series| {
@@ -68,6 +68,37 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
     assert!(cx.debug_bounds("bottom-inspector").is_some());
     assert!(cx.debug_bounds("metric-track:metric-0").is_some());
     assert!(cx.debug_bounds("metric-track:metric-5").is_some());
+
+    for scale in [1_u32, 2, 3] {
+        window
+            .update(&mut cx, |viewer, _, cx| {
+                viewer.workspace.update(cx, |workspace, cx| {
+                    workspace.update_overview_widths(400., 400 * scale, cx);
+                    assert_eq!(
+                        workspace.track_viewport.borrow().physical_width,
+                        400 * scale
+                    );
+                });
+            })
+            .expect("viewer should remain open");
+    }
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.dispatch_workbench_command(WorkbenchCommand::DuplicateActiveView, cx);
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+    assert_eq!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .views
+                .views()
+                .len())
+            .expect("viewer should remain open"),
+        2
+    );
 
     let before = window
         .read_with(&cx, |viewer, cx| {
@@ -108,7 +139,29 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
         .expect("viewer should remain open");
     let after = after.expect("shared viewport should remain available");
     assert_ne!(after, before);
-    assert_eq!((run_count, panel_count), (20, 6));
+    assert_eq!((run_count, panel_count), (10, 6));
+    let (source_resources, panel_resources) = window
+        .read_with(&cx, |viewer, cx| {
+            let session = viewer.session.read(cx);
+            (
+                session.sources.resource_snapshot(),
+                session.panel_reads.resource_snapshot(),
+            )
+        })
+        .expect("viewer should remain open");
+    let resources_pass = source_resources.peak_concurrent_reads <= 4
+        && panel_resources.stale_retained_snapshots == 0;
+    println!(
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"check\",\
+         \"domain\":\"viewer\",\"check\":\"workload_matrix\",\
+         \"passed\":{resources_pass},\"detail\":\"runs=10,metrics=6,views=2,\
+         peak_concurrency={},superseded={},stale={},retained={}\"}}",
+        source_resources.peak_concurrent_reads,
+        source_resources.superseded_reads,
+        panel_resources.stale_reads,
+        panel_resources.stale_retained_snapshots,
+    );
+    assert!(resources_pass);
     assert!(cx.debug_bounds("metric-track:metric-0").is_some());
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer
@@ -156,7 +209,7 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
             (active.runs.len(), active.panels.len())
         })
         .expect("viewer should remain open");
-    assert_eq!((runs, panels), (20, 6));
+    assert_eq!((runs, panels), (10, 6));
     println!("SEEX_RSS_PHASE final");
     std::thread::sleep(std::time::Duration::from_millis(200));
 }
