@@ -1,4 +1,4 @@
-"""Benchmark explicit-step ``run.log(...)`` admission throughput."""
+"""Benchmark Python/PyO3 ``run.log(...)`` admission throughput."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Any
 
 DEFAULT_REPORTS = 100_000
 DEFAULT_QUEUE_CAPACITY = 1_048_576
+MODES = ("explicit_single", "implicit_single", "mapping_8")
 
 
 def main() -> int:
@@ -39,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_REPORTS,
         help=f"number of explicit-step reports to log (default: {DEFAULT_REPORTS})",
     )
+    parser.add_argument("--mode", choices=MODES, default="explicit_single")
     parser.add_argument(
         "--queue-capacity",
         type=positive_int,
@@ -78,6 +80,8 @@ def parent_main(args: argparse.Namespace) -> int:
             str(args.reports),
             "--queue-capacity",
             str(args.queue_capacity),
+            "--mode",
+            args.mode,
             "--path",
             str(project_path),
         ]
@@ -104,6 +108,7 @@ def child_main(args: argparse.Namespace) -> int:
         project_path=args.path,
         reports=args.reports,
         queue_capacity=args.queue_capacity,
+        mode=args.mode,
     )
     print_result(result)
     # The parent owns cleanup; skip implicit client drain in this timed benchmark.
@@ -115,6 +120,7 @@ def run_benchmark(
     project_path: Path,
     reports: int,
     queue_capacity: int,
+    mode: str,
 ) -> dict[str, Any]:
     import seex
 
@@ -122,13 +128,11 @@ def run_benchmark(
     project = client.create_project("benchmark", project_id="bench-project")
     run = client.create_run(project.project_id, "throughput", run_id="bench-run")
 
-    started = time.perf_counter()
-    for step in range(reports):
-        run.log("train/loss", step, float(step))
-    elapsed = time.perf_counter() - started
+    elapsed = log_reports(run, mode, reports)
 
     return {
-        "benchmark": "explicit_step_run_log_admission",
+        "benchmark": "run_log_admission",
+        "mode": mode,
         "reports": reports,
         "elapsed_seconds": elapsed,
         "calls_per_second": reports / elapsed,
@@ -141,6 +145,52 @@ def run_benchmark(
 
 def print_result(result: dict[str, Any]) -> None:
     print(json.dumps(result, indent=2, sort_keys=True), flush=True)
+    throughput = float(result["calls_per_second"])
+    mode = str(result["mode"])
+    print(
+        "SEEX_PERF "
+        + json.dumps(
+            {
+                "schema_version": 2,
+                "record_type": "metric",
+                "domain": "reporting",
+                "metric": f"python.{mode}.admission",
+                "unit": "points/s",
+                "direction": "higher",
+                "batch_iterations": int(result["reports"]),
+                "samples": 1,
+                "raw_samples": [throughput],
+                "mad": 0.0,
+                "relative_mad": 0.0,
+                "p50": throughput,
+                "p95": throughput,
+                "max": throughput,
+                "reliable": True,
+            },
+            separators=(",", ":"),
+        ),
+        flush=True,
+    )
+
+
+def log_reports(run: Any, mode: str, reports: int) -> float:
+    """Runs one compatibility workload and returns admission wall time."""
+    if mode not in MODES:
+        raise ValueError(f"unsupported reporting mode: {mode}")
+    if mode == "mapping_8" and reports % 8 != 0:
+        raise ValueError("mapping_8 reports must be divisible by eight")
+    started = time.perf_counter()
+    if mode == "mapping_8":
+        for step in range(reports // 8):
+            for metric in range(8):
+                run.log(f"metric-{metric}", step, float(step))
+    elif mode == "implicit_single":
+        for selected_step, value in enumerate(float(index) for index in range(reports)):
+            run.log("train/loss", selected_step, value)
+    else:
+        for step in range(reports):
+            run.log("train/loss", step, float(step))
+    return time.perf_counter() - started
 
 
 def diagnostics_to_dict(diagnostics: Any) -> dict[str, Any]:

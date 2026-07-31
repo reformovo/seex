@@ -63,49 +63,52 @@ It changes no production behavior and requires no performance improvement.
 
 #### Gate format and comparator
 
-- [ ] Define version 2 performance JSON with `reporting`, `query`, and `viewer`
+- [x] Define version 2 performance JSON with `reporting`, `query`, and `viewer`
   domains. Record environment, commit and dirty-worktree identity, fixture,
   commands, units, batch size, raw samples, MAD, p50, p95, max, RSS phases, and
   original/rolling comparison results.
-- [ ] Implement the typed collector and comparator with the standard libraries
+- [x] Implement the typed collector and comparator with the standard libraries
   already available to the repository. Keep raw traces and per-iteration trace
   artifacts outside the repository; commit only stable statistics and human
   conclusions.
-- [ ] Calibrate each timing batch until one sample lasts at least 10 ms. Mark a
+- [x] Calibrate each timing batch until one sample lasts at least 10 ms. Mark a
   metric with relative MAD above 2% as non-deciding; it cannot accept a
   migration or optimization candidate.
-- [ ] Encode migration and optimization policies from the Execution Contract,
+- [x] Encode migration and optimization policies from the Execution Contract,
   including hard floors, Pass, No-change, and Regression outcomes.
-- [ ] Keep resource counters behind test-support/release test configuration and
+- [x] Keep resource counters behind test-support/release test configuration and
   prove an ordinary release build contains no counter state or production log.
 
 #### Workloads
 
-- [ ] Cover reporting at the Rust engine and Python/PyO3 boundaries: explicit
+- [x] Cover reporting at the Rust engine and Python/PyO3 boundaries: explicit
   step, implicit single metric, multi-metric Mapping, queue admission,
   drain/persistence, finalization, and peak RSS.
-- [ ] Cover Reader queries on DuckDB and SQLite with 10 Runs and 1,000,000
+- [x] Cover Reader queries on DuckDB and SQLite with 10 Runs and 1,000,000
   points per series: full and narrow ranges, Step/relative-time/timestamp axes,
   neighbors, duplicates, spikes, last-write-wins, completeness, and reasons.
-- [ ] Use identical read-only fixtures, independent release binaries, and
+- [x] Use identical read-only fixtures, independent release binaries, and
   alternating execution order for baseline and candidate query samples.
-- [ ] Cover Viewer with 10 Runs and at least six visible Metrics: single and
+- [x] Cover Viewer with 10 Runs and at least six visible Metrics: single and
   dual View, sparse/dense windows, 1x/2x/3x, 30 zoom cycles, stale generation,
   query concurrency, snapshot/path counters, CPU, RSS, and Metal trace metadata.
-- [ ] Run automated RSS workloads in a fresh process. Record warm, peak, final,
+  The deciding 280 Hz trace uses the reset 10-Run/six-Metric workbench and
+  user-performed zoom; the failed automated interaction is not baseline evidence.
+- [x] Run automated RSS workloads in a fresh process. Record warm, peak, final,
   phase trend, and retained stale-snapshot counts from an external sampler.
 
 #### Baseline freeze and exit
 
-- [ ] Freeze the pre-migration worktree as the permanent original baseline and
+- [x] Freeze the pre-migration worktree as the permanent original baseline and
   first rolling baseline. Preserve the current accepted logical-budget,
-  compact-snapshot, bounded-geometry, and shared-DuckDB improvements.
-- [ ] Record exact machine, OS, Rust toolchain, display/scale, fixture identity,
+  compact-snapshot, bounded-geometry, and shared-DuckDB improvements. The
+  corrected U0 code baseline is `e1f248fbb66eed7c49d36ef393e263f6c72df721`.
+- [x] Record exact machine, OS, Rust toolchain, display/scale, fixture identity,
   sample count, commands, and known environmental blockers in the performance
   validation document.
-- [ ] Verify gate instrumentation does not change ordinary release API,
+- [x] Verify gate instrumentation does not change ordinary release API,
   behavior, binary dependencies, or reliable CPU results by more than 3%.
-- [ ] Exit U0 only when all three domains can compare a candidate against both
+- [x] Exit U0 only when all three domains can compare a candidate against both
   baselines and reproduce correctness and resource results.
 
 ### U1: Public `seex` Facade and Reader First

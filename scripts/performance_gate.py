@@ -1,0 +1,909 @@
+"""Capture and compare Seex Viewer performance records."""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import itertools
+import json
+import math
+import os
+import pathlib
+import platform
+import queue
+import shlex
+import statistics
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Sequence
+from typing import Literal, TypedDict, cast
+
+_PREFIX = "SEEX_PERF "
+_REQUIRED_PAIRS = 7
+_RSS_TREND_NOISE_FLOOR_BYTES = 1024 * 1024
+_DOMAINS = frozenset({"reporting", "query", "viewer"})
+_DIRECTIONS = frozenset({"higher", "lower", "neutral"})
+_UNITS = frozenset({"bytes", "count", "ns", "ns/op", "points/s"})
+
+Domain = Literal["reporting", "query", "viewer"]
+Direction = Literal["higher", "lower", "neutral"]
+
+
+class MetricSample(TypedDict):
+    """One machine-readable metric emitted by a release benchmark."""
+
+    metric: str
+    unit: str
+    batch_iterations: int
+    samples: int
+    raw_samples: list[float]
+    p50: float
+    p95: float
+    max_batch: float
+    max_single: float
+    relative_mad: float
+    reliable: bool
+
+
+class Capture(TypedDict):
+    """Repeated benchmark output plus its execution environment."""
+
+    schema_version: int
+    environment: dict[str, str | bool]
+    command: list[str]
+    runs: list[dict[str, MetricSample]]
+
+
+class Verdict(TypedDict):
+    """Comparison result consumed by the performance optimization loop."""
+
+    verdict: str
+    primary: str
+    median_improvement: float
+    improved_pairs: int
+    regressions: dict[str, float]
+    reason: str
+
+
+class RssResult(TypedDict):
+    """RSS stability result for a phase-marked child process."""
+
+    schema_version: Literal[2]
+    record_type: Literal["rss"]
+    samples: list[int]
+    phase_indexes: dict[str, int]
+    phase_rss_bytes: dict[str, int]
+    warm_index: int
+    trend_end_index: int
+    final_index: int
+    warm_rss_bytes: int
+    peak_rss_bytes: int
+    final_rss_bytes: int
+    allowed_final_rss_bytes: int
+    monotonic_growth: bool
+    verdict: str
+
+
+class V2Metric(TypedDict):
+    """One deciding or informational metric emitted by a workload."""
+
+    domain: Domain
+    metric: str
+    unit: str
+    direction: Direction
+    batch_iterations: int
+    samples: int
+    raw_samples: list[float]
+    mad: float
+    relative_mad: float
+    p50: float
+    p95: float
+    maximum: float
+    reliable: bool
+
+
+class V2Check(TypedDict):
+    """One correctness or resource invariant emitted by a workload."""
+
+    domain: Domain
+    check: str
+    passed: bool
+    detail: str
+
+
+class V2Output(TypedDict):
+    """Validated records emitted by one workload invocation."""
+
+    metrics: dict[str, V2Metric]
+    checks: list[V2Check]
+
+
+class HardFloor(TypedDict):
+    """An absolute metric requirement checked for every candidate run."""
+
+    metric: str
+    statistic: Literal["p50", "p95", "maximum"]
+    operator: Literal["at_least", "at_most"]
+    value: float
+
+
+class V2Verdict(TypedDict):
+    """Stable comparison outcome for a migration or optimization."""
+
+    verdict: Literal["pass", "no_change", "regression"]
+    primary: str | None
+    median_improvement: float
+    improved_pairs: int
+    regressions: dict[str, float]
+    unreliable: list[str]
+    failed_checks: list[str]
+    failed_floors: list[str]
+    reason: str
+
+
+class CandidateSpec(TypedDict):
+    """Scope and policy declared before running one candidate."""
+
+    name: str
+    candidate_type: Literal["migration", "optimization"]
+    primary: str | None
+    protected: list[str]
+    hard_floors: list[HardFloor]
+    fixture: str
+    commands: list[list[str]]
+    changed_files: list[str]
+
+
+class V2Capture(TypedDict):
+    """Repeated schema-v2 workload invocations from one binary."""
+
+    schema_version: Literal[2]
+    record_type: Literal["capture"]
+    environment: dict[str, str | bool]
+    command: list[str]
+    runs: list[V2Output]
+
+
+class V2Pair(TypedDict):
+    """Alternating baseline and candidate captures."""
+
+    schema_version: Literal[2]
+    record_type: Literal["pair"]
+    candidate_spec: CandidateSpec
+    execution_order: list[list[Literal["baseline", "candidate"]]]
+    baseline: V2Capture
+    candidate: V2Capture
+
+
+def _finite_number(record: dict[str, object], field: str) -> float:
+    value = record.get(field)
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise TypeError(f"SEEX_PERF {field} must be a finite number")
+    return float(value)
+
+
+def _domain(record: dict[str, object]) -> Domain:
+    domain = record.get("domain")
+    if domain not in _DOMAINS:
+        raise ValueError(f"SEEX_PERF domain must be one of {sorted(_DOMAINS)}")
+    return cast(Domain, domain)
+
+
+def _calibrated(unit: str, batch_iterations: int, raw_samples: Sequence[float]) -> bool:
+    if unit == "ns/op":
+        elapsed = [sample * batch_iterations for sample in raw_samples]
+    elif unit == "points/s":
+        elapsed = [batch_iterations * 1_000_000_000 / sample for sample in raw_samples]
+    elif unit == "ns":
+        elapsed = list(raw_samples)
+    else:
+        return True
+    return all(sample >= 10_000_000 for sample in elapsed)
+
+
+def _validate_metric_summary(record: dict[str, object], raw_samples: Sequence[float]) -> dict[str, float]:
+    ordered = sorted(raw_samples)
+    p50 = float(statistics.median(ordered))
+    deviations = [abs(sample - p50) for sample in ordered]
+    mad = float(statistics.median(deviations))
+    if p50 == 0 and mad != 0:
+        raise ValueError("SEEX_PERF raw_samples with zero median have undefined relative_mad")
+    expected = {
+        "mad": mad,
+        "relative_mad": 0.0 if p50 == 0 else mad / abs(p50),
+        "p50": p50,
+        "p95": ordered[(len(ordered) * 95 + 99) // 100 - 1],
+        "max": ordered[-1],
+    }
+    parsed: dict[str, float] = {}
+    for field, expected_value in expected.items():
+        value = _finite_number(record, field)
+        absolute_tolerance = 1e-6 if field == "relative_mad" else 1e-3
+        if not math.isclose(value, expected_value, rel_tol=1e-9, abs_tol=absolute_tolerance):
+            raise ValueError(f"SEEX_PERF {field} does not match raw_samples")
+        parsed[field] = value
+    return parsed
+
+
+def parse_v2_output(output: str) -> V2Output:
+    """Parses strict schema-v2 metric and correctness records."""
+    metrics: dict[str, V2Metric] = {}
+    checks: list[V2Check] = []
+    for line in output.splitlines():
+        if not line.startswith(_PREFIX):
+            continue
+        decoded = json.loads(line.removeprefix(_PREFIX))
+        if not isinstance(decoded, dict):
+            raise TypeError("SEEX_PERF record must be a JSON object")
+        if decoded.get("schema_version") != 2:
+            raise ValueError("deciding captures require SEEX_PERF schema_version 2")
+        domain = _domain(decoded)
+        record_type = decoded.get("record_type")
+        if record_type == "check":
+            name, passed, detail = decoded.get("check"), decoded.get("passed"), decoded.get("detail")
+            if not isinstance(name, str) or not name or not isinstance(passed, bool) or not isinstance(detail, str):
+                raise TypeError("SEEX_PERF check requires check, passed, and detail")
+            checks.append(V2Check(domain=domain, check=name, passed=passed, detail=detail))
+            continue
+        if record_type != "metric":
+            raise ValueError("SEEX_PERF record_type must be metric or check")
+        metric, unit, direction = decoded.get("metric"), decoded.get("unit"), decoded.get("direction")
+        batch_iterations, sample_count = decoded.get("batch_iterations"), decoded.get("samples")
+        raw_samples, reliable = decoded.get("raw_samples"), decoded.get("reliable")
+        if not isinstance(metric, str) or not metric:
+            raise ValueError("SEEX_PERF metric must be a non-empty string")
+        if unit not in _UNITS or direction not in _DIRECTIONS:
+            raise ValueError("SEEX_PERF metric has an unsupported unit or direction")
+        if not isinstance(batch_iterations, int) or isinstance(batch_iterations, bool) or batch_iterations <= 0:
+            raise ValueError("SEEX_PERF batch_iterations must be positive")
+        if not isinstance(sample_count, int) or isinstance(sample_count, bool) or sample_count <= 0:
+            raise ValueError("SEEX_PERF samples must be positive")
+        if not isinstance(raw_samples, list) or len(raw_samples) != sample_count:
+            raise ValueError("SEEX_PERF raw_samples must match samples")
+        parsed = [
+            float(value) for value in raw_samples if isinstance(value, int | float) and not isinstance(value, bool)
+        ]
+        if len(parsed) != sample_count or any(not math.isfinite(value) for value in parsed):
+            raise TypeError("SEEX_PERF raw_samples must contain only finite numbers")
+        if not isinstance(reliable, bool):
+            raise TypeError("SEEX_PERF reliable must be boolean")
+        summary = _validate_metric_summary(decoded, parsed)
+        key = f"{domain}.{metric}"
+        if key in metrics:
+            raise ValueError(f"duplicate SEEX_PERF metric {key!r}")
+        metrics[key] = V2Metric(
+            domain=domain,
+            metric=metric,
+            unit=cast(str, unit),
+            direction=cast(Direction, direction),
+            batch_iterations=batch_iterations,
+            samples=sample_count,
+            raw_samples=parsed,
+            mad=summary["mad"],
+            relative_mad=summary["relative_mad"],
+            p50=summary["p50"],
+            p95=summary["p95"],
+            maximum=summary["max"],
+            reliable=reliable and _calibrated(cast(str, unit), batch_iterations, parsed),
+        )
+    if not metrics and not checks:
+        raise ValueError("benchmark output contained no schema-v2 SEEX_PERF records")
+    return V2Output(metrics=metrics, checks=checks)
+
+
+def _relative_mad(values: Sequence[float]) -> float:
+    median = _median(values)
+    if median == 0:
+        return 0.0 if all(value == 0 for value in values) else math.inf
+    return _median([abs(value - median) for value in values]) / abs(median)
+
+
+def _v2_series(runs: Sequence[V2Output], metric: str) -> list[V2Metric]:
+    try:
+        return [run["metrics"][metric] for run in runs]
+    except KeyError as error:
+        raise ValueError(f"capture is missing metric {metric!r}") from error
+
+
+def _series_reliable(series: Sequence[V2Metric]) -> bool:
+    return all(metric["reliable"] and metric["relative_mad"] <= 0.02 for metric in series) and (
+        _relative_mad([metric["p50"] for metric in series]) <= 0.02
+    )
+
+
+def compare_v2_captures(
+    baseline: Sequence[V2Output],
+    candidate: Sequence[V2Output],
+    candidate_type: Literal["migration", "optimization"],
+    *,
+    primary: str | None,
+    protected: Sequence[str] = (),
+    hard_floors: Sequence[HardFloor] = (),
+) -> V2Verdict:
+    """Applies U0 correctness, reliability, migration, and optimization policy."""
+    if not baseline or len(baseline) != len(candidate):
+        raise ValueError("baseline and candidate require equal non-empty runs")
+    if candidate_type == "optimization" and len(candidate) < _REQUIRED_PAIRS:
+        raise ValueError(f"optimization requires at least {_REQUIRED_PAIRS} pairs")
+    if candidate_type == "optimization" and primary is None:
+        raise ValueError("optimization requires a primary metric")
+
+    failed_checks = [
+        f"{check['domain']}.{check['check']}"
+        for runs in (baseline, candidate)
+        for run in runs
+        for check in run["checks"]
+        if not check["passed"]
+    ]
+    failed_floors: list[str] = []
+    for floor in hard_floors:
+        for metric in _v2_series(candidate, floor["metric"]):
+            value = metric[floor["statistic"]]
+            failed = value < floor["value"] if floor["operator"] == "at_least" else value > floor["value"]
+            if failed:
+                failed_floors.append(floor["metric"])
+                break
+
+    unreliable: list[str] = []
+    regressions: dict[str, float] = {}
+    for metric_name in protected:
+        before = _v2_series(baseline, metric_name)
+        after = _v2_series(candidate, metric_name)
+        if before[0]["unit"] != after[0]["unit"] or before[0]["direction"] != after[0]["direction"]:
+            raise ValueError(f"metric contract changed for {metric_name!r}")
+        if not _series_reliable(before) or not _series_reliable(after):
+            unreliable.append(metric_name)
+            continue
+        direction = before[0]["direction"]
+        before_median = _median([metric["p50"] for metric in before])
+        after_median = _median([metric["p50"] for metric in after])
+        regression = (after_median / before_median) - 1.0
+        if direction == "higher":
+            regression = (before_median / after_median) - 1.0
+        if direction != "neutral" and regression > 0.03 + 1e-12:
+            regressions[metric_name] = regression
+
+    median_improvement = 0.0
+    improved_pairs = 0
+    primary_unreliable = False
+    if primary is not None:
+        before = _v2_series(baseline, primary)
+        after = _v2_series(candidate, primary)
+        if before[0]["direction"] == "neutral":
+            raise ValueError("primary metric must have an optimization direction")
+        primary_unreliable = not _series_reliable(before) or not _series_reliable(after)
+        if primary_unreliable:
+            unreliable.append(primary)
+        else:
+            improvements = [
+                ((left["p50"] - right["p50"]) / left["p50"])
+                if left["direction"] == "lower"
+                else ((right["p50"] - left["p50"]) / left["p50"])
+                for left, right in zip(before, after, strict=True)
+            ]
+            median_improvement = _median(improvements)
+            improved_pairs = sum(improvement > 0 for improvement in improvements)
+
+    if failed_checks or failed_floors or regressions:
+        verdict, reason = "regression", "correctness, hard floor, or protected metric failed"
+    elif candidate_type == "migration":
+        verdict, reason = "pass", "migration preserved every reliable protected metric"
+    elif primary_unreliable or improved_pairs < 6 or median_improvement + 1e-12 < 0.05:
+        verdict, reason = "no_change", "primary metric was unreliable or missed the optimization threshold"
+    else:
+        verdict, reason = "pass", "optimization improved its primary without a protected regression"
+    return V2Verdict(
+        verdict=verdict,
+        primary=primary,
+        median_improvement=median_improvement,
+        improved_pairs=improved_pairs,
+        regressions=regressions,
+        unreliable=sorted(set(unreliable)),
+        failed_checks=failed_checks,
+        failed_floors=failed_floors,
+        reason=reason,
+    )
+
+
+def validate_candidate_spec(spec: CandidateSpec) -> None:
+    """Validates the bounded scope declared for a performance candidate."""
+    if not spec["name"].strip() or not spec["fixture"].strip() or not spec["commands"]:
+        raise ValueError("candidate name, fixture, and commands are required")
+    if len(spec["changed_files"]) > 5:
+        raise ValueError("ordinary candidates may declare no more than five changed files")
+    if spec["candidate_type"] == "optimization" and spec["primary"] is None:
+        raise ValueError("optimization candidates require a primary metric")
+
+
+def capture_v2(command: Sequence[str], repeats: int = _REQUIRED_PAIRS) -> V2Capture:
+    """Runs one schema-v2 workload repeatedly in independent processes."""
+    if repeats <= 0:
+        raise ValueError("performance capture requires at least one run")
+    return V2Capture(
+        schema_version=2,
+        record_type="capture",
+        environment=_environment(),
+        command=list(command),
+        runs=[parse_v2_output(_command_output(command)) for _ in range(repeats)],
+    )
+
+
+def pair_v2(
+    baseline_command: Sequence[str],
+    candidate_command: Sequence[str],
+    spec: CandidateSpec,
+    repeats: int = _REQUIRED_PAIRS,
+) -> V2Pair:
+    """Captures AB/BA process pairs so fixed execution order cannot decide a result."""
+    if repeats < _REQUIRED_PAIRS:
+        raise ValueError(f"paired capture requires at least {_REQUIRED_PAIRS} runs")
+    validate_candidate_spec(spec)
+    baseline_runs: list[V2Output] = []
+    candidate_runs: list[V2Output] = []
+    execution_order: list[list[Literal["baseline", "candidate"]]] = []
+    for index in range(repeats):
+        order: list[Literal["baseline", "candidate"]] = (
+            ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
+        )
+        execution_order.append(order)
+        for role in order:
+            command = baseline_command if role == "baseline" else candidate_command
+            output = parse_v2_output(_command_output(command))
+            (baseline_runs if role == "baseline" else candidate_runs).append(output)
+    environment = _environment()
+    return V2Pair(
+        schema_version=2,
+        record_type="pair",
+        candidate_spec=spec,
+        execution_order=execution_order,
+        baseline=V2Capture(
+            schema_version=2,
+            record_type="capture",
+            environment=environment,
+            command=list(baseline_command),
+            runs=baseline_runs,
+        ),
+        candidate=V2Capture(
+            schema_version=2,
+            record_type="capture",
+            environment=environment,
+            command=list(candidate_command),
+            runs=candidate_runs,
+        ),
+    )
+
+
+def compare_v2_baselines(
+    original: V2Pair,
+    rolling: V2Pair,
+    spec: CandidateSpec,
+) -> dict[str, V2Verdict | str]:
+    """Reports both baselines while using rolling as the acceptance decision."""
+    validate_candidate_spec(spec)
+    for role, pair in (("original", original), ("rolling", rolling)):
+        validate_candidate_spec(pair["candidate_spec"])
+        if pair["candidate_spec"] != spec:
+            raise ValueError(f"{role} pair candidate_spec does not match comparison spec")
+    results = {
+        role: compare_v2_captures(
+            pair["baseline"]["runs"],
+            pair["candidate"]["runs"],
+            spec["candidate_type"],
+            primary=spec["primary"],
+            protected=spec["protected"],
+            hard_floors=spec["hard_floors"],
+        )
+        for role, pair in (("original", original), ("rolling", rolling))
+    }
+    return {**results, "verdict": results["rolling"]["verdict"]}
+
+
+def parse_output(output: str) -> dict[str, MetricSample]:
+    """Parses machine records from one benchmark invocation."""
+    metrics: dict[str, MetricSample] = {}
+    for line in output.splitlines():
+        if not line.startswith(_PREFIX):
+            continue
+        decoded = json.loads(line.removeprefix(_PREFIX))
+        if not isinstance(decoded, dict):
+            raise TypeError("SEEX_PERF record must be a JSON object")
+        metric = decoded.get("metric")
+        unit = decoded.get("unit")
+        batch_iterations = decoded.get("batch_iterations")
+        sample_count = decoded.get("samples")
+        raw_samples = decoded.get("raw_samples")
+        reliable = decoded.get("reliable")
+        if not isinstance(metric, str) or not metric:
+            raise ValueError("SEEX_PERF metric must be a non-empty string")
+        if not isinstance(unit, str) or not unit:
+            raise ValueError("SEEX_PERF unit must be a non-empty string")
+        if not isinstance(batch_iterations, int) or isinstance(batch_iterations, bool) or batch_iterations <= 0:
+            raise ValueError("SEEX_PERF batch_iterations must be positive")
+        if not isinstance(sample_count, int) or isinstance(sample_count, bool) or sample_count <= 0:
+            raise ValueError("SEEX_PERF samples must be positive")
+        if not isinstance(raw_samples, list) or len(raw_samples) != sample_count:
+            raise ValueError("SEEX_PERF raw_samples must match samples")
+        numbers: dict[str, float] = {}
+        for field in ("p50", "p95", "max_batch", "max_single", "relative_mad"):
+            value = decoded.get(field)
+            if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+                raise ValueError(f"SEEX_PERF {field} must be non-negative: {value!r}")
+            numbers[field] = float(value)
+        if numbers["p50"] <= 0:
+            raise ValueError(f"SEEX_PERF p50 must be positive: {numbers['p50']!r}")
+        parsed_samples = [
+            float(value) for value in raw_samples if isinstance(value, int | float) and not isinstance(value, bool)
+        ]
+        if len(parsed_samples) != sample_count:
+            raise TypeError("SEEX_PERF raw_samples must contain only numbers")
+        if not isinstance(reliable, bool):
+            raise TypeError("SEEX_PERF reliable must be boolean")
+        metrics[metric] = MetricSample(
+            metric=metric,
+            unit=unit,
+            batch_iterations=batch_iterations,
+            samples=sample_count,
+            raw_samples=parsed_samples,
+            p50=numbers["p50"],
+            p95=numbers["p95"],
+            max_batch=numbers["max_batch"],
+            max_single=numbers["max_single"],
+            relative_mad=numbers["relative_mad"],
+            reliable=reliable,
+        )
+    if not metrics:
+        raise ValueError("benchmark output contained no SEEX_PERF records")
+    return metrics
+
+
+def _command_output(command: Sequence[str]) -> str:
+    completed = subprocess.run(command, check=True, capture_output=True, text=True)
+    return completed.stdout + completed.stderr
+
+
+def _environment() -> dict[str, str | bool]:
+    revision = _command_output(("git", "rev-parse", "HEAD")).strip()
+    dirty = bool(_command_output(("git", "status", "--porcelain")).strip())
+    return {
+        "captured_at": datetime.datetime.now(datetime.UTC).isoformat(),
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "rustc": _command_output(("rustc", "--version")).strip(),
+        "python": platform.python_version(),
+        "uv": _command_output(("uv", "--version")).strip(),
+        "display": os.environ.get("SEEX_PERF_DISPLAY", "unrecorded"),
+        "git_revision": revision,
+        "dirty": dirty,
+    }
+
+
+def capture(command: Sequence[str], repeats: int = _REQUIRED_PAIRS) -> Capture:
+    """Runs a benchmark repeatedly and returns its versioned capture."""
+    if repeats < _REQUIRED_PAIRS:
+        raise ValueError(f"performance capture requires at least {_REQUIRED_PAIRS} runs")
+    runs = [parse_output(_command_output(command)) for _ in range(repeats)]
+    return Capture(
+        schema_version=1,
+        environment=_environment(),
+        command=list(command),
+        runs=runs,
+    )
+
+
+def _samples(capture_record: Capture, metric: str) -> list[MetricSample]:
+    samples: list[MetricSample] = []
+    for run in capture_record["runs"]:
+        try:
+            samples.append(run[metric])
+        except KeyError as error:
+            raise ValueError(f"capture is missing metric {metric!r}") from error
+    if len(samples) < _REQUIRED_PAIRS:
+        raise ValueError(f"metric {metric!r} has fewer than {_REQUIRED_PAIRS} samples")
+    return samples
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def compare_captures(
+    baseline: Capture,
+    candidate: Capture,
+    primary: str,
+    protected: Sequence[str] = (),
+) -> Verdict:
+    """Applies the 5%, six-of-seven, and 3% regression policy."""
+    baseline_primary = _samples(baseline, primary)
+    candidate_primary = _samples(candidate, primary)
+    paired = list(zip(baseline_primary, candidate_primary, strict=True))
+    if any(not before["reliable"] or not after["reliable"] for before, after in paired):
+        return Verdict(
+            verdict="no_change",
+            primary=primary,
+            median_improvement=0.0,
+            improved_pairs=0,
+            regressions={},
+            reason="primary metric contains unreliable samples",
+        )
+    improvements = [(before["p50"] - after["p50"]) / before["p50"] for before, after in paired]
+    median_improvement = _median(improvements)
+    improved_pairs = sum(improvement > 0 for improvement in improvements)
+    regressions: dict[str, float] = {}
+    for metric in protected:
+        before = _samples(baseline, metric)
+        after = _samples(candidate, metric)
+        if any(not sample["reliable"] for sample in [*before, *after]):
+            continue
+        regression = (
+            _median([sample["p50"] for sample in after]) / _median([sample["p50"] for sample in before])
+        ) - 1.0
+        if regression > 0.03:
+            regressions[metric] = regression
+    if regressions:
+        verdict = "regression"
+        reason = "one or more protected metrics regressed by more than 3%"
+    elif improved_pairs < 6 or median_improvement < 0.05:
+        verdict = "no_change"
+        reason = "primary metric did not improve by 5% in six of seven pairs"
+    else:
+        verdict = "pass"
+        reason = "primary metric improved without a protected regression"
+    return Verdict(
+        verdict=verdict,
+        primary=primary,
+        median_improvement=median_improvement,
+        improved_pairs=improved_pairs,
+        regressions=regressions,
+        reason=reason,
+    )
+
+
+def _read_capture(path: pathlib.Path) -> Capture:
+    return cast(Capture, json.loads(path.read_text(encoding="utf-8")))
+
+
+def _read_candidate_spec(path: pathlib.Path) -> CandidateSpec:
+    value = cast(CandidateSpec, json.loads(path.read_text(encoding="utf-8")))
+    validate_candidate_spec(value)
+    return value
+
+
+def _read_v2_pair(path: pathlib.Path) -> V2Pair:
+    value = cast(V2Pair, json.loads(path.read_text(encoding="utf-8")))
+    if value.get("schema_version") != 2 or value.get("record_type") != "pair":
+        raise ValueError(f"{path} is not a schema-v2 pair")
+    return value
+
+
+def _write_json(path: pathlib.Path, value: object) -> None:
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def evaluate_rss(
+    samples: Sequence[int],
+    warm_index: int,
+    final_index: int,
+    *,
+    trend_end_index: int | None = None,
+    phase_indexes: dict[str, int] | None = None,
+) -> RssResult:
+    """Evaluates the warm/peak/final RSS contract."""
+    if trend_end_index is None:
+        trend_end_index = final_index
+    if not samples or any(sample <= 0 for sample in samples):
+        raise ValueError("RSS samples must be positive")
+    if not 0 <= warm_index <= trend_end_index <= final_index < len(samples):
+        raise ValueError("RSS phase indexes do not match the samples")
+    warm = samples[warm_index]
+    final = samples[final_index]
+    trend = samples[warm_index : trend_end_index + 1]
+    meaningful_growth = trend[-1] - trend[0] > max(
+        trend[0] // 100,
+        _RSS_TREND_NOISE_FLOOR_BYTES,
+    )
+    monotonic = (
+        len(trend) >= 8 and meaningful_growth and all(before <= after for before, after in itertools.pairwise(trend))
+    )
+    allowed = max(int(warm * 1.05), warm + 32 * 1024 * 1024)
+    verdict = "pass" if final <= allowed and not monotonic else "regression"
+    phases = dict(phase_indexes or {})
+    phases.update(warm=warm_index, cycles_done=trend_end_index, final=final_index)
+    if any(not warm_index <= index <= final_index for index in phases.values()):
+        raise ValueError("RSS phase indexes must fall between warm and final")
+    return RssResult(
+        schema_version=2,
+        record_type="rss",
+        samples=list(samples),
+        phase_indexes=phases,
+        phase_rss_bytes={name: samples[index] for name, index in phases.items()},
+        warm_index=warm_index,
+        trend_end_index=trend_end_index,
+        final_index=final_index,
+        warm_rss_bytes=warm,
+        peak_rss_bytes=max(samples),
+        final_rss_bytes=final,
+        allowed_final_rss_bytes=allowed,
+        monotonic_growth=monotonic,
+        verdict=verdict,
+    )
+
+
+def _rss_bytes(process_id: int) -> int:
+    output = _command_output(("ps", "-o", "rss=", "-p", str(process_id))).strip()
+    if not output:
+        raise ProcessLookupError(f"process {process_id} has no RSS sample")
+    rss = int(output) * 1024
+    if rss <= 0:
+        raise ProcessLookupError(f"process {process_id} has no positive RSS sample")
+    return rss
+
+
+def sample_rss(command: Sequence[str], interval: float) -> RssResult:
+    """Samples a child that emits named RSS phases from a fresh process."""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if process.stdout is None:
+        raise RuntimeError("RSS child stdout pipe was not created")
+    stdout = process.stdout
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def read_output() -> None:
+        for line in stdout:
+            lines.put(line)
+        lines.put(None)
+
+    reader = threading.Thread(target=read_output, name="seex-rss-output", daemon=True)
+    reader.start()
+    samples: list[int] = []
+    phases: dict[str, int] = {}
+    output_closed = False
+    while process.poll() is None or not output_closed:
+        while True:
+            try:
+                line = lines.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                output_closed = True
+                break
+            sys.stdout.write(line)
+            marker = line.partition("SEEX_RSS_PHASE ")[2].strip()
+            if marker:
+                if marker in phases:
+                    raise ValueError(f"RSS child emitted duplicate phase {marker!r}")
+                phases[marker] = max(len(samples) - 1, 0)
+        if process.poll() is None:
+            try:
+                samples.append(_rss_bytes(process.pid))
+            except ProcessLookupError:
+                if process.poll() is None:
+                    raise
+            time.sleep(interval)
+    reader.join()
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command)
+    if not {"warm", "cycles_done", "final"}.issubset(phases):
+        raise ValueError("RSS child did not emit warm, cycles_done, and final phase markers")
+    warm_index = phases["warm"]
+    trend_end_index = phases["cycles_done"]
+    phases["final"] = len(samples) - 1
+    return evaluate_rss(
+        samples,
+        warm_index,
+        len(samples) - 1,
+        trend_end_index=trend_end_index,
+        phase_indexes=phases,
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="action", required=True)
+    capture_parser = commands.add_parser("capture")
+    capture_parser.add_argument("--output", type=pathlib.Path, required=True)
+    capture_parser.add_argument("--runs", type=int, default=_REQUIRED_PAIRS)
+    capture_parser.add_argument("command", nargs=argparse.REMAINDER)
+    capture_v2_parser = commands.add_parser("capture-v2")
+    capture_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
+    capture_v2_parser.add_argument("--runs", type=int, default=_REQUIRED_PAIRS)
+    capture_v2_parser.add_argument("command", nargs=argparse.REMAINDER)
+    compare_parser = commands.add_parser("compare")
+    compare_parser.add_argument("--baseline", type=pathlib.Path, required=True)
+    compare_parser.add_argument("--candidate", type=pathlib.Path, required=True)
+    compare_parser.add_argument("--primary", required=True)
+    compare_parser.add_argument("--protected", action="append", default=[])
+    pair_parser = commands.add_parser("pair")
+    pair_parser.add_argument("--baseline-command", required=True)
+    pair_parser.add_argument("--candidate-command", required=True)
+    pair_parser.add_argument("--primary", required=True)
+    pair_parser.add_argument("--protected", action="append", default=[])
+    pair_parser.add_argument("--output", type=pathlib.Path, required=True)
+    pair_v2_parser = commands.add_parser("pair-v2")
+    pair_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
+    pair_v2_parser.add_argument("--baseline-command", required=True)
+    pair_v2_parser.add_argument("--candidate-command", required=True)
+    pair_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
+    compare_v2_parser = commands.add_parser("compare-v2")
+    compare_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
+    compare_v2_parser.add_argument("--original", type=pathlib.Path, required=True)
+    compare_v2_parser.add_argument("--rolling", type=pathlib.Path, required=True)
+    rss_parser = commands.add_parser("rss")
+    rss_parser.add_argument("--output", type=pathlib.Path, required=True)
+    rss_parser.add_argument("--interval", type=float, default=0.05)
+    rss_parser.add_argument("command", nargs=argparse.REMAINDER)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Runs capture or comparison and returns a stable process status."""
+    args = _parser().parse_args(argv)
+    command: list[str] = []
+    if args.action in {"capture", "capture-v2", "rss"}:
+        command = args.command[1:] if args.command[:1] == ["--"] else args.command
+        if not command:
+            raise ValueError(f"{args.action} requires a command after --")
+    if args.action == "capture":
+        _write_json(args.output, capture(command, args.runs))
+        return 0
+    if args.action == "capture-v2":
+        _write_json(args.output, capture_v2(command, args.runs))
+        return 0
+    if args.action == "pair-v2":
+        spec = _read_candidate_spec(args.spec)
+        result = pair_v2(shlex.split(args.baseline_command), shlex.split(args.candidate_command), spec)
+        _write_json(args.output, result)
+        return 0
+    if args.action == "compare-v2":
+        result = compare_v2_baselines(
+            _read_v2_pair(args.original),
+            _read_v2_pair(args.rolling),
+            _read_candidate_spec(args.spec),
+        )
+        print(json.dumps(result, sort_keys=True))
+        return {"pass": 0, "no_change": 2, "regression": 3}[cast(str, result["verdict"])]
+    if args.action == "rss":
+        result = sample_rss(command, args.interval)
+        _write_json(args.output, result)
+        return 0 if result["verdict"] == "pass" else 3
+    if args.action == "pair":
+        baseline_runs: list[dict[str, MetricSample]] = []
+        candidate_runs: list[dict[str, MetricSample]] = []
+        baseline_command = shlex.split(args.baseline_command)
+        candidate_command = shlex.split(args.candidate_command)
+        for _ in range(_REQUIRED_PAIRS):
+            baseline_runs.append(parse_output(_command_output(baseline_command)))
+            candidate_runs.append(parse_output(_command_output(candidate_command)))
+        environment = _environment()
+        baseline = Capture(
+            schema_version=1,
+            environment=environment,
+            command=baseline_command,
+            runs=baseline_runs,
+        )
+        candidate = Capture(
+            schema_version=1,
+            environment=environment,
+            command=candidate_command,
+            runs=candidate_runs,
+        )
+        verdict = compare_captures(baseline, candidate, args.primary, args.protected)
+        _write_json(args.output, {"baseline": baseline, "candidate": candidate, "verdict": verdict})
+    else:
+        verdict = compare_captures(
+            _read_capture(args.baseline),
+            _read_capture(args.candidate),
+            args.primary,
+            args.protected,
+        )
+        print(json.dumps(verdict, sort_keys=True))
+    return {"pass": 0, "no_change": 2, "regression": 3}[verdict["verdict"]]
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
+        print(f"viewer performance gate failed: {error}", file=sys.stderr)
+        sys.exit(4)

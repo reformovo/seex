@@ -459,8 +459,10 @@ fn measure_cpu_budget(label: &str, mut operation: impl FnMut()) {
         .map(|sample| (sample - p50_ns).abs())
         .collect::<Vec<_>>();
     deviations.sort_by(f64::total_cmp);
-    let relative_mad = deviations[SAMPLES / 2] / p50_ns;
+    let mad = deviations[SAMPLES / 2];
+    let relative_mad = mad / p50_ns;
     let reliable = relative_mad <= 0.02;
+    let metric = label.replace(' ', ".");
     println!(
         "{label}: batch={batch_iterations}, samples={SAMPLES}, p50={:.3} ms, p95={:.3} ms, max={:.3} ms, single-max={:.3} ms, relative-mad={relative_mad:.4}",
         p50_ns / 1_000_000.,
@@ -469,9 +471,22 @@ fn measure_cpu_budget(label: &str, mut operation: impl FnMut()) {
         maximum_single.as_secs_f64() * 1_000.,
     );
     println!(
-        "SEEX_PERF {{\"schema_version\":1,\"metric\":\"{label}\",\"unit\":\"ns/op\",\"batch_iterations\":{batch_iterations},\"samples\":{SAMPLES},\"raw_samples\":{:?},\"p50\":{p50_ns:.3},\"p95\":{p95_ns:.3},\"max_batch\":{maximum_ns:.3},\"max_single\":{:.3},\"relative_mad\":{relative_mad:.6},\"reliable\":{reliable}}}",
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
+         \"domain\":\"viewer\",\"metric\":\"cpu.{metric}\",\"unit\":\"ns/op\",\
+         \"direction\":\"lower\",\"batch_iterations\":{batch_iterations},\
+         \"samples\":{SAMPLES},\"raw_samples\":{:?},\"mad\":{mad:.3},\
+         \"relative_mad\":{relative_mad:.6},\"p50\":{p50_ns:.3},\
+         \"p95\":{p95_ns:.3},\"max\":{maximum_ns:.3},\"reliable\":{reliable}}}",
         raw_samples,
-        maximum_single.as_nanos(),
+    );
+    let maximum_single_ns = maximum_single.as_nanos();
+    println!(
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
+         \"domain\":\"viewer\",\"metric\":\"cpu.{metric}.single\",\"unit\":\"ns/op\",\
+         \"direction\":\"lower\",\"batch_iterations\":1,\"samples\":1,\
+         \"raw_samples\":[{maximum_single_ns}],\"mad\":0,\"relative_mad\":0,\
+         \"p50\":{maximum_single_ns},\"p95\":{maximum_single_ns},\
+         \"max\":{maximum_single_ns},\"reliable\":true}}",
     );
     assert!(
         p95_ns <= Duration::from_micros(8_330).as_nanos() as f64,
