@@ -14,8 +14,10 @@ use crate::workbench::document::WorkbenchDocument;
 use crate::workbench::panel_reads::{
     MetricPanelId, PanelReadMode, PanelReadRequest, PanelReadTag, PlannedSourceRead,
 };
+use crate::workbench::toml_document::TomlWorkbenchDocument;
 
 use super::super::ViewerApp;
+use super::persistence::RestoredWorkbench;
 use super::{WorkbenchSession, WorkbenchSessionEvent};
 
 struct PanelDetailQuery {
@@ -245,6 +247,25 @@ impl ViewerApp {
         let restored = self
             .session
             .update(cx, |session, cx| session.restore_document(document, cx));
+        self.apply_restored_workbench(restored, cx);
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "activated by the schema-v1 persistence migration")
+    )]
+    pub(in crate::desktop::app) fn restore_toml_workbench(
+        &mut self,
+        document: TomlWorkbenchDocument,
+        cx: &mut Context<Self>,
+    ) {
+        let restored = self.session.update(cx, |session, cx| {
+            session.restore_toml_document(document, cx)
+        });
+        self.apply_restored_workbench(restored, cx);
+    }
+
+    fn apply_restored_workbench(&mut self, restored: RestoredWorkbench, cx: &mut Context<Self>) {
         let layout = restored.layout;
         self.project_sidebar.update(cx, |sidebar, _| {
             sidebar.visible = layout.project_sidebar_visible;

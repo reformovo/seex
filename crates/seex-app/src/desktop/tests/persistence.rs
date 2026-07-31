@@ -2,7 +2,56 @@ use gpui::{TestAppContext, px};
 
 use super::super::test_support::*;
 use super::*;
+use crate::domain::SourceAlias;
 use crate::workbench::document::SavedRunRef;
+use crate::workbench::toml_document::{
+    SavedAnalysisView as TomlAnalysisView, SavedLayout, SavedRunRef as TomlRunRef,
+    TomlWorkbenchDocument,
+};
+
+#[gpui::test]
+fn toml_workbench_restores_alias_qualified_runs(cx: &mut TestAppContext) {
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let document = TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout::default(),
+        expanded_projects: Vec::new(),
+        pinned_projects: Vec::new(),
+        archived_projects: Vec::new(),
+        archived_runs: Vec::new(),
+        views: vec![TomlAnalysisView {
+            name: "Restored".to_owned(),
+            runs: vec![TomlRunRef {
+                source_alias: alias.clone(),
+                project_id: ProjectId::from_string("project"),
+                run_id: RunId::from_string("run"),
+            }],
+            baseline: None,
+            pinned_runs: Vec::new(),
+            metrics: Vec::new(),
+            metric_heights: Vec::new(),
+            selected_metric: None,
+            axis: AlignmentAxis::Step,
+            viewport: None,
+        }],
+    };
+    let (window, mut cx) = open_viewer(cx, None);
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.restore_toml_workbench(document, cx);
+        })
+        .expect("viewer should remain open");
+
+    window
+        .read_with(&cx, |viewer, cx| {
+            assert_eq!(
+                viewer.session_snapshot(cx).views.active().runs[0].source_id,
+                DataSourceId::from_alias(&alias)
+            );
+        })
+        .expect("viewer should remain open");
+}
 
 #[gpui::test]
 fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAppContext) {

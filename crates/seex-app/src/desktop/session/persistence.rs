@@ -103,6 +103,43 @@ impl WorkbenchSession {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "activated by the schema-v1 persistence migration")
+    )]
+    pub(crate) fn restore_toml_document(
+        &mut self,
+        document: crate::workbench::toml_document::TomlWorkbenchDocument,
+        cx: &mut Context<Self>,
+    ) -> RestoredWorkbench {
+        let (views, issues) = crate::workbench::AnalysisViews::restore_toml(&document);
+        self.views = views;
+        self.last_saved_workbench = Some(document.encode());
+        self.persistence_dirty = false;
+        self.layout = ViewerLayoutState {
+            project_sidebar_visible: document.layout.project_sidebar_visible,
+            project_sidebar_width: document.layout.project_sidebar_width.clamp(160., 600.),
+            metric_sidebar_compact: document.layout.metric_sidebar_compact,
+            bottom_inspector_visible: document.layout.bottom_inspector_visible,
+            bottom_inspector_height: document.layout.bottom_inspector_height.clamp(56., 2_000.),
+        };
+        if !issues.is_empty() {
+            self.transient_error = Some(issues.join("; "));
+        }
+        let available_source_ids = self
+            .sources
+            .sources()
+            .filter(|source| source.root_path.is_dir())
+            .map(|source| source.source_id.clone())
+            .collect();
+        self.publish_snapshot();
+        cx.notify();
+        RestoredWorkbench {
+            layout: self.layout,
+            available_source_ids,
+        }
+    }
+
     pub(crate) fn sync_layout_and_persist(
         &mut self,
         layout: ViewerLayoutState,
