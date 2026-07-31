@@ -7,6 +7,25 @@ use toml::Table;
 use crate::bootstrap::{CatalogBackend, S3ConnectionConfig, is_s3_data_path};
 
 const MAX_METRIC_QUEUE_CAPACITY: i64 = 1_048_576;
+const CONFIG_SCHEMA_VERSION: i64 = 1;
+
+struct ConfigDocument {
+    table: Table,
+    base_path: PathBuf,
+}
+
+struct ConfigLayers {
+    global: Option<ConfigDocument>,
+    project: Option<ConfigDocument>,
+}
+
+impl ConfigLayers {
+    fn documents(&self) -> impl Iterator<Item = &ConfigDocument> {
+        [self.project.as_ref(), self.global.as_ref()]
+            .into_iter()
+            .flatten()
+    }
+}
 
 pub struct ResolvedInitConfig {
     pub catalog_backend: CatalogBackend,
@@ -36,14 +55,16 @@ pub struct S3ConnectionOverrides {
 
 #[derive(Debug, thiserror::Error)]
 pub enum InitConfigError {
-    #[error("failed to read config.toml: {source}")]
+    #[error("failed to read {scope} config.toml: {source}")]
     ReadConfig {
+        scope: &'static str,
         #[source]
         source: io::Error,
     },
 
-    #[error("invalid config.toml: {source}")]
+    #[error("invalid {scope} config.toml: {source}")]
     ParseConfig {
+        scope: &'static str,
         #[source]
         source: toml::de::Error,
     },
@@ -63,8 +84,11 @@ pub fn resolve_init_config(
     let storage = resolve_storage_config(root_path, data_path, catalog_backend, catalog_path)?;
     let metric_queue_capacity = validate_metric_queue_capacity(metric_queue_capacity)?;
     let s3_connection = if storage.data_path.as_deref().is_some_and(is_s3_data_path) {
-        let config = load_project_config(root_path)?;
-        Some(resolve_s3_connection(config.as_ref(), s3_overrides)?)
+        let layers = load_config_layers(root_path)?;
+        Some(resolve_s3_connection(
+            layers.project.as_ref().map(|config| &config.table),
+            s3_overrides,
+        )?)
     } else {
         None
     };
@@ -90,10 +114,10 @@ pub fn resolve_storage_config(
     catalog_backend: Option<&str>,
     catalog_path: Option<PathBuf>,
 ) -> Result<ResolvedStorageConfig, InitConfigError> {
-    let config = load_project_config(root_path)?;
-    let data_path = resolve_data_path(root_path, data_path, config.as_ref())?;
-    let catalog_backend = resolve_catalog_backend(catalog_backend, config.as_ref())?;
-    let catalog_path = resolve_catalog_path(root_path, catalog_path, config.as_ref())?;
+    let layers = load_config_layers(root_path)?;
+    let data_path = resolve_layered_data_path(root_path, data_path, &layers)?;
+    let catalog_backend = resolve_layered_catalog_backend(catalog_backend, &layers)?;
+    let catalog_path = resolve_layered_catalog_path(root_path, catalog_path, &layers)?;
     validate_path_configuration(data_path.as_deref(), catalog_path.as_deref())?;
 
     Ok(ResolvedStorageConfig {
@@ -103,17 +127,97 @@ pub fn resolve_storage_config(
     })
 }
 
-fn load_project_config(root_path: &Path) -> Result<Option<Table>, InitConfigError> {
-    let config_path = root_path.join(".seex").join("config.toml");
-    let content = match fs::read_to_string(&config_path) {
+fn load_config_layers(root_path: &Path) -> Result<ConfigLayers, InitConfigError> {
+    let home_path = std::env::var_os("HOME").map(PathBuf::from);
+    load_config_layers_from(root_path, home_path.as_deref())
+}
+
+fn load_config_layers_from(
+    root_path: &Path,
+    home_path: Option<&Path>,
+) -> Result<ConfigLayers, InitConfigError> {
+    let global = home_path
+        .map(|home| load_config_document("global", &home.join(".seex/config.toml"), home))
+        .transpose()?
+        .flatten();
+    let project = load_config_document("project", &root_path.join(".seex/config.toml"), root_path)?;
+    Ok(ConfigLayers { global, project })
+}
+
+fn load_config_document(
+    scope: &'static str,
+    config_path: &Path,
+    base_path: &Path,
+) -> Result<Option<ConfigDocument>, InitConfigError> {
+    let content = match fs::read_to_string(config_path) {
         Ok(content) => content,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => return Err(InitConfigError::ReadConfig { source }),
+        Err(source) => return Err(InitConfigError::ReadConfig { scope, source }),
     };
-    content
+    let table = content
         .parse::<Table>()
-        .map(Some)
-        .map_err(|source| InitConfigError::ParseConfig { source })
+        .map_err(|source| InitConfigError::ParseConfig { scope, source })?;
+    match table
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+    {
+        Some(CONFIG_SCHEMA_VERSION) => Ok(Some(ConfigDocument {
+            table,
+            base_path: base_path.to_owned(),
+        })),
+        _ => Err(invalid(format!(
+            "{scope} config.toml schema_version must be {CONFIG_SCHEMA_VERSION}"
+        ))),
+    }
+}
+
+fn resolve_layered_data_path(
+    root_path: &Path,
+    explicit: Option<PathBuf>,
+    layers: &ConfigLayers,
+) -> Result<Option<PathBuf>, InitConfigError> {
+    if explicit.is_some() {
+        return resolve_data_path(root_path, explicit, None);
+    }
+    for document in layers.documents() {
+        let value = resolve_data_path(&document.base_path, None, Some(&document.table))?;
+        if value.is_some() {
+            return Ok(value);
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_layered_catalog_backend(
+    explicit: Option<&str>,
+    layers: &ConfigLayers,
+) -> Result<CatalogBackend, InitConfigError> {
+    if explicit.is_some() {
+        return resolve_catalog_backend(explicit, None);
+    }
+    for document in layers.documents() {
+        if document.table.contains_key("catalog_backend") {
+            return resolve_catalog_backend(None, Some(&document.table));
+        }
+    }
+    resolve_catalog_backend(None, None)
+}
+
+fn resolve_layered_catalog_path(
+    root_path: &Path,
+    explicit: Option<PathBuf>,
+    layers: &ConfigLayers,
+) -> Result<Option<PathBuf>, InitConfigError> {
+    if explicit.is_some() {
+        return resolve_catalog_path(root_path, explicit, None);
+    }
+    for document in layers.documents() {
+        let value = resolve_catalog_path(&document.base_path, None, Some(&document.table))?;
+        if value.is_some() {
+            return Ok(value);
+        }
+    }
+    Ok(None)
 }
 
 fn resolve_data_path(
@@ -353,6 +457,65 @@ mod tests {
 
     fn parse_config(raw: &str) -> Table {
         raw.parse::<Table>().expect("test config should parse")
+    }
+
+    fn test_directory(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("seex-{name}-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn schema_v1_layers_keep_precedence_and_path_bases() -> Result<(), Box<dyn std::error::Error>> {
+        let base = test_directory("config-layers");
+        let home = base.join("home");
+        let root = base.join("project");
+        fs::create_dir_all(home.join(".seex"))?;
+        fs::create_dir_all(root.join(".seex"))?;
+        fs::write(
+            home.join(".seex/config.toml"),
+            include_str!("../../../tests/fixtures/config/v1-global.toml"),
+        )?;
+        fs::write(
+            root.join(".seex/config.toml"),
+            include_str!("../../../tests/fixtures/config/v1-project.toml"),
+        )?;
+
+        let layers = load_config_layers_from(&root, Some(&home))?;
+        assert_eq!(
+            resolve_layered_catalog_backend(None, &layers)?,
+            CatalogBackend::Sqlite
+        );
+        assert_eq!(
+            resolve_layered_data_path(&root, None, &layers)?,
+            Some(root.join(".seex/data"))
+        );
+        let global_only = ConfigLayers {
+            global: layers.global,
+            project: None,
+        };
+        assert_eq!(
+            resolve_layered_catalog_path(&root, None, &global_only)?,
+            Some(home.join(".seex/global-catalog.ducklake"))
+        );
+        fs::remove_dir_all(base)?;
+        Ok(())
+    }
+
+    #[test]
+    fn loaded_config_requires_schema_version_one() -> Result<(), Box<dyn std::error::Error>> {
+        let root = test_directory("config-version");
+        fs::create_dir_all(root.join(".seex"))?;
+        fs::write(root.join(".seex/config.toml"), "data_path = 'data'\n")?;
+
+        let error = load_config_layers_from(&root, None)
+            .err()
+            .ok_or("missing schema version should fail")?;
+
+        assert_eq!(
+            error.to_string(),
+            "project config.toml schema_version must be 1"
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]
