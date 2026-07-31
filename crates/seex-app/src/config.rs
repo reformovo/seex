@@ -1,6 +1,6 @@
 //! Desktop-owned, syntax-preserving configuration updates.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +26,109 @@ pub struct EditableConfig {
     scope: ConfigScope,
     original: Option<Vec<u8>>,
     document: DocumentMut,
+}
+
+/// One validated machine-local Source definition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfiguredSource {
+    pub alias: SourceAlias,
+    pub root_path: PathBuf,
+    pub projects: Vec<ProjectId>,
+}
+
+/// Loads and merges global and project Source definitions.
+///
+/// # Errors
+///
+/// Returns [`ConfigEditError`] when either document or Source definition is
+/// invalid, or when the same alias has different effective definitions.
+pub fn load_sources(
+    global_path: &Path,
+    global_base: &Path,
+    project_path: &Path,
+    project_base: &Path,
+) -> Result<Vec<ConfiguredSource>, ConfigEditError> {
+    let global = EditableConfig::load(global_path, ConfigScope::Global)?;
+    let project = EditableConfig::load(project_path, ConfigScope::Project)?;
+    let mut merged = BTreeMap::new();
+    for source in parse_sources(&global.document, global_base)?
+        .into_iter()
+        .chain(parse_sources(&project.document, project_base)?)
+    {
+        let key = source.alias.as_str().to_owned();
+        if let Some(existing) = merged.get(&key) {
+            if existing != &source {
+                return Err(ConfigEditError::SourceAliasConflict { alias: key });
+            }
+        } else {
+            merged.insert(key, source);
+        }
+    }
+    Ok(merged.into_values().collect())
+}
+
+fn parse_sources(
+    document: &DocumentMut,
+    base_path: &Path,
+) -> Result<Vec<ConfiguredSource>, ConfigEditError> {
+    let Some(item) = document.get("sources") else {
+        return Ok(Vec::new());
+    };
+    let sources = item
+        .as_table_like()
+        .ok_or_else(|| invalid_source("sources"))?;
+    sources
+        .iter()
+        .map(|(name, item)| parse_source(name, item.as_table_like(), base_path))
+        .collect()
+}
+
+fn parse_source(
+    name: &str,
+    source: Option<&dyn toml_edit::TableLike>,
+    base_path: &Path,
+) -> Result<ConfiguredSource, ConfigEditError> {
+    let source = source.ok_or_else(|| invalid_source(name))?;
+    let alias = SourceAlias::new(name).map_err(|_| invalid_source(name))?;
+    let raw_path = source
+        .get("path")
+        .and_then(toml_edit::Item::as_str)
+        .filter(|path| !path.is_empty() && !path.contains("://"))
+        .ok_or_else(|| invalid_source(name))?;
+    let path = PathBuf::from(raw_path);
+    let root_path = if path.is_absolute() {
+        path
+    } else {
+        base_path.join(path)
+    };
+    let projects = source
+        .get("projects")
+        .and_then(toml_edit::Item::as_array)
+        .ok_or_else(|| invalid_source(name))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|project| !project.is_empty())
+                .map(ProjectId::from_string)
+                .ok_or_else(|| invalid_source(name))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut seen = HashSet::with_capacity(projects.len());
+    if projects.is_empty() || !projects.iter().all(|project| seen.insert(project.as_str())) {
+        return Err(invalid_source(name));
+    }
+    Ok(ConfiguredSource {
+        alias,
+        root_path,
+        projects,
+    })
+}
+
+fn invalid_source(alias: &str) -> ConfigEditError {
+    ConfigEditError::InvalidSourceDefinition {
+        alias: alias.to_owned(),
+    }
 }
 
 impl EditableConfig {
@@ -146,6 +249,10 @@ pub enum ConfigEditError {
     NonUtf8Path,
     #[error("Source Project allowlist must be non-empty and contain no duplicates")]
     InvalidProjectAllowlist,
+    #[error("invalid Source definition for alias {alias}")]
+    InvalidSourceDefinition { alias: String },
+    #[error("Source alias {alias} has conflicting global and project definitions")]
+    SourceAliasConflict { alias: String },
     #[error("configuration path has no parent directory")]
     MissingParent,
     #[error("configuration changed since it was read")]
@@ -159,6 +266,44 @@ pub enum ConfigEditError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_layers_resolve_paths_allowlists_and_alias_conflicts()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        let global_path = home.join(".seex/config.toml");
+        let project_path = project.join(".seex/config.toml");
+        fs::create_dir_all(global_path.parent().ok_or("global config parent")?)?;
+        fs::create_dir_all(project_path.parent().ok_or("project config parent")?)?;
+        fs::write(
+            &global_path,
+            include_str!("../../../tests/fixtures/config/v1-global.toml"),
+        )?;
+        fs::write(
+            &project_path,
+            include_str!("../../../tests/fixtures/config/v1-project.toml"),
+        )?;
+
+        let sources = load_sources(&global_path, &home, &project_path, &project)?;
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].alias.as_str(), "local-benchmarks");
+        assert_eq!(sources[0].projects[0].as_str(), "reader-benchmarks");
+        assert_eq!(sources[1].root_path, home.join("experiments"));
+
+        fs::write(
+            &project_path,
+            "schema_version = 1\n[sources.research]\npath = '/different'\n\
+             projects = ['vision-baseline']\n",
+        )?;
+        assert!(matches!(
+            load_sources(&global_path, &home, &project_path, &project),
+            Err(ConfigEditError::SourceAliasConflict { alias }) if alias == "research"
+        ));
+        Ok(())
+    }
 
     #[test]
     fn source_update_preserves_unowned_content() -> Result<(), Box<dyn std::error::Error>> {
