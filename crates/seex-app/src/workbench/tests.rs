@@ -249,7 +249,7 @@ fn restore_reports_duplicate_identities_and_unknown_selection() {
         }],
     };
 
-    let (views, issues) = AnalysisViews::restore_toml(&document);
+    let (views, issues) = AnalysisViews::restore(&document);
 
     assert_eq!(views.active().runs.len(), 1);
     assert_eq!(views.active().panels.len(), 1);
@@ -291,7 +291,7 @@ fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
 
     let decoded = TomlWorkbenchDocument::decode(&document.encode())
         .expect("schema-v1 workbench document should round-trip");
-    let (views, issues) = AnalysisViews::restore_toml(&decoded);
+    let (views, issues) = AnalysisViews::restore(&decoded);
 
     assert!(issues.is_empty());
     assert_eq!(decoded.views[0].runs.len(), 25);
@@ -315,7 +315,7 @@ fn restored_organization_uses_composite_source_identities() {
         views: Vec::new(),
     };
 
-    let (views, issues) = AnalysisViews::restore_toml(&document);
+    let (views, issues) = AnalysisViews::restore(&document);
 
     assert!(issues.is_empty());
     assert_ne!(views.pinned_projects()[0], views.archived_projects()[0]);

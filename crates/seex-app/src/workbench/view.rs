@@ -9,10 +9,6 @@ use seex_model::types::ProjectId;
 use crate::data::query::{CurveSnapshot, InspectorSnapshot};
 use crate::data::worker::{Generation, ReadKind};
 use crate::domain::{DataSourceId, RunRef, SelectionError, ViewNavigation};
-use crate::workbench::document::{
-    SavedAnalysisView as LegacyAnalysisView, SavedProjectRef as LegacyProjectRef,
-    SavedRunRef as LegacyRunRef, WorkbenchDocument,
-};
 use crate::workbench::panel_reads::{
     AnalysisViewId, MetricPanelId, PanelReadMode, SourceReadFailure,
 };
@@ -147,14 +143,14 @@ impl Default for AnalysisViews {
 }
 
 impl AnalysisViews {
-    pub fn restore(document: &WorkbenchDocument) -> (Self, Vec<String>) {
+    pub fn restore(document: &TomlWorkbenchDocument) -> (Self, Vec<String>) {
         let mut issues = Vec::new();
         let mut views = Vec::new();
         for (index, saved) in document.views.iter().enumerate() {
             let mut runs = Vec::new();
             for saved_run in &saved.runs {
                 let run = RunRef::new(
-                    DataSourceId::from_path(&saved_run.source_path),
+                    DataSourceId::from_alias(&saved_run.source_alias),
                     saved_run.project_id.clone(),
                     saved_run.run_id.clone(),
                 );
@@ -240,14 +236,14 @@ impl AnalysisViews {
         }
         let active_view_id = views[active].view_id.clone();
         let next_id = views.len() as u64 + 1;
-        let mut restored = Self {
+        let restored = Self {
             views,
             pinned_projects: document
                 .pinned_projects
                 .iter()
                 .map(|project| {
                     ProjectRef::new(
-                        DataSourceId::from_path(&project.source_path),
+                        DataSourceId::from_alias(&project.source_alias),
                         project.project_id.clone(),
                     )
                 })
@@ -257,7 +253,7 @@ impl AnalysisViews {
                 .iter()
                 .map(|project| {
                     ProjectRef::new(
-                        DataSourceId::from_path(&project.source_path),
+                        DataSourceId::from_alias(&project.source_alias),
                         project.project_id.clone(),
                     )
                 })
@@ -267,54 +263,7 @@ impl AnalysisViews {
             active_view_id,
             next_id,
         };
-        for project in &document.removed_projects {
-            restored.remove_project(ProjectRef::new(
-                DataSourceId::from_path(&project.source_path),
-                project.project_id.clone(),
-            ));
-        }
         (restored, issues)
-    }
-
-    pub fn restore_toml(document: &TomlWorkbenchDocument) -> (Self, Vec<String>) {
-        let project = |saved: &crate::workbench::toml_document::SavedProjectRef| LegacyProjectRef {
-            source_path: saved.source_alias.as_str().into(),
-            project_id: saved.project_id.clone(),
-        };
-        let run = |saved: &SavedRunRef| LegacyRunRef {
-            source_path: saved.source_alias.as_str().into(),
-            project_id: saved.project_id.clone(),
-            run_id: saved.run_id.clone(),
-        };
-        let legacy = WorkbenchDocument {
-            sources: Vec::new(),
-            pinned_projects: document.pinned_projects.iter().map(project).collect(),
-            archived_projects: document.archived_projects.iter().map(project).collect(),
-            removed_projects: Vec::new(),
-            archived_runs: document.archived_runs.iter().map(run).collect(),
-            views: document
-                .views
-                .iter()
-                .map(|view| LegacyAnalysisView {
-                    name: view.name.clone(),
-                    runs: view.runs.iter().map(run).collect(),
-                    baseline: view.baseline.as_ref().map(run),
-                    pinned_runs: view.pinned_runs.iter().map(run).collect(),
-                    metrics: view.metrics.clone(),
-                    metric_heights: view.metric_heights.clone(),
-                    selected_metric: view.selected_metric.clone(),
-                    axis: view.axis,
-                    viewport: view.viewport,
-                })
-                .collect(),
-            active_view: document.active_view,
-            project_sidebar_visible: document.layout.project_sidebar_visible,
-            project_sidebar_width: document.layout.project_sidebar_width,
-            metric_sidebar_compact: document.layout.metric_sidebar_compact,
-            bottom_inspector_visible: document.layout.bottom_inspector_visible,
-            bottom_inspector_height: document.layout.bottom_inspector_height,
-        };
-        Self::restore(&legacy)
     }
 
     pub fn views(&self) -> &[AnalysisView] {
@@ -936,9 +885,9 @@ fn metric_row_height(height: f32) -> f32 {
     height.clamp(DEFAULT_METRIC_ROW_HEIGHT, MAX_METRIC_ROW_HEIGHT)
 }
 
-fn saved_run_ref(saved: &crate::workbench::document::SavedRunRef) -> RunRef {
+fn saved_run_ref(saved: &SavedRunRef) -> RunRef {
     RunRef::new(
-        DataSourceId::from_path(&saved.source_path),
+        DataSourceId::from_alias(&saved.source_alias),
         saved.project_id.clone(),
         saved.run_id.clone(),
     )

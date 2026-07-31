@@ -4,7 +4,6 @@ use gpui::{AppContext, Context};
 
 use crate::domain::{DataSourceId, RunRef, SourceAlias};
 use crate::workbench::ProjectRef;
-use crate::workbench::document::WorkbenchDocument;
 use crate::workbench::toml_document::{
     SavedAnalysisView as TomlAnalysisView, SavedLayout, SavedProjectRef as TomlProjectRef,
     SavedRunRef as TomlRunRef, TomlWorkbenchDocument,
@@ -43,75 +42,12 @@ impl WorkbenchSession {
         self.persistence_dirty || self.layout != layout
     }
 
-    #[expect(dead_code, reason = "removed with the legacy workbench codec")]
-    pub(crate) fn restore_document(
-        &mut self,
-        document: WorkbenchDocument,
-        cx: &mut Context<Self>,
-    ) -> RestoredWorkbench {
-        let mut source_paths = document.sources.clone();
-        let referenced_paths = document
-            .pinned_projects
-            .iter()
-            .chain(&document.archived_projects)
-            .map(|project| &project.source_path)
-            .chain(document.archived_runs.iter().map(|run| &run.source_path))
-            .chain(document.views.iter().flat_map(|view| {
-                view.runs
-                    .iter()
-                    .chain(&view.pinned_runs)
-                    .chain(view.baseline.iter())
-                    .map(|run| &run.source_path)
-            }));
-        for path in referenced_paths {
-            if !source_paths.contains(path) {
-                source_paths.push(path.clone());
-            }
-        }
-
-        for path in &source_paths {
-            let source_id = self.sources.import(path.clone());
-            if !path.is_dir() {
-                self.sources.mark_unavailable(
-                    &source_id,
-                    format!("source path is unavailable: {}", path.display()),
-                );
-            }
-        }
-        let (views, issues) = crate::workbench::AnalysisViews::restore(&document);
-        self.views = views;
-        self.last_saved_workbench = Some(document.encode());
-        self.persistence_dirty = false;
-        self.layout = ViewerLayoutState {
-            project_sidebar_visible: document.project_sidebar_visible,
-            project_sidebar_width: document.project_sidebar_width.clamp(160., 600.),
-            metric_sidebar_compact: document.metric_sidebar_compact,
-            bottom_inspector_visible: document.bottom_inspector_visible,
-            bottom_inspector_height: document.bottom_inspector_height.clamp(56., 2_000.),
-        };
-        if !issues.is_empty() {
-            self.transient_error = Some(issues.join("; "));
-        }
-        let available_source_ids = self
-            .sources
-            .sources()
-            .filter(|source| source.root_path.is_dir())
-            .map(|source| source.source_id.clone())
-            .collect();
-        self.publish_snapshot();
-        cx.notify();
-        RestoredWorkbench {
-            layout: self.layout,
-            available_source_ids,
-        }
-    }
-
     pub(crate) fn restore_toml_document(
         &mut self,
         document: crate::workbench::toml_document::TomlWorkbenchDocument,
         cx: &mut Context<Self>,
     ) -> RestoredWorkbench {
-        let (views, issues) = crate::workbench::AnalysisViews::restore_toml(&document);
+        let (views, issues) = crate::workbench::AnalysisViews::restore(&document);
         self.views = views;
         self.last_saved_workbench = Some(document.encode());
         self.persistence_dirty = false;

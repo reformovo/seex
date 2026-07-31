@@ -10,7 +10,6 @@ use crate::data::query::CurveAxis;
 use crate::data::registry::SourceStatus;
 use crate::data::worker::{ReadKind, ReadRequest};
 use crate::domain::{DataSourceId, RunRef};
-use crate::workbench::document::WorkbenchDocument;
 use crate::workbench::panel_reads::{
     MetricPanelId, PanelReadMode, PanelReadRequest, PanelReadTag, PlannedSourceRead,
 };
@@ -237,18 +236,6 @@ impl ViewerApp {
         self.session.update(cx, |session, cx| {
             session.configure_sources(sources, &visible_runs, cx);
         });
-    }
-
-    #[expect(dead_code, reason = "removed with the legacy workbench codec")]
-    pub(in crate::desktop::app) fn restore_workbench(
-        &mut self,
-        document: WorkbenchDocument,
-        cx: &mut Context<Self>,
-    ) {
-        let restored = self
-            .session
-            .update(cx, |session, cx| session.restore_document(document, cx));
-        self.apply_restored_workbench(restored, cx);
     }
 
     pub(in crate::desktop::app) fn restore_toml_workbench(
