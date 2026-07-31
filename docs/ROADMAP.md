@@ -1,9 +1,10 @@
 # Seex Roadmap
 
 > This file contains only current and future work. Completed 0.1.x phases and
-> their original metrics are archived in
-> [`roadmap/0.1.x-completed.md`](roadmap/0.1.x-completed.md). Shipped release
-> details live in `release-notes/`.
+> their measured results are summarized as release history in
+> [`release-notes/0.1.0b0.md`](release-notes/0.1.0b0.md#completed-01x-roadmap).
+> Shipped release details and completed roadmap history live together in
+> `release-notes/`.
 
 Pre-1.0 releases do not promise store, API, or machine-output compatibility.
 The next coordinated milestone is Cargo `0.1.0-beta.1`, Python `0.1.0b1`, and

@@ -15,7 +15,8 @@ notes, and historical architecture snapshots.
 - `docs/glossary.md` for product terms.
 - `docs/parquet-schema-contract.md` for the Parquet compatibility contract.
 - `docs/adr/` for accepted decisions.
-- `docs/release-notes/` for shipped release notes.
+- `docs/release-notes/` for shipped release notes and completed roadmap
+  history.
 
 ## Historical Context
 
