@@ -1,6 +1,6 @@
 # Viewer Configuration and Workbench State
 
-> Status: Draft
+> Status: Accepted for `0.1.0-beta.1` / `0.1.0b1` by ROADMAP U1 and U6
 
 ## Summary
 
@@ -14,7 +14,7 @@ lifecycles and portability rules:
   and explicit export/import.
 
 The first audience is one user restoring a workbench across personal devices.
-Transfer is explicit; this proposal does not introduce accounts, cloud sync,
+Transfer is explicit; this design does not introduce accounts, cloud sync,
 shared-file synchronization, or team collaboration.
 
 ## Ownership and Boundaries
@@ -40,7 +40,7 @@ while the desktop manages Sources and future settings. Storage keys and secrets
 must not be copied into workbench state. Global storage and S3 values provide
 defaults; project values override them, and S3 tables merge field by field.
 
-The proposal changes no Rust or Python SDK API, catalog schema, Parquet schema,
+The design changes no Rust or Python SDK API, catalog schema, Parquet schema,
 or native storage responsibility. UI state remains owned by `seex-app`; it is
 not stored in DuckDB, SQLite, DuckLake, or the Parquet data area.
 
@@ -56,7 +56,7 @@ does not define setting keys before a real preference is introduced.
 
 Resolution order is explicit SDK argument, project config, global config, then
 built-in default. The examples show every currently supported native config key
-together with the proposed Source table; values are illustrative:
+together with the accepted Source table; values are illustrative:
 
 ```toml
 # ~/.seex/config.toml

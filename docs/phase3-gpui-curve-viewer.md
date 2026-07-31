@@ -6,7 +6,7 @@
 > Roadmap note: this document preserves the original single-panel baseline.
 > [`ROADMAP.md`](ROADMAP.md) is authoritative for later sequencing: the
 > completed multi-project workbench history is archived, and final resource,
-> Metal, and macOS ARM64 release qualification is ROADMAP U6.
+> Metal, and macOS ARM64 release qualification is ROADMAP U7.
 
 ## Outcome
 
@@ -143,7 +143,7 @@ value.
   rejection, both catalog backends, local path resolution, and error states.
 - Record storage query timings separately from renderer frame timings.
 
-### Original macOS ARM64 Release Plan (Roadmap U6)
+### Original macOS ARM64 Release Plan (Roadmap U7)
 
 - Pin GPUI 0.2.2 as a macOS-only dependency with default features disabled and
   `font-kit` enabled; do not use `gpui-component`, runtime shaders, or Blade.

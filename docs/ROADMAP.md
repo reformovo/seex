@@ -13,16 +13,20 @@ tag `v0.1.0-beta.1`, all built from the same source.
 ## 0.1.0 Beta / Unified SDK and Bounded Native Queries
 
 This milestone implements the accepted
-[single-crate SDK](single-crate-rust-sdk.md) and completes the outstanding
-Viewer query, RSS, and Metal work. [ADR 0015](adr/0015-unified-rust-sdk-performance-preserving-migration.md)
-defines the architecture; this roadmap defines implementation order and exit
-criteria.
+[single-crate SDK](single-crate-rust-sdk.md), the accepted
+[Viewer configuration and workbench design](drafts/viewer-configuration-and-workbench-state.md),
+and the outstanding Viewer query, RSS, and Metal work.
+[ADR 0015](adr/0015-unified-rust-sdk-performance-preserving-migration.md)
+defines the SDK architecture; this roadmap defines implementation order and
+exit criteria.
 
 The order is fixed:
 
 ```text
-U0 gates -> U1 Reader -> U2 storage/query -> U3 reporting/Run SDK
-         -> U4 Python API -> U5 crate/package convergence -> U6 release gates
+U0 gates -> U1 configuration + Reader -> U2 storage/query
+         -> U3 reporting/Run SDK -> U4 Python API
+         -> U5 crate/package convergence
+         -> U6 Viewer configuration/workbench -> U7 release gates
 ```
 
 No later phase may remove a boundary or baseline needed by an earlier phase.
@@ -55,6 +59,9 @@ begin only after Desktop uses Reader.
 - [ ] Preserve the catalog and Parquet schemas, DuckLake as a required native
   dependency, four-way Viewer read concurrency, and the 100 ms trailing
   debounce. Add no runtime dependency without separate approval.
+- [ ] The direct `toml_edit` runtime dependency is approved only for the U1
+  syntax-preserving configuration candidate. Review that dependency change
+  separately from document codecs, Source management, and SDK migration.
 
 ### U0: Unified Performance Gates and Migration Baseline
 
@@ -111,10 +118,36 @@ It changes no production behavior and requires no performance improvement.
 - [x] Exit U0 only when all three domains can compare a candidate against both
   baselines and reproduce correctness and resource results.
 
-### U1: Public `seex` Facade and Reader First
+### U1: Configuration Foundation, Public `seex` Facade, and Reader First
 
-U1 is a migration phase. It introduces the destination without moving storage
-source or changing the public Python API.
+U1 establishes the configuration and identity contract before Reader migration.
+Configuration, document codecs, the facade, and Reader migration remain
+separate candidates. The configuration work does not change public Rust or
+Python APIs; the facade and Reader add only the already-planned Rust surface,
+and the shipped Python API remains unchanged until U4.
+
+#### U1.1: Configuration and document foundation
+
+- [ ] Define schema version 1 for global `~/.seex/config.toml` and project
+  `<root>/.seex/config.toml`. Resolve explicit SDK arguments, project config,
+  global config, and built-in defaults in that order; merge S3 tables field by
+  field and ignore inherited credentials when effective `data_path` is local.
+- [ ] Keep field-level ownership explicit: the SDK reads storage and S3 keys;
+  Desktop reads and edits Sources. Share contract fixtures without exposing
+  Desktop configuration types through the public SDK.
+- [ ] Introduce stable Source aliases and represent Viewer Project and Run
+  references by alias rather than path. Validate alias conflicts and Source
+  Project allowlists, and load Runs only for allowed Projects.
+- [ ] Implement schema version 1 TOML workbench encoding, decoding, and
+  validation. Reject the legacy `seex-workbench 1` format without migration.
+- [ ] Use the approved direct `toml_edit` dependency for Desktop
+  read-modify-write. Preserve comments, unknown fields, native storage fields,
+  and secrets; require owner-only permissions for global secrets; write through
+  a same-directory temporary file and reject a stale read fingerprint.
+- [ ] Prove SDK `init`, `log`, `finish`, and `shutdown` may read effective
+  configuration but never rewrite either config or workbench file.
+
+#### U1.2: Facade and Reader migration
 
 - [ ] Create unpublished `crates/seex` as a facade over the current
   `seex-model`, `seex-storage`, and `seex-core` crates. Keep every workspace
@@ -128,15 +161,20 @@ source or changing the public Python API.
   completeness, and reasons, and expose an Arrow PyCapsule stream directly.
 - [ ] Keep `ProjectConnection`, `ProjectMetricReader`, `NativeQueryStore`,
   storage errors, DuckDB types, and local-only source policy private.
-- [ ] Migrate Desktop discovery and curve reads to Reader. Preserve four-way
-  scheduling, generation reconciliation, hover/locked-cursor real-sample
-  semantics, and source-specific failures.
+- [ ] Migrate Desktop discovery and curve reads to Reader over configured
+  Source aliases and Project allowlists. Preserve four-way scheduling,
+  generation reconciliation, hover/locked-cursor real-sample semantics, and
+  source-specific failures.
 - [ ] Route PyO3 through a temporary compatibility adapter without changing the
   shipped Python surface; defer the breaking public API switch to U4.
-- [ ] Cover Reader/native/standalone parity, all axes and range types, strict
-  bounds, Desktop neighbors, missing metadata, and Arrow output.
-- [ ] Exit U1 only when query, reporting, Viewer CPU, and RSS protected metrics
-  are reliable and regress by no more than 3% from the rolling baseline.
+- [ ] Cover configuration layering, path bases, schema and alias conflicts,
+  allowlists, TOML round trips, source preservation, concurrent edits, and
+  byte-for-byte SDK non-mutation, plus Reader/native/standalone parity, all
+  axes and range types, strict bounds, Desktop neighbors, missing metadata,
+  and Arrow output.
+- [ ] Exit U1 only when configuration and Reader correctness pass and query,
+  reporting, Viewer CPU, and RSS protected metrics are reliable and regress by
+  no more than 3% from the rolling baseline.
 
 ### U2: Storage Migration and Query Peak Reduction
 
@@ -275,13 +313,67 @@ as a compatibility layer.
 - [ ] Run warning-free Rust formatting, Clippy, check, tests, doc tests, docs,
   package verification, Python gates, and all three performance domains.
 
-### U6: Final Resource, Metal, and Release Qualification
+### U6: Viewer Configuration and Workbench Experience
 
-U6 begins after U0–U5 pass. CI/release workflow changes remain a separate
+U6 completes the accepted Viewer configuration and workbench design after
+crate convergence and before final release qualification. Keep Source
+management, autosave, and export/import as separate candidates.
+
+#### U6.1: Source management and scope
+
+- [ ] Implement Source directory preflight, editable alias and Project
+  multi-selection confirmation, configuration writeback, Manage Projects, and
+  Reload Sources. Reject an invalid reload without replacing the last valid
+  live Sources.
+- [ ] Select project scope only from the Source root used to launch or
+  explicitly open Viewer. Importing another Source does not change scope;
+  configuration merges global and project documents, while workbenches never
+  merge and no project scope uses `~/.seex/workbench.toml`.
+- [ ] Keep Archive Project as reversible workbench state. Make Remove Project
+  a confirmed unimport that removes the allowlist entry and its workbench
+  references; retire persisted `removed_projects`.
+
+#### U6.2: Semantic autosave
+
+- [ ] Persist Views and the active View; selected, baseline, pinned, and
+  archived Runs and Projects; Metrics, selected Metric, row heights, axis and
+  viewport; major component visibility and dimensions; and expanded Projects.
+- [ ] Exclude Source paths and allowlists, hover/focus and menu state, filter
+  text, scroll positions, query results, pending tasks, cursors, and transient
+  errors from workbench state.
+- [ ] Have `WorkbenchSession` produce immutable semantic snapshots and
+  coalesce changes. Serialize and atomically replace the file on a GPUI
+  background task, then update entities on the foreground; render callbacks
+  consume plain snapshots and never perform I/O or re-enter an Entity.
+- [ ] Report invalid or unsupported documents without overwriting them. Retain
+  unavailable Source, Project, and Run references across save and restart so
+  they recover when mappings or data return.
+
+#### U6.3: Export, import, and exit gates
+
+- [ ] Export only `workbench.toml`, never config, Source paths, allowlists,
+  native data, secrets, or transient state.
+- [ ] Before import, autosave the current workbench and preflight every alias,
+  Project, rewrite, and allowlist addition. After confirmation, complete all
+  file writes before switching live configuration and workbench state; a
+  failure keeps the previous live state.
+- [ ] Cover every acceptance scenario in the accepted design, including
+  owner-only secret files, invalid external edit fallback, alias remapping,
+  missing-reference recovery, archive/unimport behavior, and failed import
+  without a live-state switch.
+- [ ] Pass pure Rust tests for configuration, permissions, aliases, codecs,
+  legacy rejection, and source preservation; pass GPUI tests for Source
+  confirmation, reload, autosave, archive/unimport, recovery, export, and
+  import. Run `cargo check`, `cargo test`, and the protected Viewer gates.
+
+### U7: Final Resource, Metal, and Release Qualification
+
+U7 begins after U0–U6 pass. CI/release workflow changes remain a separate
 review slice and require explicit approval under the repository boundary.
 
-- [ ] Re-run complete Reader, reporting, Python, package, Viewer correctness,
-  CPU, RSS, and stale-generation gates against original and rolling baselines.
+- [ ] Re-run complete Reader, reporting, Python, package, Viewer configuration,
+  workbench, correctness, CPU, RSS, and stale-generation gates against original
+  and rolling baselines.
 - [ ] With 10 Runs and at least six visible Metrics, verify 2x Detail returned
   points are approximately halved and compact snapshot storage is at least 60%
   below the original baseline.
@@ -326,7 +418,7 @@ review slice and require explicit approval under the repository boundary.
 
 - [ ] Evaluate the [research driver](drafts/autoresearch-control-loop-notes.md)
   without moving source or Git mutation into Seex engine.
-- [ ] Design config/tag filtering, export, Web UI, MCP, and agent-facing
+- [ ] Design config/tag filtering, data export, Web UI, MCP, and agent-facing
   surfaces as independently reviewable phases after the beta is qualified.
 - [ ] Revisit cumulative-token and normalized-budget comparison axes,
   repetition/significance policy, and persisted research context as separate
