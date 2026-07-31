@@ -11,16 +11,16 @@ use seex_app::data::worker::{
 };
 use seex_app::domain::{DataSourceId, RunRef};
 use seex_core::engine::client::NativeClient;
-use seex_model::alignment::AlignmentViewport;
-use seex_model::metric::MetricKey;
+use seex_model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentReduction, AlignmentViewport};
+use seex_model::metric::{MetricKey, MetricQuery, ReductionPolicy, Step};
 use seex_model::run::RunId;
 use seex_model::types::ProjectId;
-use seex_storage::ProjectConnection;
 use seex_storage::bootstrap::{
     CatalogBackend, NativeStorageConfig, open_existing_native_connection_with_config,
     open_native_connection_with_config,
 };
 use seex_storage::config::resolve_storage_config;
+use seex_storage::{ProjectConnection, ProjectMetricReader};
 
 mod support;
 
@@ -38,6 +38,7 @@ const TRACE_METRICS: [&str; 6] = [
 ];
 const QUERY_TIMEOUT: Duration = Duration::from_secs(300);
 const FIXTURE_MANIFEST: &str = ".seex/performance-fixture-v2.txt";
+const FIXTURE_EPOCH_MILLIS: i64 = 1_700_000_000_000;
 
 fn backend_name(backend: CatalogBackend) -> &'static str {
     match backend {
@@ -87,6 +88,21 @@ fn validate_fixture(
         }
     }
     Ok(())
+}
+
+fn open_fixture_connection(root: &Path) -> Result<ProjectConnection, Box<dyn Error>> {
+    let resolved = resolve_storage_config(root, None, None, None)?;
+    Ok(ProjectConnection::new(
+        open_existing_native_connection_with_config(
+            NativeStorageConfig::with_backend_and_s3_config(
+                resolved.catalog_backend,
+                root,
+                resolved.catalog_path,
+                resolved.data_path,
+                None,
+            ),
+        )?,
+    ))
 }
 
 fn fixture_path(backend: CatalogBackend, root_variable: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -206,8 +222,9 @@ fn prepare_fixture(
         }
         connection.rebuild_metric_aggregates_for_run(run_id)?;
         connection.execute(
-            "UPDATE seex_runs SET status = 'finished', finished_at = now() WHERE run_id = ?",
-            [run_id.as_str()],
+            "UPDATE seex_runs SET status = 'finished',
+                    started_at = epoch_ms(?), finished_at = now() WHERE run_id = ?",
+            (FIXTURE_EPOCH_MILLIS, run_id.as_str()),
         )?;
     }
     connection.flush_metric_points()?;
@@ -428,6 +445,123 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum BaselineAxis {
+    Step,
+    RelativeTime,
+    Timestamp,
+}
+
+impl BaselineAxis {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Step => "step",
+            Self::RelativeTime => "relative_time",
+            Self::Timestamp => "timestamp",
+        }
+    }
+}
+
+fn query_reader_equivalent(
+    connection: &ProjectConnection,
+    run_ids: &[RunId],
+    axis: BaselineAxis,
+    start: i64,
+    end: i64,
+    max_points: usize,
+) -> Result<usize, Box<dyn Error>> {
+    if start >= end {
+        return Err("reader-equivalent range must be non-empty and half-open".into());
+    }
+    let reader = ProjectMetricReader::new(connection);
+    let mut returned = 0;
+    for run_id in run_ids {
+        let count = match axis {
+            BaselineAxis::Step => reader
+                .query_metric(&MetricQuery::new(
+                    run_id.clone(),
+                    MetricKey::from_string("loss"),
+                    Some(Step::new(start)),
+                    Some(Step::new(end)),
+                    ReductionPolicy::screen_budget(max_points as u32, 1)?,
+                )?)?
+                .points
+                .len(),
+            BaselineAxis::RelativeTime | BaselineAxis::Timestamp => {
+                let offset = if matches!(axis, BaselineAxis::Timestamp) {
+                    FIXTURE_EPOCH_MILLIS
+                } else {
+                    0
+                };
+                let result = reader.query_aligned_metric(&AlignmentQuery {
+                    run_id: run_id.clone(),
+                    metric_key: MetricKey::from_string("loss"),
+                    axis: AlignmentAxis::ElapsedTime,
+                    viewport: AlignmentViewport::new(start - offset, end - offset - 1)?,
+                    reduction: AlignmentReduction::screen_budget(max_points as u32, 1)?,
+                })?;
+                result
+                    .points
+                    .iter()
+                    .filter(|point| {
+                        let value = point.axis_value + offset;
+                        start <= value && value < end
+                    })
+                    .take(max_points)
+                    .count()
+            }
+        };
+        if count > max_points {
+            return Err(format!("{} query exceeded max_points", axis.label()).into());
+        }
+        returned += count;
+    }
+    Ok(returned)
+}
+
+fn measure_reader_axis(
+    backend: &str,
+    connection: &ProjectConnection,
+    run_ids: &[RunId],
+    axis: BaselineAxis,
+    range: &str,
+    start: i64,
+    end: i64,
+) -> Result<(), Box<dyn Error>> {
+    let mut samples = Vec::with_capacity(7);
+    for _ in 0..7 {
+        let started = Instant::now();
+        let returned = query_reader_equivalent(connection, run_ids, axis, start, end, 5_000)?;
+        if returned == 0 || returned > RUNS * 5_000 {
+            return Err("reader-equivalent query returned an invalid point count".into());
+        }
+        samples.push(started.elapsed().as_nanos() as f64);
+    }
+    let mut ordered = samples.clone();
+    ordered.sort_by(f64::total_cmp);
+    let p50 = ordered[3];
+    let mut deviations = ordered
+        .iter()
+        .map(|sample| (sample - p50).abs())
+        .collect::<Vec<_>>();
+    deviations.sort_by(f64::total_cmp);
+    let mad = deviations[3];
+    let relative_mad = mad / p50;
+    println!(
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
+         \"domain\":\"query\",\"metric\":\"{backend}.reader.{}.{range}\",\
+         \"unit\":\"ns/op\",\"direction\":\"lower\",\"batch_iterations\":1,\
+         \"samples\":7,\"raw_samples\":{samples:?},\"mad\":{mad},\
+         \"relative_mad\":{relative_mad},\"p50\":{p50},\"p95\":{},\
+         \"max\":{},\"reliable\":{}}}",
+        axis.label(),
+        ordered[6],
+        ordered[6],
+        relative_mad <= 0.02,
+    );
+    Ok(())
+}
+
 #[test]
 #[ignore = "creates retained DuckDB and SQLite fixtures for release query validation"]
 fn prepare_large_native_series_fixture() -> Result<(), Box<dyn Error>> {
@@ -459,6 +593,49 @@ fn large_native_series_respect_viewer_query_budgets() -> Result<(), Box<dyn Erro
     );
     validate_backend(CatalogBackend::DuckDb)?;
     validate_backend(CatalogBackend::Sqlite)
+}
+
+#[test]
+#[ignore = "queries the immutable scale fixture on all Reader destination axes"]
+fn reader_equivalent_axes_and_ranges() -> Result<(), Box<dyn Error>> {
+    assert!(
+        std::hint::black_box(!cfg!(debug_assertions)),
+        "Reader performance validation requires --release"
+    );
+    for backend in [CatalogBackend::DuckDb, CatalogBackend::Sqlite] {
+        let (root, run_ids) = read_fixture(
+            backend,
+            "SEEX_APP_SCALE_FIXTURE_ROOT",
+            &["loss"],
+            SOURCE_POINTS,
+        )?;
+        let connection = open_fixture_connection(&root)?;
+        for (axis, offset) in [
+            (BaselineAxis::Step, 0),
+            (BaselineAxis::RelativeTime, 0),
+            (BaselineAxis::Timestamp, FIXTURE_EPOCH_MILLIS),
+        ] {
+            measure_reader_axis(
+                backend_name(backend),
+                &connection,
+                &run_ids,
+                axis,
+                "full",
+                offset,
+                offset + SOURCE_POINTS,
+            )?;
+            measure_reader_axis(
+                backend_name(backend),
+                &connection,
+                &run_ids,
+                axis,
+                "narrow",
+                offset + 450_000,
+                offset + 550_000,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[test]
