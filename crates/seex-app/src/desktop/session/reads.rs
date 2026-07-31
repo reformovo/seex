@@ -239,6 +239,10 @@ impl ViewerApp {
         });
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retained until legacy Viewer tests migrate")
+    )]
     pub(in crate::desktop::app) fn restore_workbench(
         &mut self,
         document: WorkbenchDocument,
@@ -250,10 +254,6 @@ impl ViewerApp {
         self.apply_restored_workbench(restored, cx);
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "activated by the schema-v1 persistence migration")
-    )]
     pub(in crate::desktop::app) fn restore_toml_workbench(
         &mut self,
         document: TomlWorkbenchDocument,

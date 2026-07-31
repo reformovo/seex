@@ -3,7 +3,7 @@ use std::path::PathBuf;
 #[cfg(all(test, feature = "test-support"))]
 use crate::data::registry::SourceStatus;
 use crate::domain::RunRef;
-use crate::workbench::document::WorkbenchDocument;
+use crate::workbench::toml_document::TomlWorkbenchDocument;
 use gpui::{
     Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, Render, SharedString, Window,
     div, prelude::*,
@@ -74,7 +74,8 @@ impl ViewerApp {
     ) -> Self {
         let focus = cx.focus_handle();
         focus.focus(window);
-        let session = cx.new(|_| WorkbenchSession::new(default_workbench_path()));
+        let session =
+            cx.new(|_| WorkbenchSession::new(default_workbench_path(project_path.as_deref())));
         let mut app = Self {
             theme: ViewerTheme::for_appearance(window.appearance()),
             focus,
@@ -188,8 +189,8 @@ impl ViewerApp {
         })
         .detach();
         if let Some(path) = app.session.read(cx).workbench_path.clone() {
-            match WorkbenchDocument::load(&path) {
-                Ok(Some(document)) => app.restore_workbench(document, cx),
+            match TomlWorkbenchDocument::load(&path) {
+                Ok(Some(document)) => app.restore_toml_workbench(document, cx),
                 Ok(None) => {}
                 Err(error) => {
                     app.session.update(cx, |session, cx| {

@@ -56,7 +56,7 @@ fn toml_workbench_restores_alias_qualified_runs(cx: &mut TestAppContext) {
 #[gpui::test]
 fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
-    let path = root.path().join("workbench.state");
+    let path = root.path().join("workbench.toml");
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer(cx, None);
     window
@@ -71,7 +71,8 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
             viewer.bottom_inspector.update(cx, |inspector, _| {
                 inspector.height = px(260.);
             });
-            let source_id = DataSourceId::from_path(root.path());
+            let alias = SourceAlias::new("research").expect("test alias should be valid");
+            let source_id = DataSourceId::from_alias(&alias);
             let project_id = ProjectId::from_string("project");
             viewer.session.update(cx, |session, session_cx| {
                 session.workbench_path = Some(path.clone());
@@ -131,18 +132,22 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
     }
     let loaded = loaded.expect("workbench document should be saved");
 
-    assert!(!loaded.project_sidebar_visible);
-    assert_eq!(loaded.project_sidebar_width, 288.);
-    assert!(loaded.metric_sidebar_compact);
-    assert_eq!(loaded.bottom_inspector_height, 260.);
+    assert!(!loaded.layout.project_sidebar_visible);
+    assert_eq!(loaded.layout.project_sidebar_width, 288.);
+    assert!(loaded.layout.metric_sidebar_compact);
+    assert_eq!(loaded.layout.bottom_inspector_height, 260.);
     assert_eq!(loaded.views.len(), 1);
     assert!(loaded.views[0].metrics.is_empty());
     assert_eq!(loaded.pinned_projects.len(), 1);
     assert_eq!(loaded.archived_projects.len(), 1);
-    assert_eq!(loaded.removed_projects.len(), 1);
     assert_eq!(loaded.archived_runs.len(), 1);
     assert!(loaded.views[0].baseline.is_some());
     assert_eq!(loaded.views[0].pinned_runs.len(), 1);
+    assert!(
+        !std::fs::read_to_string(path)
+            .expect("saved workbench should be UTF-8")
+            .contains("removed_projects")
+    );
 }
 
 #[gpui::test]

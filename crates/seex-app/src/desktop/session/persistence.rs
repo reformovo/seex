@@ -1,11 +1,13 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui::{AppContext, Context};
 
-use crate::domain::{DataSourceId, RunRef};
+use crate::domain::{DataSourceId, RunRef, SourceAlias};
 use crate::workbench::ProjectRef;
-use crate::workbench::document::{
-    SavedAnalysisView, SavedProjectRef, SavedRunRef, WorkbenchDocument,
+use crate::workbench::document::WorkbenchDocument;
+use crate::workbench::toml_document::{
+    SavedAnalysisView as TomlAnalysisView, SavedLayout, SavedProjectRef as TomlProjectRef,
+    SavedRunRef as TomlRunRef, TomlWorkbenchDocument,
 };
 
 use super::WorkbenchSession;
@@ -41,6 +43,10 @@ impl WorkbenchSession {
         self.persistence_dirty || self.layout != layout
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "retained until legacy Viewer tests migrate")
+    )]
     pub(crate) fn restore_document(
         &mut self,
         document: WorkbenchDocument,
@@ -103,10 +109,6 @@ impl WorkbenchSession {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "activated by the schema-v1 persistence migration")
-    )]
     pub(crate) fn restore_toml_document(
         &mut self,
         document: crate::workbench::toml_document::TomlWorkbenchDocument,
@@ -171,31 +173,33 @@ impl WorkbenchSession {
         .detach();
     }
 
-    fn workbench_document(&self, layout: ViewerLayoutState) -> WorkbenchDocument {
-        let source_path = |source_id: &DataSourceId| {
-            self.sources.source(source_id).map_or_else(
-                || PathBuf::from(source_id.as_str()),
-                |source| source.root_path.clone(),
-            )
+    fn workbench_document(&self, layout: ViewerLayoutState) -> TomlWorkbenchDocument {
+        let save_project = |project: &ProjectRef| {
+            SourceAlias::new(project.source_id.as_str())
+                .ok()
+                .map(|source_alias| TomlProjectRef {
+                    source_alias,
+                    project_id: project.project_id.clone(),
+                })
         };
-        let save_project = |project: &ProjectRef| SavedProjectRef {
-            source_path: source_path(&project.source_id),
-            project_id: project.project_id.clone(),
-        };
-        let save_run = |run: &RunRef| SavedRunRef {
-            source_path: source_path(&run.source_id),
-            project_id: run.project_id.clone(),
-            run_id: run.run_id.clone(),
+        let save_run = |run: &RunRef| {
+            SourceAlias::new(run.source_id.as_str())
+                .ok()
+                .map(|source_alias| TomlRunRef {
+                    source_alias,
+                    project_id: run.project_id.clone(),
+                    run_id: run.run_id.clone(),
+                })
         };
         let views = self
             .views
             .views()
             .iter()
-            .map(|view| SavedAnalysisView {
+            .map(|view| TomlAnalysisView {
                 name: view.name.clone(),
-                runs: view.runs.iter().map(&save_run).collect(),
-                baseline: view.baseline.as_ref().map(&save_run),
-                pinned_runs: view.pinned_runs.iter().map(&save_run).collect(),
+                runs: view.runs.iter().filter_map(&save_run).collect(),
+                baseline: view.baseline.as_ref().and_then(&save_run),
+                pinned_runs: view.pinned_runs.iter().filter_map(&save_run).collect(),
                 metrics: view
                     .panels
                     .iter()
@@ -217,48 +221,46 @@ impl WorkbenchSession {
                 viewport: view.navigation.brush().map(|brush| brush.selected()),
             })
             .collect();
-        WorkbenchDocument {
-            sources: self
-                .sources
-                .sources()
-                .map(|source| source.root_path.clone())
-                .collect(),
+        TomlWorkbenchDocument {
+            active_view: self.views.active_index(),
+            layout: SavedLayout {
+                project_sidebar_visible: layout.project_sidebar_visible,
+                project_sidebar_width: layout.project_sidebar_width,
+                metric_sidebar_compact: layout.metric_sidebar_compact,
+                bottom_inspector_visible: layout.bottom_inspector_visible,
+                bottom_inspector_height: layout.bottom_inspector_height,
+            },
+            expanded_projects: Vec::new(),
             pinned_projects: self
                 .views
                 .pinned_projects()
                 .iter()
-                .map(&save_project)
+                .filter_map(&save_project)
                 .collect(),
             archived_projects: self
                 .views
                 .archived_projects()
                 .iter()
-                .map(&save_project)
+                .filter_map(&save_project)
                 .collect(),
-            removed_projects: self
+            archived_runs: self
                 .views
-                .removed_projects()
+                .archived_runs()
                 .iter()
-                .map(&save_project)
+                .filter_map(&save_run)
                 .collect(),
-            archived_runs: self.views.archived_runs().iter().map(&save_run).collect(),
             views,
-            active_view: self.views.active_index(),
-            project_sidebar_visible: layout.project_sidebar_visible,
-            project_sidebar_width: layout.project_sidebar_width,
-            metric_sidebar_compact: layout.metric_sidebar_compact,
-            bottom_inspector_visible: layout.bottom_inspector_visible,
-            bottom_inspector_height: layout.bottom_inspector_height,
         }
     }
 }
 
-pub(crate) fn default_workbench_path() -> Option<PathBuf> {
+pub(crate) fn default_workbench_path(_project_root: Option<&Path>) -> Option<PathBuf> {
     #[cfg(test)]
     return None;
 
     #[cfg(not(test))]
-    let home = std::env::var_os("HOME")?;
-    #[cfg(not(test))]
-    Some(PathBuf::from(home).join("Library/Application Support/Seex/viewer.workbench"))
+    _project_root
+        .map(Path::to_owned)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .map(|root| root.join(".seex/workbench.toml"))
 }
