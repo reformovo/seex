@@ -378,7 +378,7 @@ def emit_performance_records(result: dict[str, Any]) -> None:
             "p50": p50,
             "p95": p95,
             "max": max(raw),
-            "reliable": relative_mad <= 0.02,
+            "reliable": relative_mad <= 0.02 and min(raw) >= 10_000_000,
         }
         print("SEEX_PERF " + json.dumps(record, separators=(",", ":")), flush=True)
 

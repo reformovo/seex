@@ -92,7 +92,7 @@ fn measure(
         }
         samples.push((batch_iterations * points_per_call) as f64 / started.elapsed().as_secs_f64());
     }
-    emit_metric(label, batch_iterations, samples);
+    emit_metric(label, batch_iterations * points_per_call, samples);
     Ok(())
 }
 
@@ -109,12 +109,13 @@ fn emit_queue_check(client: &NativeClient) {
 
 fn emit_duration(label: &str, elapsed: Duration) {
     let value = elapsed.as_nanos();
+    let reliable = elapsed >= CALIBRATION_TARGET;
     println!(
         "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
          \"domain\":\"reporting\",\"metric\":\"rust.{label}\",\
          \"unit\":\"ns\",\"direction\":\"lower\",\"batch_iterations\":1,\
          \"samples\":1,\"raw_samples\":[{value}],\"mad\":0,\"relative_mad\":0,\
-         \"p50\":{value},\"p95\":{value},\"max\":{value},\"reliable\":true}}"
+         \"p50\":{value},\"p95\":{value},\"max\":{value},\"reliable\":{reliable}}}"
     );
 }
 

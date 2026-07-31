@@ -80,6 +80,18 @@ def test_parse_v2_output_validates_metrics_and_checks() -> None:
     assert parsed["checks"] == [performance_gate.V2Check(domain="query", check="parity", passed=True, detail="matched")]
 
 
+def test_v2_timing_below_ten_milliseconds_is_non_deciding() -> None:
+    short = performance_gate.parse_v2_output(
+        _v2_metric(batch_iterations=1_000, raw_samples=[1_000.0] * 3, relative_mad=0.0, reliable=True)
+    )
+    calibrated = performance_gate.parse_v2_output(
+        _v2_metric(batch_iterations=10_000, raw_samples=[1_000.0] * 3, relative_mad=0.0, reliable=True)
+    )
+
+    assert not short["metrics"]["query.duckdb.step.full"]["reliable"]
+    assert calibrated["metrics"]["query.duckdb.step.full"]["reliable"]
+
+
 @pytest.mark.parametrize(
     "updates, message",
     [
@@ -96,6 +108,7 @@ def test_parse_v2_output_rejects_invalid_deciding_records(updates: dict[str, obj
 
 def _v2_runs(value: float, **updates: object) -> list[performance_gate.V2Output]:
     values: dict[str, object] = {
+        "batch_iterations": 200_000,
         "raw_samples": [value] * 3,
         "p50": value,
         "relative_mad": 0.0,

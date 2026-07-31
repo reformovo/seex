@@ -190,6 +190,18 @@ def _domain(record: dict[str, object]) -> Domain:
     return cast(Domain, domain)
 
 
+def _calibrated(unit: str, batch_iterations: int, raw_samples: Sequence[float]) -> bool:
+    if unit == "ns/op":
+        elapsed = [sample * batch_iterations for sample in raw_samples]
+    elif unit == "points/s":
+        elapsed = [batch_iterations * 1_000_000_000 / sample for sample in raw_samples]
+    elif unit == "ns":
+        elapsed = list(raw_samples)
+    else:
+        return True
+    return all(sample >= 10_000_000 for sample in elapsed)
+
+
 def parse_v2_output(output: str) -> V2Output:
     """Parses strict schema-v2 metric and correctness records."""
     metrics: dict[str, V2Metric] = {}
@@ -248,7 +260,7 @@ def parse_v2_output(output: str) -> V2Output:
             p50=_finite_number(decoded, "p50"),
             p95=_finite_number(decoded, "p95"),
             maximum=_finite_number(decoded, "max"),
-            reliable=reliable,
+            reliable=reliable and _calibrated(cast(str, unit), batch_iterations, parsed),
         )
     if not metrics and not checks:
         raise ValueError("benchmark output contained no schema-v2 SEEX_PERF records")
