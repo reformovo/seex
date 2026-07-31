@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fs;
 use std::hint::black_box;
 use std::path::PathBuf;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use seex_core::engine::client::{NativeClient, NativeRun};
@@ -106,6 +107,17 @@ fn emit_queue_check(client: &NativeClient) {
     );
 }
 
+fn emit_duration(label: &str, elapsed: Duration) {
+    let value = elapsed.as_nanos();
+    println!(
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
+         \"domain\":\"reporting\",\"metric\":\"rust.{label}\",\
+         \"unit\":\"ns\",\"direction\":\"lower\",\"batch_iterations\":1,\
+         \"samples\":1,\"raw_samples\":[{value}],\"mad\":0,\"relative_mad\":0,\
+         \"p50\":{value},\"p95\":{value},\"max\":{value},\"reliable\":true}}"
+    );
+}
+
 #[test]
 #[ignore = "hardware-sensitive release reporting admission workload"]
 fn reporting_admission_modes() -> Result<(), Box<dyn Error>> {
@@ -137,5 +149,54 @@ fn reporting_admission_modes() -> Result<(), Box<dyn Error>> {
         client.shutdown(None)?;
         fs::remove_dir_all(root)?;
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "fresh-process release reporting durability workload"]
+fn reporting_durability_phases() -> Result<(), Box<dyn Error>> {
+    const REPORTS: u64 = 1_000;
+    assert!(
+        black_box(!cfg!(debug_assertions)),
+        "workload requires --release"
+    );
+    let (root, client, run) = run_for_mode("durability")?;
+    println!("SEEX_RSS_PHASE warm");
+
+    let admission_started = Instant::now();
+    for step in 0..REPORTS {
+        run.log_metric_at_step("loss", step as i64, step as f64)?;
+    }
+    emit_duration("queue_admission", admission_started.elapsed());
+    println!("SEEX_RSS_PHASE admitted");
+
+    let drain_started = Instant::now();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while client.diagnostics().pending_reports != 0 {
+        if Instant::now() >= deadline {
+            return Err("reporting durability drain timed out".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    emit_duration("drain_persistence", drain_started.elapsed());
+    println!("SEEX_RSS_PHASE cycles_done");
+
+    let finalization_started = Instant::now();
+    client.finish_run(&run.run_id)?;
+    emit_duration("finalization", finalization_started.elapsed());
+    let diagnostics = client.diagnostics();
+    let passed = diagnostics.pending_reports == 0
+        && diagnostics.persisted_reports == REPORTS
+        && diagnostics.queue_full_errors == 0
+        && diagnostics.last_flush_status == "succeeded";
+    println!(
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"check\",\
+         \"domain\":\"reporting\",\"check\":\"rust.durability\",\
+         \"passed\":{passed},\"detail\":\"persisted={},pending={},queue_full={}\"}}",
+        diagnostics.persisted_reports, diagnostics.pending_reports, diagnostics.queue_full_errors,
+    );
+    println!("SEEX_RSS_PHASE final");
+    client.shutdown(None)?;
+    fs::remove_dir_all(root)?;
     Ok(())
 }
