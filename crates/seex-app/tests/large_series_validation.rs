@@ -282,7 +282,9 @@ fn measure(
         .map(|sample| sample.abs_diff(median))
         .collect::<Vec<_>>();
     deviations.sort_unstable();
-    let relative_mad = deviations[deviations.len() / 2].as_secs_f64() / median.as_secs_f64();
+    let mad = deviations[deviations.len() / 2];
+    let relative_mad = mad.as_secs_f64() / median.as_secs_f64();
+    let metric = label.replace(' ', ".");
     println!(
         "{label}: cold={:.3} ms, warm min/median/max={:.3}/{:.3}/{:.3} ms",
         samples[0].as_secs_f64() * 1_000.,
@@ -291,9 +293,13 @@ fn measure(
         warm[warm.len() - 1].as_secs_f64() * 1_000.,
     );
     println!(
-        "SEEX_PERF {{\"schema_version\":1,\"metric\":\"{label} query\",\"unit\":\"ns/op\",\"batch_iterations\":1,\"samples\":7,\"raw_samples\":{raw_samples:?},\"p50\":{},\"p95\":{},\"max_batch\":{},\"max_single\":{},\"relative_mad\":{relative_mad:.6},\"reliable\":{}}}",
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
+         \"domain\":\"query\",\"metric\":\"{metric}.viewer\",\"unit\":\"ns/op\",\
+         \"direction\":\"lower\",\"batch_iterations\":1,\"samples\":7,\
+         \"raw_samples\":{raw_samples:?},\"mad\":{},\"relative_mad\":{relative_mad:.6},\
+         \"p50\":{},\"p95\":{},\"max\":{},\"reliable\":{}}}",
+        mad.as_nanos(),
         median.as_nanos(),
-        warm[6].as_nanos(),
         warm[6].as_nanos(),
         warm[6].as_nanos(),
         relative_mad <= 0.02,
@@ -349,7 +355,11 @@ fn assert_snapshot(
             ("snapshot bytes", resources.snapshot_bytes),
         ] {
             println!(
-                "SEEX_PERF {{\"schema_version\":1,\"metric\":\"{label} {metric}\",\"unit\":\"count\",\"batch_iterations\":1,\"samples\":1,\"raw_samples\":[{value}],\"p50\":{value},\"p95\":{value},\"max_batch\":{value},\"max_single\":{value},\"relative_mad\":0.0,\"reliable\":true}}"
+                "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
+                 \"domain\":\"viewer\",\"metric\":\"resource.{label}.{metric}\",\
+                 \"unit\":\"count\",\"direction\":\"neutral\",\"batch_iterations\":1,\
+                 \"samples\":1,\"raw_samples\":[{value}],\"mad\":0,\"relative_mad\":0,\
+                 \"p50\":{value},\"p95\":{value},\"max\":{value},\"reliable\":true}}"
             );
         }
     }
