@@ -1,5 +1,6 @@
 use std::error::Error;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -41,6 +42,20 @@ const TRACE_METRICS: [&str; 6] = [
 const QUERY_TIMEOUT: Duration = Duration::from_secs(300);
 const FIXTURE_MANIFEST: &str = ".seex/performance-fixture-v2.txt";
 const FIXTURE_EPOCH_MILLIS: i64 = 1_700_000_000_000;
+const FNV1A_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV1A_PRIME: u64 = 0x100000001b3;
+
+#[derive(Debug, Eq, PartialEq)]
+struct FixtureFingerprint {
+    data_files: usize,
+    data_bytes: u64,
+    data_fnv1a64: u64,
+    physical_rows: i64,
+    min_step: i64,
+    max_step: i64,
+    min_timestamp: String,
+    max_timestamp: String,
+}
 
 fn backend_name(backend: CatalogBackend) -> &'static str {
     match backend {
@@ -49,12 +64,109 @@ fn backend_name(backend: CatalogBackend) -> &'static str {
     }
 }
 
-fn fixture_manifest(backend: CatalogBackend, metrics: &[&str], source_points: i64) -> String {
+fn fixture_manifest(
+    backend: CatalogBackend,
+    metrics: &[&str],
+    source_points: i64,
+    fingerprint: &FixtureFingerprint,
+) -> String {
     format!(
-        "schema=v2\nsemantics=lww-spikes-v1\nbackend={}\nruns={RUNS}\nmetrics={}\neffective_points_per_series={source_points}\n",
+        "schema=v2\nsemantics=lww-spikes-v1\nbackend={}\nruns={RUNS}\nmetrics={}\n\
+         effective_points_per_series={source_points}\nphysical_rows={}\nstep_bounds={}..{}\n\
+         timestamp_bounds={}..{}\ndata_files={}\ndata_bytes={}\ndata_fnv1a64={:016x}\n",
         backend_name(backend),
-        metrics.join(",")
+        metrics.join(","),
+        fingerprint.physical_rows,
+        fingerprint.min_step,
+        fingerprint.max_step,
+        fingerprint.min_timestamp,
+        fingerprint.max_timestamp,
+        fingerprint.data_files,
+        fingerprint.data_bytes,
+        fingerprint.data_fnv1a64,
     )
+}
+
+fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV1A_PRIME);
+    }
+    hash
+}
+
+fn data_file_fingerprint(root: &Path) -> Result<(usize, u64, u64), Box<dyn Error>> {
+    let data_root = root.join("custom/data");
+    let mut pending = vec![data_root.clone()];
+    let mut files = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                pending.push(entry.path());
+            } else if entry.file_type()?.is_file() {
+                files.push(entry.path());
+            }
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err("retained fixture contains no data files".into());
+    }
+    let mut hash = FNV1A_OFFSET;
+    let mut total_bytes = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    for path in &files {
+        let relative = path.strip_prefix(&data_root)?.to_string_lossy();
+        hash = hash_bytes(hash, relative.as_bytes());
+        hash = hash_bytes(hash, &[0]);
+        let metadata = path.metadata()?;
+        total_bytes = total_bytes
+            .checked_add(metadata.len())
+            .ok_or("fixture data size overflow")?;
+        hash = hash_bytes(hash, &metadata.len().to_le_bytes());
+        let mut reader = BufReader::new(File::open(path)?);
+        loop {
+            let read = reader.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hash = hash_bytes(hash, &buffer[..read]);
+        }
+    }
+    Ok((files.len(), total_bytes, hash))
+}
+
+fn fixture_fingerprint(
+    connection: &ProjectConnection,
+    root: &Path,
+) -> Result<FixtureFingerprint, Box<dyn Error>> {
+    let (physical_rows, min_step, max_step, min_timestamp, max_timestamp) = connection.query_row(
+        "SELECT count(*), min(step), max(step),
+                CAST(min(timestamp) AS VARCHAR), CAST(max(timestamp) AS VARCHAR)
+         FROM dl.metric_points",
+        [],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        },
+    )?;
+    let (data_files, data_bytes, data_fnv1a64) = data_file_fingerprint(root)?;
+    Ok(FixtureFingerprint {
+        data_files,
+        data_bytes,
+        data_fnv1a64,
+        physical_rows,
+        min_step,
+        max_step,
+        min_timestamp,
+        max_timestamp,
+    })
 }
 
 fn validate_fixture(
@@ -63,13 +175,8 @@ fn validate_fixture(
     metrics: &[&str],
     source_points: i64,
 ) -> Result<(), Box<dyn Error>> {
-    let expected = fixture_manifest(backend, metrics, source_points);
-    let actual = fs::read_to_string(root.join(FIXTURE_MANIFEST))?;
-    if actual != expected {
-        return Err("retained fixture manifest does not match the requested workload".into());
-    }
     let resolved = resolve_storage_config(root, None, None, None)?;
-    let connection = open_existing_native_connection_with_config(
+    let connection = ProjectConnection::new(open_existing_native_connection_with_config(
         NativeStorageConfig::with_backend_and_s3_config(
             resolved.catalog_backend,
             root,
@@ -77,7 +184,20 @@ fn validate_fixture(
             resolved.data_path,
             None,
         ),
-    )?;
+    )?);
+    let fingerprint = fixture_fingerprint(&connection, root)?;
+    let expected_rows = RUNS as i64 * metrics.len() as i64 * (source_points + 1);
+    if fingerprint.physical_rows != expected_rows
+        || fingerprint.min_step != 0
+        || fingerprint.max_step != source_points - 1
+    {
+        return Err("retained fixture row count or step bounds changed".into());
+    }
+    let expected = fixture_manifest(backend, metrics, source_points, &fingerprint);
+    let actual = fs::read_to_string(root.join(FIXTURE_MANIFEST))?;
+    if actual != expected {
+        return Err("retained fixture manifest does not match its data content".into());
+    }
     for metric in metrics {
         let matching: i64 = connection.query_row(
             "SELECT count(*) FROM seex_metric_aggregates
@@ -244,10 +364,11 @@ fn prepare_fixture(
         )?;
     }
     connection.flush_metric_points()?;
+    let fingerprint = fixture_fingerprint(&connection, &root)?;
     drop(connection);
     fs::write(
         root.join(FIXTURE_MANIFEST),
-        fixture_manifest(backend, metrics, source_points),
+        fixture_manifest(backend, metrics, source_points, &fingerprint),
     )?;
     validate_fixture(&root, backend, metrics, source_points)?;
     Ok((root, run_ids))
@@ -622,6 +743,23 @@ fn semantic_points(
         .filter(|point| matches!(point.step.value(), 249_999 | 250_000 | 500_000 | 500_001))
         .map(|point| (point.step.value(), point.value_f64))
         .collect())
+}
+
+#[test]
+fn fixture_data_fingerprint_changes_with_file_contents() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    let data = root.path().join("custom/data/metric_points");
+    fs::create_dir_all(&data)?;
+    let file = data.join("part.parquet");
+    fs::write(&file, b"first fixture contents")?;
+    let first = data_file_fingerprint(root.path())?;
+
+    fs::write(file, b"changed fixture contents")?;
+    let changed = data_file_fingerprint(root.path())?;
+
+    assert_eq!(first.0, 1);
+    assert_ne!(first, changed);
+    Ok(())
 }
 
 #[test]
