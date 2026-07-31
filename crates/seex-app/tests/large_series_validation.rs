@@ -287,7 +287,8 @@ fn prepare_fixture(
     fs::write(
         seex_dir.join("config.toml"),
         format!(
-            "catalog_backend = \"{}\"\ncatalog_path = \"custom/{catalog_name}\"\n\
+            "schema_version = 1\ncatalog_backend = \"{}\"\n\
+             catalog_path = \"custom/{catalog_name}\"\n\
              data_path = \"custom/data\"\n",
             if backend == CatalogBackend::DuckDb {
                 "duckdb"

@@ -158,7 +158,7 @@ mod tests {
         fs::create_dir(&config_dir)?;
         fs::write(
             config_dir.join("config.toml"),
-            "data_path = \"s3://bucket/data\"\n",
+            "schema_version = 1\ndata_path = \"s3://bucket/data\"\n",
         )?;
 
         let error = ReadSession::open_existing(root.path()).err();

@@ -1003,6 +1003,7 @@ def test_cli_sanitizes_config_credentials_and_catalog_paths(
     config_path.parent.mkdir(parents=True)
     secret = "credential-must-not-leak"
     config_path.write_text(
+        "schema_version = 1\n"
         'data_path = "s3://private-bucket/metrics"\n'
         "[s3]\n"
         'endpoint = "127.0.0.1:9000"\n'

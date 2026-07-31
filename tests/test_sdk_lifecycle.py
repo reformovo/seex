@@ -31,7 +31,7 @@ path_style = "yes"
 def _write_project_config(root_path: pathlib.Path, content: str) -> None:
     config_path = root_path / ".seex" / "config.toml"
     config_path.parent.mkdir(parents=True)
-    config_path.write_text(content, encoding="utf-8")
+    config_path.write_text(f"schema_version = 1\n{content}", encoding="utf-8")
 
 
 def test_init_returns_client(tmp_path: pathlib.Path) -> None:

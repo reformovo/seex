@@ -97,7 +97,8 @@ fn fixture(backend: CatalogBackend, absolute_paths: bool) -> Result<Fixture, Box
     fs::write(
         config_dir.join("config.toml"),
         format!(
-            "catalog_backend = \"{backend_name}\"\ncatalog_path = \"{configured_catalog}\"\n\
+            "schema_version = 1\ncatalog_backend = \"{backend_name}\"\n\
+             catalog_path = \"{configured_catalog}\"\n\
              data_path = \"{configured_data}\"\n"
         ),
     )?;
