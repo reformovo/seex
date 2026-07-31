@@ -1,5 +1,7 @@
 //! Schema-v1 TOML workbench model.
 
+use std::collections::HashSet;
+
 use seex_chart_core::AxisRange;
 use seex_model::alignment::AlignmentAxis;
 use seex_model::run::RunId;
@@ -29,11 +31,23 @@ impl TomlWorkbenchDocument {
     /// Returns [`TomlWorkbenchError`] when the TOML, schema version, or a typed
     /// workbench field is invalid.
     pub fn decode(raw: &str) -> Result<Self, TomlWorkbenchError> {
+        if raw
+            .lines()
+            .next()
+            .is_some_and(|line| line.trim() == "seex-workbench 1")
+        {
+            return Err(TomlWorkbenchError::LegacyFormat);
+        }
         let document = raw.parse::<DocumentMut>()?;
         if document["schema_version"].as_integer() != Some(WORKBENCH_SCHEMA_VERSION) {
             return Err(TomlWorkbenchError::UnsupportedSchema);
         }
-        Ok(Self {
+        for field in ["sources", "projects", "removed_projects", "path", "s3"] {
+            if document.as_table().contains_key(field) {
+                return Err(TomlWorkbenchError::InvalidField(field));
+            }
+        }
+        let workbench = Self {
             active_view: document["active_view"]
                 .as_integer()
                 .and_then(|value| usize::try_from(value).ok())
@@ -56,7 +70,32 @@ impl TomlWorkbenchDocument {
             )?,
             archived_runs: table_array(document.get("archived_runs"), "archived_runs", run_ref)?,
             views: table_array(document.get("views"), "views", view)?,
-        })
+        };
+        workbench.validate()?;
+        Ok(workbench)
+    }
+
+    /// Validates semantic schema-v1 workbench invariants.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TomlWorkbenchError::InvalidField`] for inconsistent state.
+    pub fn validate(&self) -> Result<(), TomlWorkbenchError> {
+        if (self.views.is_empty() && self.active_view != 0)
+            || (!self.views.is_empty() && self.active_view >= self.views.len())
+        {
+            return Err(TomlWorkbenchError::InvalidField("active_view"));
+        }
+        if !positive(self.layout.project_sidebar_width)
+            || !positive(self.layout.bottom_inspector_height)
+        {
+            return Err(TomlWorkbenchError::InvalidField("layout"));
+        }
+        validate_projects(&self.expanded_projects, "expanded_projects")?;
+        validate_projects(&self.pinned_projects, "pinned_projects")?;
+        validate_projects(&self.archived_projects, "archived_projects")?;
+        validate_runs(&self.archived_runs, "archived_runs")?;
+        self.views.iter().try_for_each(validate_view)
     }
 
     pub fn encode(&self) -> String {
@@ -81,6 +120,8 @@ impl TomlWorkbenchDocument {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TomlWorkbenchError {
+    #[error("legacy seex-workbench 1 documents are unsupported")]
+    LegacyFormat,
     #[error("workbench schema_version must be 1")]
     UnsupportedSchema,
     #[error("invalid workbench field {0}")]
@@ -142,6 +183,9 @@ fn view(table: &Table) -> Result<SavedAnalysisView, TomlWorkbenchError> {
 }
 
 fn project_ref(table: &Table) -> Result<SavedProjectRef, TomlWorkbenchError> {
+    if table.contains_key("path") || table.contains_key("projects") {
+        return Err(TomlWorkbenchError::InvalidField("source"));
+    }
     Ok(SavedProjectRef {
         source_alias: SourceAlias::new(string(table, "source")?)
             .map_err(|_| TomlWorkbenchError::InvalidField("source"))?,
@@ -156,6 +200,83 @@ fn run_ref(table: &Table) -> Result<SavedRunRef, TomlWorkbenchError> {
         project_id: project.project_id,
         run_id: RunId::from_string(string(table, "run_id")?),
     })
+}
+
+fn validate_view(view: &SavedAnalysisView) -> Result<(), TomlWorkbenchError> {
+    if view.name.is_empty() {
+        return Err(TomlWorkbenchError::InvalidField("name"));
+    }
+    validate_runs(&view.runs, "runs")?;
+    validate_runs(&view.pinned_runs, "pinned_runs")?;
+    if let Some(baseline) = &view.baseline {
+        validate_run(baseline, "baseline")?;
+    }
+    let mut metrics = HashSet::with_capacity(view.metrics.len());
+    if !view
+        .metrics
+        .iter()
+        .all(|metric| !metric.is_empty() && metrics.insert(metric.as_str()))
+    {
+        return Err(TomlWorkbenchError::InvalidField("metrics"));
+    }
+    if view
+        .selected_metric
+        .as_ref()
+        .is_some_and(|metric| !metrics.contains(metric.as_str()))
+    {
+        return Err(TomlWorkbenchError::InvalidField("selected_metric"));
+    }
+    if !view
+        .metric_heights
+        .iter()
+        .all(|(metric, height)| metrics.contains(metric.as_str()) && positive(*height))
+    {
+        return Err(TomlWorkbenchError::InvalidField("metric_heights"));
+    }
+    Ok(())
+}
+
+fn validate_projects(
+    projects: &[SavedProjectRef],
+    field: &'static str,
+) -> Result<(), TomlWorkbenchError> {
+    let mut seen = HashSet::with_capacity(projects.len());
+    if projects.iter().all(|project| {
+        !project.project_id.as_str().is_empty()
+            && seen.insert((project.source_alias.as_str(), project.project_id.as_str()))
+    }) {
+        Ok(())
+    } else {
+        Err(TomlWorkbenchError::InvalidField(field))
+    }
+}
+
+fn validate_runs(runs: &[SavedRunRef], field: &'static str) -> Result<(), TomlWorkbenchError> {
+    let mut seen = HashSet::with_capacity(runs.len());
+    if runs.iter().all(|run| {
+        validate_run(run, field).is_ok()
+            && seen.insert((
+                run.source_alias.as_str(),
+                run.project_id.as_str(),
+                run.run_id.as_str(),
+            ))
+    }) {
+        Ok(())
+    } else {
+        Err(TomlWorkbenchError::InvalidField(field))
+    }
+}
+
+fn validate_run(run: &SavedRunRef, field: &'static str) -> Result<(), TomlWorkbenchError> {
+    if run.project_id.as_str().is_empty() || run.run_id.as_str().is_empty() {
+        Err(TomlWorkbenchError::InvalidField(field))
+    } else {
+        Ok(())
+    }
+}
+
+fn positive(value: f32) -> bool {
+    value.is_finite() && value > 0.
 }
 
 fn strings(item: Option<&Item>, field: &'static str) -> Result<Vec<String>, TomlWorkbenchError> {
@@ -374,6 +495,37 @@ impl SavedRunRef {
 mod tests {
     use super::*;
 
+    fn document() -> TomlWorkbenchDocument {
+        let source_alias = SourceAlias::new("research").expect("test alias should be valid");
+        let project = SavedProjectRef {
+            source_alias: source_alias.clone(),
+            project_id: ProjectId::from_string("project-1"),
+        };
+        TomlWorkbenchDocument {
+            active_view: 0,
+            layout: SavedLayout::default(),
+            expanded_projects: vec![project.clone()],
+            pinned_projects: vec![project.clone()],
+            archived_projects: Vec::new(),
+            archived_runs: Vec::new(),
+            views: vec![SavedAnalysisView {
+                name: "Training".to_owned(),
+                runs: vec![SavedRunRef {
+                    source_alias,
+                    project_id: project.project_id,
+                    run_id: RunId::from_string("run-1"),
+                }],
+                baseline: None,
+                pinned_runs: Vec::new(),
+                metrics: vec!["loss".to_owned()],
+                metric_heights: vec![("loss".to_owned(), 160.)],
+                selected_metric: Some("loss".to_owned()),
+                axis: AlignmentAxis::Step,
+                viewport: Some(AxisRange::new(1., 5.).expect("test range should be valid")),
+            }],
+        }
+    }
+
     #[test]
     fn run_reference_derives_its_alias_qualified_project() {
         let run = SavedRunRef {
@@ -388,35 +540,7 @@ mod tests {
 
     #[test]
     fn schema_v1_encoding_contains_aliases_without_machine_paths() {
-        let source_alias = SourceAlias::new("research").expect("test alias should be valid");
-        let project = SavedProjectRef {
-            source_alias: source_alias.clone(),
-            project_id: ProjectId::from_string("project-1"),
-        };
-        let run = SavedRunRef {
-            source_alias,
-            project_id: project.project_id.clone(),
-            run_id: RunId::from_string("run-1"),
-        };
-        let document = TomlWorkbenchDocument {
-            active_view: 0,
-            layout: SavedLayout::default(),
-            expanded_projects: vec![project.clone()],
-            pinned_projects: vec![project],
-            archived_projects: Vec::new(),
-            archived_runs: Vec::new(),
-            views: vec![SavedAnalysisView {
-                name: "Training".to_owned(),
-                runs: vec![run],
-                baseline: None,
-                pinned_runs: Vec::new(),
-                metrics: vec!["loss".to_owned()],
-                metric_heights: vec![("loss".to_owned(), 160.)],
-                selected_metric: Some("loss".to_owned()),
-                axis: AlignmentAxis::Step,
-                viewport: Some(AxisRange::new(1., 5.).expect("test range should be valid")),
-            }],
-        };
+        let document = document();
 
         let encoded = document.encode();
         let decoded =
@@ -442,5 +566,25 @@ mod tests {
                 .lines()
                 .any(|line| line.trim_start().starts_with("path ="))
         );
+    }
+
+    #[test]
+    fn legacy_document_is_rejected_without_migration() {
+        let error = TomlWorkbenchDocument::decode("seex-workbench 1\nactive 0\n")
+            .expect_err("legacy workbench should be rejected");
+
+        assert!(matches!(error, TomlWorkbenchError::LegacyFormat));
+    }
+
+    #[test]
+    fn duplicate_run_reference_is_rejected() {
+        let mut document = document();
+        let duplicate = document.views[0].runs[0].clone();
+        document.views[0].runs.push(duplicate);
+
+        assert!(matches!(
+            document.validate(),
+            Err(TomlWorkbenchError::InvalidField("runs"))
+        ));
     }
 }
