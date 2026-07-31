@@ -63,25 +63,25 @@ It changes no production behavior and requires no performance improvement.
 
 #### Gate format and comparator
 
-- [ ] Define version 2 performance JSON with `reporting`, `query`, and `viewer`
+- [x] Define version 2 performance JSON with `reporting`, `query`, and `viewer`
   domains. Record environment, commit and dirty-worktree identity, fixture,
   commands, units, batch size, raw samples, MAD, p50, p95, max, RSS phases, and
   original/rolling comparison results.
-- [ ] Implement the typed collector and comparator with the standard libraries
+- [x] Implement the typed collector and comparator with the standard libraries
   already available to the repository. Keep raw traces and per-iteration trace
   artifacts outside the repository; commit only stable statistics and human
   conclusions.
-- [ ] Calibrate each timing batch until one sample lasts at least 10 ms. Mark a
+- [x] Calibrate each timing batch until one sample lasts at least 10 ms. Mark a
   metric with relative MAD above 2% as non-deciding; it cannot accept a
   migration or optimization candidate.
-- [ ] Encode migration and optimization policies from the Execution Contract,
+- [x] Encode migration and optimization policies from the Execution Contract,
   including hard floors, Pass, No-change, and Regression outcomes.
 - [ ] Keep resource counters behind test-support/release test configuration and
   prove an ordinary release build contains no counter state or production log.
 
 #### Workloads
 
-- [ ] Cover reporting at the Rust engine and Python/PyO3 boundaries: explicit
+- [x] Cover reporting at the Rust engine and Python/PyO3 boundaries: explicit
   step, implicit single metric, multi-metric Mapping, queue admission,
   drain/persistence, finalization, and peak RSS.
 - [ ] Cover Reader queries on DuckDB and SQLite with 10 Runs and 1,000,000

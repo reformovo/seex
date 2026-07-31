@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "status": "u0-partial",
+  "original": {
+    "source_revision": "ce0bbf51122070b8a23d17332eeb3667d5fa0ecf",
+    "rolling_revision": "ce0bbf51122070b8a23d17332eeb3667d5fa0ecf",
+    "environment": {
+      "captured_at": "2026-07-31",
+      "dirty": false,
+      "machine": "arm64",
+      "os": "macOS 26.3",
+      "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+      "python": "3.13.2",
+      "uv": "0.8.12"
+    },
+    "domains": {
+      "reporting": {
+        "fixture": {
+          "rust_admission": "one calibrated process sample per AB/BA pair",
+          "python_admission_reports": 100000,
+          "durability_reports": 1000,
+          "durability_repeats": 7
+        },
+        "deciding_metrics": {
+          "rust.explicit_single.admission_points_per_second": 15131366.821,
+          "rust.implicit_single.admission_points_per_second": 15204098.304,
+          "rust.mapping_8.admission_points_per_second": 15726163.758,
+          "rust.drain_persistence_ns": 65170250,
+          "rust.finalization_ns": 13500792,
+          "python.explicit_single.admission_points_per_second": 1426285.136,
+          "python.implicit_single.admission_points_per_second": 1415984.340,
+          "python.drain_persistence_ns": 50098459.003
+        },
+        "non_deciding_metrics": {
+          "python.mapping_8.capture_relative_mad": 0.020219,
+          "python.finalization_reason": "relative MAD above 2%",
+          "queue_admission_reason": "timed batch below 10 ms",
+          "shutdown_reason": "timed batch below 10 ms"
+        },
+        "rss": {
+          "rust_warm_bytes": 130170880,
+          "rust_peak_bytes": 177733632,
+          "rust_final_bytes": 177733632,
+          "python_warm_bytes": 22528000,
+          "python_peak_bytes": 138428416,
+          "python_final_bytes": 138117120,
+          "stability_verdict": "informational baseline; warm precedes lazy native initialization"
+        },
+        "correctness": "pass: no queue-full failures, no pending reports after drain, exact persistence, successful flush"
+      },
+      "query": { "status": "pending" },
+      "viewer": { "status": "pending" }
+    },
+    "raw_artifacts": {
+      "reporting_rust": {
+        "path": "/tmp/seex-perf/u0/reporting-rust-clean.json",
+        "sha256": "393ddaf6d0c595d28c8d9a9fa2608878b2905c1eb9329d7a2f7406eb115823db"
+      },
+      "reporting_python_explicit": {
+        "path": "/tmp/seex-perf/u0/reporting-python-explicit-clean.json",
+        "sha256": "7ca598ee32ec348096fcabca186124131f80dbbff7a15e5babb5a3e0160dabbe"
+      },
+      "reporting_python_implicit": {
+        "path": "/tmp/seex-perf/u0/reporting-python-implicit-clean.json",
+        "sha256": "c7b46a0eea3d8199373d98142e0abc14a0bb7b0559bcc9fbb953b1d79b0d87fe"
+      },
+      "reporting_python_mapping": {
+        "path": "/tmp/seex-perf/u0/reporting-python-mapping-clean.json",
+        "sha256": "b40a697f483a19a2a8d62cb55204bc83699d85782b3d25885bdd67e33d4cbfda"
+      },
+      "reporting_python_durability": {
+        "path": "/tmp/seex-perf/u0/reporting-python-durability-clean.json",
+        "sha256": "0758d14ba31369c51d9007ab45d71ddcab36427b53a74b31eb069a05aa041e9f"
+      },
+      "reporting_rust_rss": {
+        "path": "/tmp/seex-perf/u0/reporting-rust-rss-clean.json",
+        "sha256": "7d6f8b702962b8581b251ede238d497d8f556f15cb3dd53fd3b4bbd2b55c59b2"
+      },
+      "reporting_python_rss": {
+        "path": "/tmp/seex-perf/u0/reporting-python-rss-clean.json",
+        "sha256": "7eba849d8cbd803b58587fb3d79d3f68294de7804eda75e49f314dc911a75a61"
+      }
+    }
+  }
+}
