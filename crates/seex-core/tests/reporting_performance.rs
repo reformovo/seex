@@ -80,7 +80,7 @@ fn measure(
         operation(index)?;
     }
     let mut batch_iterations = 1_024;
-    loop {
+    let sample = loop {
         let started = Instant::now();
         for index in 0..batch_iterations {
             operation(index)?;
@@ -89,20 +89,11 @@ fn measure(
         settle()?;
         if elapsed >= CALIBRATION_TARGET || batch_iterations * points_per_call >= QUEUE_CAPACITY / 2
         {
-            break;
+            break (batch_iterations * points_per_call) as f64 / elapsed.as_secs_f64();
         }
         batch_iterations *= 2;
-    }
-    let mut samples = Vec::with_capacity(SAMPLES);
-    for sample in 0..SAMPLES {
-        let started = Instant::now();
-        for index in 0..batch_iterations {
-            operation(sample * batch_iterations + index)?;
-        }
-        samples.push((batch_iterations * points_per_call) as f64 / started.elapsed().as_secs_f64());
-        settle()?;
-    }
-    emit_metric(label, batch_iterations * points_per_call, samples);
+    };
+    emit_metric(label, batch_iterations * points_per_call, vec![sample]);
     Ok(())
 }
 
