@@ -115,6 +115,29 @@ class V2Output(TypedDict):
     checks: list[V2Check]
 
 
+class HardFloor(TypedDict):
+    """An absolute metric requirement checked for every candidate run."""
+
+    metric: str
+    statistic: Literal["p50", "p95", "maximum"]
+    operator: Literal["at_least", "at_most"]
+    value: float
+
+
+class V2Verdict(TypedDict):
+    """Stable comparison outcome for a migration or optimization."""
+
+    verdict: Literal["pass", "no_change", "regression"]
+    primary: str | None
+    median_improvement: float
+    improved_pairs: int
+    regressions: dict[str, float]
+    unreliable: list[str]
+    failed_checks: list[str]
+    failed_floors: list[str]
+    reason: str
+
+
 def _finite_number(record: dict[str, object], field: str) -> float:
     value = record.get(field)
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
@@ -192,6 +215,116 @@ def parse_v2_output(output: str) -> V2Output:
     if not metrics and not checks:
         raise ValueError("benchmark output contained no schema-v2 SEEX_PERF records")
     return V2Output(metrics=metrics, checks=checks)
+
+
+def _relative_mad(values: Sequence[float]) -> float:
+    median = _median(values)
+    if median == 0:
+        return 0.0 if all(value == 0 for value in values) else math.inf
+    return _median([abs(value - median) for value in values]) / abs(median)
+
+
+def _v2_series(runs: Sequence[V2Output], metric: str) -> list[V2Metric]:
+    try:
+        return [run["metrics"][metric] for run in runs]
+    except KeyError as error:
+        raise ValueError(f"capture is missing metric {metric!r}") from error
+
+
+def _series_reliable(series: Sequence[V2Metric]) -> bool:
+    return all(metric["reliable"] and metric["relative_mad"] <= 0.02 for metric in series) and (
+        _relative_mad([metric["p50"] for metric in series]) <= 0.02
+    )
+
+
+def compare_v2_captures(
+    baseline: Sequence[V2Output],
+    candidate: Sequence[V2Output],
+    candidate_type: Literal["migration", "optimization"],
+    *,
+    primary: str | None,
+    protected: Sequence[str] = (),
+    hard_floors: Sequence[HardFloor] = (),
+) -> V2Verdict:
+    """Applies U0 correctness, reliability, migration, and optimization policy."""
+    if not baseline or len(baseline) != len(candidate):
+        raise ValueError("baseline and candidate require equal non-empty runs")
+    if candidate_type == "optimization" and len(candidate) < _REQUIRED_PAIRS:
+        raise ValueError(f"optimization requires at least {_REQUIRED_PAIRS} pairs")
+    if candidate_type == "optimization" and primary is None:
+        raise ValueError("optimization requires a primary metric")
+
+    failed_checks = [
+        f"{check['domain']}.{check['check']}" for run in candidate for check in run["checks"] if not check["passed"]
+    ]
+    failed_floors: list[str] = []
+    for floor in hard_floors:
+        for metric in _v2_series(candidate, floor["metric"]):
+            value = metric[floor["statistic"]]
+            failed = value < floor["value"] if floor["operator"] == "at_least" else value > floor["value"]
+            if failed:
+                failed_floors.append(floor["metric"])
+                break
+
+    unreliable: list[str] = []
+    regressions: dict[str, float] = {}
+    for metric_name in protected:
+        before = _v2_series(baseline, metric_name)
+        after = _v2_series(candidate, metric_name)
+        if before[0]["unit"] != after[0]["unit"] or before[0]["direction"] != after[0]["direction"]:
+            raise ValueError(f"metric contract changed for {metric_name!r}")
+        if not _series_reliable(before) or not _series_reliable(after):
+            unreliable.append(metric_name)
+            continue
+        direction = before[0]["direction"]
+        before_median = _median([metric["p50"] for metric in before])
+        after_median = _median([metric["p50"] for metric in after])
+        regression = (after_median / before_median) - 1.0
+        if direction == "higher":
+            regression = (before_median / after_median) - 1.0
+        if direction != "neutral" and regression > 0.03 + 1e-12:
+            regressions[metric_name] = regression
+
+    median_improvement = 0.0
+    improved_pairs = 0
+    primary_unreliable = False
+    if primary is not None:
+        before = _v2_series(baseline, primary)
+        after = _v2_series(candidate, primary)
+        if before[0]["direction"] == "neutral":
+            raise ValueError("primary metric must have an optimization direction")
+        primary_unreliable = not _series_reliable(before) or not _series_reliable(after)
+        if primary_unreliable:
+            unreliable.append(primary)
+        else:
+            improvements = [
+                ((left["p50"] - right["p50"]) / left["p50"])
+                if left["direction"] == "lower"
+                else ((right["p50"] - left["p50"]) / left["p50"])
+                for left, right in zip(before, after, strict=True)
+            ]
+            median_improvement = _median(improvements)
+            improved_pairs = sum(improvement > 0 for improvement in improvements)
+
+    if failed_checks or failed_floors or regressions:
+        verdict, reason = "regression", "correctness, hard floor, or protected metric failed"
+    elif candidate_type == "migration":
+        verdict, reason = "pass", "migration preserved every reliable protected metric"
+    elif primary_unreliable or improved_pairs < 6 or median_improvement + 1e-12 < 0.05:
+        verdict, reason = "no_change", "primary metric was unreliable or missed the optimization threshold"
+    else:
+        verdict, reason = "pass", "optimization improved its primary without a protected regression"
+    return V2Verdict(
+        verdict=verdict,
+        primary=primary,
+        median_improvement=median_improvement,
+        improved_pairs=improved_pairs,
+        regressions=regressions,
+        unreliable=sorted(set(unreliable)),
+        failed_checks=failed_checks,
+        failed_floors=failed_floors,
+        reason=reason,
+    )
 
 
 def parse_output(output: str) -> dict[str, MetricSample]:

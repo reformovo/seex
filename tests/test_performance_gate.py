@@ -93,6 +93,64 @@ def test_parse_v2_output_rejects_invalid_deciding_records(updates: dict[str, obj
         performance_gate.parse_v2_output(_v2_metric(**updates))
 
 
+def _v2_runs(value: float, **updates: object) -> list[performance_gate.V2Output]:
+    values: dict[str, object] = {
+        "raw_samples": [value] * 3,
+        "p50": value,
+        "relative_mad": 0.0,
+        "reliable": True,
+    }
+    values.update(updates)
+    return [performance_gate.parse_v2_output(_v2_metric(**values)) for _ in range(7)]
+
+
+def test_v2_optimization_accepts_six_of_seven_and_five_percent() -> None:
+    candidate = _v2_runs(94.0)
+    candidate[-1] = _v2_runs(101.0)[0]
+
+    verdict = performance_gate.compare_v2_captures(
+        _v2_runs(100.0), candidate, "optimization", primary="query.duckdb.step.full"
+    )
+
+    assert verdict["verdict"] == "pass"
+    assert verdict["improved_pairs"] == 6
+
+
+def test_v2_migration_checks_hard_floors_and_protected_regressions() -> None:
+    floor = performance_gate.HardFloor(
+        metric="query.duckdb.step.full", statistic="p95", operator="at_most", value=110.0
+    )
+    candidate = _v2_runs(104.0, p95=111.0)
+    candidate[0]["checks"].append(
+        performance_gate.V2Check(domain="query", check="parity", passed=False, detail="mismatch")
+    )
+
+    verdict = performance_gate.compare_v2_captures(
+        _v2_runs(100.0),
+        candidate,
+        "migration",
+        primary=None,
+        protected=["query.duckdb.step.full"],
+        hard_floors=[floor],
+    )
+
+    assert verdict["verdict"] == "regression"
+    assert verdict["failed_checks"] == ["query.parity"]
+    assert verdict["failed_floors"] == ["query.duckdb.step.full"]
+    assert verdict["regressions"]["query.duckdb.step.full"] > 0.03
+
+
+def test_v2_unreliable_primary_is_no_change() -> None:
+    candidate = _v2_runs(80.0, relative_mad=0.021, reliable=False)
+
+    verdict = performance_gate.compare_v2_captures(
+        _v2_runs(100.0), candidate, "optimization", primary="query.duckdb.step.full"
+    )
+
+    assert verdict["verdict"] == "no_change"
+    assert verdict["unreliable"] == ["query.duckdb.step.full"]
+
+
 def test_compare_accepts_consistent_improvement() -> None:
     verdict = performance_gate.compare_captures(
         _capture(100.0),
