@@ -3,7 +3,7 @@
 ## U0 baseline identity
 
 The permanent U0 executable baseline is the clean detached worktree at
-`ce0bbf51122070b8a23d17332eeb3667d5fa0ecf`. Original and rolling initially
+`961024801569e28507041e079e4d47c413f728a5`. Original and rolling initially
 refer to the same revision. The older Viewer-only schema-v1 record remains in
 `viewer-performance-baselines.json` as release history and is not a deciding
 U1 baseline.
@@ -49,5 +49,46 @@ python scripts/performance_gate.py capture-v2 --runs 7 \
   python scripts/bench_log_throughput.py --mode explicit_single
 ```
 
-Query, Viewer, ordinary-release instrumentation isolation, and dual-baseline
-self-comparison remain open. U1 must not begin until those sections are closed.
+## Query baseline
+
+The immutable query fixture contains DuckDB and SQLite catalogs with 10 Runs,
+one `loss` series per Run, and 1,000,000 effective points per series. Its
+`lww-spikes-v1` identity covers a late replacement at step 250,000 and a spike
+at step 500,000. Each measurement process validated the manifest, aggregate
+row count, and last step before opening the fixture read-only.
+
+Reader-equivalent coverage passed for Step, relative-time, and timestamp axes;
+full and narrow half-open ranges; strict `max_points`; native/standalone parity;
+left and right real neighbors; completeness and reasons. Standalone relative
+time returned explicit missing-run-start evidence. All six Viewer-equivalent
+query metrics were reliable inside their seven-sample process capture.
+
+Two independent release targets at the baseline revision ran seven AB/BA
+pairs. Original and rolling migration comparisons both returned `pass`, with
+no failed checks, floors, or reliable protected regressions. Three of twelve
+Reader metrics were reliable across both process series; the other nine had
+cross-process relative MAD above 2% and remain non-deciding evidence.
+
+The fresh-process RSS capture recorded warm 294,912 bytes, peak/final
+804,290,560 bytes, and no monotonic growth. Its machine verdict is
+`regression` because the warm marker precedes lazy DuckDB/DuckLake loading;
+this is retained as an informational startup baseline, not represented as a
+steady-state pass.
+
+Representative commands:
+
+```bash
+python scripts/performance_gate.py capture-v2 --runs 1 \
+  --output /tmp/seex-perf/u0/query-axes-9610248.json -- \
+  env SEEX_APP_SCALE_FIXTURE_ROOT=/tmp/seex-perf/fixtures/query-v2-ce0bbf5 \
+  /tmp/seex-perf/targets/u0-original/release/deps/large_series_validation-da5e76e3ced1b854 \
+  reader_equivalent_axes_and_ranges --ignored --nocapture
+
+python scripts/performance_gate.py compare-v2 \
+  --spec /tmp/seex-perf/u0/query-self-compare-spec.json \
+  --original /tmp/seex-perf/u0/query-pair-9610248.json \
+  --rolling /tmp/seex-perf/u0/query-pair-9610248.json
+```
+
+Viewer and ordinary-release instrumentation isolation remain open. U1 must not
+begin until those sections and the complete three-domain self-comparison close.

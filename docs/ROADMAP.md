@@ -84,10 +84,10 @@ It changes no production behavior and requires no performance improvement.
 - [x] Cover reporting at the Rust engine and Python/PyO3 boundaries: explicit
   step, implicit single metric, multi-metric Mapping, queue admission,
   drain/persistence, finalization, and peak RSS.
-- [ ] Cover Reader queries on DuckDB and SQLite with 10 Runs and 1,000,000
+- [x] Cover Reader queries on DuckDB and SQLite with 10 Runs and 1,000,000
   points per series: full and narrow ranges, Step/relative-time/timestamp axes,
   neighbors, duplicates, spikes, last-write-wins, completeness, and reasons.
-- [ ] Use identical read-only fixtures, independent release binaries, and
+- [x] Use identical read-only fixtures, independent release binaries, and
   alternating execution order for baseline and candidate query samples.
 - [ ] Cover Viewer with 10 Runs and at least six visible Metrics: single and
   dual View, sparse/dense windows, 1x/2x/3x, 30 zoom cycles, stale generation,

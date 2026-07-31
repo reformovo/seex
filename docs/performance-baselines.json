@@ -2,8 +2,8 @@
   "schema_version": 2,
   "status": "u0-partial",
   "original": {
-    "source_revision": "ce0bbf51122070b8a23d17332eeb3667d5fa0ecf",
-    "rolling_revision": "ce0bbf51122070b8a23d17332eeb3667d5fa0ecf",
+    "source_revision": "961024801569e28507041e079e4d47c413f728a5",
+    "rolling_revision": "961024801569e28507041e079e4d47c413f728a5",
     "environment": {
       "captured_at": "2026-07-31",
       "dirty": false,
@@ -48,7 +48,43 @@
         },
         "correctness": "pass: no queue-full failures, no pending reports after drain, exact persistence, successful flush"
       },
-      "query": { "status": "pending" },
+      "query": {
+        "fixture": {
+          "backends": ["duckdb", "sqlite"],
+          "runs": 10,
+          "metrics": ["loss"],
+          "effective_points_per_series": 1000000,
+          "semantics": "lww-spikes-v1",
+          "duckdb_manifest_sha256": "61e9975cc2a3f8e0ba042e66942f24ebe86e7ee5f9b11235451fce931de6afd5",
+          "sqlite_manifest_sha256": "4d219bb2d9cae3eae4713ea8bafa21977d0c7ab5c5bade9fc44f563c2b6f2558"
+        },
+        "reliable_protected_p50_ns": {
+          "duckdb.reader.step.full": 2240429792,
+          "duckdb.reader.timestamp.narrow": 530043250,
+          "sqlite.reader.step.full": 2263255333
+        },
+        "viewer_equivalent_p50_ns": {
+          "duckdb.overview": 1318411583,
+          "duckdb.full.detail": 1327328208,
+          "duckdb.narrow.detail": 544287167,
+          "sqlite.overview": 1331797084,
+          "sqlite.full.detail": 1313827500,
+          "sqlite.narrow.detail": 552188250
+        },
+        "non_deciding_metrics": {
+          "reader_axes": "9 of 12 protected metrics had cross-process relative MAD above 2%",
+          "rss": "warm marker precedes lazy native initialization"
+        },
+        "rss": {
+          "warm_bytes": 294912,
+          "peak_bytes": 804290560,
+          "final_bytes": 804290560,
+          "monotonic_growth": false,
+          "stability_verdict": "informational startup baseline; regression against pre-initialization warm RSS"
+        },
+        "correctness": "pass: backend and standalone parity, LWW, duplicate replacement, spike, neighbors, strict budgets, completeness and reasons",
+        "self_comparison": "pass: 7 AB/BA pairs from independent release targets; original and rolling both pass"
+      },
       "viewer": { "status": "pending" }
     },
     "raw_artifacts": {
@@ -79,6 +115,26 @@
       "reporting_python_rss": {
         "path": "/tmp/seex-perf/u0/reporting-python-rss-clean.json",
         "sha256": "7eba849d8cbd803b58587fb3d79d3f68294de7804eda75e49f314dc911a75a61"
+      },
+      "query_semantics": {
+        "path": "/tmp/seex-perf/u0/query-semantics-9610248.json",
+        "sha256": "4488ed606da1fcfabca836abdb76a269bb39704e3762c6f5c50dbeba61102e93"
+      },
+      "query_axes": {
+        "path": "/tmp/seex-perf/u0/query-axes-9610248.json",
+        "sha256": "1df27d42b91fbfc14b40ecbfa69abbb6010de148813fe7f0e5be0c7c81a7f85b"
+      },
+      "query_viewer_equivalent": {
+        "path": "/tmp/seex-perf/u0/query-viewer-9610248.json",
+        "sha256": "51ad0d64fe53bd2821cdd876e36b8284356c7132d563eea57cf2d5b1469f59a9"
+      },
+      "query_rss": {
+        "path": "/tmp/seex-perf/u0/query-rss-9610248.json",
+        "sha256": "8cfea4545769eca17dba5fef31a5c8f37458771913725d419ca8a5ff4dd9cebb"
+      },
+      "query_pair": {
+        "path": "/tmp/seex-perf/u0/query-pair-9610248.json",
+        "sha256": "c68b0347a66027a84eb628bc4991e75d96601bc7a93d64ae0140222172d3d97d"
       }
     }
   }
