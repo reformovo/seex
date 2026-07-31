@@ -65,7 +65,11 @@ impl ReadSession {
     ///
     /// Returns [`SourceError`] when a catalog query fails.
     pub fn discover(&self, request: &DiscoveryRequest) -> Result<CatalogSnapshot, SourceError> {
-        let projects = self.connection.list_projects()?;
+        let mut projects = self.connection.list_projects()?;
+        if let Some(allowlist) = &request.project_allowlist {
+            let allowed = allowlist.iter().collect::<HashSet<_>>();
+            projects.retain(|project| allowed.contains(&project.project_id));
+        }
         let project_id = request.project_id.as_ref().filter(|project_id| {
             projects
                 .iter()
@@ -206,6 +210,7 @@ mod tests {
 
         let session = ReadSession::open_existing(root.path())?;
         let snapshot = session.discover(&DiscoveryRequest {
+            project_allowlist: None,
             project_id: Some(project.project_id),
             selected_run_ids: vec![first.run_id, RunId::from_string("removed")],
             metric_runs: vec![(other_project.project_id, other.run_id)],
@@ -227,16 +232,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["latency", "loss"]
         );
-        let all_runs = session
-            .try_clone()?
-            .discover(&DiscoveryRequest::default())?;
+        let all_runs = session.try_clone()?.discover(&DiscoveryRequest {
+            project_allowlist: Some(vec![ProjectId::from_string("project-1")]),
+            ..DiscoveryRequest::default()
+        })?;
+        assert_eq!(all_runs.projects.len(), 1);
         assert_eq!(
             all_runs
                 .runs
                 .iter()
                 .map(|run| run.run_id.as_str())
                 .collect::<Vec<_>>(),
-            ["run-2", "run-1", "run-3"]
+            ["run-2", "run-1"]
         );
         Ok(())
     }

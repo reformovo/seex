@@ -182,6 +182,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
     let source_id = fixture.source_id();
     let selection = fixture.selection();
     let discovery_request = DiscoveryRequest {
+        project_allowlist: None,
         project_id: Some(fixture.project_id.clone()),
         selected_run_ids: selection
             .runs

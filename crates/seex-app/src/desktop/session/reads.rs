@@ -142,6 +142,7 @@ impl WorkbenchSession {
         cx: &mut Context<Self>,
     ) {
         let request = DiscoveryRequest {
+            project_allowlist: None,
             project_id: None,
             selected_run_ids: Vec::new(),
             metric_runs: visible_runs
