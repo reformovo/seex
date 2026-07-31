@@ -99,6 +99,14 @@ def test_v2_timing_below_ten_milliseconds_is_non_deciding() -> None:
     assert calibrated["metrics"]["query.duckdb.step.full"]["reliable"]
 
 
+def test_parse_v2_output_accepts_even_sample_statistics() -> None:
+    parsed = performance_gate.parse_v2_output(_v2_metric(samples=4, raw_samples=[10.0, 10.0, 12.0, 12.0]))
+
+    metric = parsed["metrics"]["query.duckdb.step.full"]
+    assert metric["p50"] == 11.0
+    assert metric["mad"] == 1.0
+
+
 @pytest.mark.parametrize(
     "updates, message",
     [

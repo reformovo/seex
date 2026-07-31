@@ -207,9 +207,12 @@ def _validate_metric_summary(record: dict[str, object], raw_samples: Sequence[fl
     ordered = sorted(raw_samples)
     p50 = float(statistics.median(ordered))
     deviations = [abs(sample - p50) for sample in ordered]
+    mad = float(statistics.median(deviations))
+    if p50 == 0 and mad != 0:
+        raise ValueError("SEEX_PERF raw_samples with zero median have undefined relative_mad")
     expected = {
-        "mad": float(statistics.median(deviations)),
-        "relative_mad": _relative_mad(ordered),
+        "mad": mad,
+        "relative_mad": 0.0 if p50 == 0 else mad / abs(p50),
         "p50": p50,
         "p95": ordered[(len(ordered) * 95 + 99) // 100 - 1],
         "max": ordered[-1],
