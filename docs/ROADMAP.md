@@ -92,6 +92,8 @@ It changes no production behavior and requires no performance improvement.
 - [x] Cover Viewer with 10 Runs and at least six visible Metrics: single and
   dual View, sparse/dense windows, 1x/2x/3x, 30 zoom cycles, stale generation,
   query concurrency, snapshot/path counters, CPU, RSS, and Metal trace metadata.
+  The deciding 280 Hz trace uses the reset 10-Run/six-Metric workbench and
+  user-performed zoom; the failed automated interaction is not baseline evidence.
 - [x] Run automated RSS workloads in a fresh process. Record warm, peak, final,
   phase trend, and retained stale-snapshot counts from an external sampler.
 

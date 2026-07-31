@@ -112,20 +112,27 @@ warm/peak/final RSS was 169,213,952/173,260,800/169,213,952 bytes; dual View was
 168,378,368/172,376,064/168,378,368 bytes. Both RSS verdicts were `pass` with
 no monotonic growth.
 
-An ordinary release binary from the baseline revision produced a 25.652-second
-launch-mode Metal System Trace with Instruments 16.0 (17F113). Computer Use
-confirmed the real product window contained 10 Runs and the six retained
-Metrics, and verified `cmd-=` changed the viewport before the traced keyboard
-zoom-in/out sequence. The trace identifies XG27AQWMG at 2560x1440 and 280 Hz as
-the main display and records 253 presented handlers.
+An ordinary release binary from the baseline revision produced a 90.781-second
+launch-mode Metal System Trace with Instruments 16.0 (17F113). Before capture,
+the persisted workbench was reset to the sole `viewer scale` source and was
+verified across an application restart with exactly 10 selected Runs and the
+six `accuracy`, `error`, `latency`, `loss`, `memory`, and `throughput` tracks;
+each track reported `10 Runs · 10 drawable`. The traced zoom-in/out interaction
+was performed and visually verified by the user. An earlier Computer Use
+attempt did not reliably change the viewport and is explicitly non-evidence.
 
-After the first two seconds, 68 of 70 presentations used one approximately
-3.572 ms refresh period and two used two periods; the 7.144 ms maximum did not
-exceed two periods. Two post-warm drawable waits exceeded 7.15 ms, the maximum
-was 12.510 ms, and none exceeded 16.7 ms. Instruments reported no hang risks
-and one startup potential hang at 0.846 seconds for 137.65 ms. These remain
-explicit original-baseline evidence rather than being hidden by the passing
-CPU hard floors and resource gates.
+After a five-second startup warmup, all 4,976 timed presentations used one
+approximately 3.572 ms 280 Hz period; the maximum was 3.579 ms. The 2,605
+post-warm drawable waits had a 4.069 ms maximum, with none above 7.15 ms or
+16.7 ms. Instruments reported no hang risks. It did report one 1.041-second
+potential hang from 3.398 to 4.439 seconds while the initial six tracks were
+loading, so the warmup excludes that startup interval rather than hiding it.
+
+At capture time, `system_profiler` identified XG27AQWMG at 2560x1440 and
+280 Hz as the main display. Instruments listed the same external display and
+refresh rate, but its `device-display-info` table marked the 120 Hz built-in
+display as main. The contradiction is retained as an environmental limitation;
+the measured 3.572 ms presented-handler cadence is the 280 Hz evidence.
 
 Representative commands:
 
@@ -138,8 +145,9 @@ python scripts/performance_gate.py rss --interval 0.05 \
   representative_workbench_stays_responsive_while_a_source_is_pending \
   -- --ignored --nocapture
 
-xcrun xctrace record --template 'Metal System Trace' --time-limit 25s \
-  --output /tmp/seex-perf/u0/viewer-metal-280hz-interactive-9610248.trace \
+xcrun xctrace record --template 'Metal System Trace' --time-limit 90s \
+  --output /tmp/seex-perf/u0/viewer-metal-280hz-10x6-manual-9610248.trace \
+  --no-prompt \
   --launch -- /tmp/seex-perf/u0/Seex-9610248-280hz.app/Contents/MacOS/seex-app \
   /tmp/seex-perf/fixtures/viewer-v2-9610248/duckdb
 ```

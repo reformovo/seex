@@ -13,7 +13,7 @@
       "python": "3.13.2",
       "uv": "0.8.12",
       "instruments": "16.0 (17F113)",
-      "displays": "XG27AQWMG 2560x1440 at 280 Hz main; built-in 3024x1964 at 120 Hz"
+      "displays": "system_profiler: XG27AQWMG 2560x1440 at 280 Hz main; built-in 3024x1964 at 120 Hz"
     },
     "domains": {
       "reporting": {
@@ -121,16 +121,20 @@
           "dual_verdict": "pass"
         },
         "metal": {
-          "capture": "XG27AQWMG 2560x1440 at 280 Hz; 25.652 s launch-mode Metal System Trace",
-          "presented_handlers": 253,
-          "post_warm_presented_handlers": 70,
-          "post_warm_max_presented_ns": 7143916,
-          "post_warm_two_period_presentations": 2,
-          "post_warm_max_drawable_wait_ns": 12509667,
+          "capture": "XG27AQWMG 2560x1440 at 280 Hz; 90.781 s launch-mode Metal System Trace with user-performed zoom",
+          "warmup_seconds": 5,
+          "presented_handlers": 10613,
+          "post_warm_presented_handlers": 4976,
+          "post_warm_max_presented_ns": 3578749,
+          "post_warm_one_period_presentations": 4976,
+          "post_warm_two_period_presentations": 0,
+          "post_warm_max_drawable_wait_ns": 4069208,
+          "post_warm_drawable_waits_over_7_15_ms": 0,
           "post_warm_drawable_waits_over_16_7_ms": 0,
           "hang_risks": 0,
-          "potential_hangs": ["0.846 s: 137.65 ms startup"],
-          "manual_conclusion": "68 post-warm presentations used one 280 Hz period and 2 used two periods; none exceeded two periods"
+          "potential_hangs": ["3.398 s: 1.041 s startup/loading before warmup"],
+          "display_metadata_note": "system_profiler reported XG27AQWMG as main; xctrace device-display-info marked the built-in display as main but recorded the external display at 280 Hz",
+          "manual_conclusion": "after a 5 s warmup, all 4976 timed presentations in the trace containing user-performed zoom used one approximately 3.572 ms period"
         },
         "correctness": "pass: six-metric resources, four-way concurrency, supersession, stale retention, budgets, CPU floors and RSS"
       }
@@ -229,12 +233,16 @@
         "sha256": "220c740bfd5ffcc9e40d856acd2ba2e4d8b0b0246f4cdac33dc3c13e48baf74e"
       },
       "viewer_metal_toc": {
-        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-interactive-9610248-toc.xml",
-        "sha256": "737945eac9217cb8eceb9787444bc92b674c80d4e135b33ee231e5ec15c4829b"
+        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-10x6-manual-9610248-toc.xml",
+        "sha256": "88c942432c5d63ac19423888175061e828a5980dc8f7089a393ec7bd6cb70455"
       },
       "viewer_metal_file_manifest": {
-        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-interactive-9610248-files.sha256",
-        "sha256": "267b55c192a6d09633db4e72e36042cfcc8c6e552af42abda919f7c0159c6f01"
+        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-10x6-manual-9610248-files.sha256",
+        "sha256": "1863c7a2ebaa3628288dc4b1c0575368ca7712548a28ae0b67778f4607c304fa"
+      },
+      "viewer_metal_scenario": {
+        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-10x6-scenario.png",
+        "sha256": "c9797a732d7cdbb2b534beb3977193fd4ebf73767614eafb4bf3b592450ab93b"
       },
       "reporting_pair": {
         "path": "/tmp/seex-perf/u0/reporting-pair-9610248.json",
