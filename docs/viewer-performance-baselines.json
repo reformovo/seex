@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "original": {
+    "captured_at": "2026-07-30",
+    "source_revision": "bc389c1",
+    "gate_worktree": true,
+    "environment": {
+      "machine": "Mac16,8 / Apple M4 Pro",
+      "os": "macOS 26.3 (25D125)",
+      "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+      "display": "ASUS XG27AQWMG 2560x1440 @ 280 Hz"
+    },
+    "fixture": {
+      "backends": ["duckdb", "sqlite"],
+      "runs": 10,
+      "source_points_per_series": 1000000
+    },
+    "cpu_p50_ns_per_op": {
+      "brush_pan": 11.365,
+      "brush_resize": 2.949,
+      "brush_zoom": 27.676,
+      "cached_path_preparation": 140679.281,
+      "uncached_path_preparation": 2095579.438,
+      "hit_testing": 206419.758,
+      "ruler_hover_evidence": 2043.167
+    },
+    "query_p50_ns": {
+      "duckdb_overview": 1666693917,
+      "duckdb_full_detail": 1681142708,
+      "duckdb_narrow_detail": 701989625,
+      "sqlite_overview": 1725299750,
+      "sqlite_full_detail": 1751924000,
+      "sqlite_narrow_detail": 747000792
+    },
+    "resource_counts": {
+      "overview_returned_points": 15000,
+      "overview_snapshot_points": 30000,
+      "overview_snapshot_bytes": 1680000,
+      "full_detail_returned_points": 60000,
+      "full_detail_snapshot_points": 120000,
+      "full_detail_snapshot_bytes": 6720000,
+      "narrow_detail_returned_points": 51020,
+      "narrow_detail_snapshot_points": 102040,
+      "narrow_detail_snapshot_bytes": 5714240,
+      "scale_process_peak_rss_bytes": 1115308032,
+      "scale_process_peak_footprint_bytes": 911197288
+    },
+    "raw_artifacts": {
+      "cpu": "/tmp/seex-perf/original-cpu.json",
+      "scale": "/tmp/seex-perf/original-scale-run1.log",
+      "rss": "/tmp/seex-perf/original-scale-rss.log",
+      "metal": "local 2026-07-27 Metal System Trace"
+    }
+  },
+  "incumbent": {
+    "stage": "resource-efficiency-stage-4-partial",
+    "relative_to": "original",
+    "evaluated_at": "2026-07-31",
+    "resource_counts": {
+      "overview_returned_points": 15000,
+      "overview_snapshot_points": 15000,
+      "overview_snapshot_bytes": 240000,
+      "full_detail_returned_points": 40000,
+      "full_detail_snapshot_points": 40000,
+      "full_detail_snapshot_bytes": 640000,
+      "narrow_detail_returned_points": 26520,
+      "narrow_detail_snapshot_points": 26520,
+      "narrow_detail_snapshot_bytes": 424320,
+      "scale_process_peak_rss_bytes": 757563392,
+      "scale_process_peak_footprint_bytes": 149652152,
+      "representative_warm_rss_bytes": 258129920,
+      "representative_peak_rss_bytes": 267714560,
+      "representative_final_rss_bytes": 267714560
+    },
+    "relative_improvement_percent": {
+      "full_detail_snapshot_bytes": 90.476,
+      "narrow_detail_snapshot_bytes": 92.574,
+      "scale_process_peak_rss_bytes": 32.079
+    },
+    "cpu_hard_gate": {
+      "worst_p95_ns": 2066011.719,
+      "worst_single_ns": 2833709,
+      "p95_limit_ns": 8330000,
+      "single_limit_ns": 16700000,
+      "verdict": "pass"
+    },
+    "shared_connection_gate": {
+      "primary_metric": "startup_peak_rss_bytes",
+      "pairs_better": 7,
+      "pairs_at_least_5_percent": 6,
+      "median_improvement_percent": 12.987,
+      "manual_hover_verdict": "pass"
+    },
+    "manual_resource_gate": {
+      "verdict": "regression",
+      "one_view_peak_rss_bytes": 5700603904,
+      "two_view_peak_rss_bytes": 5439913984,
+      "metal_attached_peak_rss_bytes": 8011726848,
+      "vmmap_live_heap_bytes": 142108713,
+      "vmmap_physical_footprint_bytes": 806459802,
+      "malloc_high_water_bytes": 1524713390,
+      "cause": "full-series DuckDB CTE and window materialization"
+    },
+    "rejected_candidates": [
+      {
+        "name": "step-bounds-second-source-scan",
+        "verdict": "protected-regression",
+        "duckdb_overview_regression_percent": 13.57,
+        "duckdb_full_regression_percent": 16.25,
+        "sqlite_overview_regression_percent": 17.45,
+        "sqlite_full_regression_percent": 21.28,
+        "raw_artifact": "/tmp/seex-perf/stage4-step-filter-candidate-scale.log"
+      },
+      {
+        "name": "step-single-scan-global-window",
+        "verdict": "protected-regression",
+        "duckdb_overview_regression_percent": 49.06,
+        "duckdb_full_regression_percent": 46.0,
+        "duckdb_narrow_regression_percent": 71.62,
+        "sqlite_overview_regression_percent": 46.41,
+        "sqlite_full_regression_percent": 47.75,
+        "sqlite_narrow_regression_percent": 63.61,
+        "raw_artifact": "/tmp/seex-perf/stage4-single-scan-candidate-scale.log"
+      },
+      {
+        "name": "viewer-shared-memory-limit-1g",
+        "verdict": "inconsistent-primary-and-protected-regression",
+        "pairs_completed": 5,
+        "pairs_better": 3,
+        "pair_improvement_percent": [56.625, 19.137, -18.886, 12.18, -22.012],
+        "query_regression_percent_range": [3.98, 5.35],
+        "raw_artifact_prefix": "/tmp/seex-perf/memory-limit-1g-"
+      },
+      {
+        "name": "step-id-extrema-create-sort-key",
+        "verdict": "protected-regression",
+        "overview_full_improvement_percent_range": [24.8, 28.4],
+        "narrow_regression_percent_range": [6.8, 7.1],
+        "raw_artifact": "/tmp/seex-perf/stage4-step-id-extrema-candidate-scale.log"
+      },
+      {
+        "name": "scalar-extrema-all-screen-queries",
+        "verdict": "protected-regression",
+        "duckdb_overview_improvement_percent": 10.65,
+        "duckdb_full_improvement_percent": 6.68,
+        "duckdb_narrow_regression_percent": 29.17,
+        "sqlite_narrow_regression_percent": 22.78,
+        "raw_artifact": "/tmp/seex-perf/stage4-scalar-extrema-candidate-scale.log"
+      },
+      {
+        "name": "adaptive-scalar-extrema",
+        "verdict": "rss-regression",
+        "smoke_baseline_peak_rss_bytes": 2566668288,
+        "smoke_candidate_peak_rss_bytes": 3234742272,
+        "regression_percent": 26.029,
+        "raw_artifact_prefix": "/tmp/seex-perf/adaptive-extrema-"
+      }
+    ],
+    "raw_artifacts": {
+      "scale": "/tmp/seex-perf/stage5-final-scale.log",
+      "scale_rss": "/tmp/seex-perf/stage5-final-scale-rss.log",
+      "cpu": "/tmp/seex-perf/stage5-final-cpu.json",
+      "representative_rss": "/tmp/seex-perf/stage5-shared-rss.json",
+      "shared_connection_pairs": "/tmp/seex-perf/stage5-shared-pairs.json",
+      "manual_rss": "/tmp/seex-perf/stage5-no-trace-two-view-rss.csv",
+      "vmmap": "/tmp/seex-perf/stage5-two-view-vmmap.txt",
+      "heap": "/tmp/seex-perf/stage5-two-view-heap.txt",
+      "malloc_high_water": "/tmp/seex-perf/stage5-two-view-malloc-symbols.txt"
+    }
+  }
+}

@@ -1108,7 +1108,7 @@ fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppCo
                 let detail = panel.detail.as_ref().expect("detail should be present");
                 assert_eq!(
                     detail.point_budget,
-                    panel.physical_width.saturating_mul(2).clamp(2_000, 10_000)
+                    panel.logical_width.saturating_mul(2).clamp(512, 5_000)
                 );
             }
         })

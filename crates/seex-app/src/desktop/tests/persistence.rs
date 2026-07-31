@@ -120,9 +120,10 @@ fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppCo
                 .overview
                 .as_ref()
                 .is_some_and(|snapshot| {
-                    snapshot.series.iter().all(|series| {
-                        series.evidence.completeness == EvidenceCompleteness::Unavailable
-                    })
+                    snapshot
+                        .series
+                        .iter()
+                        .all(|series| series.completeness == EvidenceCompleteness::Unavailable)
                 })
     });
 

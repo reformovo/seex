@@ -1,5 +1,220 @@
 # Viewer Performance Validation
 
+## Resource-Optimization Baseline Gate
+
+The pre-optimization baseline was frozen on 2026-07-30 before changing any
+Phase 3E resource budget or snapshot ownership. The machine-readable summary is
+[`viewer-performance-baselines.json`](viewer-performance-baselines.json); raw
+samples and Instruments bundles remain local validation artifacts.
+
+The gate keeps an immutable original baseline and a rolling incumbent. A
+candidate must improve its declared primary metric by at least 5% in six of
+seven paired runs, may not regress a reliable protected median by more than 3%,
+and must retain the p95 8.33 ms and single-operation 16.7 ms CPU limits.
+Metrics with relative MAD above 2% are recorded but cannot accept a candidate.
+
+The 10-Run, one-million-point-per-series DuckDB/SQLite baseline retained the
+same storage fixture across runs. Overview returned 15,000 points and retained
+30,000 point structs; full Detail returned 60,000 and retained 120,000. The
+full-Detail shallow point footprint was 6,720,000 bytes. The direct release
+test process peaked at 1,115,308,032 bytes RSS and a 911,197,288 byte memory
+footprint. These values include native query working memory and are the Stage 4
+process baseline, not an estimate of Viewer snapshot ownership.
+
+The existing 2026-07-27 active-display trace remains the original Metal
+baseline: it recorded ten presentations spanning two 280 Hz refresh periods,
+so the final display gate was already open before resource optimization.
+
+### Stage 1 Result
+
+Stage 1 was accepted against the frozen original baseline. Detail budgets now
+derive from logical plot width and cap at 5,000 points per series; Overview caps
+at 2,000. Full-Detail returned points fell from 60,000 to 40,000 (33.3%) and
+narrow-Detail points fell from 51,020 to 26,520 (48.0%). Corresponding shallow
+snapshot bytes fell to 4,480,000 and 2,970,240 while source rows and viewport
+neighbors remained unchanged.
+
+The repeated scale process peak RSS fell from 1,115,308,032 to 1,081,982,976
+bytes. Query timing remained scan-bound and did not show a consistent protected
+regression. The post-change CPU gate passed with uncached path preparation at
+2.031 ms p95 and 2.201 ms maximum. Organization-only state changes retained
+their loaded snapshots, and display scale changes no longer alter storage
+sampling density when logical width is unchanged.
+
+### Stages 2–4 and Automated Stage 5 Candidate
+
+Stages 2–3 and the isolated Stage 4 measurements passed on 2026-07-31.
+`CurveSeriesSnapshot` now owns one chart series rather than a second per-point
+evidence representation. Full-Detail shallow snapshot storage fell from
+6,720,000 to 640,000 bytes (90.5%), and the narrow snapshot fell from 5,714,240
+to 424,320 bytes (92.6%). Hover, locked cursor, and baseline delta continue to
+index the same retained real sample; the manual hover regression check passed.
+
+Projection compaction is bounded by logical canvas buckets, removed series
+evict their projection and GPUI path entries, and repeated hover frames reuse
+static Metric chart preparation. Query viewport filtering reduced the final
+scale process peak RSS from 1,115,308,032 to 757,563,392 bytes (32.1%). The
+10-Run, six-Metric 30-cycle workload held a 258,129,920 byte warm RSS and a
+267,714,560 byte peak/final RSS, reported no monotonic growth, and remained
+inside the `max(5%, 32 MiB)` final bound.
+
+Four readers now clone one lazily opened DuckDB connection so they share the
+database and buffer manager without reducing the four-way concurrency limit.
+Seven alternating process pairs all used the same retained fixture and 300 RSS
+samples per process. All seven candidate peaks were lower; six improved by at
+least 5%, and the median improvement was 12.99%. The candidate also passed the
+representative GPUI workload and a manual hover/tooltip/locked-cursor check.
+
+The final retained-fixture query run was reliable for all six backend/query
+combinations. DuckDB Overview/full/narrow medians were
+1260.253/1267.972/515.609 ms; SQLite medians were
+1267.051/1267.993/537.579 ms. Counts, viewport neighbors, exact extrema, and
+DuckDB/SQLite evidence parity remained unchanged. The final CPU capture kept
+the worst p95 at 2.066 ms and worst single operation at 2.834 ms.
+
+An experimental grouped-extrema query was rejected before this incumbent: it
+lowered an isolated scale RSS measurement but raised the real six-Metric peak
+to 9,540,943,872 bytes and broke hover. Only that SQL candidate was reverted;
+its exact-extrema correctness assertion remains. The active-display Metal and
+final resource gates remain open.
+
+#### Real Multi-View Resource Rejection
+
+The automated GPUI workload did not reproduce native query working memory.
+The fixed one-million-point, 10-Run, six-Metric application reached a 5.31 GiB
+RSS peak with one View and ended the two-View interval at 3.69 GiB. The two-View
+interval peaked at 5.06 GiB without Instruments; an attached Metal trace peaked
+at 7.82 GiB before falling to approximately 0.49 GiB during detach. These are
+hard-gate failures, so the Stage 4 whole-series split and Stage 5 RSS items are
+not accepted despite the isolated scale and shared-connection improvements.
+
+At the stable two-View capture, `heap` found only 135.5 MiB of live malloc
+objects and `vmmap` reported a 769.1 MiB physical footprint. Malloc zones held
+2.0 GiB, including 1.2 GiB of resident `MALLOC_SMALL (empty)` regions. A
+symbolized high-water capture recorded 32.4 million allocations and 130.6 GiB
+of cumulative allocation churn. The largest stacks were
+`query_curves → query_aligned_metric → PhysicalCTE::Sink` and
+`PhysicalWindow → HashedSort/FullSort`, allocating through DuckDB's
+`ColumnDataCollection`, `TupleDataAllocator`, and buffer manager.
+
+The current SQL narrows `visible_source`, but only after `ranked`,
+`ordered AS MATERIALIZED`, `lag`, and bucket ranking have processed the full
+series. The next candidate must split invariant whole-series diagnostics from
+viewport selection and remove the full-series materialized CTE before any
+further tuning. Safe early Step filtering is preferred; elapsed-time filtering
+must preserve last-write-wins when a replacement changes timestamp. Grouped
+`arg_min(struct_pack(...))` remains rejected because its real six-Metric peak
+was 9.54 GiB and it broke hover.
+
+A subsequent Step-bounds candidate pushed the viewport before last-write-wins,
+but obtained bounds with a second source scan. Narrow Detail improved by
+approximately 28–31%, while reliable Overview/full medians regressed by
+13.6–21.3% across DuckDB and SQLite. This exceeded the 3% protected limit, so
+the candidate was rejected before RSS pairing and only its candidate hunks
+were removed. The next alternative must retain one source scan: compute Step
+bounds and negative-axis state on the same effective stream, filter before
+bucket ranks, and eliminate the unnecessary Step `lag` and full-series
+materialized CTE.
+
+The single-source-scan follow-up replaced the second scan with global Step
+windows on the effective stream. It preserved all deterministic evidence and
+produced reliable samples, but added another full-stream window pipeline:
+DuckDB medians regressed by 46–72% and SQLite by 46–64%. It was also rejected
+before RSS pairing. Since both SQL shapes failed protected latency, the next
+alternative is a shared database memory budget: the four cloned Viewer
+connections retain application-level concurrency while DuckDB enforces one
+buffer-manager limit and spills only when their combined working set exceeds
+that limit.
+
+A 1 GiB shared Viewer memory limit then reduced the first smoke peak from
+4.66 GB to 2.02 GB, but failed robust pairing. The first five improvements
+were +56.6%, +19.1%, -18.9%, +12.2%, and -22.0%; only three improved, so six
+of seven became impossible and the remaining runs were stopped. Reliable
+single-query medians also regressed by approximately 4–5%. The memory-limit
+hunk was removed. Further work must reduce a concrete operator rather than
+force spill or tune a cap.
+
+A step-ID extrema candidate then kept only extrema identities in each hash
+aggregate and rejoined real rows. Overview/full medians improved by 25–28%,
+but narrow Detail reliably regressed by approximately 7%. The candidate was
+rejected and removed. Profiling attributed the narrow overhead to
+`create_sort_key` blobs, a second hash group used to deduplicate step IDs, and
+the row join. A scalar `arg_min`/`arg_max` state plus an `IN` semi-join is the
+remaining operator-level alternative; it must retain the full-query gain
+without the narrow regression.
+
+Native scalar `arg_min`/`arg_max` removed the sort-key and join overhead and
+improved DuckDB Overview/full by 10.6%/6.7%, but applying it to every screen
+query made DuckDB narrow Detail 29.2% slower (SQLite approximately 22.8%, with
+high MAD). It was rejected and removed. The measured crossover supports SQL
+shape selection before execution: retain window ranks for small Step spans and
+all elapsed-time queries, and use scalar extrema only when the Step span is
+large relative to the point budget.
+
+Adaptive selection retained the query-time improvements and protected narrow
+latency, but the real two-View RSS smoke regressed from 2.57 GB to 3.23 GB
+(26.0%). It was rejected before pairing. This isolates DuckDB
+`HASH_GROUP_BY`, not merely large aggregate state, as the incompatible
+operator. The next alternative must stay in the window pipeline while reducing
+its four ordered ranks.
+
+A Step-partition window candidate replaced four ordered ranks with two struct
+min/max windows. All six reliable query medians improved by approximately
+11–30%, but the real two-View RSS smoke regressed from 2.54 GB to 2.76 GB
+(8.7%). It was rejected before pairing and removed. Faster SQL operators have
+now repeatedly raised the real resource peak, while `vmmap` identifies empty
+malloc arenas as the retained memory. The next candidate therefore leaves the
+query plan unchanged and asks the macOS allocator to release empty pages after
+each Run query has destroyed its temporary DuckDB result.
+
+Calling maximal macOS pressure relief after every Run was then rejected on the
+latency gate before RSS measurement. Reliable DuckDB Overview/full/narrow
+medians regressed by 4.0%/5.9%/10.0%, and reliable SQLite full Detail regressed
+by 4.0%; two other SQLite samples exceeded the 2% relative-MAD limit. Scanning
+all malloc zones 10 times per Metric query is therefore too expensive. The
+next candidate may request relief once after the complete Metric snapshot,
+reducing the call count by 10 while still releasing empty arenas between the
+six Metric panels and between Views.
+
+One relief request per complete Metric query passed all six protected latency
+checks, with reliable medians improving by approximately 0.5–2.3%. Its paired
+two-View smoke lowered peak RSS from 2,780,208 KiB to 2,656,880 KiB (4.44%) and
+final RSS by 4.31%. Both are below the 5% acceptance threshold, so the result
+is No-change and the candidate was removed before seven-pair validation. The
+four workers can finish close together and scan all zones while sibling queries
+still allocate. The next alternative should request relief only when the last
+outstanding read for a source completes, after the concurrent batch is idle.
+
+Moving relief to that quiescent source boundary kept reliable query medians
+within approximately -0.8% to +0.7% of the rolling baseline. Its paired smoke
+lowered peak RSS from 2,780,208 KiB to 2,646,736 KiB (4.80%) and final RSS by
+2.86%. The peak improvement still missed the 5% threshold, so this candidate
+was also classified No-change and removed. The remaining measured compromise
+is one mid-query release after five Runs plus one at completion: it can release
+empty arenas before the active peak while avoiding the rejected 10-call cost.
+
+That five-Run cadence passed all protected query medians, which stayed within
+approximately -0.5% to +1.6% of the rolling baseline. Its smoke peak was
+2,653,072 KiB, a 4.57% improvement, and final RSS improved by 4.83%. It did not
+outperform the quiescent candidate or reach 5%, so it was rejected and removed.
+Allocator relief frequency is no longer a tuning direction: the remaining peak
+is active DuckDB operator working memory. The next candidate keeps four Viewer
+readers but bounds the shared DuckDB scheduler's internal parallelism.
+
+Setting that shared scheduler to four internal threads was rejected immediately
+on protected latency. Reliable DuckDB Overview/full/narrow medians regressed by
+approximately 49.5%/40.5%/43.1%, so the run was terminated before SQLite or
+RSS measurement and the setting was removed. Neither scheduler limits nor
+allocator tuning can satisfy both gates; further work must change how much data
+the window/sort operators materialize without changing their exact semantics.
+
+Removing only the semantically redundant Step `lag(axis_value)` then improved
+DuckDB narrow Detail by 9.7%, but reliably regressed Overview/full by 7.7%/7.4%.
+The materialized ordered window is therefore also providing a favorable plan
+shape for full-span consumers. The candidate was stopped before SQLite or RSS
+measurement and removed; the next plan must preserve that full-span pipeline
+while specializing narrow viewport work before materialization.
+
 ## Measurement Record
 
 - Date: 2026-07-27

@@ -48,7 +48,7 @@ pub(crate) struct TrackViewport {
 pub(crate) struct ScheduledPanelDetail {
     pub panel_id: MetricPanelId,
     pub viewport: AlignmentViewport,
-    pub physical_width: u32,
+    pub logical_width: u32,
 }
 
 #[derive(Clone)]
@@ -419,16 +419,16 @@ impl super::AnalysisWorkspace {
         &self,
         panel_id: &MetricPanelId,
         viewport: AlignmentViewport,
-        physical_width: u32,
+        logical_width: u32,
     ) -> bool {
         self.snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.views.active_panel(panel_id))
             .is_some_and(|panel| {
-                panel.needs_detail(viewport, physical_width)
+                panel.needs_detail(viewport, logical_width)
                     && (!self.detail_refresh_pending
                         || panel.detail.is_none()
-                        || panel.physical_width != physical_width)
+                        || panel.logical_width != logical_width)
             })
     }
     pub(crate) fn reconcile_track_schedule(
@@ -461,6 +461,7 @@ impl super::AnalysisWorkspace {
         self.track_hovers
             .retain(|panel_id, _| scheduled_ids.contains(panel_id));
         let logical_width = f32::from_bits(state.logical_width_bits) as f64;
+        let query_width = logical_width.ceil().max(1.) as u32;
         let baseline = session.views.active().baseline.clone();
         let emphasized_run = self
             .interaction
@@ -513,15 +514,11 @@ impl super::AnalysisWorkspace {
                 };
                 chart.read(cx).warm_projection(canvas);
             }
-            if self.should_schedule_panel_detail(
-                &panel.panel_id,
-                detail_viewport,
-                state.physical_width.max(1),
-            ) {
+            if self.should_schedule_panel_detail(&panel.panel_id, detail_viewport, query_width) {
                 requests.push(ScheduledPanelDetail {
                     panel_id: panel.panel_id.clone(),
                     viewport: detail_viewport,
-                    physical_width: state.physical_width.max(1),
+                    logical_width: query_width,
                 });
             }
         }

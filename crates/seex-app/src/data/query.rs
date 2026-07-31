@@ -6,11 +6,10 @@ use seex_chart_core::{DataPoint, Series, SeriesId};
 use seex_core::engine::EngineError;
 use seex_core::engine::query::NativeQueryStore;
 use seex_model::alignment::{
-    AlignedMetricResult, AlignmentAxis, AlignmentQuery, AlignmentQueryError, AlignmentReduction,
-    AlignmentViewport,
+    AlignmentAxis, AlignmentQuery, AlignmentQueryError, AlignmentReduction, AlignmentViewport,
 };
 use seex_model::comparison::{
-    EvidenceCompleteness, ObjectiveDirection, ObjectiveEvidence, ObjectiveMetric,
+    EvidenceCompleteness, EvidenceReason, ObjectiveDirection, ObjectiveEvidence, ObjectiveMetric,
 };
 use seex_model::metric::{MetricAggregate, MetricKey};
 use seex_model::run::Run;
@@ -35,7 +34,7 @@ pub struct CurveSelection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OverviewRequest {
     pub selection: CurveSelection,
-    pub physical_width: u32,
+    pub logical_width: u32,
 }
 
 /// Closed-viewport detail query.
@@ -43,7 +42,7 @@ pub struct OverviewRequest {
 pub struct DetailRequest {
     pub selection: CurveSelection,
     pub viewport: AlignmentViewport,
-    pub physical_width: u32,
+    pub logical_width: u32,
 }
 
 /// Whole-series product summaries and objective evidence for the inspector.
@@ -72,8 +71,17 @@ pub struct InspectorSnapshot {
 pub struct CurveSeriesSnapshot {
     pub run_ref: RunRef,
     pub run: Run,
-    pub evidence: AlignedMetricResult,
+    pub completeness: EvidenceCompleteness,
+    pub reasons: Vec<EvidenceReason>,
+    pub source_row_count: u64,
+    pub returned_point_count: u64,
     pub chart_series: Option<Series>,
+}
+
+impl CurveSeriesSnapshot {
+    pub fn downsampled(&self) -> bool {
+        self.source_row_count > self.returned_point_count
+    }
 }
 
 /// Immutable reduced curves returned for one requested viewport.
@@ -84,6 +92,32 @@ pub struct CurveSnapshot {
     /// Data-derived range, expanded to one rendered axis unit for one coordinate.
     pub real_range: Option<AlignmentViewport>,
     pub series: Vec<CurveSeriesSnapshot>,
+}
+
+#[cfg(feature = "test-support")]
+impl CurveSnapshot {
+    /// Returns shallow point ownership without instrumenting the production path.
+    pub fn resource_snapshot(&self) -> crate::performance::CurveResourceSnapshot {
+        let returned_points = self
+            .series
+            .iter()
+            .map(|curve| curve.returned_point_count)
+            .sum::<u64>();
+        let chart_points = self
+            .series
+            .iter()
+            .filter_map(|curve| curve.chart_series.as_ref())
+            .map(|series| series.points().len() as u64)
+            .sum::<u64>();
+        crate::performance::CurveResourceSnapshot {
+            requested_budget: u64::from(self.point_budget),
+            source_points: self.series.iter().map(|curve| curve.source_row_count).sum(),
+            returned_points,
+            snapshot_points: chart_points,
+            snapshot_bytes: chart_points * std::mem::size_of::<DataPoint>() as u64,
+            ..crate::performance::CurveResourceSnapshot::default()
+        }
+    }
 }
 
 /// Failures while planning or executing a viewer curve query.
@@ -106,6 +140,15 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_overview(&self, request: &OverviewRequest) -> Result<CurveSnapshot, QueryError> {
+        self.query_overview_until(request, &mut || false)
+            .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
+    }
+
+    pub(crate) fn query_overview_until(
+        &self,
+        request: &OverviewRequest,
+        is_superseded: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<CurveSnapshot>, QueryError> {
         let viewport = match request.selection.axis {
             CurveAxis::Step => AlignmentViewport::new(0, i64::MAX)?,
             CurveAxis::AbsoluteTime => AlignmentViewport::new(i64::MIN, i64::MAX)?,
@@ -114,7 +157,8 @@ impl ReadSession {
             self,
             &request.selection,
             viewport,
-            overview_budget(request.physical_width),
+            overview_budget(request.logical_width),
+            is_superseded,
         )
     }
 
@@ -124,11 +168,21 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_detail(&self, request: &DetailRequest) -> Result<CurveSnapshot, QueryError> {
+        self.query_detail_until(request, &mut || false)
+            .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
+    }
+
+    pub(crate) fn query_detail_until(
+        &self,
+        request: &DetailRequest,
+        is_superseded: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<CurveSnapshot>, QueryError> {
         query_curves(
             self,
             &request.selection,
             request.viewport,
-            detail_budget(request.physical_width),
+            detail_budget(request.logical_width),
+            is_superseded,
         )
     }
 
@@ -180,12 +234,12 @@ impl ReadSession {
     }
 }
 
-fn overview_budget(physical_width: u32) -> u32 {
-    physical_width.clamp(500, 2_000)
+fn overview_budget(logical_width: u32) -> u32 {
+    logical_width.clamp(256, 2_000)
 }
 
-fn detail_budget(physical_width: u32) -> u32 {
-    physical_width.saturating_mul(2).clamp(2_000, 10_000)
+fn detail_budget(logical_width: u32) -> u32 {
+    logical_width.saturating_mul(2).clamp(512, 5_000)
 }
 
 fn query_curves(
@@ -193,7 +247,8 @@ fn query_curves(
     selection: &CurveSelection,
     viewport: AlignmentViewport,
     point_budget: u32,
-) -> Result<CurveSnapshot, QueryError> {
+    is_superseded: &mut dyn FnMut() -> bool,
+) -> Result<Option<CurveSnapshot>, QueryError> {
     let run_ids = selection
         .runs
         .iter()
@@ -205,6 +260,9 @@ fn query_curves(
     let mut real_bounds: Option<(i64, i64)> = None;
     let mut series = Vec::with_capacity(runs.len());
     for run in runs {
+        if is_superseded() {
+            return Ok(None);
+        }
         let Some(run_ref) = selection.runs.iter().find(|selected| {
             selected.source_id == selection.source_id
                 && selected.project_id == run.project_id
@@ -245,18 +303,10 @@ fn query_curves(
             evidence.completeness,
             EvidenceCompleteness::Complete | EvidenceCompleteness::Partial
         );
-        let chart_series = drawable
-            .then(|| {
-                Series::new(
-                    SeriesId::new(run_ref.cache_key())?,
-                    evidence
-                        .points
-                        .iter()
-                        .map(|point| DataPoint::new(point.axis_value as f64, point.point.value_f64))
-                        .collect(),
-                )
-            })
-            .transpose()?;
+        let returned_point_count = evidence.points.len() as u64;
+        let source_row_count = evidence.source_row_count;
+        let completeness = evidence.completeness;
+        let reasons = evidence.reasons;
         if drawable {
             for axis_value in evidence
                 .points
@@ -270,20 +320,38 @@ fn query_curves(
                 });
             }
         }
+        let chart_series = drawable
+            .then(|| {
+                Series::new(
+                    SeriesId::new(run_ref.cache_key())?,
+                    evidence
+                        .points
+                        .into_iter()
+                        .map(|point| DataPoint::new(point.axis_value as f64, point.point.value_f64))
+                        .collect(),
+                )
+            })
+            .transpose()?;
         series.push(CurveSeriesSnapshot {
             run_ref: run_ref.clone(),
             run,
-            evidence,
+            completeness,
+            reasons,
+            source_row_count,
+            returned_point_count,
             chart_series,
         });
     }
     let real_range = real_bounds.map(brushable_range).transpose()?;
-    Ok(CurveSnapshot {
+    if is_superseded() {
+        return Ok(None);
+    }
+    Ok(Some(CurveSnapshot {
         viewport,
         point_budget,
         real_range,
         series,
-    })
+    }))
 }
 
 fn brushable_range(
@@ -310,15 +378,14 @@ fn brushable_range(
 
 #[cfg(test)]
 mod tests {
-    use seex_chart_core::{AxisRange, BrushState};
-    use seex_core::engine::client::NativeClient;
-    use seex_model::run::{RunId, RunStatus};
-    use seex_model::types::ProjectId;
-
     use super::{
         AlignmentViewport, CurveAxis, CurveSelection, DataSourceId, DetailRequest, MetricKey,
         OverviewRequest, ReadSession, RunRef, brushable_range, detail_budget, overview_budget,
     };
+    use seex_chart_core::{AxisRange, BrushState};
+    use seex_core::engine::client::NativeClient;
+    use seex_model::run::{RunId, RunStatus};
+    use seex_model::types::ProjectId;
 
     #[test]
     fn screen_budgets_clamp_density_and_overflow() {
@@ -331,7 +398,7 @@ mod tests {
                 detail_budget(2_500),
                 detail_budget(u32::MAX)
             ],
-            [500, 900, 2_000, 2_000, 5_000, 10_000]
+            [256, 900, 2_000, 512, 5_000, 5_000]
         );
     }
 
@@ -378,36 +445,32 @@ mod tests {
 
         let overview = session.query_overview(&OverviewRequest {
             selection: selection.clone(),
-            physical_width: 500,
+            logical_width: 500,
         })?;
-        let evidence = &overview.series[0].evidence;
+        let curve = &overview.series[0];
 
         assert_eq!(overview.series[0].run.status, RunStatus::Finished);
-        assert!(evidence.points.iter().all(|point| {
-            point.axis_value == point.point.timestamp.timestamp_millis()
-                && point.axis_value > 1_000_000_000_000
-        }));
-        let first = evidence
-            .points
-            .first()
-            .expect("fixture should have points")
-            .axis_value;
-        let last = evidence
-            .points
-            .last()
-            .expect("fixture should have points")
-            .axis_value;
+        let points = curve
+            .chart_series
+            .as_ref()
+            .expect("complete evidence should draw")
+            .points();
+        assert!(points.iter().all(|point| point.x > 1_000_000_000_000.));
+        let first = points.first().expect("fixture should have points").x as i64;
+        let last = points.last().expect("fixture should have points").x as i64;
         let detail = session.query_detail(&DetailRequest {
             selection,
             viewport: AlignmentViewport::new(first, last)?,
-            physical_width: 500,
+            logical_width: 500,
         })?;
         assert!(
             detail.series[0]
-                .evidence
-                .points
+                .chart_series
+                .as_ref()
+                .expect("complete evidence should draw")
+                .points()
                 .iter()
-                .all(|point| point.axis_value >= first && point.axis_value <= last)
+                .all(|point| point.x >= first as f64 && point.x <= last as f64)
         );
         Ok(())
     }

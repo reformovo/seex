@@ -1,6 +1,8 @@
-# Crate Boundaries
+# Crate and Module Boundaries
 
-Seex workspace crates follow one dependency direction:
+Seex is transitioning from Cargo-enforced product layers to one published Rust
+SDK. During the transition, the current crates remain authoritative and the
+workspace must build after every migration slice:
 
 ```text
 seex-model <- seex-storage <- seex-core <- seex-python
@@ -14,7 +16,26 @@ coordination and immutable snapshots; independent GPUI entities own the
 sidebar, View bar, analysis workspace, inspector, and charts. All reverse
 dependencies, mutual entity subscriptions, and crate cycles are forbidden.
 
-## Responsibilities
+The accepted final structure is:
+
+```text
+seex (published facade)
+  facade -> engine -> storage -> model
+       ^         Reader owns public reads
+       +-------------------------------+
+
+seex-python (private) ----> seex
+seex-app (private) -------> seex + seex-plot
+seex-plot (private) ------> no SDK, storage, PyO3, or GPUI dependency
+```
+
+The arrows in the module chain point from a consumer to what it may use. Model
+does not depend on storage; storage does not depend on engine; engine does not
+depend on the facade. The transitional diagram is deleted when U5 removes the
+old crates. See [ADR 0015](adr/0015-unified-rust-sdk-performance-preserving-migration.md)
+and the accepted [SDK design](single-crate-rust-sdk.md).
+
+## Transitional Responsibilities
 
 - **`seex-model`** owns projects, runs, metrics, typed identities, query
   inputs, reduction policies, and query results. It has no storage, Python, or
@@ -35,20 +56,45 @@ dependencies, mutual entity subscriptions, and crate cycles are forbidden.
 - **`seex-app`** owns source selection, background query scheduling,
   conversion from metric points to chart points, GPUI state, and rendering.
 
-## Shared Query Contract
+## Final Responsibilities
 
-Both metric readers apply half-open step filtering and last-write-wins effective
-series semantics before optional reduction. The storage crate owns full-series,
-LTTB, and screen-budgeted extrema query strategies; chart code projects every
-point returned by storage and does not downsample again.
+- **`seex::model`** owns product identities, metric evidence, query inputs, and
+  comparison types. It has no storage, Python, or rendering dependency.
+- **`seex::storage`** is private and owns DuckDB/DuckLake, catalog and Parquet
+  I/O, schema validation, reduction, and storage errors.
+- **`seex::engine`** is private and owns Run lifecycle, atomic report admission,
+  the bounded writer queue, finalization, diagnostics, comparison, and ranking.
+- **The `seex` facade** owns the stable `Client`, `RunHandle`, `Reader`, options,
+  public errors, and common model exports. Storage implementation types never
+  appear in this API.
+- **`seex-python`** maps the facade to typed Python Run, Api, and Arrow surfaces.
+  It contains no product, query, or storage policy.
+- **`seex-plot`** owns renderer-independent geometry and interaction. It remains
+  independent of storage and GPUI.
+- **`seex-app`** composes the facade, plot crate, and GPUI. It derives private
+  viewport query options but never depends on DuckDB or storage types.
 
-Aligned queries are separate from ordinary half-open step queries. They derive
-raw-step or elapsed-time coordinates after last-write-wins, use a closed
-viewport plus one strict neighbor on each side, and expose full or
-screen-budgeted extrema results through the shared metric-reader interface.
-The native reader resolves elapsed origin from Run metadata. The standalone
-Parquet reader remains fact-only: it supports step alignment and reports
-`missing_run_start` for elapsed alignment.
+## Reader Query Contract
+
+The public Reader accepts a typed axis and half-open range plus an optional
+strict `max_points`; it never accepts pixels. Every implementation applies
+last-write-wins before optional reduction and returns real samples with source
+count, downsampled state, completeness, and reasons. Chart code projects every
+point returned by Reader and does not downsample again.
+
+Desktop converts its closed viewport into crate-private options that may add one
+strict real neighbor on either side while preserving the public point bound.
+Step, relative-time, and timestamp coordinates are derived after
+last-write-wins. The native reader resolves time origins from Run metadata. The
+standalone Parquet reader remains fact-only and reports missing metadata as
+incomplete evidence.
+
+Full-span and narrow queries use distinct physical plans. The protected
+full-span plan remains unchanged while narrow Step selection can filter before
+materialization and reduction without discarding replacements. Whole-series
+diagnostics are separate from viewport selection. Superseded requests may
+interrupt only the cloned connection and current request token that own them;
+stale results never enter a Viewer snapshot.
 
 The native project store is the authoritative read source for catalog discovery
 and inline plus Parquet-backed facts. A standalone Parquet dataset is a

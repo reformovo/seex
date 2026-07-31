@@ -49,7 +49,7 @@ pub struct MetricPanel {
     pub detail_generation: Option<Generation>,
     pub overview_revision: u64,
     pub detail_revision: u64,
-    pub physical_width: u32,
+    pub logical_width: u32,
     pub requested_detail_viewport: Option<AlignmentViewport>,
     pub inspector: Option<Arc<InspectorSnapshot>>,
     pub inspector_generation: Option<Generation>,
@@ -69,7 +69,7 @@ impl MetricPanel {
             detail_generation: None,
             overview_revision: 0,
             detail_revision: 0,
-            physical_width: 1_000,
+            logical_width: 1_000,
             requested_detail_viewport: None,
             inspector: None,
             inspector_generation: None,
@@ -86,10 +86,10 @@ impl MetricPanel {
         }
     }
 
-    pub fn needs_detail(&self, viewport: AlignmentViewport, physical_width: u32) -> bool {
+    pub fn needs_detail(&self, viewport: AlignmentViewport, logical_width: u32) -> bool {
         !self.is_pending(ReadKind::Detail)
             && (self.requested_detail_viewport != Some(viewport)
-                || self.physical_width != physical_width)
+                || self.logical_width != logical_width)
     }
 }
 
@@ -658,14 +658,14 @@ impl AnalysisViews {
         panel_id: &MetricPanelId,
         generation: Generation,
         viewport: AlignmentViewport,
-        physical_width: u32,
+        logical_width: u32,
     ) {
         let Some(panel) = self.active_panel_mut(panel_id) else {
             return;
         };
         panel.detail_generation = Some(generation);
         panel.requested_detail_viewport = Some(viewport);
-        panel.physical_width = physical_width;
+        panel.logical_width = logical_width;
     }
 
     pub fn complete_active_panel_read(

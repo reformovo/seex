@@ -231,6 +231,32 @@ struct TaggedRequest {
     _ticket: RequestTicket,
 }
 
+struct RequestIdentity {
+    source_id: DataSourceId,
+    generation: Generation,
+    kind: ReadKind,
+    metric_key: Option<String>,
+}
+
+impl RequestIdentity {
+    fn new(tagged: &TaggedRequest) -> Self {
+        let metric_key = match &tagged.request {
+            ReadRequest::Overview(request) => {
+                Some(request.selection.metric_key.as_str().to_owned())
+            }
+            ReadRequest::Detail(request) => Some(request.selection.metric_key.as_str().to_owned()),
+            ReadRequest::Inspector(request) => Some(request.metric_key.as_str().to_owned()),
+            ReadRequest::Discover(_) => None,
+        };
+        Self {
+            source_id: tagged.source_id.clone(),
+            generation: tagged.generation,
+            kind: tagged.request.kind(),
+            metric_key,
+        }
+    }
+}
+
 #[derive(Default)]
 struct RequestTicket(Option<Arc<AtomicUsize>>);
 
@@ -255,9 +281,38 @@ pub struct ReadWorker {
     events: Option<ReadEventReceiver>,
     threads: Vec<JoinHandle<()>>,
     outstanding: Arc<AtomicUsize>,
+    #[cfg(feature = "test-support")]
+    gate: Arc<ReadConcurrencyGate>,
+    #[cfg(feature = "test-support")]
+    superseded_reads: Arc<AtomicUsize>,
 }
 
 const MAX_WORKERS_PER_SOURCE: usize = 4;
+
+struct ReadSessionPool {
+    root_path: PathBuf,
+    base: Mutex<Option<ReadSession>>,
+}
+
+impl ReadSessionPool {
+    fn new(root_path: PathBuf) -> Self {
+        Self {
+            root_path,
+            base: Mutex::new(None),
+        }
+    }
+
+    fn open(&self) -> Result<ReadSession, SourceError> {
+        let mut base = self.base.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(base) = base.as_ref() {
+            return base.try_clone();
+        }
+        let opened = ReadSession::open_existing(&self.root_path)?;
+        let worker = opened.try_clone()?;
+        *base = Some(opened);
+        Ok(worker)
+    }
+}
 
 impl ReadWorker {
     /// Starts a worker for one local native source.
@@ -273,26 +328,32 @@ impl ReadWorker {
         root_path: &Path,
         gate: Arc<ReadConcurrencyGate>,
     ) -> Result<Self, std::io::Error> {
-        let root_path = root_path.to_path_buf();
+        let sessions = Arc::new(ReadSessionPool::new(root_path.to_path_buf()));
         let (request_tx, request_rx) = mpsc::channel();
         let (event_tx, event_rx) = read_event_channel();
         let worker_count = gate.limit.min(MAX_WORKERS_PER_SOURCE);
+        #[cfg(feature = "test-support")]
+        let superseded_reads = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(RequestQueue {
             receiver: request_rx,
-            pending: PendingRequests::default(),
+            pending: PendingRequests {
+                #[cfg(feature = "test-support")]
+                superseded_reads: Some(Arc::clone(&superseded_reads)),
+                ..PendingRequests::default()
+            },
         }));
         let events = Arc::new(event_tx);
         let outstanding = Arc::new(AtomicUsize::new(0));
         let mut threads = Vec::with_capacity(worker_count);
         for index in 0..worker_count {
-            let root_path = root_path.clone();
+            let sessions = Arc::clone(&sessions);
             let requests = Arc::clone(&requests);
             let events = Arc::clone(&events);
             let gate = Arc::clone(&gate);
             threads.push(
                 thread::Builder::new()
                     .name(format!("seex-native-reader-{index}"))
-                    .spawn(move || worker_loop(root_path, requests, events, gate))?,
+                    .spawn(move || worker_loop(sessions, requests, events, gate))?,
             );
         }
         Ok(Self {
@@ -300,6 +361,10 @@ impl ReadWorker {
             events: Some(event_rx),
             threads,
             outstanding,
+            #[cfg(feature = "test-support")]
+            gate,
+            #[cfg(feature = "test-support")]
+            superseded_reads,
         })
     }
 
@@ -331,12 +396,29 @@ impl ReadWorker {
     pub fn take_event_receiver(&mut self) -> Option<ReadEventReceiver> {
         self.events.take()
     }
+
+    #[cfg(feature = "test-support")]
+    pub fn resource_snapshot(&self) -> crate::performance::ReadSchedulingSnapshot {
+        let concurrent_reads = *self
+            .gate
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        crate::performance::ReadSchedulingSnapshot {
+            concurrent_reads: concurrent_reads as u64,
+            peak_concurrent_reads: self.gate.peak.load(Ordering::Relaxed) as u64,
+            superseded_reads: self.superseded_reads.load(Ordering::Relaxed) as u64,
+            ..crate::performance::ReadSchedulingSnapshot::default()
+        }
+    }
 }
 
 pub(crate) struct ReadConcurrencyGate {
     active: Mutex<usize>,
     available: Condvar,
     limit: usize,
+    #[cfg(feature = "test-support")]
+    peak: AtomicUsize,
 }
 
 impl ReadConcurrencyGate {
@@ -346,6 +428,8 @@ impl ReadConcurrencyGate {
             active: Mutex::new(0),
             available: Condvar::new(),
             limit,
+            #[cfg(feature = "test-support")]
+            peak: AtomicUsize::new(0),
         }
     }
 
@@ -361,6 +445,8 @@ impl ReadConcurrencyGate {
                 .unwrap_or_else(|error| error.into_inner());
         }
         *active += 1;
+        #[cfg(feature = "test-support")]
+        self.peak.fetch_max(*active, Ordering::Relaxed);
         ReadPermit { gate: self }
     }
 }
@@ -402,23 +488,33 @@ struct PendingRequests {
     overview: Vec<TaggedRequest>,
     detail: Vec<TaggedRequest>,
     inspector: Vec<TaggedRequest>,
+    #[cfg(feature = "test-support")]
+    superseded_reads: Option<Arc<AtomicUsize>>,
 }
 
 impl PendingRequests {
     fn push(&mut self, tagged: TaggedRequest) {
-        match &tagged.request {
+        let _superseded = match &tagged.request {
             ReadRequest::Discover(_) => {
                 if self
                     .discover
                     .as_ref()
                     .is_none_or(|pending| tagged.generation >= pending.generation)
                 {
+                    let superseded = self.discover.is_some();
                     self.discover = Some(tagged);
+                    superseded
+                } else {
+                    false
                 }
             }
             ReadRequest::Overview(_) => push_curve_request(&mut self.overview, tagged),
             ReadRequest::Detail(_) => push_curve_request(&mut self.detail, tagged),
             ReadRequest::Inspector(_) => push_curve_request(&mut self.inspector, tagged),
+        };
+        #[cfg(feature = "test-support")]
+        if _superseded && let Some(counter) = &self.superseded_reads {
+            counter.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -429,14 +525,28 @@ impl PendingRequests {
             .or_else(|| (!self.detail.is_empty()).then(|| self.detail.remove(0)))
             .or_else(|| (!self.inspector.is_empty()).then(|| self.inspector.remove(0)))
     }
+
+    fn has_newer(&self, identity: &RequestIdentity) -> bool {
+        self.discover
+            .iter()
+            .chain(&self.overview)
+            .chain(&self.detail)
+            .chain(&self.inspector)
+            .any(|candidate| {
+                candidate.source_id == identity.source_id
+                    && candidate.generation > identity.generation
+                    && candidate.request.kind() == identity.kind
+                    && RequestIdentity::new(candidate).metric_key == identity.metric_key
+            })
+    }
 }
 
-fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) {
+fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) -> bool {
     let metric_key = match &tagged.request {
         ReadRequest::Overview(request) => &request.selection.metric_key,
         ReadRequest::Detail(request) => &request.selection.metric_key,
         ReadRequest::Inspector(request) => &request.metric_key,
-        ReadRequest::Discover(_) => return,
+        ReadRequest::Discover(_) => return false,
     };
     if let Some(index) = pending.iter().position(|candidate| {
         candidate.source_id == tagged.source_id
@@ -449,9 +559,12 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) {
     }) {
         if tagged.generation >= pending[index].generation {
             pending[index] = tagged;
+            return true;
         }
+        false
     } else {
         pending.push(tagged);
+        false
     }
 }
 
@@ -474,16 +587,34 @@ fn next_request(queue: &Mutex<RequestQueue>) -> Option<TaggedRequest> {
     }
 }
 
+fn request_is_superseded(queue: &Mutex<RequestQueue>, identity: &RequestIdentity) -> bool {
+    let Ok(mut queue) = queue.try_lock() else {
+        return false;
+    };
+    while let Ok(request) = queue.receiver.try_recv() {
+        queue.pending.push(request);
+    }
+    queue.pending.has_newer(identity)
+}
+
 fn worker_loop(
-    root_path: PathBuf,
+    sessions: Arc<ReadSessionPool>,
     requests: Arc<Mutex<RequestQueue>>,
     events: Arc<ReadEventSender>,
     gate: Arc<ReadConcurrencyGate>,
 ) {
     let mut session = None;
     while let Some(request) = next_request(&requests) {
+        let identity = RequestIdentity::new(&request);
         let _permit = gate.acquire();
-        let event = execute(&root_path, &mut session, request);
+        if request_is_superseded(&requests, &identity) {
+            continue;
+        }
+        let Some(event) = execute(&sessions, &mut session, request, || {
+            request_is_superseded(&requests, &identity)
+        }) else {
+            continue;
+        };
         if !events.send(event) {
             return;
         }
@@ -491,10 +622,11 @@ fn worker_loop(
 }
 
 fn execute(
-    root_path: &Path,
+    sessions: &ReadSessionPool,
     session: &mut Option<ReadSession>,
     tagged: TaggedRequest,
-) -> ReadEvent {
+    mut is_superseded: impl FnMut() -> bool,
+) -> Option<ReadEvent> {
     let TaggedRequest {
         source_id,
         generation,
@@ -504,26 +636,41 @@ fn execute(
     let kind = request.kind();
     let result = (|| {
         if session.is_none() {
-            *session = Some(ReadSession::open_existing(root_path)?);
+            *session = Some(sessions.open()?);
         }
         let session = session.as_ref().ok_or(WorkerError::SessionUnavailable)?;
-        Ok(match request {
+        Ok(Some(match request {
             ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(&request)?),
             ReadRequest::Overview(request) => {
-                ReadSnapshot::Overview(session.query_overview(&request)?)
+                let Some(snapshot) = session.query_overview_until(&request, &mut is_superseded)?
+                else {
+                    return Ok(None);
+                };
+                ReadSnapshot::Overview(snapshot)
             }
-            ReadRequest::Detail(request) => ReadSnapshot::Detail(session.query_detail(&request)?),
+            ReadRequest::Detail(request) => {
+                let Some(snapshot) = session.query_detail_until(&request, &mut is_superseded)?
+                else {
+                    return Ok(None);
+                };
+                ReadSnapshot::Detail(snapshot)
+            }
             ReadRequest::Inspector(request) => {
                 ReadSnapshot::Inspector(session.query_inspector(&request)?)
             }
-        })
+        }))
     })();
-    ReadEvent {
+    let result = match result {
+        Ok(Some(result)) => Ok(result),
+        Ok(None) => return None,
+        Err(error) => Err(error),
+    };
+    Some(ReadEvent {
         source_id,
         generation,
         kind,
         result,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -539,8 +686,8 @@ mod tests {
 
     use super::{
         DataSourceId, DiscoveryRequest, Generation, OverviewRequest, PendingRequests,
-        ReadConcurrencyGate, ReadRequest, ReadWorker, RequestQueue, RequestTicket, TaggedRequest,
-        next_request, read_event_channel,
+        ReadConcurrencyGate, ReadRequest, ReadWorker, RequestIdentity, RequestQueue, RequestTicket,
+        TaggedRequest, next_request, read_event_channel, request_is_superseded,
     };
 
     fn overview_request(metric: &str) -> ReadRequest {
@@ -551,7 +698,7 @@ mod tests {
                 metric_key: MetricKey::from_string(metric),
                 axis: CurveAxis::Step,
             },
-            physical_width: 1_000,
+            logical_width: 1_000,
         })
     }
 
@@ -570,6 +717,10 @@ mod tests {
             events: Some(event_rx),
             threads: vec![thread],
             outstanding: Arc::new(AtomicUsize::new(1)),
+            #[cfg(feature = "test-support")]
+            gate: Arc::new(ReadConcurrencyGate::new(1)),
+            #[cfg(feature = "test-support")]
+            superseded_reads: Arc::new(AtomicUsize::new(0)),
         };
         let (dropped_tx, dropped_rx) = mpsc::channel();
         let dropper = thread::spawn(move || {
@@ -607,7 +758,13 @@ mod tests {
 
     #[test]
     fn pending_curve_requests_coalesce_per_metric_panel() {
-        let mut pending = PendingRequests::default();
+        #[cfg(feature = "test-support")]
+        let superseded_reads = Arc::new(AtomicUsize::new(0));
+        let mut pending = PendingRequests {
+            #[cfg(feature = "test-support")]
+            superseded_reads: Some(Arc::clone(&superseded_reads)),
+            ..PendingRequests::default()
+        };
         for (generation, metric) in [(1, "loss"), (2, "accuracy"), (3, "loss")] {
             pending.push(TaggedRequest {
                 source_id: DataSourceId::from_string("source"),
@@ -624,6 +781,11 @@ mod tests {
                     .generation
             }),
             [Generation(3), Generation(2)]
+        );
+        #[cfg(feature = "test-support")]
+        assert_eq!(
+            superseded_reads.load(std::sync::atomic::Ordering::Relaxed),
+            1
         );
     }
 
@@ -681,6 +843,36 @@ mod tests {
     }
 
     #[test]
+    fn queued_newer_generation_supersedes_before_execution() {
+        let (request_tx, request_rx) = mpsc::channel();
+        let current = TaggedRequest {
+            source_id: DataSourceId::from_string("source"),
+            generation: Generation(1),
+            request: overview_request("loss"),
+            _ticket: RequestTicket::default(),
+        };
+        let identity = RequestIdentity::new(&current);
+        request_tx
+            .send(TaggedRequest {
+                source_id: DataSourceId::from_string("source"),
+                generation: Generation(2),
+                request: overview_request("loss"),
+                _ticket: RequestTicket::default(),
+            })
+            .expect("test queue should remain open");
+        let queue = Mutex::new(RequestQueue {
+            receiver: request_rx,
+            pending: PendingRequests::default(),
+        });
+
+        assert!(request_is_superseded(&queue, &identity));
+        assert_eq!(
+            next_request(&queue).map(|request| request.generation),
+            Some(Generation(2))
+        );
+    }
+
+    #[test]
     fn event_receiver_can_only_be_taken_once() {
         let (request_tx, _request_rx) = mpsc::channel();
         let (_event_tx, event_rx) = read_event_channel();
@@ -689,6 +881,10 @@ mod tests {
             events: Some(event_rx),
             threads: Vec::new(),
             outstanding: Arc::new(AtomicUsize::new(0)),
+            #[cfg(feature = "test-support")]
+            gate: Arc::new(ReadConcurrencyGate::new(1)),
+            #[cfg(feature = "test-support")]
+            superseded_reads: Arc::new(AtomicUsize::new(0)),
         };
 
         assert!(worker.take_event_receiver().is_some());

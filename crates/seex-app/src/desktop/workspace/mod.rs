@@ -123,13 +123,16 @@ impl AnalysisWorkspace {
         if self.overview_logical_width == logical_width && self.overview_width == physical_width {
             return;
         }
+        let query_width_changed = self.overview_logical_width != logical_width;
         self.overview_logical_width = logical_width;
         self.overview_width = physical_width;
         let mut viewport = self.track_viewport.borrow_mut();
         viewport.logical_width_bits = logical_width.max(1.).to_bits();
         viewport.physical_width = physical_width.max(1);
         drop(viewport);
-        cx.emit(AnalysisWorkspaceEvent::RequestOverview);
+        if query_width_changed {
+            cx.emit(AnalysisWorkspaceEvent::RequestOverview);
+        }
         cx.notify();
     }
 
@@ -245,7 +248,7 @@ impl ViewerApp {
                     self.request_panel_detail(
                         &request.panel_id,
                         request.viewport,
-                        request.physical_width,
+                        request.logical_width,
                         cx,
                     );
                 }

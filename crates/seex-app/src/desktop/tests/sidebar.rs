@@ -1458,9 +1458,10 @@ fn metric_sidebar_rows_align_with_independent_chart_tracks(cx: &mut TestAppConte
                 .iter()
                 .all(|panel| {
                     panel.detail.as_ref().is_some_and(|snapshot| {
-                        snapshot.series.iter().any(|series| {
-                            series.evidence.completeness == EvidenceCompleteness::Unavailable
-                        })
+                        snapshot
+                            .series
+                            .iter()
+                            .any(|series| series.completeness == EvidenceCompleteness::Unavailable)
                     })
                 });
             (ranges, unavailable)

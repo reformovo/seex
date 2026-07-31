@@ -70,14 +70,14 @@ pub enum PanelReadRequest {
         runs: Vec<RunRef>,
         metric_key: MetricKey,
         axis: CurveAxis,
-        physical_width: u32,
+        logical_width: u32,
     },
     Detail {
         runs: Vec<RunRef>,
         metric_key: MetricKey,
         axis: CurveAxis,
         viewport: AlignmentViewport,
-        physical_width: u32,
+        logical_width: u32,
     },
     Inspector {
         runs: Vec<RunRef>,
@@ -107,7 +107,7 @@ impl PanelReadRequest {
             Self::Overview {
                 metric_key,
                 axis,
-                physical_width,
+                logical_width,
                 ..
             } => ReadRequest::Overview(OverviewRequest {
                 selection: CurveSelection {
@@ -116,13 +116,13 @@ impl PanelReadRequest {
                     metric_key: metric_key.clone(),
                     axis: *axis,
                 },
-                physical_width: *physical_width,
+                logical_width: *logical_width,
             }),
             Self::Detail {
                 metric_key,
                 axis,
                 viewport,
-                physical_width,
+                logical_width,
                 ..
             } => ReadRequest::Detail(DetailRequest {
                 selection: CurveSelection {
@@ -132,7 +132,7 @@ impl PanelReadRequest {
                     axis: *axis,
                 },
                 viewport: *viewport,
-                physical_width: *physical_width,
+                logical_width: *logical_width,
             }),
             Self::Inspector { metric_key, .. } => ReadRequest::Inspector(InspectorRequest {
                 source_id,
@@ -163,6 +163,27 @@ pub struct PanelReadSnapshot {
     pub curves: Option<CurveSnapshot>,
     pub inspector: Option<InspectorSnapshot>,
     pub source_errors: Vec<SourceReadFailure>,
+}
+
+#[cfg(feature = "test-support")]
+impl PanelReadSnapshot {
+    pub fn resource_snapshot(
+        &self,
+        read_kind: ReadKind,
+    ) -> Option<crate::performance::PanelResourceSnapshot> {
+        Some(crate::performance::PanelResourceSnapshot {
+            view_id: self.tag.view_id.as_str().to_owned(),
+            panel_id: self.tag.panel_id.as_str().to_owned(),
+            generation: self.tag.generation.0,
+            read_kind: format!("{read_kind:?}").to_lowercase(),
+            curves: self.curves.as_ref()?.resource_snapshot(),
+            concurrent_reads: 0,
+            peak_concurrent_reads: 0,
+            superseded_reads: 0,
+            stale_reads: 0,
+            stale_retained_snapshots: 0,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -196,6 +217,8 @@ enum SourcePanelSnapshot {
 pub struct PanelReadCoordinator {
     pending: HashMap<PanelReadKey, PendingPanelRead>,
     inflight: HashMap<(Generation, ReadKind), PanelReadKey>,
+    #[cfg(feature = "test-support")]
+    stale_reads: u64,
 }
 
 impl PanelReadCoordinator {
@@ -266,14 +289,26 @@ impl PanelReadCoordinator {
     pub fn apply(&mut self, event: ReadEvent) -> PanelReadOutcome {
         let lookup = (event.generation, event.kind);
         let Some(key) = self.inflight.get(&lookup).cloned() else {
+            #[cfg(feature = "test-support")]
+            {
+                self.stale_reads += 1;
+            }
             return PanelReadOutcome::IgnoredStale;
         };
         let Some(pending) = self.pending.get_mut(&key) else {
+            #[cfg(feature = "test-support")]
+            {
+                self.stale_reads += 1;
+            }
             return PanelReadOutcome::IgnoredStale;
         };
         if !pending.expected.contains(&event.source_id)
             || pending.responses.contains_key(&event.source_id)
         {
+            #[cfg(feature = "test-support")]
+            {
+                self.stale_reads += 1;
+            }
             return PanelReadOutcome::IgnoredStale;
         }
         let response = match event.result {
@@ -310,6 +345,15 @@ impl PanelReadCoordinator {
         });
         for (generation, kind) in removed {
             self.inflight.remove(&(generation, kind));
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn resource_snapshot(&self) -> crate::performance::ReadSchedulingSnapshot {
+        crate::performance::ReadSchedulingSnapshot {
+            stale_reads: self.stale_reads,
+            stale_retained_snapshots: 0,
+            ..crate::performance::ReadSchedulingSnapshot::default()
         }
     }
 }
@@ -400,9 +444,7 @@ pub enum PanelCoordinationError {
 #[cfg(test)]
 mod tests {
     use seex_chart_core::{DataPoint, Series, SeriesId};
-    use seex_model::alignment::{AlignedMetricPoint, AlignedMetricResult};
     use seex_model::comparison::EvidenceCompleteness;
-    use seex_model::metric::{MetricPoint, Step};
     use seex_model::run::{Run, RunId, RunStatus};
     use seex_model::types::ProjectId;
 
@@ -439,7 +481,7 @@ mod tests {
             metric_key: MetricKey::from_string("loss"),
             axis: CurveAxis::Step,
             viewport: AlignmentViewport::new(0, 10).expect("test viewport should be valid"),
-            physical_width: 1_000,
+            logical_width: 1_000,
         }
     }
 
@@ -447,18 +489,6 @@ mod tests {
         let timestamp = "2026-01-01T00:00:00Z"
             .parse()
             .expect("fixed timestamp should parse");
-        let metric_key = MetricKey::from_string("loss");
-        let point = AlignedMetricPoint {
-            point: MetricPoint {
-                run_id: run_ref.run_id.clone(),
-                metric_key: metric_key.clone(),
-                step: Step::new(1),
-                timestamp,
-                value_f64: 0.5,
-                ingested_at: timestamp,
-            },
-            axis_value: 1,
-        };
         let chart_series = Series::new(
             SeriesId::new(run_ref.cache_key()).expect("Run reference should make a series id"),
             vec![DataPoint::new(1., 0.5)],
@@ -481,12 +511,10 @@ mod tests {
                     finished_at: Some(timestamp),
                 },
                 run_ref,
-                evidence: AlignedMetricResult {
-                    source_row_count: 1,
-                    points: vec![point],
-                    completeness: EvidenceCompleteness::Complete,
-                    reasons: Vec::new(),
-                },
+                completeness: EvidenceCompleteness::Complete,
+                reasons: Vec::new(),
+                source_row_count: 1,
+                returned_point_count: 1,
                 chart_series: Some(chart_series),
             }],
         }
@@ -591,5 +619,42 @@ mod tests {
             coordinator.apply(detail_event(run.source_id.clone(), 2, Ok(snapshot(run)))),
             PanelReadOutcome::IgnoredStale
         );
+        #[cfg(feature = "test-support")]
+        assert_eq!(
+            coordinator.resource_snapshot(),
+            crate::performance::ReadSchedulingSnapshot {
+                stale_reads: 2,
+                stale_retained_snapshots: 0,
+                ..crate::performance::ReadSchedulingSnapshot::default()
+            }
+        );
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn resource_snapshot_keeps_panel_generation_identity() {
+        let run = run_ref("source", "run");
+        let mut coordinator = PanelReadCoordinator::default();
+        coordinator
+            .begin(tag(7), request(vec![run.clone()]))
+            .expect("read should begin");
+        let PanelReadOutcome::Completed(completed) =
+            coordinator.apply(detail_event(run.source_id.clone(), 7, Ok(snapshot(run))))
+        else {
+            panic!("single-source read should complete");
+        };
+
+        let resources = completed
+            .resource_snapshot(ReadKind::Detail)
+            .expect("curve result should expose resources");
+        assert_eq!(
+            (
+                resources.view_id.as_str(),
+                resources.panel_id.as_str(),
+                resources.generation
+            ),
+            ("view", "panel", 7)
+        );
+        assert_eq!(resources.read_kind, "detail");
     }
 }

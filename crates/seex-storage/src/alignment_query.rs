@@ -50,7 +50,7 @@ pub(crate) fn query_aligned_metric(
     for row in rows {
         let (point, count, negative, decreasing) = row?;
         if let Some(point) = point {
-            points.push(point.into_aligned_metric_point()?);
+            points.push(point.into_aligned_metric_point(&query.run_id, &query.metric_key)?);
         }
         source_row_count = count;
         has_negative_axis = negative;
@@ -142,8 +142,7 @@ fn aligned_points_sql(
              SELECT count(*)::UBIGINT AS source_row_count FROM visible_source
          ),
          {selection}
-         SELECT selected.run_id, selected.metric_key, selected.step,
-                epoch_ms(selected.timestamp), selected.value_f64,
+         SELECT selected.step, epoch_ms(selected.timestamp), selected.value_f64,
                 epoch_ms(selected.ingested_at), selected.axis_value,
                 source_stats.source_row_count, axis_stats.has_negative_axis,
                 axis_stats.has_decreasing_axis
@@ -169,16 +168,16 @@ fn ordered_ctes(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
     };
     format!(
         "WITH ranked AS (
-             SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at,
+             SELECT step, timestamp, value_f64, ingested_at,
                     row_number() OVER (
-                        PARTITION BY run_id, metric_key, step
+                        PARTITION BY step
                         ORDER BY ingested_at DESC, {tie_breaker}
                     ) AS write_rank
              FROM {relation}
              WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
          ),
          effective AS (
-             SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at
+             SELECT step, timestamp, value_f64, ingested_at
              FROM ranked WHERE write_rank = 1
          ),
          derived AS (
@@ -239,8 +238,6 @@ fn query_values(
 }
 
 struct StoredAlignedPoint {
-    run_id: String,
-    metric_key: String,
     step: i64,
     timestamp_millis: i64,
     value_f64: f64,
@@ -249,11 +246,15 @@ struct StoredAlignedPoint {
 }
 
 impl StoredAlignedPoint {
-    fn into_aligned_metric_point(self) -> Result<AlignedMetricPoint, StorageError> {
+    fn into_aligned_metric_point(
+        self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+    ) -> Result<AlignedMetricPoint, StorageError> {
         Ok(AlignedMetricPoint {
             point: MetricPoint {
-                run_id: RunId::from_string(self.run_id),
-                metric_key: MetricKey::from_string(self.metric_key),
+                run_id: run_id.clone(),
+                metric_key: metric_key.clone(),
                 step: Step::new(self.step),
                 timestamp: timestamp_from_millis("timestamp", self.timestamp_millis)?,
                 value_f64: self.value_f64,
@@ -267,20 +268,18 @@ impl StoredAlignedPoint {
 fn stored_alignment_row(
     row: &duckdb::Row<'_>,
 ) -> duckdb::Result<(Option<StoredAlignedPoint>, u64, bool, bool)> {
-    let run_id: Option<String> = row.get(0)?;
-    let point = match run_id {
-        Some(run_id) => Some(StoredAlignedPoint {
-            run_id,
-            metric_key: row.get(1)?,
-            step: row.get(2)?,
-            timestamp_millis: row.get(3)?,
-            value_f64: row.get(4)?,
-            ingested_at_millis: row.get(5)?,
-            axis_value: row.get(6)?,
+    let step: Option<i64> = row.get(0)?;
+    let point = match step {
+        Some(step) => Some(StoredAlignedPoint {
+            step,
+            timestamp_millis: row.get(1)?,
+            value_f64: row.get(2)?,
+            ingested_at_millis: row.get(3)?,
+            axis_value: row.get(4)?,
         }),
         None => None,
     };
-    Ok((point, row.get(7)?, row.get(8)?, row.get(9)?))
+    Ok((point, row.get(5)?, row.get(6)?, row.get(7)?))
 }
 
 #[cfg(test)]
@@ -400,13 +399,13 @@ mod tests {
 
         assert_eq!(result.source_row_count, 7);
         assert!(result.downsampled());
-        assert!(result.points.iter().any(|point| point.axis_value == 0));
-        assert!(result.points.iter().any(|point| point.axis_value == 6));
-        assert!(
+        assert_eq!(
             result
                 .points
                 .iter()
-                .any(|point| point.point.value_f64 == -1.0)
+                .map(|point| (point.axis_value, point.point.value_f64))
+                .collect::<Vec<_>>(),
+            vec![(0, 0.0), (1, 1.0), (3, -1.0), (5, 5.0), (6, 6.0)]
         );
         Ok(())
     }
@@ -425,6 +424,24 @@ mod tests {
 
         assert_eq!(result.points.len(), 7);
         assert!(!result.downsampled());
+        Ok(())
+    }
+
+    #[test]
+    fn screen_extrema_ties_choose_the_lowest_axis_point() -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        connection
+            .execute_batch("UPDATE dl.metric_points SET value_f64 = -2.0 WHERE step IN (2, 4);")?;
+        let mut screen = query(
+            AlignmentAxis::Step,
+            AlignmentReduction::screen_budget(1, 1)?,
+        );
+        screen.viewport = AlignmentViewport::new(1, 5)?;
+
+        let result = ProjectMetricReader::new(&connection).query_aligned_metric(&screen)?;
+
+        assert!(result.points.iter().any(|point| point.axis_value == 2));
+        assert!(!result.points.iter().any(|point| point.axis_value == 4));
         Ok(())
     }
 

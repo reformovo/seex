@@ -212,7 +212,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
 
     let overview_request = OverviewRequest {
         selection: fixture.selection(),
-        physical_width: 1,
+        logical_width: 1,
     };
     let overview = match read(
         &worker,
@@ -224,24 +224,21 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         ReadSnapshot::Overview(snapshot) => snapshot,
         other => return Err(format!("unexpected overview snapshot: {other:?}").into()),
     };
-    assert_eq!(overview.point_budget, 500);
+    assert_eq!(overview.point_budget, 256);
     assert_eq!(
         overview
             .real_range
             .map(|range| (range.start(), range.end())),
         Some((0, SOURCE_POINTS - 1))
     );
-    assert_eq!(
-        overview.series[0].evidence.source_row_count,
-        SOURCE_POINTS as u64
-    );
-    assert!(overview.series[0].evidence.points.len() <= 502);
-    assert!(overview.series[0].evidence.downsampled());
+    assert_eq!(overview.series[0].source_row_count, SOURCE_POINTS as u64);
+    assert!(overview.series[0].returned_point_count <= 258);
+    assert!(overview.series[0].downsampled());
     assert_eq!(
         overview
             .series
             .iter()
-            .map(|series| series.evidence.completeness)
+            .map(|series| series.completeness)
             .collect::<Vec<_>>(),
         [
             EvidenceCompleteness::Complete,
@@ -273,20 +270,20 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         ReadRequest::Detail(DetailRequest {
             selection: detail_selection.clone(),
             viewport: AlignmentViewport::new(0, SOURCE_POINTS - 1)?,
-            physical_width: 1,
+            logical_width: 1,
         }),
     )? {
         ReadSnapshot::Detail(snapshot) => snapshot,
         other => return Err(format!("unexpected detail snapshot: {other:?}").into()),
     };
-    assert_eq!(full_detail.point_budget, 2_000);
-    assert!(full_detail.series[0].evidence.points.len() <= 2_002);
-    assert!(full_detail.series[0].evidence.downsampled());
+    assert_eq!(full_detail.point_budget, 512);
+    assert!(full_detail.series[0].returned_point_count <= 514);
+    assert!(full_detail.series[0].downsampled());
 
     let detail_request = DetailRequest {
         selection: detail_selection,
         viewport: AlignmentViewport::new(500, 1_500)?,
-        physical_width: 1,
+        logical_width: 1,
     };
     let detail = match read(
         &worker,
@@ -299,23 +296,42 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         other => return Err(format!("unexpected detail snapshot: {other:?}").into()),
     };
     assert_eq!(detail.point_budget, full_detail.point_budget);
-    assert_eq!(detail.series[0].evidence.source_row_count, 1_003);
-    assert_eq!(detail.series[0].evidence.points.len(), 1_003);
+    assert_eq!(detail.series[0].source_row_count, 1_003);
+    assert!(detail.series[0].returned_point_count <= 514);
+    #[cfg(feature = "test-support")]
+    {
+        let resources = detail.resource_snapshot();
+        assert_eq!(resources.requested_budget, 512);
+        assert_eq!(resources.source_points, 1_003);
+        assert_eq!(
+            resources.returned_points,
+            detail.series[0].returned_point_count
+        );
+        assert_eq!(resources.snapshot_points, resources.returned_points);
+        assert_eq!(
+            resources.snapshot_bytes,
+            resources.snapshot_points * std::mem::size_of::<seex_chart_core::DataPoint>() as u64
+        );
+    }
     assert_eq!(
         detail.series[0]
-            .evidence
-            .points
+            .chart_series
+            .as_ref()
+            .expect("complete evidence should draw")
+            .points()
             .first()
-            .map(|point| point.axis_value),
-        Some(499)
+            .map(|point| point.x as i64),
+        Some(499),
     );
     assert_eq!(
         detail.series[0]
-            .evidence
-            .points
+            .chart_series
+            .as_ref()
+            .expect("complete evidence should draw")
+            .points()
             .last()
-            .map(|point| point.axis_value),
-        Some(1_501)
+            .map(|point| point.x as i64),
+        Some(1_501),
     );
 
     Ok(())

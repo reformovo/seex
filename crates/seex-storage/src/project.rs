@@ -19,6 +19,12 @@ impl ProjectConnection {
         Self { connection }
     }
 
+    pub fn try_clone(&self) -> Result<Self, StorageError> {
+        let connection = self.connection.try_clone()?;
+        connection.execute_batch("USE seex_catalog;")?;
+        Ok(Self::new(connection))
+    }
+
     pub fn create_project(&self, project: &Project) -> Result<(), StorageError> {
         self.connection.execute(
             "INSERT INTO seex_projects (project_id, name, created_at) VALUES (?, ?, ?)",

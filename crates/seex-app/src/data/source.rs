@@ -50,6 +50,12 @@ impl ReadSession {
         })
     }
 
+    pub(crate) fn try_clone(&self) -> Result<Self, SourceError> {
+        Ok(Self {
+            connection: self.connection.try_clone()?,
+        })
+    }
+
     /// Discovers Projects, Runs, and the selected Runs' metric union.
     ///
     /// Runs are newest-first. A Project or Run removed since the request was
@@ -221,7 +227,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["latency", "loss"]
         );
-        let all_runs = session.discover(&DiscoveryRequest::default())?;
+        let all_runs = session
+            .try_clone()?
+            .discover(&DiscoveryRequest::default())?;
         assert_eq!(
             all_runs
                 .runs

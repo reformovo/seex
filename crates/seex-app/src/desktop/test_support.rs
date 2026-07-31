@@ -243,7 +243,7 @@ pub(super) fn first_panel_detail_is_settled(viewer: &ViewerApp, cx: &App) -> boo
             panel.detail.is_some()
                 && !panel.is_pending(ReadKind::Detail)
                 && panel.requested_detail_viewport == Some(viewport)
-                && panel.physical_width > 0
+                && panel.logical_width > 0
         })
 }
 
