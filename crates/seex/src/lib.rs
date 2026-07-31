@@ -6,11 +6,13 @@
 
 #![forbid(unsafe_code)]
 
+mod error;
 mod reader;
 
+pub use error::{Error, Result};
 pub use reader::{
     MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, MetricSample,
-    MetricSeries, MetricSeriesError, RelativeTime, Timestamp,
+    MetricSeries, MetricSeriesError, Reader, ReaderBuilder, RelativeTime, Timestamp,
 };
 pub use seex_model::comparison::{
     ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,

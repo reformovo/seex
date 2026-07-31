@@ -1,9 +1,97 @@
 //! Public read-query contracts.
 
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use seex_model::comparison::{EvidenceCompleteness, EvidenceReason};
-use seex_model::metric::{MetricPoint, Step};
+use seex_model::metric::{MetricAggregate, MetricPoint, Step};
+use seex_model::run::Run;
+use seex_model::types::{Project, ProjectId};
+use seex_storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
+use seex_storage::config::{S3ConnectionOverrides, resolve_init_config};
+use seex_storage::{ProjectConnection, ProjectMetricReader};
+
+use crate::error::{Error, Result as SdkResult};
+
+/// Builder for opening one existing native project store read-only.
+pub struct ReaderBuilder {
+    root_path: PathBuf,
+}
+
+impl ReaderBuilder {
+    pub fn new(root_path: impl Into<PathBuf>) -> Self {
+        Self {
+            root_path: root_path.into(),
+        }
+    }
+
+    /// Opens the configured store without starting a writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Configuration`] for invalid effective configuration or
+    /// [`Error::Storage`] when the existing native store cannot be opened.
+    pub fn open(self) -> SdkResult<Reader> {
+        let resolved = resolve_init_config(
+            &self.root_path,
+            None,
+            None,
+            None,
+            1,
+            S3ConnectionOverrides::default(),
+        )
+        .map_err(|_| Error::Configuration)?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            resolved.catalog_backend,
+            &self.root_path,
+            resolved.catalog_path,
+            resolved.data_path,
+            resolved.s3_connection,
+        );
+        let connection =
+            open_existing_native_connection_with_config(config).map_err(|_| Error::Storage)?;
+        Ok(Reader {
+            connection: ProjectConnection::new(connection),
+        })
+    }
+}
+
+/// Read-only discovery and metric-query entry point.
+pub struct Reader {
+    connection: ProjectConnection,
+}
+
+impl Reader {
+    pub fn builder(root_path: impl AsRef<Path>) -> ReaderBuilder {
+        ReaderBuilder::new(root_path.as_ref().to_owned())
+    }
+
+    /// Lists Projects in stable catalog order.
+    pub fn projects(&self) -> SdkResult<Vec<Project>> {
+        self.connection.list_projects().map_err(|_| Error::Storage)
+    }
+
+    /// Gets one Project when it exists.
+    pub fn project(&self, project_id: &ProjectId) -> SdkResult<Option<Project>> {
+        self.connection
+            .get_project(project_id)
+            .map_err(|_| Error::Storage)
+    }
+
+    /// Lists Runs for one Project.
+    pub fn runs(&self, project_id: &ProjectId) -> SdkResult<Vec<Run>> {
+        self.connection
+            .list_runs(project_id, None, None, 0)
+            .map_err(|_| Error::Storage)
+    }
+
+    /// Lists persisted Metric summaries for one Run.
+    pub fn metrics(&self, run: &Run) -> SdkResult<Vec<MetricAggregate>> {
+        ProjectMetricReader::new(&self.connection)
+            .list_metrics(&run.run_id, run.status)
+            .map_err(|_| Error::Storage)
+    }
+}
 
 /// Horizontal coordinate requested for a metric series.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -350,5 +438,43 @@ mod tests {
             ),
             Err(MetricSeriesError::InvalidSourceCount)
         );
+    }
+
+    #[test]
+    fn reader_opens_without_a_writer_and_discovers_catalog_resources()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use seex_core::engine::client::NativeClient;
+        use seex_model::run::RunId;
+
+        let root = tempfile::tempdir()?;
+        let client = NativeClient::open_with_storage_config(root.path(), None, None, 1024)?;
+        let project_id = ProjectId::from_string("project-1");
+        let project = client.create_project("reader", Some(project_id.clone()))?;
+        let run = client.create_run(
+            &project.project_id,
+            "baseline",
+            Some(RunId::from_string("run-1")),
+        )?;
+        client
+            .run_handle(run.clone())
+            .log_metric_at_step("loss", 0, 1.0)?;
+        client.finish_run(&run.run_id)?;
+        client.shutdown(None)?;
+        std::fs::write(
+            root.path().join(".seex/config.toml"),
+            "schema_version = 1\ncatalog_path = '.seex/catalog.ducklake'\n\
+             data_path = '.seex/data'\n",
+        )?;
+
+        let reader = Reader::builder(root.path()).open()?;
+        let projects = reader.projects()?;
+        let runs = reader.runs(&project_id)?;
+        let metrics = reader.metrics(&runs[0])?;
+
+        assert_eq!(projects, [project]);
+        assert_eq!(reader.project(&project_id)?, projects.first().cloned());
+        assert_eq!(runs[0].run_id.as_str(), "run-1");
+        assert_eq!(metrics[0].metric_key.as_str(), "loss");
+        Ok(())
     }
 }

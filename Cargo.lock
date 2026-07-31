@@ -5445,6 +5445,7 @@ dependencies = [
  "seex-core",
  "seex-model",
  "seex-storage",
+ "tempfile",
 ]
 
 [[package]]

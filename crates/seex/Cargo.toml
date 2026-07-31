@@ -12,6 +12,9 @@ seex-core = { path = "../seex-core" }
 seex-model = { path = "../seex-model" }
 seex-storage = { path = "../seex-storage" }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lib]
 name = "seex"
 path = "src/lib.rs"
