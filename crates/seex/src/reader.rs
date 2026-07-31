@@ -12,19 +12,31 @@ use seex_model::run::{Run, RunId, RunStatus};
 use seex_model::types::{Project, ProjectId};
 use seex_storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
 use seex_storage::config::{S3ConnectionOverrides, resolve_init_config};
-use seex_storage::{ProjectConnection, ProjectMetricReader};
+use seex_storage::{ParquetSource, ProjectConnection, ProjectMetricReader, StandaloneMetricReader};
 
 use crate::error::{Error, Result as SdkResult};
 
-/// Builder for opening one existing native project store read-only.
+/// Builder for opening one existing native or standalone store read-only.
 pub struct ReaderBuilder {
-    root_path: PathBuf,
+    source: ReaderSource,
+}
+
+enum ReaderSource {
+    Native(PathBuf),
+    Parquet(String),
 }
 
 impl ReaderBuilder {
     pub fn new(root_path: impl Into<PathBuf>) -> Self {
         Self {
-            root_path: root_path.into(),
+            source: ReaderSource::Native(root_path.into()),
+        }
+    }
+
+    /// Selects a standalone Parquet file, glob, or object-store URI.
+    pub fn parquet(source: impl Into<String>) -> Self {
+        Self {
+            source: ReaderSource::Parquet(source.into()),
         }
     }
 
@@ -35,8 +47,21 @@ impl ReaderBuilder {
     /// Returns [`Error::Configuration`] for invalid effective configuration or
     /// [`Error::Storage`] when the existing native store cannot be opened.
     pub fn open(self) -> SdkResult<Reader> {
+        let root_path = match self.source {
+            ReaderSource::Native(root_path) => root_path,
+            ReaderSource::Parquet(source) => {
+                let standalone = StandaloneMetricReader::open(
+                    ParquetSource::new(source).map_err(|_| Error::Storage)?,
+                )
+                .map_err(|_| Error::Storage)?;
+                return Ok(Reader {
+                    connection: None,
+                    standalone: Some(standalone),
+                });
+            }
+        };
         let resolved = resolve_init_config(
-            &self.root_path,
+            &root_path,
             None,
             None,
             None,
@@ -46,7 +71,7 @@ impl ReaderBuilder {
         .map_err(|_| Error::Configuration)?;
         let config = NativeStorageConfig::with_backend_and_s3_config(
             resolved.catalog_backend,
-            &self.root_path,
+            &root_path,
             resolved.catalog_path,
             resolved.data_path,
             resolved.s3_connection,
@@ -54,14 +79,16 @@ impl ReaderBuilder {
         let connection =
             open_existing_native_connection_with_config(config).map_err(|_| Error::Storage)?;
         Ok(Reader {
-            connection: ProjectConnection::new(connection),
+            connection: Some(ProjectConnection::new(connection)),
+            standalone: None,
         })
     }
 }
 
 /// Read-only discovery and metric-query entry point.
 pub struct Reader {
-    connection: ProjectConnection,
+    connection: Option<ProjectConnection>,
+    standalone: Option<StandaloneMetricReader>,
 }
 
 impl Reader {
@@ -69,28 +96,37 @@ impl Reader {
         ReaderBuilder::new(root_path.as_ref().to_owned())
     }
 
+    /// Builds a Reader over a standalone Parquet source.
+    pub fn parquet(source: impl Into<String>) -> ReaderBuilder {
+        ReaderBuilder::parquet(source)
+    }
+
+    fn native(&self) -> SdkResult<&ProjectConnection> {
+        self.connection.as_ref().ok_or(Error::UnsupportedQuery)
+    }
+
     /// Lists Projects in stable catalog order.
     pub fn projects(&self) -> SdkResult<Vec<Project>> {
-        self.connection.list_projects().map_err(|_| Error::Storage)
+        self.native()?.list_projects().map_err(|_| Error::Storage)
     }
 
     /// Gets one Project when it exists.
     pub fn project(&self, project_id: &ProjectId) -> SdkResult<Option<Project>> {
-        self.connection
+        self.native()?
             .get_project(project_id)
             .map_err(|_| Error::Storage)
     }
 
     /// Lists Runs for one Project.
     pub fn runs(&self, project_id: &ProjectId) -> SdkResult<Vec<Run>> {
-        self.connection
+        self.native()?
             .list_runs(project_id, None, None, 0)
             .map_err(|_| Error::Storage)
     }
 
     /// Lists persisted Metric summaries for one Run.
     pub fn metrics(&self, run: &Run) -> SdkResult<Vec<MetricAggregate>> {
-        ProjectMetricReader::new(&self.connection)
+        ProjectMetricReader::new(self.native()?)
             .list_metrics(&run.run_id, run.status)
             .map_err(|_| Error::Storage)
     }
@@ -102,11 +138,14 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
     ) -> SdkResult<MetricSeries> {
-        let run = self
-            .connection
-            .get_run(run_id)
-            .map_err(|_| Error::Storage)?;
-        let run_start = run.started_at.timestamp_millis();
+        let (run_start, run_status) = match &self.connection {
+            Some(connection) => {
+                let run = connection.get_run(run_id).map_err(|_| Error::Storage)?;
+                (run.started_at.timestamp_millis(), run.status)
+            }
+            None => (0, RunStatus::Finished),
+        };
+        let standalone = self.standalone.is_some();
         let (axis, storage_axis, bounds) = match query.range() {
             MetricRange::All(axis) => (
                 *axis,
@@ -129,15 +168,19 @@ impl Reader {
             MetricRange::Timestamps { start, end } => (
                 MetricAxis::Timestamp,
                 AlignmentAxis::ElapsedTime,
-                Some((
-                    start
-                        .as_millis()
-                        .checked_sub(run_start)
-                        .ok_or(Error::UnsupportedQuery)?,
-                    end.as_millis()
-                        .checked_sub(run_start)
-                        .ok_or(Error::UnsupportedQuery)?,
-                )),
+                Some(if standalone {
+                    (start.as_millis(), end.as_millis())
+                } else {
+                    (
+                        start
+                            .as_millis()
+                            .checked_sub(run_start)
+                            .ok_or(Error::UnsupportedQuery)?,
+                        end.as_millis()
+                            .checked_sub(run_start)
+                            .ok_or(Error::UnsupportedQuery)?,
+                    )
+                }),
             ),
         };
         let viewport = match bounds {
@@ -151,15 +194,24 @@ impl Reader {
                 AlignmentReduction::screen_budget(u32::try_from(limit).unwrap_or(u32::MAX), 1)
             })
             .map_err(|_| Error::UnsupportedQuery)?;
-        let result = ProjectMetricReader::new(&self.connection)
-            .query_aligned_metric(&AlignmentQuery {
-                run_id: run_id.clone(),
-                metric_key: metric_key.clone(),
-                axis: storage_axis,
-                viewport,
-                reduction,
-            })
-            .map_err(|_| Error::Storage)?;
+        let storage_query = AlignmentQuery {
+            run_id: run_id.clone(),
+            metric_key: metric_key.clone(),
+            axis: storage_axis,
+            viewport,
+            reduction,
+        };
+        let result = match (&self.connection, &self.standalone) {
+            (Some(connection), None) => {
+                ProjectMetricReader::new(connection).query_aligned_metric(&storage_query)
+            }
+            (None, Some(reader)) if axis == MetricAxis::Timestamp => {
+                reader.query_timestamp_metric(&storage_query)
+            }
+            (None, Some(reader)) => reader.query_aligned_metric(&storage_query),
+            _ => return Err(Error::Storage),
+        }
+        .map_err(|_| Error::Storage)?;
         let neighbor_count = result
             .points
             .iter()
@@ -189,7 +241,7 @@ impl Reader {
             samples = enforce_point_bound(samples, max_points);
         }
         let source_count = result.source_row_count.saturating_sub(neighbor_count);
-        let (completeness, reasons) = qualify_series(&samples, result.reasons, run.status);
+        let (completeness, reasons) = qualify_series(&samples, result.reasons, run_status);
         MetricSeries::from_samples(axis, samples, source_count, completeness, reasons)
             .map_err(|_| Error::Storage)
     }
@@ -670,6 +722,39 @@ mod tests {
                 Some(3),
             )?,
         )?;
+        let parquet = root
+            .path()
+            .join(".seex/data/main/metric_points/**/*.parquet")
+            .to_string_lossy()
+            .into_owned();
+        let standalone = Reader::parquet(parquet).open()?;
+        let standalone_steps = standalone.query_metric(
+            &run.run_id,
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(
+                MetricRange::Steps {
+                    start: Step::new(1),
+                    end: Step::new(4),
+                },
+                Some(2),
+            )?,
+        )?;
+        let standalone_relative = standalone.query_metric(
+            &run.run_id,
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(MetricRange::All(MetricAxis::RelativeTime), Some(3))?,
+        )?;
+        let standalone_timestamps = standalone.query_metric(
+            &run.run_id,
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(
+                MetricRange::Timestamps {
+                    start: Timestamp::from_millis(started_at),
+                    end: Timestamp::from_millis(started_at + 60_000),
+                },
+                Some(3),
+            )?,
+        )?;
 
         assert_eq!(projects, [project]);
         assert_eq!(reader.project(&project_id)?, projects.first().cloned());
@@ -695,6 +780,14 @@ mod tests {
             MetricCoordinate::Timestamp(value)
                 if (started_at..started_at + 60_000).contains(&value.as_millis())
         )));
+        assert_eq!(standalone.projects(), Err(Error::UnsupportedQuery));
+        assert_eq!(standalone_steps, series);
+        assert!(standalone_relative.samples().is_empty());
+        assert_eq!(
+            standalone_relative.reasons(),
+            [EvidenceReason::MissingRunStart]
+        );
+        assert_eq!(standalone_timestamps, timestamps);
         Ok(())
     }
 }
