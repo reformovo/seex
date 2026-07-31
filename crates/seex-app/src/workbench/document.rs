@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use seex_chart_core::AxisRange;
 use seex_model::alignment::AlignmentAxis;
@@ -71,104 +70,6 @@ pub enum WorkbenchDocumentError {
 }
 
 impl WorkbenchDocument {
-    pub fn save(&self, path: &Path) -> Result<(), WorkbenchDocumentError> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| WorkbenchDocumentError::Write {
-                path: path.to_owned(),
-                source,
-            })?;
-        }
-        let temporary = path.with_extension("tmp");
-        fs::write(&temporary, self.encode()).map_err(|source| WorkbenchDocumentError::Write {
-            path: temporary.clone(),
-            source,
-        })?;
-        fs::rename(&temporary, path).map_err(|source| WorkbenchDocumentError::Write {
-            path: path.to_owned(),
-            source,
-        })
-    }
-
-    pub fn load(path: &Path) -> Result<Option<Self>, WorkbenchDocumentError> {
-        let raw = match fs::read_to_string(path) {
-            Ok(raw) => raw,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(source) => {
-                return Err(WorkbenchDocumentError::Read {
-                    path: path.to_owned(),
-                    source,
-                });
-            }
-        };
-        Self::decode(&raw).map(Some)
-    }
-
-    pub fn encode(&self) -> String {
-        let mut output = format!("{HEADER}\n");
-        output.push_str(&format!(
-            "dock {} {} {} {} {}\nactive {}\n",
-            u8::from(self.project_sidebar_visible),
-            self.project_sidebar_width.to_bits(),
-            u8::from(self.metric_sidebar_compact),
-            u8::from(self.bottom_inspector_visible),
-            self.bottom_inspector_height.to_bits(),
-            self.active_view
-        ));
-        for source in &self.sources {
-            output.push_str(&format!(
-                "source {}\n",
-                encode(source.to_string_lossy().as_ref())
-            ));
-        }
-        for project in &self.pinned_projects {
-            encode_project_record(&mut output, "pinned-project", project);
-        }
-        for project in &self.archived_projects {
-            encode_project_record(&mut output, "archived-project", project);
-        }
-        for project in &self.removed_projects {
-            encode_project_record(&mut output, "removed-project", project);
-        }
-        for run in &self.archived_runs {
-            encode_run_record(&mut output, "archived-run", run);
-        }
-        for view in &self.views {
-            let viewport = view.viewport.map_or_else(
-                || "- -".to_owned(),
-                |range| format!("{} {}", range.start().to_bits(), range.end().to_bits()),
-            );
-            output.push_str(&format!(
-                "view {} {} {} {viewport}\n",
-                encode(&view.name),
-                axis_name(view.axis),
-                view.selected_metric
-                    .as_deref()
-                    .map_or_else(|| "-".to_owned(), encode),
-            ));
-            for run in &view.runs {
-                encode_run_record(&mut output, "run", run);
-            }
-            if let Some(baseline) = &view.baseline {
-                encode_run_record(&mut output, "baseline-run", baseline);
-            }
-            for run in &view.pinned_runs {
-                encode_run_record(&mut output, "pinned-run", run);
-            }
-            for metric in &view.metrics {
-                output.push_str(&format!("metric {}\n", encode(metric)));
-            }
-            for (metric, height) in &view.metric_heights {
-                output.push_str(&format!(
-                    "metric-height {} {}\n",
-                    encode(metric),
-                    height.to_bits()
-                ));
-            }
-            output.push_str("end\n");
-        }
-        output
-    }
-
     pub fn decode(raw: &str) -> Result<Self, WorkbenchDocumentError> {
         let mut lines = raw.lines().enumerate();
         let header = lines.next().map(|(_, line)| line).unwrap_or_default();
@@ -311,23 +212,6 @@ impl WorkbenchDocument {
     }
 }
 
-fn encode_project_record(output: &mut String, kind: &str, project: &SavedProjectRef) {
-    output.push_str(&format!(
-        "{kind} {} {}\n",
-        encode(project.source_path.to_string_lossy().as_ref()),
-        encode(project.project_id.as_str()),
-    ));
-}
-
-fn encode_run_record(output: &mut String, kind: &str, run: &SavedRunRef) {
-    output.push_str(&format!(
-        "{kind} {} {} {}\n",
-        encode(run.source_path.to_string_lossy().as_ref()),
-        encode(run.project_id.as_str()),
-        encode(run.run_id.as_str()),
-    ));
-}
-
 fn decode_project_ref(
     source: &str,
     project: &str,
@@ -351,14 +235,6 @@ fn decode_run_ref(
         project_id: project.project_id,
         run_id: RunId::from_string(decode(run, line)?),
     })
-}
-
-fn encode(value: &str) -> String {
-    value
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 fn decode(value: &str, line: usize) -> Result<String, WorkbenchDocumentError> {
@@ -387,16 +263,14 @@ fn parse_bool(value: &str, line: usize) -> Result<bool, WorkbenchDocumentError> 
     }
 }
 
-macro_rules! named_enum {
-    ($name:ident, $parse_name:ident, $type:ty, {$($text:literal => $value:path),+ $(,)?}) => {
-        fn $name(value: $type) -> &'static str { match value { $($value => $text),+ } }
-        fn $parse_name(value: &str, line: usize) -> Result<$type, WorkbenchDocumentError> {
-            match value { $($text => Ok($value)),+, _ => Err(invalid_value(line, "invalid enum value")) }
-        }
-    };
+fn parse_axis(value: &str, line: usize) -> Result<AlignmentAxis, WorkbenchDocumentError> {
+    match value {
+        "step" => Ok(AlignmentAxis::Step),
+        "elapsed" => Ok(AlignmentAxis::ElapsedTime),
+        _ => Err(invalid_value(line, "invalid enum value")),
+    }
 }
 
-named_enum!(axis_name, parse_axis, AlignmentAxis, {"step" => AlignmentAxis::Step, "elapsed" => AlignmentAxis::ElapsedTime});
 fn invalid_value(line: usize, message: &str) -> WorkbenchDocumentError {
     WorkbenchDocumentError::Invalid {
         line,
