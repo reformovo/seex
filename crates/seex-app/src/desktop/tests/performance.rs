@@ -10,6 +10,12 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
         std::hint::black_box(!cfg!(debug_assertions)),
         "workbench validation requires --release"
     );
+    let view_count = std::env::var("SEEX_VIEWER_PERF_VIEWS")
+        .ok()
+        .map_or(2, |value| {
+            value.parse::<usize>().expect("view count must be 1 or 2")
+        });
+    assert!(matches!(view_count, 1 | 2), "view count must be 1 or 2");
     let (root, project_id, first_run_id) = fixture_with_complete_runs(6, 10);
     let (pending_root, _, _) = fixture_with_extent(10);
     cx.executor().allow_parking();
@@ -83,12 +89,14 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
             .expect("viewer should remain open");
     }
 
-    window
-        .update(&mut cx, |viewer, _, cx| {
-            viewer.dispatch_workbench_command(WorkbenchCommand::DuplicateActiveView, cx);
-        })
-        .expect("viewer should remain open");
-    cx.run_until_parked();
+    if view_count == 2 {
+        window
+            .update(&mut cx, |viewer, _, cx| {
+                viewer.dispatch_workbench_command(WorkbenchCommand::DuplicateActiveView, cx);
+            })
+            .expect("viewer should remain open");
+        cx.run_until_parked();
+    }
     assert_eq!(
         window
             .read_with(&cx, |viewer, cx| viewer
@@ -97,7 +105,7 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
                 .views()
                 .len())
             .expect("viewer should remain open"),
-        2
+        view_count
     );
 
     let before = window
@@ -154,7 +162,7 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
     println!(
         "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"check\",\
          \"domain\":\"viewer\",\"check\":\"workload_matrix\",\
-         \"passed\":{resources_pass},\"detail\":\"runs=10,metrics=6,views=2,\
+         \"passed\":{resources_pass},\"detail\":\"runs=10,metrics=6,views={view_count},\
          peak_concurrency={},superseded={},stale={},retained={}\"}}",
         source_resources.peak_concurrent_reads,
         source_resources.superseded_reads,
@@ -188,6 +196,14 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
     std::thread::sleep(std::time::Duration::from_millis(200));
 
     println!("SEEX_RSS_PHASE warm");
+    println!(
+        "SEEX_RSS_PHASE {}",
+        if view_count == 1 {
+            "single_view"
+        } else {
+            "dual_view"
+        }
+    );
     for _ in 0..30 {
         window
             .update(&mut cx, |viewer, _, cx| {
