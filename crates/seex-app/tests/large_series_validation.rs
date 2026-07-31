@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use seex_app::data::query::{
@@ -17,8 +17,10 @@ use seex_model::run::RunId;
 use seex_model::types::ProjectId;
 use seex_storage::ProjectConnection;
 use seex_storage::bootstrap::{
-    CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
+    CatalogBackend, NativeStorageConfig, open_existing_native_connection_with_config,
+    open_native_connection_with_config,
 };
+use seex_storage::config::resolve_storage_config;
 
 mod support;
 
@@ -35,6 +37,57 @@ const TRACE_METRICS: [&str; 6] = [
     "error",
 ];
 const QUERY_TIMEOUT: Duration = Duration::from_secs(300);
+const FIXTURE_MANIFEST: &str = ".seex/performance-fixture-v2.txt";
+
+fn backend_name(backend: CatalogBackend) -> &'static str {
+    match backend {
+        CatalogBackend::DuckDb => "duckdb",
+        CatalogBackend::Sqlite => "sqlite",
+    }
+}
+
+fn fixture_manifest(backend: CatalogBackend, metrics: &[&str], source_points: i64) -> String {
+    format!(
+        "schema=v2\nbackend={}\nruns={RUNS}\nmetrics={}\neffective_points_per_series={source_points}\n",
+        backend_name(backend),
+        metrics.join(",")
+    )
+}
+
+fn validate_fixture(
+    root: &Path,
+    backend: CatalogBackend,
+    metrics: &[&str],
+    source_points: i64,
+) -> Result<(), Box<dyn Error>> {
+    let expected = fixture_manifest(backend, metrics, source_points);
+    let actual = fs::read_to_string(root.join(FIXTURE_MANIFEST))?;
+    if actual != expected {
+        return Err("retained fixture manifest does not match the requested workload".into());
+    }
+    let resolved = resolve_storage_config(root, None, None, None)?;
+    let connection = open_existing_native_connection_with_config(
+        NativeStorageConfig::with_backend_and_s3_config(
+            resolved.catalog_backend,
+            root,
+            resolved.catalog_path,
+            resolved.data_path,
+            None,
+        ),
+    )?;
+    for metric in metrics {
+        let matching: i64 = connection.query_row(
+            "SELECT count(*) FROM seex_metric_aggregates
+             WHERE metric_key = ? AND effective_count = ? AND last_step = ?",
+            (*metric, source_points, source_points - 1),
+            |row| row.get(0),
+        )?;
+        if matching != RUNS as i64 {
+            return Err(format!("fixture metric {metric} has {matching} valid Runs").into());
+        }
+    }
+    Ok(())
+}
 
 fn fixture_path(backend: CatalogBackend, root_variable: &str) -> Result<PathBuf, Box<dyn Error>> {
     let name = match backend {
@@ -55,6 +108,8 @@ fn run_ids() -> Vec<RunId> {
 fn read_fixture(
     backend: CatalogBackend,
     root_variable: &str,
+    metrics: &[&str],
+    source_points: i64,
 ) -> Result<(PathBuf, Vec<RunId>), Box<dyn Error>> {
     let root = fixture_path(backend, root_variable)?;
     let config = root.join(".seex/config.toml");
@@ -65,6 +120,7 @@ fn read_fixture(
         )
         .into());
     }
+    validate_fixture(&root, backend, metrics, source_points)?;
     Ok((root, run_ids()))
 }
 
@@ -77,6 +133,7 @@ fn prepare_fixture(
     let root = fixture_path(backend, root_variable)?;
     let run_ids = run_ids();
     if root.join(".seex/config.toml").is_file() {
+        validate_fixture(&root, backend, metrics, source_points)?;
         return Ok((root, run_ids));
     }
     if root.exists() && fs::read_dir(&root)?.next().is_some() {
@@ -155,6 +212,11 @@ fn prepare_fixture(
     }
     connection.flush_metric_points()?;
     drop(connection);
+    fs::write(
+        root.join(FIXTURE_MANIFEST),
+        fixture_manifest(backend, metrics, source_points),
+    )?;
+    validate_fixture(&root, backend, metrics, source_points)?;
     Ok((root, run_ids))
 }
 
@@ -261,7 +323,12 @@ fn assert_snapshot(
 }
 
 fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
-    let (root, run_ids) = read_fixture(backend, "SEEX_APP_SCALE_FIXTURE_ROOT")?;
+    let (root, run_ids) = read_fixture(
+        backend,
+        "SEEX_APP_SCALE_FIXTURE_ROOT",
+        &["loss"],
+        SOURCE_POINTS,
+    )?;
     let mut worker = ReadWorker::spawn(&root)?;
     let events = worker
         .take_event_receiver()
