@@ -29,6 +29,8 @@ impl Fixture {
         for step in 0..8 {
             handle.log_metric_at_step("loss", step, step as f64)?;
         }
+        handle.log_metric_at_step("loss", 2, 42.0)?;
+        handle.log_metric_at_step("loss", 4, 1_000.0)?;
         client.finish_run(&run.run_id)?;
         client.shutdown(None)?;
         std::fs::write(
@@ -126,5 +128,51 @@ fn standalone_relative_ranges_report_missing_run_start() -> Result<(), Box<dyn s
         assert!(standalone.samples().is_empty());
         assert_eq!(standalone.reasons(), [EvidenceReason::MissingRunStart]);
     }
+    Ok(())
+}
+
+#[test]
+fn small_fixture_preserves_lww_spikes_and_true_step_neighbors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let metric = MetricKey::from_string("loss");
+    let narrow = MetricQuery::new(
+        MetricRange::Steps {
+            start: Step::new(2),
+            end: Step::new(3),
+        },
+        None,
+    )?;
+
+    let native = fixture
+        .native
+        .query_metric_for_desktop(&fixture.run_id, &metric, &narrow)?;
+    let standalone =
+        fixture
+            .standalone
+            .query_metric_for_desktop(&fixture.run_id, &metric, &narrow)?;
+    let points = native
+        .samples()
+        .iter()
+        .map(|sample| match sample.coordinate {
+            MetricCoordinate::Step(step) => (step.value(), sample.point.value_f64),
+            _ => panic!("Step query returned another coordinate axis"),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(standalone, native);
+    assert_eq!(points, [(1, 1.0), (2, 42.0), (3, 3.0)]);
+    let spike = fixture.query(
+        &fixture.native,
+        MetricQuery::new(
+            MetricRange::Steps {
+                start: Step::new(4),
+                end: Step::new(5),
+            },
+            None,
+        )?,
+    )?;
+    assert_eq!(spike.samples().len(), 1);
+    assert_eq!(spike.samples()[0].point.value_f64, 1_000.0);
     Ok(())
 }
