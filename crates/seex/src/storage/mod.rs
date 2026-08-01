@@ -17,6 +17,8 @@ use crate::model::alignment::{AlignmentQuery, AlignmentQueryResult};
 use crate::model::metric::{MetricQuery, MetricQueryResult};
 
 pub use lock::RunWriterGuard;
+#[doc(hidden)]
+pub use metric_query::SeriesDiagnostics;
 pub use metric_query::{ProjectMetricReader, percent_encode_metric_key};
 pub use project::{MetricWrite, ProjectConnection};
 pub use query::{ParquetMetricReader, ParquetSource, StandaloneMetricReader};
