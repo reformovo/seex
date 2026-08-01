@@ -16,6 +16,7 @@ use crate::sdk::arrow::PyArrowTable;
 use crate::sdk::comparison::{
     PyComparisonReport, PyComparisonResult, PyObjectiveEvidence, PyRankingResult, objective,
 };
+use crate::sdk::compat::query_step_metric;
 use seex_core::config::{InitConfigError, S3ConnectionOverrides, resolve_init_config};
 
 create_exception!(
@@ -366,16 +367,21 @@ impl PyClient {
     ) -> PyResult<Vec<PyMetricPoint>> {
         let run_id = RunId::from_string(run_id);
         let metric_key = MetricKey::from_string(metric_key);
-        self._inner
-            .query_metric(
-                &run_id,
-                &metric_key,
-                start_step.map(Step::new),
-                end_step.map(Step::new),
-                max_points,
-            )
-            .map(|points| points.into_iter().map(PyMetricPoint::from).collect())
-            .map_err(runtime_error)
+        query_step_metric(
+            &self._inner,
+            &run_id,
+            &metric_key,
+            start_step.map(Step::new),
+            end_step.map(Step::new),
+            max_points,
+        )
+        .map(|series| {
+            series
+                .samples()
+                .iter()
+                .map(|sample| PyMetricPoint::from(sample.point.clone()))
+                .collect()
+        })
     }
 
     #[pyo3(signature = (run_id, metric_key, start_step=None, end_step=None, max_points=None))]
@@ -389,19 +395,20 @@ impl PyClient {
     ) -> PyResult<(Vec<PyMetricPoint>, u64, bool)> {
         let run_id = RunId::from_string(run_id);
         let metric_key = MetricKey::from_string(metric_key);
-        let result = self
-            ._inner
-            .query_metric_with_metadata(
-                &run_id,
-                &metric_key,
-                start_step.map(Step::new),
-                end_step.map(Step::new),
-                max_points,
-            )
-            .map_err(runtime_error)?;
-        let downsampled = (result.points.len() as u64) < result.source_row_count;
-        let points = result.points.into_iter().map(PyMetricPoint::from).collect();
-        Ok((points, result.source_row_count, downsampled))
+        let series = query_step_metric(
+            &self._inner,
+            &run_id,
+            &metric_key,
+            start_step.map(Step::new),
+            end_step.map(Step::new),
+            max_points,
+        )?;
+        let points = series
+            .samples()
+            .iter()
+            .map(|sample| PyMetricPoint::from(sample.point.clone()))
+            .collect();
+        Ok((points, series.source_count(), series.downsampled()))
     }
 
     pub fn query_metric_summaries(
@@ -743,7 +750,7 @@ fn attach_exception_context(exc_value: &Bound<'_, PyAny>, teardown_error: PyErr)
     let _ = exc_value.setattr("__context__", teardown_value);
 }
 
-fn runtime_error(error: crate::engine::EngineError) -> PyErr {
+pub(crate) fn runtime_error(error: crate::engine::EngineError) -> PyErr {
     let message = error.to_string();
     match error {
         crate::engine::EngineError::RunAlreadyExists { .. } => {
