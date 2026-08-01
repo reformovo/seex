@@ -87,6 +87,32 @@ class RssResult(TypedDict):
     verdict: str
 
 
+class RssPairVerdict(TypedDict):
+    """Stable comparison outcome for paired peak-RSS captures."""
+
+    verdict: Literal["pass", "no_change", "regression"]
+    median_improvement: float
+    improved_pairs: int
+    baseline_relative_mad: float
+    candidate_relative_mad: float
+    reason: str
+
+
+class RssPair(TypedDict):
+    """Alternating fresh-process RSS captures for one candidate."""
+
+    schema_version: Literal[2]
+    record_type: Literal["rss_pair"]
+    candidate_spec: CandidateSpec
+    environment: dict[str, str | bool]
+    execution_order: list[list[Literal["baseline", "candidate"]]]
+    baseline_command: list[str]
+    candidate_command: list[str]
+    baseline: list[RssResult]
+    candidate: list[RssResult]
+    verdict: RssPairVerdict
+
+
 class V2Metric(TypedDict):
     """One deciding or informational metric emitted by a workload."""
 
@@ -803,6 +829,75 @@ def sample_rss(command: Sequence[str], interval: float) -> RssResult:
     )
 
 
+def compare_rss_pairs(baseline: Sequence[RssResult], candidate: Sequence[RssResult]) -> RssPairVerdict:
+    """Applies the optimization policy to paired fresh-process peak RSS."""
+    if len(baseline) != len(candidate) or len(candidate) < _REQUIRED_PAIRS:
+        raise ValueError(f"paired RSS optimization requires at least {_REQUIRED_PAIRS} pairs")
+    baseline_peaks = [float(result["peak_rss_bytes"]) for result in baseline]
+    candidate_peaks = [float(result["peak_rss_bytes"]) for result in candidate]
+    baseline_relative_mad = _relative_mad(baseline_peaks)
+    candidate_relative_mad = _relative_mad(candidate_peaks)
+    improvements = [(before - after) / before for before, after in zip(baseline_peaks, candidate_peaks, strict=True)]
+    median_improvement = _median(improvements)
+    improved_pairs = sum(improvement > 0 for improvement in improvements)
+    if any(result["verdict"] != "pass" for result in candidate):
+        verdict, reason = "regression", "candidate failed RSS stability"
+    elif baseline_relative_mad > 0.02 or candidate_relative_mad > 0.02:
+        verdict, reason = "no_change", "peak RSS relative MAD exceeded 2%"
+    elif improved_pairs < 6 or median_improvement + 1e-12 < 0.05:
+        verdict, reason = "no_change", "peak RSS missed the optimization threshold"
+    else:
+        verdict, reason = "pass", "peak RSS improved in at least six of seven pairs"
+    return RssPairVerdict(
+        verdict=verdict,
+        median_improvement=median_improvement,
+        improved_pairs=improved_pairs,
+        baseline_relative_mad=baseline_relative_mad,
+        candidate_relative_mad=candidate_relative_mad,
+        reason=reason,
+    )
+
+
+def pair_rss_v2(
+    baseline_command: Sequence[str],
+    candidate_command: Sequence[str],
+    spec: CandidateSpec,
+    *,
+    interval: float = 0.05,
+    repeats: int = _REQUIRED_PAIRS,
+) -> RssPair:
+    """Runs alternating fresh-process RSS captures and compares their peaks."""
+    validate_candidate_spec(spec)
+    if spec["candidate_type"] != "optimization" or spec["primary"] != "viewer.rss.peak":
+        raise ValueError("paired RSS requires optimization primary 'viewer.rss.peak'")
+    if repeats < _REQUIRED_PAIRS:
+        raise ValueError(f"paired RSS optimization requires at least {_REQUIRED_PAIRS} pairs")
+    baseline: list[RssResult] = []
+    candidate: list[RssResult] = []
+    execution_order: list[list[Literal["baseline", "candidate"]]] = []
+    for index in range(repeats):
+        order: list[Literal["baseline", "candidate"]] = (
+            ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
+        )
+        execution_order.append(order)
+        for side in order:
+            command = baseline_command if side == "baseline" else candidate_command
+            result = sample_rss(command, interval)
+            (baseline if side == "baseline" else candidate).append(result)
+    return RssPair(
+        schema_version=2,
+        record_type="rss_pair",
+        candidate_spec=spec,
+        environment=_environment(),
+        execution_order=execution_order,
+        baseline_command=list(baseline_command),
+        candidate_command=list(candidate_command),
+        baseline=baseline,
+        candidate=candidate,
+        verdict=compare_rss_pairs(baseline, candidate),
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
@@ -831,6 +926,13 @@ def _parser() -> argparse.ArgumentParser:
     pair_v2_parser.add_argument("--candidate-command", required=True)
     pair_v2_parser.add_argument("--runs", type=int)
     pair_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
+    pair_rss_v2_parser = commands.add_parser("pair-rss-v2")
+    pair_rss_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
+    pair_rss_v2_parser.add_argument("--baseline-command", required=True)
+    pair_rss_v2_parser.add_argument("--candidate-command", required=True)
+    pair_rss_v2_parser.add_argument("--runs", type=int, default=_REQUIRED_PAIRS)
+    pair_rss_v2_parser.add_argument("--interval", type=float, default=0.05)
+    pair_rss_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
     compare_v2_parser = commands.add_parser("compare-v2")
     compare_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
     compare_v2_parser.add_argument("--original", type=pathlib.Path, required=True)
@@ -866,6 +968,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         _write_json(args.output, result)
         return 0
+    if args.action == "pair-rss-v2":
+        result = pair_rss_v2(
+            shlex.split(args.baseline_command),
+            shlex.split(args.candidate_command),
+            _read_candidate_spec(args.spec),
+            interval=args.interval,
+            repeats=args.runs,
+        )
+        _write_json(args.output, result)
+        return {"pass": 0, "no_change": 2, "regression": 3}[result["verdict"]["verdict"]]
     if args.action == "compare-v2":
         result = compare_v2_baselines(
             _read_v2_pair(args.original),

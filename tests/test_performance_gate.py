@@ -469,3 +469,66 @@ def test_rss_trend_excludes_final_settle_allocation() -> None:
 
     with pytest.raises(ValueError, match="positive"):
         performance_gate.evaluate_rss([100_000_000, 0], 0, 1)
+
+
+def _rss_result(peak: int, *, verdict: str = "pass") -> performance_gate.RssResult:
+    return performance_gate.RssResult(
+        schema_version=2,
+        record_type="rss",
+        samples=[peak],
+        phase_indexes={"warm": 0, "cycles_done": 0, "final": 0},
+        phase_rss_bytes={"warm": peak, "cycles_done": peak, "final": peak},
+        warm_index=0,
+        trend_end_index=0,
+        final_index=0,
+        warm_rss_bytes=peak,
+        peak_rss_bytes=peak,
+        final_rss_bytes=peak,
+        allowed_final_rss_bytes=peak,
+        monotonic_growth=False,
+        verdict=verdict,
+    )
+
+
+def test_rss_pair_requires_reliable_six_of_seven_improvement() -> None:
+    baseline = [_rss_result(100_000_000)] * 7
+    candidate = [_rss_result(94_000_000)] * 6 + [_rss_result(101_000_000)]
+
+    accepted = performance_gate.compare_rss_pairs(baseline, candidate)
+    noisy = performance_gate.compare_rss_pairs(
+        baseline,
+        [_rss_result(value) for value in [80_000_000, 90_000_000, 100_000_000] * 2 + [80_000_000]],
+    )
+
+    assert accepted["verdict"] == "pass"
+    assert accepted["improved_pairs"] == 6
+    assert noisy["verdict"] == "no_change"
+    assert noisy["candidate_relative_mad"] > 0.02
+
+
+def test_rss_pair_alternates_fresh_processes(monkeypatch: pytest.MonkeyPatch) -> None:
+    commands: list[list[str]] = []
+
+    def fake_sample(command: list[str], interval: float) -> performance_gate.RssResult:
+        commands.append(command)
+        assert interval == 0.1
+        return _rss_result(100_000_000 if command == ["baseline"] else 90_000_000)
+
+    monkeypatch.setattr(performance_gate, "sample_rss", fake_sample)
+    monkeypatch.setattr(performance_gate, "_environment", dict)
+    spec = performance_gate.CandidateSpec(
+        name="rss optimization",
+        candidate_type="optimization",
+        primary="viewer.rss.peak",
+        protected=[],
+        hard_floors=[],
+        fixture="viewer-10x6",
+        commands=[["benchmark"]],
+        changed_files=[],
+    )
+
+    pair = performance_gate.pair_rss_v2(["baseline"], ["candidate"], spec, interval=0.1)
+
+    assert pair["verdict"]["verdict"] == "pass"
+    assert pair["execution_order"][:2] == [["baseline", "candidate"], ["candidate", "baseline"]]
+    assert commands[:4] == [["baseline"], ["candidate"], ["candidate"], ["baseline"]]
