@@ -20,7 +20,8 @@ use crate::model::types::{Project, ProjectId};
 use crate::storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
 use crate::storage::{
-    ParquetSource, ProjectConnection, ProjectMetricReader, StandaloneMetricReader,
+    ParquetSource, ProjectConnection, ProjectMetricReader, SeriesDiagnostics,
+    StandaloneMetricReader,
 };
 
 /// Builder for opening one existing native or standalone store read-only.
@@ -270,6 +271,7 @@ impl Reader {
             _ => return Err(Error::Storage),
         }
         .map_err(|_| Error::Storage)?;
+        let diagnostics = self.series_diagnostics(run_id, metric_key);
         let neighbor_count = result
             .points
             .iter()
@@ -310,7 +312,7 @@ impl Reader {
         } else {
             result.source_row_count.saturating_sub(neighbor_count)
         };
-        let (completeness, reasons) = qualify_series(&samples, result.reasons, run_status);
+        let (completeness, reasons) = qualify_series(result.reasons, diagnostics, run_status);
         MetricSeries::from_samples(axis, samples, source_count, completeness, reasons)
             .map_err(|_| Error::Storage)
     }
@@ -344,13 +346,7 @@ impl Reader {
             _ => return Err(Error::Storage),
         }
         .map_err(|_| Error::Storage)?;
-        let alignment_reasons = result
-            .points
-            .iter()
-            .any(|point| point.step.value() < 0)
-            .then_some(AlignmentReason::NegativeAxis)
-            .into_iter()
-            .collect();
+        let diagnostics = self.series_diagnostics(run_id, metric_key);
         let mut samples = result
             .points
             .into_iter()
@@ -362,7 +358,7 @@ impl Reader {
         if let Some(max_points) = query.max_points() {
             samples = enforce_point_bound(samples, max_points);
         }
-        let (completeness, reasons) = qualify_series(&samples, alignment_reasons, run_status);
+        let (completeness, reasons) = qualify_series(Vec::new(), diagnostics, run_status);
         MetricSeries::from_samples(
             MetricAxis::Step,
             samples,
@@ -371,6 +367,20 @@ impl Reader {
             reasons,
         )
         .map_err(|_| Error::Storage)
+    }
+
+    fn series_diagnostics(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+    ) -> Option<SeriesDiagnostics> {
+        match (&self.connection, &self.standalone) {
+            (Some(connection), None) => ProjectMetricReader::new(connection)
+                .series_diagnostics(run_id, metric_key)
+                .ok(),
+            (None, Some(reader)) => reader.series_diagnostics(run_id, metric_key).ok(),
+            _ => None,
+        }
     }
 
     fn metadata(&self, run_id: &RunId) -> SdkResult<RunMetadata> {
@@ -454,8 +464,8 @@ fn enforce_point_bound<T: Clone>(samples: Vec<T>, max_points: usize) -> Vec<T> {
 }
 
 fn qualify_series(
-    samples: &[MetricSample],
     alignment_reasons: Vec<AlignmentReason>,
+    diagnostics: Option<SeriesDiagnostics>,
     run_status: RunStatus,
 ) -> (EvidenceCompleteness, Vec<EvidenceReason>) {
     let mut reasons = alignment_reasons
@@ -466,14 +476,23 @@ fn qualify_series(
             AlignmentReason::DecreasingAxis => EvidenceReason::DecreasingAxis,
         })
         .collect::<Vec<_>>();
-    if samples
-        .iter()
-        .any(|sample| !sample.point.value_f64.is_finite())
-    {
-        reasons.push(EvidenceReason::NonFiniteValue);
-    }
-    if samples.is_empty() && reasons.is_empty() {
-        reasons.push(EvidenceReason::MissingMetric);
+    let missing_metric = diagnostics.is_some_and(|value| value.effective_count == 0);
+    match diagnostics {
+        Some(value) => {
+            if value.has_negative_step {
+                reasons.push(EvidenceReason::NegativeAxis);
+            }
+            if value.has_decreasing_timestamp {
+                reasons.push(EvidenceReason::DecreasingAxis);
+            }
+            if value.has_non_finite_value {
+                reasons.push(EvidenceReason::NonFiniteValue);
+            }
+            if missing_metric && reasons.is_empty() {
+                reasons.push(EvidenceReason::MissingMetric);
+            }
+        }
+        None => reasons.push(EvidenceReason::DiagnosticsUnavailable),
     }
     let invalid = reasons.iter().any(|reason| {
         matches!(
@@ -485,11 +504,14 @@ fn qualify_series(
     });
     let mut completeness = if invalid {
         EvidenceCompleteness::Invalid
-    } else if samples.is_empty() {
+    } else if missing_metric {
         EvidenceCompleteness::Unavailable
     } else {
         EvidenceCompleteness::Complete
     };
+    if reasons.contains(&EvidenceReason::DiagnosticsUnavailable) {
+        completeness = completeness.max(EvidenceCompleteness::Partial);
+    }
     let lifecycle_reason = match run_status {
         RunStatus::Running => Some(EvidenceReason::RunRunning),
         RunStatus::Failed => Some(EvidenceReason::RunFailed),
@@ -869,7 +891,7 @@ mod tests {
         let run =
             connection.create_run(&project.project_id, "baseline", RunId::from_string("run-1"))?;
         let started_at = run.started_at.timestamp_millis();
-        let rows = (0..5)
+        let mut rows = (0..5)
             .map(|step| MetricWrite {
                 run_id: run.run_id.as_str().to_owned(),
                 metric_key: String::from("loss"),
@@ -879,6 +901,24 @@ mod tests {
                 ingested_at_millis: started_at + step,
             })
             .collect::<Vec<_>>();
+        rows.extend([
+            MetricWrite {
+                run_id: run.run_id.as_str().to_owned(),
+                metric_key: String::from("loss"),
+                step: -2,
+                timestamp_millis: started_at - 100,
+                value_f64: 1.0,
+                ingested_at_millis: started_at - 2,
+            },
+            MetricWrite {
+                run_id: run.run_id.as_str().to_owned(),
+                metric_key: String::from("loss"),
+                step: -1,
+                timestamp_millis: started_at - 200,
+                value_f64: f64::NAN,
+                ingested_at_millis: started_at - 1,
+            },
+        ]);
         connection.append_metric_batch(&rows)?;
         connection.rebuild_metric_aggregates_for_run(&run.run_id)?;
         connection.mark_run_terminal(&run.run_id, RunStatus::Finished, created_at)?;
@@ -983,7 +1023,15 @@ mod tests {
             let step = sample.point.step.value();
             (1..4).contains(&step)
         }));
-        assert_eq!(series.completeness(), EvidenceCompleteness::Complete);
+        assert_eq!(series.completeness(), EvidenceCompleteness::Invalid);
+        assert_eq!(
+            series.reasons(),
+            [
+                EvidenceReason::NegativeAxis,
+                EvidenceReason::DecreasingAxis,
+                EvidenceReason::NonFiniteValue,
+            ]
+        );
         assert_eq!(desktop_series.samples().len(), 4);
         assert_eq!(desktop_series.samples()[0].point.step, Step::new(0));
         assert_eq!(desktop_series.samples()[3].point.step, Step::new(4));
@@ -1003,11 +1051,30 @@ mod tests {
         assert_eq!(standalone.projects(), Err(Error::UnsupportedQuery));
         assert_eq!(standalone_steps, series);
         assert!(standalone_relative.samples().is_empty());
+        assert!(
+            standalone_relative
+                .reasons()
+                .contains(&EvidenceReason::MissingRunStart)
+        );
         assert_eq!(
-            standalone_relative.reasons(),
-            [EvidenceReason::MissingRunStart]
+            standalone_relative.completeness(),
+            EvidenceCompleteness::Invalid
         );
         assert_eq!(standalone_timestamps, timestamps);
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_failure_preserves_points_with_explicit_partial_evidence()
+    -> Result<(), MetricSeriesError> {
+        let sample = sample(MetricCoordinate::Step(Step::new(7)));
+        let (completeness, reasons) = qualify_series(Vec::new(), None, RunStatus::Finished);
+        let series =
+            MetricSeries::from_samples(MetricAxis::Step, vec![sample], 1, completeness, reasons)?;
+
+        assert_eq!(series.samples().len(), 1);
+        assert_eq!(series.completeness(), EvidenceCompleteness::Partial);
+        assert_eq!(series.reasons(), [EvidenceReason::DiagnosticsUnavailable]);
         Ok(())
     }
 }

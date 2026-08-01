@@ -1,6 +1,5 @@
 use crate::model::alignment::{
-    AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentQueryResult, AlignmentReason,
-    AlignmentReduction,
+    AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentQueryResult, AlignmentReduction,
 };
 use crate::model::metric::{MetricKey, MetricPoint, Step};
 use crate::model::run::RunId;
@@ -45,28 +44,17 @@ pub(crate) fn query_aligned_metric(
     )?;
     let mut points = Vec::new();
     let mut source_row_count = 0;
-    let mut has_negative_axis = false;
-    let mut has_decreasing_axis = false;
     for row in rows {
-        let (point, count, negative, decreasing) = row?;
+        let (point, count) = row?;
         if let Some(point) = point {
             points.push(point.into_aligned_metric_point(&query.run_id, &query.metric_key)?);
         }
         source_row_count = count;
-        has_negative_axis = negative;
-        has_decreasing_axis = decreasing;
-    }
-    let mut reasons = Vec::with_capacity(2);
-    if has_negative_axis {
-        reasons.push(AlignmentReason::NegativeAxis);
-    }
-    if has_decreasing_axis {
-        reasons.push(AlignmentReason::DecreasingAxis);
     }
     Ok(AlignmentQueryResult {
         points,
         source_row_count,
-        reasons,
+        reasons: Vec::new(),
     })
 }
 
@@ -115,13 +103,6 @@ fn aligned_points_sql(
     };
     format!(
         "{},
-         axis_stats AS (
-             SELECT coalesce(bool_or(axis_value < 0), false) AS has_negative_axis,
-                    coalesce(bool_or(
-                        previous_axis_value IS NOT NULL AND axis_value < previous_axis_value
-                    ), false) AS has_decreasing_axis
-             FROM ordered
-         ),
          inside AS (
              SELECT * FROM ordered WHERE axis_value >= ? AND axis_value <= ?
          ),
@@ -144,9 +125,8 @@ fn aligned_points_sql(
          {selection}
          SELECT selected.step, epoch_ms(selected.timestamp), selected.value_f64,
                 epoch_ms(selected.ingested_at), selected.axis_value,
-                source_stats.source_row_count, axis_stats.has_negative_axis,
-                axis_stats.has_decreasing_axis
-         FROM source_stats CROSS JOIN axis_stats
+                source_stats.source_row_count
+         FROM source_stats
          LEFT JOIN selected ON true
          ORDER BY selected.step",
         ordered_ctes(source, axis)
@@ -267,7 +247,7 @@ impl StoredAlignedPoint {
 
 fn stored_alignment_row(
     row: &duckdb::Row<'_>,
-) -> duckdb::Result<(Option<StoredAlignedPoint>, u64, bool, bool)> {
+) -> duckdb::Result<(Option<StoredAlignedPoint>, u64)> {
     let step: Option<i64> = row.get(0)?;
     let point = match step {
         Some(step) => Some(StoredAlignedPoint {
@@ -279,7 +259,7 @@ fn stored_alignment_row(
         }),
         None => None,
     };
-    Ok((point, row.get(5)?, row.get(6)?, row.get(7)?))
+    Ok((point, row.get(5)?))
 }
 
 #[cfg(test)]
@@ -347,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_query_retains_equal_axes_and_reports_decreases() -> Result<(), Box<dyn Error>> {
+    fn elapsed_query_retains_equal_axes_without_inline_diagnostics() -> Result<(), Box<dyn Error>> {
         let connection = connection()?;
         connection.execute_batch(
             "UPDATE dl.metric_points SET timestamp = epoch_ms(1020) WHERE step = 3;
@@ -357,7 +337,7 @@ mod tests {
         elapsed.viewport = AlignmentViewport::new(10, 20)?;
         let result = ProjectMetricReader::new(&connection).query_aligned_metric(&elapsed)?;
 
-        assert_eq!(result.reasons, vec![AlignmentReason::DecreasingAxis]);
+        assert!(result.reasons.is_empty());
         assert_eq!(
             result
                 .points
@@ -446,7 +426,7 @@ mod tests {
     }
 
     #[test]
-    fn step_query_reports_negative_axis_without_repairing_points() -> Result<(), Box<dyn Error>> {
+    fn step_query_retains_negative_axis_without_inline_diagnostics() -> Result<(), Box<dyn Error>> {
         let connection = connection()?;
         connection.execute_batch(
             "INSERT INTO dl.metric_points VALUES
@@ -456,7 +436,7 @@ mod tests {
         negative.viewport = AlignmentViewport::new(-1, 0)?;
         let result = ProjectMetricReader::new(&connection).query_aligned_metric(&negative)?;
 
-        assert_eq!(result.reasons, vec![AlignmentReason::NegativeAxis]);
+        assert!(result.reasons.is_empty());
         assert!(result.points.iter().any(|point| point.axis_value == -1));
         Ok(())
     }
