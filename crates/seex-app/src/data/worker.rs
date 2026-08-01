@@ -1,7 +1,7 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
@@ -227,15 +227,25 @@ impl Drop for ReadEventReceiver {
 struct TaggedRequest {
     source_id: DataSourceId,
     generation: Generation,
+    token: RequestToken,
     request: ReadRequest,
     _ticket: RequestTicket,
 }
 
-struct RequestIdentity {
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct RequestKey {
     source_id: DataSourceId,
-    generation: Generation,
     kind: ReadKind,
     metric_key: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct RequestToken(u64);
+
+struct RequestIdentity {
+    key: RequestKey,
+    generation: Generation,
+    token: RequestToken,
 }
 
 impl RequestIdentity {
@@ -248,12 +258,55 @@ impl RequestIdentity {
             ReadRequest::Inspector(request) => Some(request.metric_key.as_str().to_owned()),
             ReadRequest::Discover(_) => None,
         };
-        Self {
+        let key = RequestKey {
             source_id: tagged.source_id.clone(),
-            generation: tagged.generation,
             kind: tagged.request.kind(),
             metric_key,
+        };
+        Self {
+            key,
+            generation: tagged.generation,
+            token: tagged.token,
         }
+    }
+}
+
+#[derive(Default)]
+struct RequestRegistry {
+    latest: HashMap<RequestKey, (Generation, RequestToken)>,
+    active: HashMap<RequestKey, (Generation, RequestToken)>,
+}
+
+impl RequestRegistry {
+    fn mark_latest(&mut self, identity: &RequestIdentity) {
+        let value = (identity.generation, identity.token);
+        if self
+            .latest
+            .get(&identity.key)
+            .is_none_or(|latest| value > *latest)
+        {
+            self.latest.insert(identity.key.clone(), value);
+        }
+    }
+
+    fn begin(&mut self, identity: &RequestIdentity) -> bool {
+        if !self.is_current(identity) {
+            return false;
+        }
+        self.active
+            .insert(identity.key.clone(), (identity.generation, identity.token));
+        true
+    }
+
+    fn finish(&mut self, identity: &RequestIdentity) {
+        let value = (identity.generation, identity.token);
+        if self.active.get(&identity.key) == Some(&value) {
+            self.active.remove(&identity.key);
+        }
+    }
+
+    fn is_current(&self, identity: &RequestIdentity) -> bool {
+        self.latest.get(&identity.key) == Some(&(identity.generation, identity.token))
     }
 }
 
@@ -281,6 +334,8 @@ pub struct ReadWorker {
     events: Option<ReadEventReceiver>,
     threads: Vec<JoinHandle<()>>,
     outstanding: Arc<AtomicUsize>,
+    registry: Arc<Mutex<RequestRegistry>>,
+    next_token: AtomicU64,
     #[cfg(feature = "test-support")]
     gate: Arc<ReadConcurrencyGate>,
     #[cfg(feature = "test-support")]
@@ -344,16 +399,18 @@ impl ReadWorker {
         }));
         let events = Arc::new(event_tx);
         let outstanding = Arc::new(AtomicUsize::new(0));
+        let registry = Arc::new(Mutex::new(RequestRegistry::default()));
         let mut threads = Vec::with_capacity(worker_count);
         for index in 0..worker_count {
             let sessions = Arc::clone(&sessions);
             let requests = Arc::clone(&requests);
             let events = Arc::clone(&events);
             let gate = Arc::clone(&gate);
+            let registry = Arc::clone(&registry);
             threads.push(
                 thread::Builder::new()
                     .name(format!("seex-native-reader-{index}"))
-                    .spawn(move || worker_loop(sessions, requests, events, gate))?,
+                    .spawn(move || worker_loop(sessions, requests, events, gate, registry))?,
             );
         }
         Ok(Self {
@@ -361,6 +418,8 @@ impl ReadWorker {
             events: Some(event_rx),
             threads,
             outstanding,
+            registry,
+            next_token: AtomicU64::new(1),
             #[cfg(feature = "test-support")]
             gate,
             #[cfg(feature = "test-support")]
@@ -380,15 +439,22 @@ impl ReadWorker {
         request: ReadRequest,
     ) -> Result<(), WorkerClosed> {
         let ticket = RequestTicket::tracked(Arc::clone(&self.outstanding));
+        let token = RequestToken(self.next_token.fetch_add(1, Ordering::Relaxed));
+        let tagged = TaggedRequest {
+            source_id,
+            generation,
+            token,
+            request,
+            _ticket: ticket,
+        };
+        self.registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .mark_latest(&RequestIdentity::new(&tagged));
         self.requests
             .as_ref()
             .ok_or(WorkerClosed)?
-            .send(TaggedRequest {
-                source_id,
-                generation,
-                request,
-                _ticket: ticket,
-            })
+            .send(tagged)
             .map_err(|_| WorkerClosed)
     }
 
@@ -533,10 +599,10 @@ impl PendingRequests {
             .chain(&self.detail)
             .chain(&self.inspector)
             .any(|candidate| {
-                candidate.source_id == identity.source_id
+                candidate.source_id == identity.key.source_id
                     && candidate.generation > identity.generation
-                    && candidate.request.kind() == identity.kind
-                    && RequestIdentity::new(candidate).metric_key == identity.metric_key
+                    && candidate.request.kind() == identity.key.kind
+                    && RequestIdentity::new(candidate).key.metric_key == identity.key.metric_key
             })
     }
 }
@@ -597,22 +663,39 @@ fn request_is_superseded(queue: &Mutex<RequestQueue>, identity: &RequestIdentity
     queue.pending.has_newer(identity)
 }
 
+fn request_is_current(registry: &Mutex<RequestRegistry>, identity: &RequestIdentity) -> bool {
+    registry
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .is_current(identity)
+}
+
 fn worker_loop(
     sessions: Arc<ReadSessionPool>,
     requests: Arc<Mutex<RequestQueue>>,
     events: Arc<ReadEventSender>,
     gate: Arc<ReadConcurrencyGate>,
+    registry: Arc<Mutex<RequestRegistry>>,
 ) {
     let mut session = None;
     while let Some(request) = next_request(&requests) {
         let identity = RequestIdentity::new(&request);
         let _permit = gate.acquire();
-        if request_is_superseded(&requests, &identity) {
+        if request_is_superseded(&requests, &identity) || !request_is_current(&registry, &identity)
+        {
             continue;
         }
-        let Some(event) = execute(&sessions, &mut session, request, || {
-            request_is_superseded(&requests, &identity)
-        }) else {
+        let Some(event) = execute(
+            &sessions,
+            &mut session,
+            request,
+            &identity,
+            &registry,
+            || {
+                request_is_superseded(&requests, &identity)
+                    || !request_is_current(&registry, &identity)
+            },
+        ) else {
             continue;
         };
         if !events.send(event) {
@@ -625,20 +708,32 @@ fn execute(
     sessions: &ReadSessionPool,
     session: &mut Option<ReadSession>,
     tagged: TaggedRequest,
+    identity: &RequestIdentity,
+    registry: &Mutex<RequestRegistry>,
     mut is_superseded: impl FnMut() -> bool,
 ) -> Option<ReadEvent> {
     let TaggedRequest {
         source_id,
         generation,
+        token: _,
         request,
         _ticket,
     } = tagged;
     let kind = request.kind();
+    let mut registered = false;
     let result = (|| {
         if session.is_none() {
             *session = Some(sessions.open()?);
         }
         let session = session.as_ref().ok_or(WorkerError::SessionUnavailable)?;
+        if !registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .begin(identity)
+        {
+            return Ok(None);
+        }
+        registered = true;
         session.reader().refresh_diagnostics(generation.0);
         Ok(Some(match request {
             ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(&request)?),
@@ -661,6 +756,16 @@ fn execute(
             }
         }))
     })();
+    let current = request_is_current(registry, identity);
+    if registered {
+        registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .finish(identity);
+    }
+    if !current {
+        return None;
+    }
     let result = match result {
         Ok(Some(result)) => Ok(result),
         Ok(None) => return None,
@@ -676,7 +781,7 @@ fn execute(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicU64, AtomicUsize};
     use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::thread;
     use std::time::Duration;
@@ -687,8 +792,9 @@ mod tests {
 
     use super::{
         DataSourceId, DiscoveryRequest, Generation, OverviewRequest, PendingRequests,
-        ReadConcurrencyGate, ReadRequest, ReadWorker, RequestIdentity, RequestQueue, RequestTicket,
-        TaggedRequest, next_request, read_event_channel, request_is_superseded,
+        ReadConcurrencyGate, ReadKind, ReadRequest, ReadWorker, RequestIdentity, RequestKey,
+        RequestQueue, RequestRegistry, RequestTicket, RequestToken, TaggedRequest, next_request,
+        read_event_channel, request_is_superseded,
     };
 
     fn overview_request(metric: &str) -> ReadRequest {
@@ -718,6 +824,8 @@ mod tests {
             events: Some(event_rx),
             threads: vec![thread],
             outstanding: Arc::new(AtomicUsize::new(1)),
+            registry: Arc::new(Mutex::new(RequestRegistry::default())),
+            next_token: AtomicU64::new(1),
             #[cfg(feature = "test-support")]
             gate: Arc::new(ReadConcurrencyGate::new(1)),
             #[cfg(feature = "test-support")]
@@ -746,6 +854,7 @@ mod tests {
             pending.push(TaggedRequest {
                 source_id: DataSourceId::new("source").expect("test alias should be valid"),
                 generation: Generation(generation),
+                token: RequestToken(generation),
                 request: ReadRequest::Discover(DiscoveryRequest::default()),
                 _ticket: RequestTicket::default(),
             });
@@ -770,6 +879,7 @@ mod tests {
             pending.push(TaggedRequest {
                 source_id: DataSourceId::new("source").expect("test alias should be valid"),
                 generation: Generation(generation),
+                token: RequestToken(generation),
                 request: overview_request(metric),
                 _ticket: RequestTicket::default(),
             });
@@ -798,6 +908,7 @@ mod tests {
                 .send(TaggedRequest {
                     source_id: DataSourceId::new("source").expect("test alias should be valid"),
                     generation: Generation(generation),
+                    token: RequestToken(generation),
                     request: overview_request(metric),
                     _ticket: RequestTicket::default(),
                 })
@@ -849,6 +960,7 @@ mod tests {
         let current = TaggedRequest {
             source_id: DataSourceId::new("source").expect("test alias should be valid"),
             generation: Generation(1),
+            token: RequestToken(1),
             request: overview_request("loss"),
             _ticket: RequestTicket::default(),
         };
@@ -857,6 +969,7 @@ mod tests {
             .send(TaggedRequest {
                 source_id: DataSourceId::new("source").expect("test alias should be valid"),
                 generation: Generation(2),
+                token: RequestToken(2),
                 request: overview_request("loss"),
                 _ticket: RequestTicket::default(),
             })
@@ -874,6 +987,37 @@ mod tests {
     }
 
     #[test]
+    fn request_tokens_isolate_keys_and_old_completion() {
+        let identity = |metric: &str, generation, token| RequestIdentity {
+            key: RequestKey {
+                source_id: DataSourceId::new("source").expect("test alias should be valid"),
+                kind: ReadKind::Detail,
+                metric_key: Some(metric.to_owned()),
+            },
+            generation: Generation(generation),
+            token: RequestToken(token),
+        };
+        let old = identity("loss", 1, 1);
+        let current = identity("loss", 2, 2);
+        let unrelated = identity("accuracy", 1, 3);
+        let mut registry = RequestRegistry::default();
+
+        registry.mark_latest(&old);
+        assert!(registry.begin(&old));
+        registry.mark_latest(&current);
+        registry.mark_latest(&unrelated);
+        assert!(!registry.is_current(&old));
+        assert!(registry.is_current(&current));
+        assert!(registry.is_current(&unrelated));
+        assert!(registry.begin(&current));
+        registry.finish(&old);
+        assert_eq!(
+            registry.active.get(&current.key),
+            Some(&(Generation(2), RequestToken(2)))
+        );
+    }
+
+    #[test]
     fn event_receiver_can_only_be_taken_once() {
         let (request_tx, _request_rx) = mpsc::channel();
         let (_event_tx, event_rx) = read_event_channel();
@@ -882,6 +1026,8 @@ mod tests {
             events: Some(event_rx),
             threads: Vec::new(),
             outstanding: Arc::new(AtomicUsize::new(0)),
+            registry: Arc::new(Mutex::new(RequestRegistry::default())),
+            next_token: AtomicU64::new(1),
             #[cfg(feature = "test-support")]
             gate: Arc::new(ReadConcurrencyGate::new(1)),
             #[cfg(feature = "test-support")]
