@@ -358,12 +358,14 @@ def compare_v2_captures(
             unreliable.append(metric_name)
             continue
         direction = before[0]["direction"]
+        if direction == "neutral":
+            continue
         before_median = _median([metric["p50"] for metric in before])
         after_median = _median([metric["p50"] for metric in after])
         regression = (after_median / before_median) - 1.0
         if direction == "higher":
             regression = (before_median / after_median) - 1.0
-        if direction != "neutral" and regression > 0.03 + 1e-12:
+        if regression > 0.03 + 1e-12:
             regressions[metric_name] = regression
 
     median_improvement = 0.0

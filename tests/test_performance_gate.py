@@ -172,6 +172,26 @@ def test_v2_migration_checks_hard_floors_and_protected_regressions() -> None:
     assert verdict["regressions"]["query.duckdb.step.full"] > 0.03
 
 
+def test_v2_migration_accepts_zero_neutral_protected_metric() -> None:
+    neutral = _v2_runs(
+        0.0,
+        batch_iterations=1,
+        direction="neutral",
+        unit="count",
+    )
+
+    verdict = performance_gate.compare_v2_captures(
+        neutral,
+        neutral,
+        "migration",
+        primary=None,
+        protected=["query.duckdb.step.full"],
+    )
+
+    assert verdict["verdict"] == "pass"
+    assert verdict["regressions"] == {}
+
+
 def test_v2_migration_rejects_baseline_check_failures() -> None:
     baseline = _v2_runs(100.0)
     baseline[0]["checks"].append(
