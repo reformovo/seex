@@ -6,7 +6,7 @@ use seex_storage::bootstrap::{
     NativeStorageConfig, is_s3_data_path, open_existing_native_connection_with_config,
 };
 use seex_storage::config::{InitConfigError, resolve_storage_config};
-use seex_storage::{ProjectConnection, StorageError};
+use seex_storage::{ProjectConnection, ReadInterrupt, StorageError};
 
 use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
@@ -154,6 +154,16 @@ impl ReadSession {
 
     pub(crate) const fn reader(&self) -> &Reader {
         &self.reader
+    }
+
+    #[doc(hidden)]
+    pub fn interrupt_handles(&self) -> [ReadInterrupt; 2] {
+        [
+            self.reader
+                .interrupt_handle()
+                .expect("native ReadSession Reader must have a connection"),
+            self.connection.interrupt_handle(),
+        ]
     }
 }
 

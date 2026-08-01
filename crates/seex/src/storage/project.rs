@@ -1,4 +1,5 @@
 use std::ops::Deref;
+use std::sync::Arc;
 
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
@@ -14,6 +15,16 @@ pub struct ProjectConnection {
     connection: duckdb::Connection,
 }
 
+/// Cloneable cancellation capability bound to one native connection.
+#[derive(Clone)]
+pub struct ReadInterrupt(Arc<duckdb::InterruptHandle>);
+
+impl ReadInterrupt {
+    pub fn interrupt(&self) {
+        self.0.interrupt();
+    }
+}
+
 impl ProjectConnection {
     pub const fn new(connection: duckdb::Connection) -> Self {
         Self { connection }
@@ -23,6 +34,11 @@ impl ProjectConnection {
         let connection = self.connection.try_clone()?;
         connection.execute_batch("USE seex_catalog;")?;
         Ok(Self::new(connection))
+    }
+
+    #[doc(hidden)]
+    pub fn interrupt_handle(&self) -> ReadInterrupt {
+        ReadInterrupt(self.connection.interrupt_handle())
     }
 
     pub fn create_project(&self, project: &Project) -> Result<(), StorageError> {

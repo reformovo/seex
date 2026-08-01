@@ -210,6 +210,14 @@ impl Reader {
         }
     }
 
+    /// Returns cancellation capability for this Reader's native connection.
+    #[doc(hidden)]
+    pub fn interrupt_handle(&self) -> Option<crate::storage::ReadInterrupt> {
+        self.connection
+            .as_ref()
+            .map(ProjectConnection::interrupt_handle)
+    }
+
     /// Desktop-only query retaining one real sample outside each range edge.
     ///
     /// The stable [`Reader::query_metric`] contract never returns these

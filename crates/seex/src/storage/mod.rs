@@ -20,6 +20,8 @@ pub use lock::RunWriterGuard;
 #[doc(hidden)]
 pub use metric_query::SeriesDiagnostics;
 pub use metric_query::{ProjectMetricReader, percent_encode_metric_key};
+#[doc(hidden)]
+pub use project::ReadInterrupt;
 pub use project::{MetricWrite, ProjectConnection};
 pub use query::{ParquetMetricReader, ParquetSource, StandaloneMetricReader};
 pub use schema::{ColumnSchema, SchemaReport, validate_metric_point_schema};
