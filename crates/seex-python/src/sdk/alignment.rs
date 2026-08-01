@@ -144,7 +144,21 @@ fn reason_value(reason: EvidenceReason) -> &'static str {
         EvidenceReason::NegativeAxis => "negative_axis",
         EvidenceReason::DecreasingAxis => "decreasing_axis",
         EvidenceReason::NonFiniteValue => "non_finite_value",
+        EvidenceReason::DiagnosticsUnavailable => "diagnostics_unavailable",
         EvidenceReason::RunRunning => "run_running",
         EvidenceReason::RunFailed => "run_failed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnostics_unavailable_has_a_stable_python_value() {
+        assert_eq!(
+            reason_value(EvidenceReason::DiagnosticsUnavailable),
+            "diagnostics_unavailable"
+        );
     }
 }

@@ -41,6 +41,7 @@ pub enum EvidenceReason {
     NegativeAxis,
     DecreasingAxis,
     NonFiniteValue,
+    DiagnosticsUnavailable,
     RunRunning,
     RunFailed,
 }
