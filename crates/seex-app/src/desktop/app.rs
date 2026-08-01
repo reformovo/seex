@@ -347,6 +347,7 @@ impl Render for ViewerApp {
                     });
                 }),
             )
+            .on_action(cx.listener(Self::on_import_source))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
@@ -382,7 +383,36 @@ impl Render for ViewerApp {
                             .child(if has_sources {
                                 self.workspace.clone().into_any_element()
                             } else {
-                                div().flex_1().into_any_element()
+                                div()
+                                    .id("empty-source-state")
+                                    .debug_selector(|| "empty-source-state".to_owned())
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_3()
+                                    .text_color(theme.colors.text_muted)
+                                    .child("No Sources configured")
+                                    .child(
+                                        div()
+                                            .id("import-source")
+                                            .debug_selector(|| "import-source".to_owned())
+                                            .px_4()
+                                            .h(theme.spacing.control_height)
+                                            .flex()
+                                            .items_center()
+                                            .rounded(theme.spacing.corner_radius)
+                                            .bg(theme.colors.accent)
+                                            .text_color(theme.colors.accent_text)
+                                            .cursor_pointer()
+                                            .hover(move |style| style.bg(theme.colors.accent_hover))
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.open_source_picker(cx);
+                                            }))
+                                            .child("Import Source…"),
+                                    )
+                                    .into_any_element()
                             })
                             .children(
                                 (has_sources && inspector_visible)

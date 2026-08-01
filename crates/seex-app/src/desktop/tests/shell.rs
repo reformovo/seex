@@ -11,7 +11,7 @@ fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppC
     let root = tempfile::tempdir().expect("test directory should be created");
     cx.executor().allow_parking();
 
-    let (window, cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
     cx.run_until_parked();
 
     window
@@ -20,6 +20,8 @@ fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppC
             assert!(viewer.session.read(cx).transient_error.is_none());
         })
         .expect("viewer should remain open");
+    assert!(cx.debug_bounds("empty-source-state").is_some());
+    assert!(cx.debug_bounds("import-source").is_some());
 }
 
 #[gpui::test]
