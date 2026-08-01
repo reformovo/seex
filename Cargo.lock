@@ -5494,6 +5494,7 @@ dependencies = [
  "arrow",
  "chrono",
  "pyo3",
+ "seex",
  "seex-core",
 ]
 
