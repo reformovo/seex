@@ -225,7 +225,7 @@ def test_read_manifest_rejects_invalid_contract(
 def test_preservation_enforces_combined_and_ordered_limits() -> None:
     manifest = _manifest(kind="preservation", protected=["query.reader.full"])
     accepted = _captures(100.0, 100.0, 100.0, 100.0, protected=(100.0, 102.0, 103.0, 100.0))
-    pair_regression = _captures(100.0, 100.0, 100.0, 100.0, protected=(98.0, 104.0, 100.0, 102.0))
+    pair_regression = _captures(100.0, 100.0, 100.0, 100.0, protected=(100.0, 106.0, 106.0, 100.0))
 
     assert performance_gate.compare(manifest, accepted)[0] == "pass"
     verdict, _, details = performance_gate.compare(manifest, pair_regression)
@@ -235,7 +235,12 @@ def test_preservation_enforces_combined_and_ordered_limits() -> None:
 
 @pytest.mark.parametrize(
     "candidate_first,candidate_second,expected",
-    [(94.0, 94.0, "pass"), (97.0, 97.0, "no_change"), (106.0, 106.0, "regression")],
+    [
+        (94.0, 94.0, "pass"),
+        (97.0, 97.0, "no_change"),
+        (101.0, 101.0, "regression"),
+        (106.0, 106.0, "regression"),
+    ],
 )
 def test_optimization_verdicts(candidate_first: float, candidate_second: float, expected: str) -> None:
     verdict, _, _ = performance_gate.compare(_manifest(), _captures(100.0, candidate_first, candidate_second, 100.0))
@@ -248,6 +253,23 @@ def test_optimization_direction_conflict_is_inconclusive() -> None:
 
     assert verdict == "inconclusive"
     assert "directions disagreed" in reason
+
+
+def test_zero_and_improvement_is_no_change() -> None:
+    verdict, _, _ = performance_gate.compare(_manifest(), _captures(100.0, 100.0, 97.0, 100.0))
+
+    assert verdict == "no_change"
+
+
+def test_protected_direction_conflict_is_inconclusive() -> None:
+    manifest = _manifest(protected=["query.reader.full"])
+    captures = _captures(100.0, 90.0, 90.0, 100.0, protected=(100.0, 99.0, 101.0, 100.0))
+
+    verdict, reason, details = performance_gate.compare(manifest, captures)
+
+    assert verdict == "inconclusive"
+    assert "directions disagreed" in reason
+    assert "query.reader.full" in cast(dict[str, object], details["direction_conflicts"])
 
 
 def test_protected_regression_and_hard_floor_block_optimization() -> None:

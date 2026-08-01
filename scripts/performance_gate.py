@@ -408,6 +408,10 @@ def _improvement(before: float, after: float, direction: Direction) -> float:
     return -_change(before, after, direction)
 
 
+def _directions_conflict(values: Sequence[float]) -> bool:
+    return any(value < 0 for value in values) and any(value > 0 for value in values)
+
+
 def _selected_metrics(manifest: Manifest) -> list[str]:
     selected = list(manifest["protected"])
     if manifest["primary"] is not None:
@@ -456,6 +460,7 @@ def compare(manifest: Manifest, captures: Sequence[Capture]) -> tuple[Verdict, s
     if floor_failures:
         return "regression", "candidate failed a hard floor", {"failed_floors": sorted(set(floor_failures))}
     regressions: dict[str, object] = {}
+    direction_conflicts: dict[str, object] = {}
     for metric in manifest["protected"]:
         direction = baseline[0]["metrics"][metric]["direction"]
         before = [capture["metrics"][metric]["median"] for capture in baseline]
@@ -463,8 +468,12 @@ def compare(manifest: Manifest, captures: Sequence[Capture]) -> tuple[Verdict, s
         pair_changes = [_change(left, right, direction) for left, right in zip(before, after, strict=True)]
         combined = _change(statistics.median(before), statistics.median(after), direction)
         comparisons[metric] = {"pair_changes": pair_changes, "combined_change": combined}
+        if _directions_conflict(pair_changes):
+            direction_conflicts[metric] = comparisons[metric]
         if combined > _MAX_MEDIAN_REGRESSION or any(change > _MAX_PAIR_REGRESSION for change in pair_changes):
             regressions[metric] = comparisons[metric]
+    if direction_conflicts:
+        return "inconclusive", "A/B and B/A directions disagreed", {"direction_conflicts": direction_conflicts}
     if regressions:
         return "regression", "a protected metric regressed", {"regressions": regressions}
     if manifest["kind"] == "preservation":
@@ -476,9 +485,9 @@ def compare(manifest: Manifest, captures: Sequence[Capture]) -> tuple[Verdict, s
     pairs = [_improvement(left, right, direction) for left, right in zip(before, after, strict=True)]
     combined = _improvement(statistics.median(before), statistics.median(after), direction)
     comparisons[primary] = {"pair_improvements": pairs, "combined_improvement": combined}
-    if (pairs[0] > 0) != (pairs[1] > 0):
+    if _directions_conflict(pairs):
         return "inconclusive", "A/B and B/A directions disagreed", comparisons
-    if combined < -_MAX_MEDIAN_REGRESSION or any(value < -_MAX_PAIR_REGRESSION for value in pairs):
+    if any(value < 0 for value in pairs):
         return "regression", "the optimization primary reliably regressed", comparisons
     if all(value > 0 for value in pairs) and combined >= manifest["minimum_improvement"]:
         return "pass", "the primary improved without a protected regression", comparisons
