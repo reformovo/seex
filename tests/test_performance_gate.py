@@ -451,6 +451,7 @@ def test_rss_sampler_records_compact_workload_phases() -> None:
 
     assert set(phases) == {"warm", "cycles_done", "final"}
     assert metrics["viewer.rss.peak"]["median"] > 0
+    assert metrics["viewer.rss.final"]["median"] > 0
 
 
 def test_rss_lookup_converts_child_exit_race(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -458,4 +459,9 @@ def test_rss_lookup_converts_child_exit_race(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(performance_gate.subprocess, "run", lambda *args, **kwargs: completed)
 
     with pytest.raises(ProcessLookupError, match="no RSS sample"):
+        performance_gate._rss_bytes(42)
+
+    zero = subprocess.CompletedProcess(["ps"], 0, stdout="0\n", stderr="")
+    monkeypatch.setattr(performance_gate.subprocess, "run", lambda *args, **kwargs: zero)
+    with pytest.raises(ProcessLookupError, match="no live RSS sample"):
         performance_gate._rss_bytes(42)

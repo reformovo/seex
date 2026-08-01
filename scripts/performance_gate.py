@@ -316,7 +316,10 @@ def _rss_bytes(process_id: int) -> int:
     output = process.stdout.strip()
     if process.returncode != 0 or not output:
         raise ProcessLookupError(f"process {process_id} has no RSS sample")
-    return int(output) * 1024
+    rss_bytes = int(output) * 1024
+    if rss_bytes <= 0:
+        raise ProcessLookupError(f"process {process_id} has no live RSS sample")
+    return rss_bytes
 
 
 def _sample_rss(command: Sequence[str], timeout: float) -> tuple[dict[str, Metric], dict[str, int]]:
@@ -364,11 +367,10 @@ def _sample_rss(command: Sequence[str], timeout: float) -> tuple[dict[str, Metri
         raise subprocess.CalledProcessError(process.returncode, command)
     if not samples or not {"warm", "cycles_done", "final"}.issubset(phases):
         raise ValueError("RSS workload must emit warm, cycles_done, and final phases")
-    phases["final"] = len(samples) - 1
     values = {
         "viewer.rss.warm": samples[phases["warm"]],
         "viewer.rss.peak": max(samples),
-        "viewer.rss.final": samples[-1],
+        "viewer.rss.final": samples[phases["final"]],
     }
     metrics = {
         key: Metric(
