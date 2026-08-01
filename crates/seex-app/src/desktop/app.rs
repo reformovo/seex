@@ -3,13 +3,13 @@ use std::path::PathBuf;
 #[cfg(all(test, feature = "test-support"))]
 use crate::data::registry::SourceStatus;
 use crate::domain::RunRef;
-use crate::workbench::document::WorkbenchDocument;
+use crate::workbench::toml_document::TomlWorkbenchDocument;
 use gpui::{
     Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, Render, SharedString, Window,
     div, prelude::*,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
 
 #[path = "assets.rs"]
@@ -74,7 +74,8 @@ impl ViewerApp {
     ) -> Self {
         let focus = cx.focus_handle();
         focus.focus(window);
-        let session = cx.new(|_| WorkbenchSession::new(default_workbench_path()));
+        let session =
+            cx.new(|_| WorkbenchSession::new(default_workbench_path(project_path.as_deref())));
         let mut app = Self {
             theme: ViewerTheme::for_appearance(window.appearance()),
             focus,
@@ -188,8 +189,8 @@ impl ViewerApp {
         })
         .detach();
         if let Some(path) = app.session.read(cx).workbench_path.clone() {
-            match WorkbenchDocument::load(&path) {
-                Ok(Some(document)) => app.restore_workbench(document, cx),
+            match TomlWorkbenchDocument::load(&path) {
+                Ok(Some(document)) => app.restore_toml_workbench(document, cx),
                 Ok(None) => {}
                 Err(error) => {
                     app.session.update(cx, |session, cx| {
@@ -201,8 +202,15 @@ impl ViewerApp {
                 }
             }
         }
-        if let Some(path) = project_path {
-            app.open_source(path, cx);
+        match crate::config::load_sources_for_scope(project_path.as_deref()) {
+            Ok(sources) => app.open_configured_sources(sources, cx),
+            Err(error) => {
+                app.session.update(cx, |session, cx| {
+                    session.transient_error = Some(error.to_string());
+                    session.publish_snapshot();
+                    cx.notify();
+                });
+            }
         }
         app.sync_child_snapshots(cx);
         app.sync_workspace_width(window, cx);
@@ -339,7 +347,6 @@ impl Render for ViewerApp {
                     });
                 }),
             )
-            .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
@@ -384,8 +391,4 @@ impl Render for ViewerApp {
                     ),
             )
     }
-}
-
-fn picked_directory(paths: Option<Vec<PathBuf>>) -> Option<PathBuf> {
-    paths.and_then(|paths| paths.into_iter().next())
 }

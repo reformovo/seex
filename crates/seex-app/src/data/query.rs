@@ -2,12 +2,11 @@ use std::collections::HashMap;
 
 use crate::data::source::ReadSession;
 use crate::domain::{DataSourceId, RunRef};
+use seex::{MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, Timestamp};
 use seex_chart_core::{DataPoint, Series, SeriesId};
 use seex_core::engine::EngineError;
 use seex_core::engine::query::NativeQueryStore;
-use seex_model::alignment::{
-    AlignmentAxis, AlignmentQuery, AlignmentQueryError, AlignmentReduction, AlignmentViewport,
-};
+use seex_model::alignment::{AlignmentQueryError, AlignmentViewport};
 use seex_model::comparison::{
     EvidenceCompleteness, EvidenceReason, ObjectiveDirection, ObjectiveEvidence, ObjectiveMetric,
 };
@@ -131,6 +130,12 @@ pub enum QueryError {
     Core(#[from] EngineError),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Sdk(#[from] seex::Error),
+    #[error(transparent)]
+    MetricQuery(#[from] MetricQueryError),
+    #[error("Reader returned a coordinate on the wrong axis")]
+    ReaderAxisMismatch,
 }
 
 impl ReadSession {
@@ -252,13 +257,12 @@ fn query_curves(
     let run_ids = selection
         .runs
         .iter()
+        .filter(|run| run.source_id == selection.source_id)
         .map(|run| run.run_id.clone())
         .collect::<Vec<_>>();
-    let runs = session.connection().get_runs(&run_ids)?;
-    let store = NativeQueryStore::new(session.connection());
-    let reduction = AlignmentReduction::screen_budget(point_budget, 1)?;
+    let runs = session.reader().runs_for_desktop(&run_ids)?;
     let mut real_bounds: Option<(i64, i64)> = None;
-    let mut series = Vec::with_capacity(runs.len());
+    let mut series = Vec::with_capacity(selection.runs.len());
     for run in runs {
         if is_superseded() {
             return Ok(None);
@@ -270,67 +274,41 @@ fn query_curves(
         }) else {
             continue;
         };
-        let storage_axis = match selection.axis {
-            CurveAxis::Step => AlignmentAxis::Step,
-            CurveAxis::AbsoluteTime => AlignmentAxis::ElapsedTime,
-        };
-        let storage_viewport = match selection.axis {
-            CurveAxis::Step => viewport,
-            CurveAxis::AbsoluteTime => {
-                let started_at = run.started_at.timestamp_millis();
-                AlignmentViewport::new(
-                    viewport.start().saturating_sub(started_at).max(0),
-                    viewport.end().saturating_sub(started_at).max(0),
-                )?
-            }
-        };
-        let mut evidence = store.query_aligned_metric(
-            &AlignmentQuery {
-                run_id: run.run_id.clone(),
-                metric_key: selection.metric_key.clone(),
-                axis: storage_axis,
-                viewport: storage_viewport,
-                reduction,
-            },
-            run.status,
+        let query = MetricQuery::new(
+            desktop_metric_range(selection.axis, viewport),
+            Some(point_budget as usize),
         )?;
-        if selection.axis == CurveAxis::AbsoluteTime {
-            for point in &mut evidence.points {
-                point.axis_value = point.point.timestamp.timestamp_millis();
-            }
-        }
+        let evidence = session.reader().query_metric_for_desktop(
+            &run.run_id,
+            &selection.metric_key,
+            &query,
+        )?;
         let drawable = matches!(
-            evidence.completeness,
+            evidence.completeness(),
             EvidenceCompleteness::Complete | EvidenceCompleteness::Partial
         );
-        let returned_point_count = evidence.points.len() as u64;
-        let source_row_count = evidence.source_row_count;
-        let completeness = evidence.completeness;
-        let reasons = evidence.reasons;
-        if drawable {
-            for axis_value in evidence
-                .points
-                .iter()
-                .map(|point| point.axis_value)
-                .filter(|value| *value >= viewport.start() && *value <= viewport.end())
-            {
-                real_bounds = Some(match real_bounds {
-                    Some((start, end)) => (start.min(axis_value), end.max(axis_value)),
-                    None => (axis_value, axis_value),
-                });
+        let returned_point_count = evidence.samples().len() as u64;
+        let source_row_count = evidence.source_count();
+        let completeness = evidence.completeness();
+        let reasons = evidence.reasons().to_vec();
+        let chart_points = if drawable {
+            let mut points = Vec::with_capacity(evidence.samples().len());
+            for sample in evidence.samples() {
+                let axis_value = desktop_axis_value(selection.axis, sample.coordinate)?;
+                if axis_value >= viewport.start() && axis_value <= viewport.end() {
+                    real_bounds = Some(match real_bounds {
+                        Some((start, end)) => (start.min(axis_value), end.max(axis_value)),
+                        None => (axis_value, axis_value),
+                    });
+                }
+                points.push(DataPoint::new(axis_value as f64, sample.point.value_f64));
             }
-        }
-        let chart_series = drawable
-            .then(|| {
-                Series::new(
-                    SeriesId::new(run_ref.cache_key())?,
-                    evidence
-                        .points
-                        .into_iter()
-                        .map(|point| DataPoint::new(point.axis_value as f64, point.point.value_f64))
-                        .collect(),
-                )
-            })
+            Some(points)
+        } else {
+            None
+        };
+        let chart_series = chart_points
+            .map(|points| Series::new(SeriesId::new(run_ref.cache_key())?, points))
             .transpose()?;
         series.push(CurveSeriesSnapshot {
             run_ref: run_ref.clone(),
@@ -352,6 +330,31 @@ fn query_curves(
         real_range,
         series,
     }))
+}
+
+fn desktop_metric_range(axis: CurveAxis, viewport: AlignmentViewport) -> MetricRange {
+    let end = viewport.end().saturating_add(1);
+    match axis {
+        CurveAxis::Step => MetricRange::Steps {
+            start: seex::Step::new(viewport.start()),
+            end: seex::Step::new(end),
+        },
+        CurveAxis::AbsoluteTime if viewport.start() == i64::MIN && viewport.end() == i64::MAX => {
+            MetricRange::All(MetricAxis::Timestamp)
+        }
+        CurveAxis::AbsoluteTime => MetricRange::Timestamps {
+            start: Timestamp::from_millis(viewport.start()),
+            end: Timestamp::from_millis(end),
+        },
+    }
+}
+
+fn desktop_axis_value(axis: CurveAxis, coordinate: MetricCoordinate) -> Result<i64, QueryError> {
+    match (axis, coordinate) {
+        (CurveAxis::Step, MetricCoordinate::Step(value)) => Ok(value.value()),
+        (CurveAxis::AbsoluteTime, MetricCoordinate::Timestamp(value)) => Ok(value.as_millis()),
+        _ => Err(QueryError::ReaderAxisMismatch),
+    }
 }
 
 fn brushable_range(
@@ -435,7 +438,7 @@ mod tests {
         client.finish_run(&run.run_id)?;
         client.shutdown(None)?;
         let session = ReadSession::open_existing(root.path())?;
-        let source_id = DataSourceId::from_path(root.path());
+        let source_id = DataSourceId::new("source").expect("test alias should be valid");
         let selection = CurveSelection {
             source_id: source_id.clone(),
             runs: vec![RunRef::new(source_id, project.project_id, run.run_id)],

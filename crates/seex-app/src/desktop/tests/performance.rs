@@ -33,7 +33,7 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
     let (root, project_id, first_run_id) = fixture_with_complete_runs(6, 10);
     let (pending_root, _, _) = fixture_with_extent(10);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     cx.simulate_resize(size(px(2_560.), px(1_800.)));
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 6);
@@ -131,10 +131,13 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
         })
         .expect("viewer should remain open")
         .expect("representative View should have a shared viewport");
-    let pending_source_id = DataSourceId::from_path(pending_root.path());
+    let pending_source_id = source_id("pending-source");
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_source(pending_root.path().to_path_buf(), cx);
+            viewer.open_configured_sources(
+                vec![configured_source("pending-source", pending_root.path())],
+                cx,
+            );
             assert!(matches!(
                 viewer
                     .session_snapshot(cx)

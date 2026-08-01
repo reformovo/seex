@@ -5439,16 +5439,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "seex"
+version = "0.1.0-beta.0"
+dependencies = [
+ "seex-core",
+ "seex-model",
+ "seex-storage",
+ "tempfile",
+]
+
+[[package]]
 name = "seex-app"
 version = "0.1.0-beta.0"
 dependencies = [
  "gpui",
+ "seex",
  "seex-chart-core",
  "seex-core",
  "seex-model",
  "seex-storage",
  "tempfile",
  "thiserror 2.0.18",
+ "toml_edit 0.25.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -5482,6 +5494,7 @@ dependencies = [
  "arrow",
  "chrono",
  "pyo3",
+ "seex",
  "seex-core",
 ]
 
@@ -6418,6 +6431,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.3",
 ]
 

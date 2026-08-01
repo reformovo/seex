@@ -46,7 +46,7 @@ fn bottom_inspector_can_close_after_switching_to_an_empty_view(cx: &mut TestAppC
 fn metric_click_opens_a_resizable_inspector_without_gesture_toggles(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
@@ -455,7 +455,7 @@ fn metric_click_opens_a_resizable_inspector_without_gesture_toggles(cx: &mut Tes
 fn inspector_table_contains_only_visible_runs(cx: &mut TestAppContext) {
     let (root, project_id, first_run_id) = fixture_with_complete_runs(1, 4);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 1);
     let second = window

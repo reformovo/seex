@@ -9,10 +9,10 @@ use seex_model::types::ProjectId;
 use crate::data::query::{CurveSnapshot, InspectorSnapshot};
 use crate::data::worker::{Generation, ReadKind};
 use crate::domain::{DataSourceId, RunRef, SelectionError, ViewNavigation};
-use crate::workbench::document::WorkbenchDocument;
 use crate::workbench::panel_reads::{
     AnalysisViewId, MetricPanelId, PanelReadMode, SourceReadFailure,
 };
+use crate::workbench::toml_document::{SavedRunRef, TomlWorkbenchDocument};
 
 pub const DEFAULT_METRIC_ROW_HEIGHT: f32 = 52.;
 const MAX_METRIC_ROW_HEIGHT: f32 = 180.;
@@ -143,14 +143,14 @@ impl Default for AnalysisViews {
 }
 
 impl AnalysisViews {
-    pub fn restore(document: &WorkbenchDocument) -> (Self, Vec<String>) {
+    pub fn restore(document: &TomlWorkbenchDocument) -> (Self, Vec<String>) {
         let mut issues = Vec::new();
         let mut views = Vec::new();
         for (index, saved) in document.views.iter().enumerate() {
             let mut runs = Vec::new();
             for saved_run in &saved.runs {
                 let run = RunRef::new(
-                    DataSourceId::from_path(&saved_run.source_path),
+                    DataSourceId::from_alias(&saved_run.source_alias),
                     saved_run.project_id.clone(),
                     saved_run.run_id.clone(),
                 );
@@ -236,14 +236,14 @@ impl AnalysisViews {
         }
         let active_view_id = views[active].view_id.clone();
         let next_id = views.len() as u64 + 1;
-        let mut restored = Self {
+        let restored = Self {
             views,
             pinned_projects: document
                 .pinned_projects
                 .iter()
                 .map(|project| {
                     ProjectRef::new(
-                        DataSourceId::from_path(&project.source_path),
+                        DataSourceId::from_alias(&project.source_alias),
                         project.project_id.clone(),
                     )
                 })
@@ -253,7 +253,7 @@ impl AnalysisViews {
                 .iter()
                 .map(|project| {
                     ProjectRef::new(
-                        DataSourceId::from_path(&project.source_path),
+                        DataSourceId::from_alias(&project.source_alias),
                         project.project_id.clone(),
                     )
                 })
@@ -263,12 +263,6 @@ impl AnalysisViews {
             active_view_id,
             next_id,
         };
-        for project in &document.removed_projects {
-            restored.remove_project(ProjectRef::new(
-                DataSourceId::from_path(&project.source_path),
-                project.project_id.clone(),
-            ));
-        }
         (restored, issues)
     }
 
@@ -891,9 +885,9 @@ fn metric_row_height(height: f32) -> f32 {
     height.clamp(DEFAULT_METRIC_ROW_HEIGHT, MAX_METRIC_ROW_HEIGHT)
 }
 
-fn saved_run_ref(saved: &crate::workbench::document::SavedRunRef) -> RunRef {
+fn saved_run_ref(saved: &SavedRunRef) -> RunRef {
     RunRef::new(
-        DataSourceId::from_path(&saved.source_path),
+        DataSourceId::from_alias(&saved.source_alias),
         saved.project_id.clone(),
         saved.run_id.clone(),
     )

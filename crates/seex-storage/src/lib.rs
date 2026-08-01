@@ -21,7 +21,7 @@ use seex_model::metric::{MetricQuery, MetricQueryResult};
 pub use lock::RunWriterGuard;
 pub use metric_query::{ProjectMetricReader, percent_encode_metric_key};
 pub use project::{MetricWrite, ProjectConnection};
-pub use query::{ParquetMetricReader, ParquetSource};
+pub use query::{ParquetMetricReader, ParquetSource, StandaloneMetricReader};
 pub use schema::{ColumnSchema, SchemaReport, validate_metric_point_schema};
 
 /// Common metric-series query interface for current storage inputs.

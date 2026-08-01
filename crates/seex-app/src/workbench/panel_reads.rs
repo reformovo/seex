@@ -460,7 +460,7 @@ mod tests {
 
     fn run_ref(source: &str, run: &str) -> RunRef {
         RunRef::new(
-            DataSourceId::from_string(source),
+            DataSourceId::new(source).expect("test alias should be valid"),
             ProjectId::from_string("project"),
             RunId::from_string(run),
         )

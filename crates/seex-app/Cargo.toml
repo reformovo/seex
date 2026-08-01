@@ -18,11 +18,13 @@ desktop = ["dep:gpui"]
 test-support = ["desktop", "gpui/test-support"]
 
 [dependencies]
+seex = { path = "../seex" }
 seex-chart-core = { path = "../seex-chart-core" }
 seex-core = { path = "../seex-core" }
 seex-model = { path = "../seex-model" }
 seex-storage = { path = "../seex-storage" }
 thiserror = "2"
+toml_edit = "0.25.12"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"], optional = true }

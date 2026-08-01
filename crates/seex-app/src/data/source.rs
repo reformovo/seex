@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use seex::Reader;
 use seex_storage::bootstrap::{
     NativeStorageConfig, is_s3_data_path, open_existing_native_connection_with_config,
 };
 use seex_storage::config::{InitConfigError, resolve_storage_config};
-use seex_storage::{ProjectConnection, ProjectMetricReader, StorageError};
+use seex_storage::{ProjectConnection, StorageError};
 
 use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
@@ -18,10 +19,14 @@ pub enum SourceError {
     Config(#[from] InitConfigError),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Sdk(#[from] seex::Error),
 }
 
 /// Read session for one existing local native Seex store.
 pub struct ReadSession {
+    root_path: PathBuf,
+    reader: Reader,
     connection: ProjectConnection,
 }
 
@@ -45,13 +50,18 @@ impl ReadSession {
             None,
         );
         let connection = open_existing_native_connection_with_config(config)?;
+        let reader = Reader::builder(root_path).open()?;
         Ok(Self {
+            root_path: root_path.to_owned(),
+            reader,
             connection: ProjectConnection::new(connection),
         })
     }
 
     pub(crate) fn try_clone(&self) -> Result<Self, SourceError> {
         Ok(Self {
+            root_path: self.root_path.clone(),
+            reader: Reader::builder(&self.root_path).open()?,
             connection: self.connection.try_clone()?,
         })
     }
@@ -65,7 +75,11 @@ impl ReadSession {
     ///
     /// Returns [`SourceError`] when a catalog query fails.
     pub fn discover(&self, request: &DiscoveryRequest) -> Result<CatalogSnapshot, SourceError> {
-        let projects = self.connection.list_projects()?;
+        let mut projects = self.reader.projects()?;
+        if let Some(allowlist) = &request.project_allowlist {
+            let allowed = allowlist.iter().collect::<HashSet<_>>();
+            projects.retain(|project| allowed.contains(&project.project_id));
+        }
         let project_id = request.project_id.as_ref().filter(|project_id| {
             projects
                 .iter()
@@ -77,7 +91,7 @@ impl ReadSession {
         );
         let mut runs = Vec::new();
         for project_id in projects_to_load {
-            let mut project_runs = self.connection.list_runs(project_id, None, None, 0)?;
+            let mut project_runs = self.reader.runs(project_id)?;
             project_runs.reverse();
             runs.extend(project_runs);
         }
@@ -96,9 +110,9 @@ impl ReadSession {
                 .iter()
                 .any(|project| &project.project_id == project_id)
         });
-        let mut statuses = runs
+        let mut known_runs = runs
             .iter()
-            .map(|run| ((run.project_id.clone(), run.run_id.clone()), run.status))
+            .map(|run| ((run.project_id.clone(), run.run_id.clone()), run.clone()))
             .collect::<HashMap<_, _>>();
         for requested_project in requested
             .iter()
@@ -108,20 +122,19 @@ impl ReadSession {
             if project_id == Some(requested_project) {
                 continue;
             }
-            statuses.extend(
-                self.connection
-                    .list_runs(requested_project, None, None, 0)?
+            known_runs.extend(
+                self.reader
+                    .runs(requested_project)?
                     .into_iter()
-                    .map(|run| ((run.project_id, run.run_id), run.status)),
+                    .map(|run| ((run.project_id.clone(), run.run_id.clone()), run)),
             );
         }
-        let reader = ProjectMetricReader::new(&self.connection);
         let mut metric_keys = BTreeMap::new();
         for (project_id, run_id) in requested {
-            let Some(status) = statuses.get(&(project_id, run_id.clone())) else {
+            let Some(run) = known_runs.get(&(project_id, run_id)) else {
                 continue;
             };
-            for aggregate in reader.list_metrics(&run_id, *status)? {
+            for aggregate in self.reader.metrics(run)? {
                 metric_keys.insert(
                     aggregate.metric_key.as_str().to_owned(),
                     aggregate.metric_key,
@@ -137,6 +150,10 @@ impl ReadSession {
 
     pub(crate) const fn connection(&self) -> &ProjectConnection {
         &self.connection
+    }
+
+    pub(crate) const fn reader(&self) -> &Reader {
+        &self.reader
     }
 }
 
@@ -158,7 +175,7 @@ mod tests {
         fs::create_dir(&config_dir)?;
         fs::write(
             config_dir.join("config.toml"),
-            "data_path = \"s3://bucket/data\"\n",
+            "schema_version = 1\ndata_path = \"s3://bucket/data\"\n",
         )?;
 
         let error = ReadSession::open_existing(root.path()).err();
@@ -206,6 +223,7 @@ mod tests {
 
         let session = ReadSession::open_existing(root.path())?;
         let snapshot = session.discover(&DiscoveryRequest {
+            project_allowlist: None,
             project_id: Some(project.project_id),
             selected_run_ids: vec![first.run_id, RunId::from_string("removed")],
             metric_runs: vec![(other_project.project_id, other.run_id)],
@@ -227,16 +245,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["latency", "loss"]
         );
-        let all_runs = session
-            .try_clone()?
-            .discover(&DiscoveryRequest::default())?;
+        let all_runs = session.try_clone()?.discover(&DiscoveryRequest {
+            project_allowlist: Some(vec![ProjectId::from_string("project-1")]),
+            ..DiscoveryRequest::default()
+        })?;
+        assert_eq!(all_runs.projects.len(), 1);
         assert_eq!(
             all_runs
                 .runs
                 .iter()
                 .map(|run| run.run_id.as_str())
                 .collect::<Vec<_>>(),
-            ["run-2", "run-1", "run-3"]
+            ["run-2", "run-1"]
         );
         Ok(())
     }

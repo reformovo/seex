@@ -113,6 +113,104 @@ impl MetricReader for ParquetMetricReader<'_> {
     }
 }
 
+/// Owned reader for a standalone Seex Parquet dataset.
+pub struct StandaloneMetricReader {
+    connection: Connection,
+    source: ParquetSource,
+    schema: SchemaReport,
+}
+
+impl StandaloneMetricReader {
+    /// Opens an isolated in-memory query connection and validates the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for DuckDB failures or an incompatible Parquet schema.
+    pub fn open(source: ParquetSource) -> Result<Self, StorageError> {
+        let connection = Connection::open_in_memory()?;
+        let schema = inspect_schema(&connection, &source)?;
+        Ok(Self {
+            connection,
+            source,
+            schema,
+        })
+    }
+
+    pub const fn schema(&self) -> &SchemaReport {
+        &self.schema
+    }
+
+    /// Queries one effective metric series.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] for query or conversion failures.
+    pub fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError> {
+        query_metric(
+            &self.connection,
+            MetricSource::Parquet(self.source.location()),
+            query,
+        )
+    }
+
+    /// Queries Step facts or reports a missing Run start for elapsed time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] for query or conversion failures.
+    pub fn query_aligned_metric(
+        &self,
+        query: &AlignmentQuery,
+    ) -> Result<AlignmentQueryResult, StorageError> {
+        validate_alignment_identity(query)?;
+        if matches!(query.axis, AlignmentAxis::ElapsedTime) {
+            return Ok(AlignmentQueryResult {
+                points: Vec::new(),
+                source_row_count: 0,
+                reasons: vec![AlignmentReason::MissingRunStart],
+            });
+        }
+        query_aligned_metric(
+            &self.connection,
+            AlignmentSource::Parquet(self.source.location()),
+            query,
+            None,
+        )
+    }
+
+    /// Queries absolute timestamps without requiring Run metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] for query or conversion failures.
+    pub fn query_timestamp_metric(
+        &self,
+        query: &AlignmentQuery,
+    ) -> Result<AlignmentQueryResult, StorageError> {
+        let mut query = query.clone();
+        query.axis = AlignmentAxis::ElapsedTime;
+        query_aligned_metric(
+            &self.connection,
+            AlignmentSource::Parquet(self.source.location()),
+            &query,
+            Some(0),
+        )
+    }
+}
+
+impl MetricReader for StandaloneMetricReader {
+    fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError> {
+        Self::query_metric(self, query)
+    }
+
+    fn query_aligned_metric(
+        &self,
+        query: &AlignmentQuery,
+    ) -> Result<AlignmentQueryResult, StorageError> {
+        Self::query_aligned_metric(self, query)
+    }
+}
+
 fn inspect_schema(
     connection: &Connection,
     source: &ParquetSource,
@@ -364,6 +462,37 @@ mod tests {
         assert!(result.points.is_empty());
         assert_eq!(result.source_row_count, 0);
         assert_eq!(result.reasons, vec![AlignmentReason::MissingRunStart]);
+        Ok(())
+    }
+
+    #[test]
+    fn owned_reader_queries_step_and_absolute_timestamp_facts() -> Result<(), Box<dyn Error>> {
+        const EPOCH_MILLIS: i64 = 1_767_225_600_000;
+
+        let connection = Connection::open_in_memory()?;
+        let parquet = TestParquet::create(&connection)?;
+        let reader = StandaloneMetricReader::open(ParquetSource::new(parquet.location.clone())?)?;
+
+        let steps = reader.query_metric(&query(ReductionPolicy::Full)?)?;
+        let timestamps = reader.query_timestamp_metric(&aligned_query(
+            AlignmentAxis::Step,
+            AlignmentViewport::new(EPOCH_MILLIS + 1_000, EPOCH_MILLIS + 3_000)?,
+            AlignmentReduction::Full,
+        ))?;
+        let relative = reader.query_aligned_metric(&aligned_query(
+            AlignmentAxis::ElapsedTime,
+            AlignmentViewport::new(0, 10_000)?,
+            AlignmentReduction::Full,
+        ))?;
+
+        assert_eq!(steps.source_row_count, 3);
+        assert!(
+            timestamps
+                .points
+                .iter()
+                .all(|point| { (EPOCH_MILLIS..=EPOCH_MILLIS + 4_000).contains(&point.axis_value) })
+        );
+        assert_eq!(relative.reasons, [AlignmentReason::MissingRunStart]);
         Ok(())
     }
 

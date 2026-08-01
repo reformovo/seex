@@ -693,7 +693,7 @@ mod tests {
     fn overview_request(metric: &str) -> ReadRequest {
         ReadRequest::Overview(OverviewRequest {
             selection: CurveSelection {
-                source_id: DataSourceId::from_string("source"),
+                source_id: DataSourceId::new("source").expect("test alias should be valid"),
                 runs: Vec::new(),
                 metric_key: MetricKey::from_string(metric),
                 axis: CurveAxis::Step,
@@ -743,7 +743,7 @@ mod tests {
         let mut pending = PendingRequests::default();
         for generation in [1, 2] {
             pending.push(TaggedRequest {
-                source_id: DataSourceId::from_string("source"),
+                source_id: DataSourceId::new("source").expect("test alias should be valid"),
                 generation: Generation(generation),
                 request: ReadRequest::Discover(DiscoveryRequest::default()),
                 _ticket: RequestTicket::default(),
@@ -767,7 +767,7 @@ mod tests {
         };
         for (generation, metric) in [(1, "loss"), (2, "accuracy"), (3, "loss")] {
             pending.push(TaggedRequest {
-                source_id: DataSourceId::from_string("source"),
+                source_id: DataSourceId::new("source").expect("test alias should be valid"),
                 generation: Generation(generation),
                 request: overview_request(metric),
                 _ticket: RequestTicket::default(),
@@ -795,7 +795,7 @@ mod tests {
         for (generation, metric) in [(1, "loss"), (2, "accuracy")] {
             request_tx
                 .send(TaggedRequest {
-                    source_id: DataSourceId::from_string("source"),
+                    source_id: DataSourceId::new("source").expect("test alias should be valid"),
                     generation: Generation(generation),
                     request: overview_request(metric),
                     _ticket: RequestTicket::default(),
@@ -846,7 +846,7 @@ mod tests {
     fn queued_newer_generation_supersedes_before_execution() {
         let (request_tx, request_rx) = mpsc::channel();
         let current = TaggedRequest {
-            source_id: DataSourceId::from_string("source"),
+            source_id: DataSourceId::new("source").expect("test alias should be valid"),
             generation: Generation(1),
             request: overview_request("loss"),
             _ticket: RequestTicket::default(),
@@ -854,7 +854,7 @@ mod tests {
         let identity = RequestIdentity::new(&current);
         request_tx
             .send(TaggedRequest {
-                source_id: DataSourceId::from_string("source"),
+                source_id: DataSourceId::new("source").expect("test alias should be valid"),
                 generation: Generation(2),
                 request: overview_request("loss"),
                 _ticket: RequestTicket::default(),

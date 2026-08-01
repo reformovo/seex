@@ -1,13 +1,62 @@
 use gpui::{Modifiers, TestAppContext, px, size};
 
+use crate::config::{ConfigScope, EditableConfig};
+use crate::domain::SourceAlias;
+
 use super::super::test_support::*;
 use super::*;
+
+#[gpui::test]
+fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().expect("test directory should be created");
+    cx.executor().allow_parking();
+
+    let (window, cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    cx.run_until_parked();
+
+    window
+        .read_with(&cx, |viewer, cx| {
+            assert!(viewer.session_snapshot(cx).sources.is_empty());
+            assert!(viewer.session.read(cx).transient_error.is_none());
+        })
+        .expect("viewer should remain open");
+}
+
+#[gpui::test]
+fn startup_loads_sources_from_project_configuration(cx: &mut TestAppContext) {
+    let (root, project_id, _) = fixture(1);
+    let alias = SourceAlias::new("configured-source").expect("test alias should be valid");
+    let mut config =
+        EditableConfig::load(root.path().join(".seex/config.toml"), ConfigScope::Project)
+            .expect("project configuration should load");
+    config
+        .set_source(&alias, root.path(), std::slice::from_ref(&project_id))
+        .expect("test Source should be configured");
+    config.save().expect("project configuration should save");
+    cx.executor().allow_parking();
+
+    let (window, cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    wait_for_viewer(window, &cx, source_catalog_loaded);
+
+    window
+        .read_with(&cx, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let source = snapshot
+                .sources
+                .iter()
+                .find(|source| source.source_id == DataSourceId::from_alias(&alias))
+                .expect("configured Source should be loaded");
+            assert_eq!(source.root_path, root.path());
+            assert_eq!(source.project_allowlist, [project_id]);
+        })
+        .expect("viewer should remain open");
+}
 
 #[gpui::test]
 fn application_shell_preserves_pinned_geometry_at_representative_sizes(cx: &mut TestAppContext) {
     let (root, _, _) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
 
     for window_size in [(600., 520.), (800., 600.), (1_440., 900.)] {
@@ -174,7 +223,7 @@ fn application_shell_preserves_pinned_geometry_at_representative_sizes(cx: &mut 
 fn worker_events_update_the_entity_without_render_polling(cx: &mut TestAppContext) {
     let (root, _, _) = fixture(1);
     cx.executor().allow_parking();
-    let (window, cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
 
     wait_for_viewer(window, &cx, source_catalog_loaded);
 }
@@ -183,7 +232,7 @@ fn worker_events_update_the_entity_without_render_polling(cx: &mut TestAppContex
 fn popovers_close_after_clicking_outside_their_controls(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(2);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 2);
 

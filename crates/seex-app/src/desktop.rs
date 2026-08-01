@@ -14,7 +14,6 @@ use app::{ViewerApp, ViewerAssets};
 actions!(
     seex_app,
     [
-        OpenProject,
         Refresh,
         ResetView,
         ToggleProjectSidebar,
@@ -38,7 +37,6 @@ pub fn run(project_path: Option<PathBuf>) {
         .with_assets(ViewerAssets)
         .run(move |cx: &mut App| {
             cx.bind_keys([
-                KeyBinding::new("cmd-o", OpenProject, None),
                 KeyBinding::new("cmd-r", Refresh, None),
                 KeyBinding::new("cmd-shift-b", ToggleProjectSidebar, None),
                 KeyBinding::new("cmd-shift-m", ToggleMetricSidebar, None),
@@ -84,10 +82,7 @@ fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "File".into(),
-            items: vec![
-                MenuItem::action("Import Source…", OpenProject),
-                MenuItem::action("Refresh", Refresh),
-            ],
+            items: vec![MenuItem::action("Refresh", Refresh)],
         },
         Menu {
             name: "View".into(),

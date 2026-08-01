@@ -2,12 +2,61 @@ use gpui::{TestAppContext, px};
 
 use super::super::test_support::*;
 use super::*;
-use crate::workbench::document::SavedRunRef;
+use crate::config::ConfiguredSource;
+use crate::domain::SourceAlias;
+use crate::workbench::toml_document::{
+    SavedAnalysisView as TomlAnalysisView, SavedLayout, SavedProjectRef, SavedRunRef as TomlRunRef,
+    TomlWorkbenchDocument,
+};
+
+#[gpui::test]
+fn toml_workbench_restores_alias_qualified_runs(cx: &mut TestAppContext) {
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let document = TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout::default(),
+        expanded_projects: Vec::new(),
+        pinned_projects: Vec::new(),
+        archived_projects: Vec::new(),
+        archived_runs: Vec::new(),
+        views: vec![TomlAnalysisView {
+            name: "Restored".to_owned(),
+            runs: vec![TomlRunRef {
+                source_alias: alias.clone(),
+                project_id: ProjectId::from_string("project"),
+                run_id: RunId::from_string("run"),
+            }],
+            baseline: None,
+            pinned_runs: Vec::new(),
+            metrics: Vec::new(),
+            metric_heights: Vec::new(),
+            selected_metric: None,
+            axis: AlignmentAxis::Step,
+            viewport: None,
+        }],
+    };
+    let (window, mut cx) = open_viewer(cx, None);
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.restore_toml_workbench(document, cx);
+        })
+        .expect("viewer should remain open");
+
+    window
+        .read_with(&cx, |viewer, cx| {
+            assert_eq!(
+                viewer.session_snapshot(cx).views.active().runs[0].source_id,
+                DataSourceId::from_alias(&alias)
+            );
+        })
+        .expect("viewer should remain open");
+}
 
 #[gpui::test]
 fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
-    let path = root.path().join("workbench.state");
+    let path = root.path().join("workbench.toml");
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer(cx, None);
     window
@@ -22,7 +71,8 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
             viewer.bottom_inspector.update(cx, |inspector, _| {
                 inspector.height = px(260.);
             });
-            let source_id = DataSourceId::from_path(root.path());
+            let alias = SourceAlias::new("research").expect("test alias should be valid");
+            let source_id = DataSourceId::from_alias(&alias);
             let project_id = ProjectId::from_string("project");
             viewer.session.update(cx, |session, session_cx| {
                 session.workbench_path = Some(path.clone());
@@ -82,26 +132,31 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
     }
     let loaded = loaded.expect("workbench document should be saved");
 
-    assert!(!loaded.project_sidebar_visible);
-    assert_eq!(loaded.project_sidebar_width, 288.);
-    assert!(loaded.metric_sidebar_compact);
-    assert_eq!(loaded.bottom_inspector_height, 260.);
+    assert!(!loaded.layout.project_sidebar_visible);
+    assert_eq!(loaded.layout.project_sidebar_width, 288.);
+    assert!(loaded.layout.metric_sidebar_compact);
+    assert_eq!(loaded.layout.bottom_inspector_height, 260.);
     assert_eq!(loaded.views.len(), 1);
     assert!(loaded.views[0].metrics.is_empty());
     assert_eq!(loaded.pinned_projects.len(), 1);
     assert_eq!(loaded.archived_projects.len(), 1);
-    assert_eq!(loaded.removed_projects.len(), 1);
     assert_eq!(loaded.archived_runs.len(), 1);
     assert!(loaded.views[0].baseline.is_some());
     assert_eq!(loaded.views[0].pinned_runs.len(), 1);
+    assert!(
+        !std::fs::read_to_string(path)
+            .expect("saved workbench should be UTF-8")
+            .contains("removed_projects")
+    );
 }
 
 #[gpui::test]
 fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
     let document = saved_workbench(
-        root.path().to_path_buf(),
-        project_id,
+        alias.clone(),
+        project_id.clone(),
         vec![run_id.clone(), RunId::from_string("removed")],
         "unknown-metric",
     );
@@ -109,7 +164,15 @@ fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppCo
     let (window, mut cx) = open_viewer(cx, None);
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.restore_workbench(document, cx);
+            viewer.open_configured_sources(
+                vec![ConfiguredSource {
+                    alias,
+                    root_path: root.path().to_path_buf(),
+                    projects: vec![project_id],
+                }],
+                cx,
+            );
+            viewer.restore_toml_workbench(document, cx);
             cx.notify();
         })
         .expect("viewer should remain open");
@@ -146,29 +209,46 @@ fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppCo
 fn restored_missing_sources_retain_state_without_rendering_runs(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     let missing = root.path().join("moved-source");
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let project_id = ProjectId::from_string("project");
     let mut document = saved_workbench(
-        missing.clone(),
-        ProjectId::from_string("project"),
+        alias.clone(),
+        project_id.clone(),
         vec![RunId::from_string("run")],
         "loss",
     );
-    let saved_run = |run_id: &str| SavedRunRef {
-        source_path: missing.clone(),
-        project_id: ProjectId::from_string("project"),
+    let saved_run = |run_id: &str| TomlRunRef {
+        source_alias: alias.clone(),
+        project_id: project_id.clone(),
         run_id: RunId::from_string(run_id),
     };
     document.views[0].baseline = Some(saved_run("baseline"));
     document.views[0].pinned_runs = vec![saved_run("pinned")];
     document.archived_runs = vec![saved_run("archived")];
-    document.project_sidebar_visible = true;
+    document.layout.project_sidebar_visible = true;
     let (window, mut cx) = open_viewer(cx, None);
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.restore_workbench(document, cx);
+            viewer.open_configured_sources(
+                vec![ConfiguredSource {
+                    alias,
+                    root_path: missing.clone(),
+                    projects: vec![project_id],
+                }],
+                cx,
+            );
+            viewer.restore_toml_workbench(document, cx);
             cx.notify();
         })
         .expect("viewer should remain open");
 
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .sources
+            .iter()
+            .any(|source| matches!(source.status, SourceStatus::Failed(_)))
+    });
     let status = window
         .read_with(&cx, |viewer, cx| {
             viewer
@@ -204,26 +284,30 @@ fn restored_missing_sources_retain_state_without_rendering_runs(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn restored_organization_records_import_their_referenced_sources(cx: &mut TestAppContext) {
+fn restored_organization_records_use_configured_sources(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     let missing = root.path().join("archived-source");
-    let mut document = saved_workbench(
-        missing.clone(),
-        ProjectId::from_string("project"),
-        Vec::new(),
-        "loss",
-    );
-    document.sources.clear();
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let project_id = ProjectId::from_string("project");
+    let mut document = saved_workbench(alias.clone(), project_id.clone(), Vec::new(), "loss");
     document.views.clear();
     document.archived_projects.push(SavedProjectRef {
-        source_path: missing.clone(),
-        project_id: ProjectId::from_string("project"),
+        source_alias: alias.clone(),
+        project_id: project_id.clone(),
     });
     let (window, mut cx) = open_viewer(cx, None);
 
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.restore_workbench(document, cx);
+            viewer.open_configured_sources(
+                vec![ConfiguredSource {
+                    alias,
+                    root_path: missing.clone(),
+                    projects: vec![project_id],
+                }],
+                cx,
+            );
+            viewer.restore_toml_workbench(document, cx);
             cx.notify();
         })
         .expect("viewer should remain open");

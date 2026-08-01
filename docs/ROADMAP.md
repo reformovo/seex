@@ -35,20 +35,30 @@ begin only after Desktop uses Reader.
 
 ### Execution Contract
 
-- [ ] Before every candidate, record its type, primary metric, protected
-  metrics, fixture, commands, and no more than five files. Target no more than
-  200 changed lines; mechanical source moves and this roadmap archive are the
-  declared exceptions.
+- [ ] Keep routine implementation items fast: declare no more than five files,
+  target no more than 200 changed lines, and run formatting, type, lint, and
+  affected correctness tests. Add a single release smoke when the item changes
+  startup, packaging, or a performance-sensitive path; routine items do not
+  require paired performance capture.
+- [ ] Before every migration or optimization checkpoint, record its type,
+  primary metric, protected metrics, fixture, commands, and no more than five
+  directly affected files. Mechanical source moves and this roadmap archive
+  are the declared scope exceptions.
 - [ ] Keep mechanical migration and performance optimization in separate
   candidates. Use Git renames for source moves and leave the workspace buildable
   after every accepted candidate.
-- [ ] Accept a migration candidate only when correctness and hard floors pass
-  and every reliable protected metric regresses by no more than 3%. It need not
-  improve performance.
+- [ ] Run migration checkpoints at boundary switches and after a coherent
+  migration slice, not after every scaffolding commit. Accept them only when
+  correctness and hard floors pass and three alternating baseline/candidate
+  pairs keep every reliable protected median within 3%. They need not improve
+  performance.
 - [ ] Accept an optimization candidate only when correctness and hard floors
   pass; at least 6 of 7 alternating baseline/candidate pairs improve; the
   primary median improves by at least 5%; protected medians regress by no more
   than 3%; and each deciding metric has relative MAD no greater than 2%.
+- [ ] Keep milestone exit gates at seven alternating pairs across every affected
+  domain. The original baseline is permanent; update the rolling baseline only
+  after an accepted migration checkpoint, optimization, or milestone exit.
 - [ ] Treat an improvement below 5%, an unreliable metric, or inconsistent
   pairs as no change. Reject correctness, schema, API parity, and hard-gate
   failures immediately.
@@ -128,51 +138,51 @@ and the shipped Python API remains unchanged until U4.
 
 #### U1.1: Configuration and document foundation
 
-- [ ] Define schema version 1 for global `~/.seex/config.toml` and project
+- [x] Define schema version 1 for global `~/.seex/config.toml` and project
   `<root>/.seex/config.toml`. Resolve explicit SDK arguments, project config,
   global config, and built-in defaults in that order; merge S3 tables field by
   field and ignore inherited credentials when effective `data_path` is local.
-- [ ] Keep field-level ownership explicit: the SDK reads storage and S3 keys;
+- [x] Keep field-level ownership explicit: the SDK reads storage and S3 keys;
   Desktop reads and edits Sources. Share contract fixtures without exposing
   Desktop configuration types through the public SDK.
-- [ ] Introduce stable Source aliases and represent Viewer Project and Run
+- [x] Introduce stable Source aliases and represent Viewer Project and Run
   references by alias rather than path. Validate alias conflicts and Source
   Project allowlists, and load Runs only for allowed Projects.
-- [ ] Implement schema version 1 TOML workbench encoding, decoding, and
-  validation. Reject the legacy `seex-workbench 1` format without migration.
-- [ ] Use the approved direct `toml_edit` dependency for Desktop
+- [x] Implement schema version 1 TOML workbench encoding, decoding, and
+  validation. Reject malformed and unsupported documents without migration.
+- [x] Use the approved direct `toml_edit` dependency for Desktop
   read-modify-write. Preserve comments, unknown fields, native storage fields,
   and secrets; require owner-only permissions for global secrets; write through
   a same-directory temporary file and reject a stale read fingerprint.
-- [ ] Prove SDK `init`, `log`, `finish`, and `shutdown` may read effective
+- [x] Prove SDK `init`, `log`, `finish`, and `shutdown` may read effective
   configuration but never rewrite either config or workbench file.
 
 #### U1.2: Facade and Reader migration
 
-- [ ] Create unpublished `crates/seex` as a facade over the current
+- [x] Create unpublished `crates/seex` as a facade over the current
   `seex-model`, `seex-storage`, and `seex-core` crates. Keep every workspace
   target buildable.
-- [ ] Define public `Reader`/`ReaderBuilder`, `MetricAxis`, typed half-open
+- [x] Define public `Reader`/`ReaderBuilder`, `MetricAxis`, typed half-open
   ranges, strict caller-selected `max_points`, and `MetricSeries`.
-- [ ] Keep pixels out of public Rust and Python queries. Desktop alone converts
+- [x] Keep pixels out of public Rust and Python queries. Desktop alone converts
   a closed viewport into crate-private options for one real neighbor on each
   side, without weakening the public point bound.
-- [ ] Make `MetricSeries` retain real samples, source count, downsampled state,
+- [x] Make `MetricSeries` retain real samples, source count, downsampled state,
   completeness, and reasons, and expose an Arrow PyCapsule stream directly.
-- [ ] Keep `ProjectConnection`, `ProjectMetricReader`, `NativeQueryStore`,
+- [x] Keep `ProjectConnection`, `ProjectMetricReader`, `NativeQueryStore`,
   storage errors, DuckDB types, and local-only source policy private.
-- [ ] Migrate Desktop discovery and curve reads to Reader over configured
+- [x] Migrate Desktop discovery and curve reads to Reader over configured
   Source aliases and Project allowlists. Preserve four-way scheduling,
   generation reconciliation, hover/locked-cursor real-sample semantics, and
   source-specific failures.
-- [ ] Route PyO3 through a temporary compatibility adapter without changing the
+- [x] Route PyO3 through a temporary compatibility adapter without changing the
   shipped Python surface; defer the breaking public API switch to U4.
-- [ ] Cover configuration layering, path bases, schema and alias conflicts,
+- [x] Cover configuration layering, path bases, schema and alias conflicts,
   allowlists, TOML round trips, source preservation, concurrent edits, and
   byte-for-byte SDK non-mutation, plus Reader/native/standalone parity, all
   axes and range types, strict bounds, Desktop neighbors, missing metadata,
   and Arrow output.
-- [ ] Exit U1 only when configuration and Reader correctness pass and query,
+- [x] Exit U1 only when configuration and Reader correctness pass and query,
   reporting, Viewer CPU, and RSS protected metrics are reliable and regress by
   no more than 3% from the rolling baseline.
 
@@ -362,7 +372,7 @@ management, autosave, and export/import as separate candidates.
   missing-reference recovery, archive/unimport behavior, and failed import
   without a live-state switch.
 - [ ] Pass pure Rust tests for configuration, permissions, aliases, codecs,
-  legacy rejection, and source preservation; pass GPUI tests for Source
+  unsupported-schema rejection, and source preservation; pass GPUI tests for Source
   confirmation, reload, autosave, archive/unimport, recovery, export, and
   import. Run `cargo check`, `cargo test`, and the protected Viewer gates.
 

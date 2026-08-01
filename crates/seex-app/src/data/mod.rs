@@ -12,6 +12,7 @@ pub use source::{ReadSession, SourceError};
 /// Catalog state requested for one viewer selection.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DiscoveryRequest {
+    pub project_allowlist: Option<Vec<ProjectId>>,
     pub project_id: Option<ProjectId>,
     pub selected_run_ids: Vec<RunId>,
     pub metric_runs: Vec<(ProjectId, RunId)>,

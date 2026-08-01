@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::config::ConfiguredSource;
 use crate::data::CatalogSnapshot;
 use crate::data::worker::{
     Generation, ReadConcurrencyGate, ReadEvent, ReadEventReceiver, ReadRequest, ReadWorker,
@@ -26,6 +27,7 @@ pub enum SourceStatus {
 pub struct ImportedSource {
     pub source_id: DataSourceId,
     pub root_path: PathBuf,
+    pub project_allowlist: Vec<ProjectId>,
     pub status: SourceStatus,
     pub catalog: CatalogSnapshot,
 }
@@ -60,21 +62,31 @@ impl SourceRegistry {
             .collect()
     }
 
-    /// Retains a source without opening its native catalog.
-    pub fn import(&mut self, root_path: PathBuf) -> DataSourceId {
-        let source_id = DataSourceId::from_path(&root_path);
-        if self.entry(&source_id).is_none() {
+    /// Installs or replaces one validated configured Source by stable alias.
+    pub fn configure(&mut self, configured: ConfiguredSource) -> DataSourceId {
+        let source_id = DataSourceId::from_alias(&configured.alias);
+        let source = ImportedSource {
+            source_id: source_id.clone(),
+            root_path: configured.root_path,
+            project_allowlist: configured.projects,
+            status: SourceStatus::Dormant,
+            catalog: CatalogSnapshot {
+                projects: Vec::new(),
+                runs: Vec::new(),
+                metric_keys: Vec::new(),
+            },
+        };
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.source.source_id == source_id)
+        {
+            entry.source = source;
+            entry.worker = None;
+            entry.catalog_requests.clear();
+        } else {
             self.entries.push(SourceEntry {
-                source: ImportedSource {
-                    source_id: source_id.clone(),
-                    root_path,
-                    status: SourceStatus::Dormant,
-                    catalog: CatalogSnapshot {
-                        projects: Vec::new(),
-                        runs: Vec::new(),
-                        metric_keys: Vec::new(),
-                    },
-                },
+                source,
                 worker: None,
                 catalog_requests: HashMap::new(),
             });
@@ -166,14 +178,17 @@ impl SourceRegistry {
         &mut self,
         source_id: &DataSourceId,
         generation: Generation,
-        request: ReadRequest,
+        mut request: ReadRequest,
     ) -> Result<(), SourceRegistryError> {
         let entry = self.entry_mut(source_id)?;
         let Some(worker) = entry.worker.as_ref() else {
             return Err(SourceRegistryError::Inactive(source_id.clone()));
         };
         entry.source.status = SourceStatus::Loading;
-        if let ReadRequest::Discover(discovery) = &request {
+        if let ReadRequest::Discover(discovery) = &mut request {
+            if !entry.source.project_allowlist.is_empty() {
+                discovery.project_allowlist = Some(entry.source.project_allowlist.clone());
+            }
             entry.source.catalog.metric_keys.clear();
             entry
                 .catalog_requests
@@ -277,20 +292,30 @@ mod tests {
     use seex_model::run::{Run, RunId, RunStatus};
     use seex_model::types::{Project, ProjectId};
 
+    use crate::config::ConfiguredSource;
     use crate::data::CatalogSnapshot;
     use crate::data::worker::{ReadKind, ReadSnapshot};
+    use crate::domain::SourceAlias;
 
     use super::{
         DataSourceId, Generation, ReadEvent, ReadRequest, SourceRegistry, SourceRegistryError,
         SourceStatus, merge_catalog,
     };
 
+    fn configured_source(alias: &str, path: &Path) -> ConfiguredSource {
+        ConfiguredSource {
+            alias: SourceAlias::new(alias).expect("test alias should be valid"),
+            root_path: path.to_path_buf(),
+            projects: vec![ProjectId::from_string("project")],
+        }
+    }
+
     #[test]
-    fn importing_sources_is_retained_ordered_and_lazy() {
+    fn configured_sources_are_retained_ordered_and_lazy() {
         let mut registry = SourceRegistry::default();
-        let first = registry.import(Path::new("first").to_path_buf());
-        registry.import(Path::new("second").to_path_buf());
-        registry.import(Path::new("first").to_path_buf());
+        let first = registry.configure(configured_source("first", Path::new("first")));
+        registry.configure(configured_source("second", Path::new("second")));
+        registry.configure(configured_source("first", Path::new("first")));
 
         assert_eq!(
             registry
@@ -299,16 +324,48 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (&first, &SourceStatus::Dormant),
-                (&DataSourceId::from_string("second"), &SourceStatus::Dormant),
+                (
+                    &DataSourceId::new("second").expect("test alias should be valid"),
+                    &SourceStatus::Dormant
+                ),
             ]
         );
         assert!(registry.entries.iter().all(|entry| entry.worker.is_none()));
     }
 
     #[test]
+    fn configured_source_keeps_alias_identity_when_its_path_changes() {
+        let mut registry = SourceRegistry::default();
+        let alias = SourceAlias::new("research").expect("test alias should be valid");
+        let source_id = registry.configure(ConfiguredSource {
+            alias: alias.clone(),
+            root_path: Path::new("first").to_path_buf(),
+            projects: vec![ProjectId::from_string("project-1")],
+        });
+        let configured_again = registry.configure(ConfiguredSource {
+            alias,
+            root_path: Path::new("second").to_path_buf(),
+            projects: vec![ProjectId::from_string("project-2")],
+        });
+
+        assert_eq!(
+            source_id,
+            DataSourceId::new("research").expect("test alias should be valid")
+        );
+        assert_eq!(configured_again, source_id);
+        assert_eq!(registry.entries.len(), 1);
+        assert_eq!(registry.entries[0].source.root_path, Path::new("second"));
+        assert_eq!(
+            registry.entries[0].source.project_allowlist[0].as_str(),
+            "project-2"
+        );
+        assert!(registry.entries[0].worker.is_none());
+    }
+
+    #[test]
     fn submitting_to_a_dormant_source_is_explicit() {
         let mut registry = SourceRegistry::default();
-        let source_id = registry.import(Path::new("missing").to_path_buf());
+        let source_id = registry.configure(configured_source("missing", Path::new("missing")));
 
         let error = registry
             .submit(
@@ -324,7 +381,7 @@ mod tests {
     #[test]
     fn activation_starts_a_worker_without_opening_the_catalog() {
         let mut registry = SourceRegistry::default();
-        let source_id = registry.import(Path::new("missing").to_path_buf());
+        let source_id = registry.configure(configured_source("missing", Path::new("missing")));
 
         let events = registry
             .activate(&source_id)
@@ -347,8 +404,8 @@ mod tests {
     #[test]
     fn events_update_only_their_matching_source_status() {
         let mut registry = SourceRegistry::default();
-        let first = registry.import(Path::new("first").to_path_buf());
-        let second = registry.import(Path::new("second").to_path_buf());
+        let first = registry.configure(configured_source("first", Path::new("first")));
+        let second = registry.configure(configured_source("second", Path::new("second")));
 
         registry.apply_event(&ReadEvent {
             source_id: first.clone(),
@@ -430,16 +487,16 @@ mod tests {
     }
 
     #[test]
-    fn removing_an_import_does_not_delete_native_data() -> Result<(), Box<dyn std::error::Error>> {
+    fn removing_a_source_does_not_delete_native_data() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let marker = root.path().join("native-data");
         std::fs::write(&marker, "retained")?;
         let mut registry = SourceRegistry::default();
-        let source_id = registry.import(root.path().to_path_buf());
+        let source_id = registry.configure(configured_source("source", root.path()));
 
         let removed = registry
             .remove(&source_id)
-            .expect("imported source should be removable");
+            .expect("configured Source should be removable");
 
         assert_eq!(removed.root_path, root.path());
         assert_eq!(std::fs::read_to_string(marker)?, "retained");

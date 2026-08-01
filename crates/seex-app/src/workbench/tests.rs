@@ -1,7 +1,10 @@
 use seex_chart_core::AxisRange;
 use seex_model::alignment::AlignmentAxis;
 
-use crate::workbench::document::{SavedAnalysisView, SavedProjectRef, SavedRunRef};
+use crate::domain::SourceAlias;
+use crate::workbench::toml_document::{
+    SavedAnalysisView, SavedLayout, SavedProjectRef, SavedRunRef, TomlWorkbenchDocument,
+};
 
 use super::*;
 
@@ -21,7 +24,7 @@ fn run_limit_allows_removal_and_is_independent_per_view() {
     let mut views = AnalysisViews::default();
     let run = |index: usize| {
         RunRef::new(
-            DataSourceId::from_string("source"),
+            DataSourceId::new("source").expect("test alias should be valid"),
             ProjectId::from_string("project"),
             RunId::from_string(format!("run-{index}")),
         )
@@ -58,7 +61,7 @@ fn run_visibility_changes_preserve_loaded_panel_state() {
     let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
     views.begin_active_panel_read(&panel_id, ReadKind::Detail, Generation(7));
     let run = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("run"),
     );
@@ -93,7 +96,7 @@ fn run_organization_changes_preserve_loaded_panel_state() {
     let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
     views.begin_active_panel_read(&panel_id, ReadKind::Detail, Generation(9));
     let run = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("run"),
     );
@@ -118,7 +121,7 @@ fn run_organization_changes_preserve_loaded_panel_state() {
 fn duplicated_views_copy_selection_without_sharing_mutation() {
     let mut views = AnalysisViews::default();
     let run = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         seex_model::types::ProjectId::from_string("project"),
         seex_model::run::RunId::from_string("run"),
     );
@@ -126,7 +129,7 @@ fn duplicated_views_copy_selection_without_sharing_mutation() {
         .toggle_active_run(run, true)
         .expect("first Run should be selected");
     let baseline = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("baseline"),
     );
@@ -134,7 +137,7 @@ fn duplicated_views_copy_selection_without_sharing_mutation() {
         .set_active_baseline(Some(baseline.clone()), true)
         .expect("baseline should fit the visible Run limit");
     let pinned = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("pinned"),
     );
@@ -217,19 +220,21 @@ fn metric_panel_heights_use_the_compact_bounded_range() {
 
 #[test]
 fn restore_reports_duplicate_identities_and_unknown_selection() {
+    let source_alias = SourceAlias::new("source").expect("test alias should be valid");
     let saved_run = SavedRunRef {
-        source_path: "/tmp/source".into(),
+        source_alias: source_alias.clone(),
         project_id: ProjectId::from_string("project"),
         run_id: RunId::from_string("run"),
     };
-    let document = WorkbenchDocument {
-        sources: vec![saved_run.source_path.clone()],
+    let document = TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout::default(),
+        expanded_projects: Vec::new(),
         pinned_projects: vec![SavedProjectRef {
-            source_path: saved_run.source_path.clone(),
+            source_alias,
             project_id: ProjectId::from_string("project"),
         }],
         archived_projects: Vec::new(),
-        removed_projects: Vec::new(),
         archived_runs: Vec::new(),
         views: vec![SavedAnalysisView {
             name: "Duplicates".to_owned(),
@@ -242,12 +247,6 @@ fn restore_reports_duplicate_identities_and_unknown_selection() {
             axis: AlignmentAxis::Step,
             viewport: Some(AxisRange::new(0., 1.).expect("viewport should be valid")),
         }],
-        active_view: 0,
-        project_sidebar_visible: true,
-        project_sidebar_width: 320.,
-        metric_sidebar_compact: false,
-        bottom_inspector_visible: false,
-        bottom_inspector_height: 220.,
     };
 
     let (views, issues) = AnalysisViews::restore(&document);
@@ -261,20 +260,21 @@ fn restore_reports_duplicate_identities_and_unknown_selection() {
 
 #[test]
 fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
-    let source_path = std::path::PathBuf::from("/tmp/offline-source");
+    let source_alias = SourceAlias::new("offline-source").expect("test alias should be valid");
     let project_id = ProjectId::from_string("project");
     let runs = (0..25)
         .map(|index| SavedRunRef {
-            source_path: source_path.clone(),
+            source_alias: source_alias.clone(),
             project_id: project_id.clone(),
             run_id: RunId::from_string(format!("run-{index}")),
         })
         .collect::<Vec<_>>();
-    let document = WorkbenchDocument {
-        sources: vec![source_path],
+    let document = TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout::default(),
+        expanded_projects: Vec::new(),
         pinned_projects: Vec::new(),
         archived_projects: Vec::new(),
-        removed_projects: Vec::new(),
         archived_runs: Vec::new(),
         views: vec![SavedAnalysisView {
             name: "Over limit".to_owned(),
@@ -287,16 +287,10 @@ fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
             axis: AlignmentAxis::Step,
             viewport: None,
         }],
-        active_view: 0,
-        project_sidebar_visible: true,
-        project_sidebar_width: 280.,
-        metric_sidebar_compact: false,
-        bottom_inspector_visible: false,
-        bottom_inspector_height: 220.,
     };
 
-    let decoded = WorkbenchDocument::decode(&document.encode())
-        .expect("v3 workbench document should round-trip");
+    let decoded = TomlWorkbenchDocument::decode(&document.encode())
+        .expect("schema-v1 workbench document should round-trip");
     let (views, issues) = AnalysisViews::restore(&decoded);
 
     assert!(issues.is_empty());
@@ -308,22 +302,17 @@ fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
 fn restored_organization_uses_composite_source_identities() {
     let project_id = ProjectId::from_string("shared-project");
     let saved_project = |source: &str| SavedProjectRef {
-        source_path: source.into(),
+        source_alias: SourceAlias::new(source).expect("test alias should be valid"),
         project_id: project_id.clone(),
     };
-    let document = WorkbenchDocument {
-        sources: vec!["/tmp/source-a".into(), "/tmp/source-b".into()],
-        pinned_projects: vec![saved_project("/tmp/source-a")],
-        archived_projects: vec![saved_project("/tmp/source-b")],
-        removed_projects: Vec::new(),
+    let document = TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout::default(),
+        expanded_projects: Vec::new(),
+        pinned_projects: vec![saved_project("source-a")],
+        archived_projects: vec![saved_project("source-b")],
         archived_runs: Vec::new(),
         views: Vec::new(),
-        active_view: 0,
-        project_sidebar_visible: true,
-        project_sidebar_width: 320.,
-        metric_sidebar_compact: false,
-        bottom_inspector_visible: false,
-        bottom_inspector_height: 220.,
     };
 
     let (views, issues) = AnalysisViews::restore(&document);
@@ -338,7 +327,7 @@ fn view_organization_is_local_while_archived_runs_are_shared() {
     let mut views = AnalysisViews::default();
     let run = |name: &str| {
         RunRef::new(
-            DataSourceId::from_string("source"),
+            DataSourceId::new("source").expect("test alias should be valid"),
             ProjectId::from_string("project"),
             RunId::from_string(name),
         )
@@ -376,7 +365,7 @@ fn view_organization_is_local_while_archived_runs_are_shared() {
 fn removed_projects_clear_every_view_without_touching_other_projects() {
     let mut views = AnalysisViews::default();
     let project = ProjectRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("removed"),
     );
     let run = |name: &str| {
@@ -462,7 +451,7 @@ fn metric_panels_keep_independent_generations_and_source_errors() {
         PanelReadMode::Replace,
         None,
         vec![SourceReadFailure {
-            source_id: DataSourceId::from_string("source-b"),
+            source_id: DataSourceId::new("source-b").expect("test alias should be valid"),
             message: "unavailable".to_owned(),
         }],
     ));

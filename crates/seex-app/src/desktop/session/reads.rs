@@ -1,20 +1,21 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use gpui::{Context, px};
 use seex_model::alignment::AlignmentViewport;
 
+use crate::config::ConfiguredSource;
 use crate::data::DiscoveryRequest;
 use crate::data::query::CurveAxis;
 use crate::data::registry::SourceStatus;
 use crate::data::worker::{ReadKind, ReadRequest};
 use crate::domain::{DataSourceId, RunRef};
-use crate::workbench::document::WorkbenchDocument;
 use crate::workbench::panel_reads::{
     MetricPanelId, PanelReadMode, PanelReadRequest, PanelReadTag, PlannedSourceRead,
 };
+use crate::workbench::toml_document::TomlWorkbenchDocument;
 
 use super::super::ViewerApp;
+use super::persistence::RestoredWorkbench;
 use super::{WorkbenchSession, WorkbenchSessionEvent};
 
 struct PanelDetailQuery {
@@ -27,18 +28,16 @@ struct PanelDetailQuery {
 }
 
 impl WorkbenchSession {
-    pub(crate) fn import_source(
+    pub(crate) fn configure_sources(
         &mut self,
-        path: PathBuf,
+        sources: Vec<ConfiguredSource>,
         visible_runs: &[RunRef],
         cx: &mut Context<Self>,
-    ) -> DataSourceId {
-        let source_id = self.sources.import(path);
-        self.transient_error = None;
-        self.persistence_dirty = true;
-        self.publish_snapshot();
-        self.request_discovery(source_id.clone(), visible_runs, cx);
-        source_id
+    ) {
+        for source in sources {
+            let source_id = self.sources.configure(source);
+            self.request_discovery(source_id, visible_runs, cx);
+        }
     }
 
     pub(crate) fn refresh_sources(
@@ -142,6 +141,7 @@ impl WorkbenchSession {
         cx: &mut Context<Self>,
     ) {
         let request = DiscoveryRequest {
+            project_allowlist: None,
             project_id: None,
             selected_run_ids: Vec::new(),
             metric_runs: visible_runs
@@ -212,14 +212,29 @@ impl WorkbenchSession {
 }
 
 impl ViewerApp {
-    pub(in crate::desktop::app) fn restore_workbench(
+    pub(in crate::desktop::app) fn open_configured_sources(
         &mut self,
-        document: WorkbenchDocument,
+        sources: Vec<ConfiguredSource>,
         cx: &mut Context<Self>,
     ) {
-        let restored = self
-            .session
-            .update(cx, |session, cx| session.restore_document(document, cx));
+        let visible_runs = self.active_visible_runs(cx);
+        self.session.update(cx, |session, cx| {
+            session.configure_sources(sources, &visible_runs, cx);
+        });
+    }
+
+    pub(in crate::desktop::app) fn restore_toml_workbench(
+        &mut self,
+        document: TomlWorkbenchDocument,
+        cx: &mut Context<Self>,
+    ) {
+        let restored = self.session.update(cx, |session, cx| {
+            session.restore_toml_document(document, cx)
+        });
+        self.apply_restored_workbench(restored, cx);
+    }
+
+    fn apply_restored_workbench(&mut self, restored: RestoredWorkbench, cx: &mut Context<Self>) {
         let layout = restored.layout;
         self.project_sidebar.update(cx, |sidebar, _| {
             sidebar.visible = layout.project_sidebar_visible;
@@ -245,13 +260,6 @@ impl ViewerApp {
         let visible_runs = self.active_visible_runs(cx);
         self.session.update(cx, |session, cx| {
             session.refresh_sources(restored.available_source_ids, &visible_runs, cx);
-        });
-    }
-
-    pub(in crate::desktop::app) fn open_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let visible_runs = self.active_visible_runs(cx);
-        self.session.update(cx, |session, cx| {
-            session.import_source(path, &visible_runs, cx);
         });
     }
 

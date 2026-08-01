@@ -237,11 +237,14 @@ fn top_refresh_requests_every_source_from_an_empty_view(cx: &mut TestAppContext)
     let (first, _, _) = fixture_with_metric("loss");
     let (second, _, _) = fixture_with_metric("accuracy");
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(first.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, first.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_source(second.path().to_path_buf(), cx);
+            viewer.open_configured_sources(
+                vec![configured_source("second-source", second.path())],
+                cx,
+            );
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
@@ -276,7 +279,7 @@ fn top_refresh_requests_every_source_from_an_empty_view(cx: &mut TestAppContext)
 fn switching_metric_tracks_preserves_the_shared_brush(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(2);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     cx.simulate_resize(size(px(1_000.), px(1_000.)));
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 2);
@@ -363,7 +366,7 @@ fn switching_metric_tracks_preserves_the_shared_brush(cx: &mut TestAppContext) {
 fn empty_view_keeps_the_converged_shell_and_opens_metric_picker(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(20);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 20);
     cx.simulate_resize(size(px(600.), px(520.)));
@@ -400,7 +403,7 @@ fn empty_view_keeps_the_converged_shell_and_opens_metric_picker(cx: &mut TestApp
 fn axis_picker_switches_the_view_to_observation_time(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(1);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window

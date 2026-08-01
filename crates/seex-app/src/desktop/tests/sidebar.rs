@@ -173,7 +173,7 @@ fn project_filter_uses_placeholder_and_blinking_caret_states(cx: &mut TestAppCon
 fn run_markers_align_with_project_icons_and_run_labels(cx: &mut TestAppContext) {
     let (root, project_id, _) = fixture_with_runs(0, 9);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer
             .session_snapshot(cx)
@@ -291,7 +291,7 @@ fn run_markers_align_with_project_icons_and_run_labels(cx: &mut TestAppContext) 
 fn project_tree_scrolls_to_runs_in_an_expanded_project(cx: &mut TestAppContext) {
     let (root, project_id, _) = fixture_with_runs(0, 12);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     let folder = cx
         .debug_bounds("project-folder-0-0")
@@ -464,7 +464,7 @@ fn project_tree_scrolls_to_runs_in_an_expanded_project(cx: &mut TestAppContext) 
 fn project_filter_finds_runs_beyond_the_revealed_page(cx: &mut TestAppContext) {
     let (root, _, _) = fixture_with_runs(0, 12);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     window
         .update(&mut cx, |viewer, _, cx| {
@@ -542,7 +542,7 @@ fn project_filter_finds_runs_beyond_the_revealed_page(cx: &mut TestAppContext) {
 fn project_visibility_keeps_baseline_and_pinned_runs_visible(cx: &mut TestAppContext) {
     let (root, project_id, _) = fixture_with_runs(0, 3);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer
             .session_snapshot(cx)
@@ -628,7 +628,7 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
 ) {
     let (root, project_id, _) = fixture_with_runs(0, 21);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer
             .session_snapshot(cx)
@@ -675,7 +675,7 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
         .update(&mut cx, |viewer, _, cx| {
             viewer.session.update(cx, |session, session_cx| {
                 session.views.active_mut().runs.push(RunRef::new(
-                    DataSourceId::from_string("offline-source"),
+                    DataSourceId::new("offline-source").expect("test alias should be valid"),
                     project_id.clone(),
                     RunId::from_string("offline-run"),
                 ));
@@ -812,7 +812,7 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
 fn baseline_pin_and_archived_restore_cannot_bypass_the_run_limit(cx: &mut TestAppContext) {
     let (root, project_id, _) = fixture_with_runs(0, 21);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer
             .session_snapshot(cx)
@@ -903,7 +903,7 @@ fn project_row_click_toggles_runs_without_changing_analysis(cx: &mut TestAppCont
             Some(SELECTABLE_CONTEXT),
         )]);
     });
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
@@ -979,11 +979,11 @@ fn project_row_click_toggles_runs_without_changing_analysis(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn project_sidebar_retains_multiple_imported_sources(cx: &mut TestAppContext) {
+fn project_sidebar_retains_multiple_configured_sources(cx: &mut TestAppContext) {
     let (first, _, _) = fixture_with_metric("loss");
     let (second, _, _) = fixture_with_metric("accuracy");
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(first.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, first.path().to_path_buf());
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer
             .session_snapshot(cx)
@@ -994,7 +994,10 @@ fn project_sidebar_retains_multiple_imported_sources(cx: &mut TestAppContext) {
     });
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_source(second.path().to_path_buf(), cx);
+            viewer.open_configured_sources(
+                vec![configured_source("second-source", second.path())],
+                cx,
+            );
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
@@ -1062,7 +1065,7 @@ fn project_sidebar_retains_multiple_imported_sources(cx: &mut TestAppContext) {
 fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext) {
     let (root, project_id, first_run_id) = fixture_with_complete_runs(2, 2);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 2);
     window
@@ -1276,7 +1279,7 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
 fn metric_sidebar_rows_align_with_independent_chart_tracks(cx: &mut TestAppContext) {
     let (root, project_id, first_run_id) = fixture_with_complete_runs(2, 2);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 2);
     window

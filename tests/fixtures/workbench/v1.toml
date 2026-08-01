@@ -1,0 +1,52 @@
+schema_version = 1
+active_view = 0
+
+[layout]
+project_sidebar_visible = true
+project_sidebar_width = 240.0
+metric_sidebar_compact = false
+bottom_inspector_visible = true
+bottom_inspector_height = 220.0
+
+[[expanded_projects]]
+source = "research"
+project_id = "vision-baseline"
+
+[[pinned_projects]]
+source = "local-benchmarks"
+project_id = "reader-benchmarks"
+
+[[archived_projects]]
+source = "research"
+project_id = "vision-large"
+
+[[archived_runs]]
+source = "research"
+project_id = "vision-baseline"
+run_id = "archived-run"
+
+[[views]]
+name = "Training"
+axis = "step"
+selected_metric = "loss"
+metrics = ["loss", "accuracy"]
+viewport = [1000.0, 5000.0]
+
+[[views.runs]]
+source = "research"
+project_id = "vision-baseline"
+run_id = "run-2026-07-31"
+
+[views.metric_heights]
+loss = 160.0
+accuracy = 128.0
+
+[[views.pinned_runs]]
+source = "local-benchmarks"
+project_id = "reader-benchmarks"
+run_id = "reader-candidate"
+
+[views.baseline]
+source = "research"
+project_id = "vision-baseline"
+run_id = "run-2026-07-30"

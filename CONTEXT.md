@@ -16,6 +16,11 @@ A lightweight namespace for related training runs.
 An imported reference that makes one local native project store available to
 the analysis workbench. One data source may contain multiple Projects.
 
+**Source alias**:
+A stable, portable name for one Data source. It remains the same when the Data
+source moves to a different machine-local path.
+_Avoid_: Source path, Data source path
+
 **Analysis View**:
 A named analysis workspace with its own selected Runs, metric panels, alignment,
 and horizontal viewport.

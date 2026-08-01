@@ -11,9 +11,12 @@ use seex_model::alignment::AlignmentAxis;
 use seex_model::run::RunId;
 use seex_model::types::ProjectId;
 
+use crate::config::ConfiguredSource;
 use crate::data::worker::ReadKind;
-use crate::domain::{DataSourceId, RunRef};
-use crate::workbench::document::{SavedAnalysisView, SavedRunRef, WorkbenchDocument};
+use crate::domain::{DataSourceId, RunRef, SourceAlias};
+use crate::workbench::toml_document::{
+    SavedAnalysisView, SavedLayout, SavedRunRef, TomlWorkbenchDocument,
+};
 
 use super::ViewerApp;
 use super::command::WorkbenchCommand;
@@ -131,23 +134,30 @@ pub(super) fn fixture_with_extent(end_step: i64) -> (tempfile::TempDir, ProjectI
 }
 
 pub(super) fn saved_workbench(
-    source_path: PathBuf,
+    source_alias: SourceAlias,
     project_id: ProjectId,
     runs: Vec<RunId>,
     metric: &str,
-) -> WorkbenchDocument {
-    WorkbenchDocument {
-        sources: vec![source_path.clone()],
+) -> TomlWorkbenchDocument {
+    TomlWorkbenchDocument {
+        active_view: 0,
+        layout: SavedLayout {
+            project_sidebar_visible: false,
+            project_sidebar_width: 280.,
+            metric_sidebar_compact: true,
+            bottom_inspector_visible: true,
+            bottom_inspector_height: 260.,
+        },
+        expanded_projects: Vec::new(),
         pinned_projects: Vec::new(),
         archived_projects: Vec::new(),
-        removed_projects: Vec::new(),
         archived_runs: Vec::new(),
         views: vec![SavedAnalysisView {
             name: "Restored".to_owned(),
             runs: runs
                 .into_iter()
                 .map(|run_id| SavedRunRef {
-                    source_path: source_path.clone(),
+                    source_alias: source_alias.clone(),
                     project_id: project_id.clone(),
                     run_id,
                 })
@@ -162,18 +172,28 @@ pub(super) fn saved_workbench(
                 seex_chart_core::AxisRange::new(0., 10.).expect("test viewport should be valid"),
             ),
         }],
-        active_view: 0,
-        project_sidebar_visible: false,
-        project_sidebar_width: 280.,
-        metric_sidebar_compact: true,
-        bottom_inspector_visible: true,
-        bottom_inspector_height: 260.,
     }
 }
 
 pub(super) fn open_viewer(
     cx: &mut TestAppContext,
     project_path: Option<PathBuf>,
+) -> (WindowHandle<ViewerApp>, VisualTestContext) {
+    open_viewer_with_optional_source(cx, project_path, None)
+}
+
+pub(super) fn open_viewer_with_configured_source(
+    cx: &mut TestAppContext,
+    project_path: PathBuf,
+) -> (WindowHandle<ViewerApp>, VisualTestContext) {
+    let source = configured_source("test-source", &project_path);
+    open_viewer_with_optional_source(cx, Some(project_path), Some(source))
+}
+
+fn open_viewer_with_optional_source(
+    cx: &mut TestAppContext,
+    project_path: Option<PathBuf>,
+    source: Option<ConfiguredSource>,
 ) -> (WindowHandle<ViewerApp>, VisualTestContext) {
     let window = cx.update(|cx| {
         cx.open_window(
@@ -184,12 +204,46 @@ pub(super) fn open_viewer(
                 ))),
                 ..WindowOptions::default()
             },
-            move |window, cx| cx.new(|cx| ViewerApp::new(project_path, window, cx)),
+            move |window, cx| {
+                cx.new(|cx| {
+                    let mut viewer = ViewerApp::new(project_path, window, cx);
+                    if let Some(source) = source {
+                        viewer.open_configured_sources(vec![source], cx);
+                    }
+                    viewer
+                })
+            },
         )
         .expect("test viewer window should open")
     });
     let visual = VisualTestContext::from_window(window.into(), cx);
     (window, visual)
+}
+
+pub(super) fn configured_source(alias: &str, root_path: &std::path::Path) -> ConfiguredSource {
+    let reader = seex::Reader::builder(root_path)
+        .open()
+        .expect("test Source should open");
+    let projects = reader
+        .projects()
+        .expect("test Source projects should load")
+        .into_iter()
+        .map(|project| project.project_id)
+        .collect::<Vec<_>>();
+    assert!(!projects.is_empty(), "test Source should contain a Project");
+    ConfiguredSource {
+        alias: SourceAlias::new(alias).expect("test Source alias should be valid"),
+        root_path: root_path.to_owned(),
+        projects,
+    }
+}
+
+pub(super) fn source_id(alias: &str) -> DataSourceId {
+    DataSourceId::from_alias(&SourceAlias::new(alias).expect("test Source alias should be valid"))
+}
+
+pub(super) fn test_source_id() -> DataSourceId {
+    source_id("test-source")
 }
 
 #[track_caller]
