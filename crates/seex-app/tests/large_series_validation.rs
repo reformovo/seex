@@ -4,6 +4,10 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use seex::{
+    EvidenceReason, MetricAxis, MetricCoordinate, MetricQuery, MetricRange, Reader, RelativeTime,
+    Step, Timestamp,
+};
 use seex_app::data::query::{
     CurveAxis, CurveSelection, CurveSnapshot, DetailRequest, OverviewRequest,
 };
@@ -12,18 +16,16 @@ use seex_app::data::worker::{
 };
 use seex_app::domain::{DataSourceId, RunRef};
 use seex_core::engine::client::NativeClient;
-use seex_model::alignment::{
-    AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction, AlignmentViewport,
-};
-use seex_model::metric::{MetricKey, MetricQuery, ReductionPolicy, Step};
+use seex_model::alignment::AlignmentViewport;
+use seex_model::metric::MetricKey;
 use seex_model::run::RunId;
 use seex_model::types::ProjectId;
+use seex_storage::ProjectConnection;
 use seex_storage::bootstrap::{
     CatalogBackend, NativeStorageConfig, open_existing_native_connection_with_config,
     open_native_connection_with_config,
 };
 use seex_storage::config::resolve_storage_config;
-use seex_storage::{ParquetMetricReader, ParquetSource, ProjectConnection, ProjectMetricReader};
 
 mod support;
 
@@ -210,21 +212,6 @@ fn validate_fixture(
         }
     }
     Ok(())
-}
-
-fn open_fixture_connection(root: &Path) -> Result<ProjectConnection, Box<dyn Error>> {
-    let resolved = resolve_storage_config(root, None, None, None)?;
-    Ok(ProjectConnection::new(
-        open_existing_native_connection_with_config(
-            NativeStorageConfig::with_backend_and_s3_config(
-                resolved.catalog_backend,
-                root,
-                resolved.catalog_path,
-                resolved.data_path,
-                None,
-            ),
-        )?,
-    ))
 }
 
 fn fixture_path(backend: CatalogBackend, root_variable: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -614,8 +601,8 @@ impl BaselineAxis {
     }
 }
 
-fn query_reader_equivalent(
-    connection: &ProjectConnection,
+fn query_reader(
+    reader: &Reader,
     run_ids: &[RunId],
     axis: BaselineAxis,
     start: i64,
@@ -625,43 +612,30 @@ fn query_reader_equivalent(
     if start >= end {
         return Err("reader-equivalent range must be non-empty and half-open".into());
     }
-    let reader = ProjectMetricReader::new(connection);
     let mut returned = 0;
     for run_id in run_ids {
-        let count = match axis {
-            BaselineAxis::Step => reader
-                .query_metric(&MetricQuery::new(
-                    run_id.clone(),
-                    MetricKey::from_string("loss"),
-                    Some(Step::new(start)),
-                    Some(Step::new(end)),
-                    ReductionPolicy::screen_budget(max_points as u32, 1)?,
-                )?)?
-                .points
-                .len(),
-            BaselineAxis::RelativeTime | BaselineAxis::Timestamp => {
-                let offset = if matches!(axis, BaselineAxis::Timestamp) {
-                    FIXTURE_EPOCH_MILLIS
-                } else {
-                    0
-                };
-                let result = reader.query_aligned_metric(&AlignmentQuery {
-                    run_id: run_id.clone(),
-                    metric_key: MetricKey::from_string("loss"),
-                    axis: AlignmentAxis::ElapsedTime,
-                    viewport: AlignmentViewport::new(start - offset, end - offset - 1)?,
-                    reduction: AlignmentReduction::screen_budget(max_points as u32, 1)?,
-                })?;
-                result
-                    .points
-                    .iter()
-                    .filter(|point| {
-                        let value = point.axis_value + offset;
-                        start <= value && value < end
-                    })
-                    .count()
-            }
+        let range = match axis {
+            BaselineAxis::Step => MetricRange::Steps {
+                start: Step::new(start),
+                end: Step::new(end),
+            },
+            BaselineAxis::RelativeTime => MetricRange::RelativeTime {
+                start: RelativeTime::from_millis(start),
+                end: RelativeTime::from_millis(end),
+            },
+            BaselineAxis::Timestamp => MetricRange::Timestamps {
+                start: Timestamp::from_millis(start),
+                end: Timestamp::from_millis(end),
+            },
         };
+        let count = reader
+            .query_metric(
+                run_id,
+                &MetricKey::from_string("loss"),
+                &MetricQuery::new(range, Some(max_points))?,
+            )?
+            .samples()
+            .len();
         if count > max_points {
             return Err(format!("{} query exceeded max_points", axis.label()).into());
         }
@@ -672,7 +646,7 @@ fn query_reader_equivalent(
 
 fn measure_reader_axis(
     backend: &str,
-    connection: &ProjectConnection,
+    reader: &Reader,
     run_ids: &[RunId],
     axis: BaselineAxis,
     range: &str,
@@ -682,7 +656,7 @@ fn measure_reader_axis(
     let mut samples = Vec::with_capacity(7);
     for _ in 0..7 {
         let started = Instant::now();
-        let returned = query_reader_equivalent(connection, run_ids, axis, start, end, 5_000)?;
+        let returned = query_reader(reader, run_ids, axis, start, end, 5_000)?;
         if returned == 0 || returned > RUNS * 5_000 {
             return Err("reader-equivalent query returned an invalid point count".into());
         }
@@ -713,34 +687,30 @@ fn measure_reader_axis(
     Ok(())
 }
 
-fn parquet_reader<'connection>(
-    connection: &'connection ProjectConnection,
-    root: &Path,
-) -> Result<ParquetMetricReader<'connection>, Box<dyn Error>> {
+fn parquet_reader(root: &Path) -> Result<Reader, Box<dyn Error>> {
     let source = root
         .join("custom/data/main/metric_points/**/*.parquet")
         .to_string_lossy()
         .into_owned();
-    Ok(ParquetMetricReader::open(
-        connection,
-        ParquetSource::new(source)?,
-    )?)
+    Ok(Reader::parquet(source).open()?)
 }
 
-fn semantic_points(
-    reader: &impl seex_storage::MetricReader,
-    run_id: &RunId,
-) -> Result<Vec<(i64, f64)>, Box<dyn Error>> {
-    let result = reader.query_metric(&MetricQuery::new(
-        run_id.clone(),
-        MetricKey::from_string("loss"),
-        Some(Step::new(249_999)),
-        Some(Step::new(500_002)),
-        ReductionPolicy::Full,
-    )?)?;
+fn semantic_points(reader: &Reader, run_id: &RunId) -> Result<Vec<(i64, f64)>, Box<dyn Error>> {
+    let result = reader.query_metric(
+        run_id,
+        &MetricKey::from_string("loss"),
+        &MetricQuery::new(
+            MetricRange::Steps {
+                start: Step::new(249_999),
+                end: Step::new(500_002),
+            },
+            None,
+        )?,
+    )?;
     Ok(result
-        .points
-        .into_iter()
+        .samples()
+        .iter()
+        .map(|sample| &sample.point)
         .filter(|point| matches!(point.step.value(), 249_999 | 250_000 | 500_000 | 500_001))
         .map(|point| (point.step.value(), point.value_f64))
         .collect())
@@ -814,7 +784,7 @@ fn reader_equivalent_axes_and_ranges() -> Result<(), Box<dyn Error>> {
             &["loss"],
             SOURCE_POINTS,
         )?;
-        let connection = open_fixture_connection(&root)?;
+        let reader = Reader::builder(&root).open()?;
         for (axis, offset) in [
             (BaselineAxis::Step, 0),
             (BaselineAxis::RelativeTime, 0),
@@ -822,7 +792,7 @@ fn reader_equivalent_axes_and_ranges() -> Result<(), Box<dyn Error>> {
         ] {
             measure_reader_axis(
                 backend_name(backend),
-                &connection,
+                &reader,
                 &run_ids,
                 axis,
                 "full",
@@ -831,7 +801,7 @@ fn reader_equivalent_axes_and_ranges() -> Result<(), Box<dyn Error>> {
             )?;
             measure_reader_axis(
                 backend_name(backend),
-                &connection,
+                &reader,
                 &run_ids,
                 axis,
                 "narrow",
@@ -854,38 +824,42 @@ fn scale_fixture_preserves_reader_semantics() -> Result<(), Box<dyn Error>> {
             &["loss"],
             SOURCE_POINTS,
         )?;
-        let connection = open_fixture_connection(&root)?;
-        let native = ProjectMetricReader::new(&connection);
+        let native = Reader::builder(&root).open()?;
         let expected = semantic_points(&native, &run_ids[0])?;
         assert_eq!(expected[1], (250_000, 42.0));
         assert_eq!(expected[2], (500_000, 1000.0));
-        let neighbors = native.query_aligned_metric(&AlignmentQuery {
-            run_id: run_ids[0].clone(),
-            metric_key: MetricKey::from_string("loss"),
-            axis: AlignmentAxis::Step,
-            viewport: AlignmentViewport::new(250_000, 250_000)?,
-            reduction: AlignmentReduction::Full,
-        })?;
+        let neighbors = native.query_metric_for_desktop(
+            &run_ids[0],
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(
+                MetricRange::Steps {
+                    start: Step::new(250_000),
+                    end: Step::new(250_001),
+                },
+                None,
+            )?,
+        )?;
         assert_eq!(
             neighbors
-                .points
+                .samples()
                 .iter()
-                .map(|point| point.axis_value)
+                .map(|sample| match sample.coordinate {
+                    MetricCoordinate::Step(step) => step.value(),
+                    _ => panic!("Desktop Step query returned another coordinate axis"),
+                })
                 .collect::<Vec<_>>(),
             [249_999, 250_000, 250_001]
         );
-        assert!(neighbors.reasons.is_empty());
+        assert!(neighbors.reasons().is_empty());
 
-        let parquet = parquet_reader(&connection, &root)?;
+        let parquet = parquet_reader(&root)?;
         assert_eq!(semantic_points(&parquet, &run_ids[0])?, expected);
-        let missing_start = parquet.query_aligned_metric(&AlignmentQuery {
-            run_id: run_ids[0].clone(),
-            metric_key: MetricKey::from_string("loss"),
-            axis: AlignmentAxis::ElapsedTime,
-            viewport: AlignmentViewport::new(0, 1)?,
-            reduction: AlignmentReduction::Full,
-        })?;
-        assert_eq!(missing_start.reasons, [AlignmentReason::MissingRunStart]);
+        let missing_start = parquet.query_metric(
+            &run_ids[0],
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(MetricRange::All(MetricAxis::RelativeTime), None)?,
+        )?;
+        assert_eq!(missing_start.reasons(), [EvidenceReason::MissingRunStart]);
         native_results.push(expected);
     }
     let passed = native_results[0] == native_results[1];
