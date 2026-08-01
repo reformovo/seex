@@ -1023,12 +1023,13 @@ mod tests {
     fn superseded_storage_error_emits_no_event() {
         let root = tempfile::tempdir().expect("test directory should initialize");
         let sessions = ReadSessionPool::new(root.path().to_owned());
+        let outstanding = Arc::new(AtomicUsize::new(0));
         let request = TaggedRequest {
             source_id: DataSourceId::new("source").expect("test alias should be valid"),
             generation: Generation(1),
             token: RequestToken(1),
             request: ReadRequest::Discover(DiscoveryRequest::default()),
-            _ticket: RequestTicket::default(),
+            _ticket: RequestTicket::tracked(Arc::clone(&outstanding)),
         };
         let identity = RequestIdentity::new(&request);
         let newer = RequestIdentity {
@@ -1046,6 +1047,14 @@ mod tests {
         let event = execute(&sessions, &mut None, request, &identity, &registry, || true);
 
         assert!(event.is_none());
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
+        assert!(
+            registry
+                .lock()
+                .expect("test registry should lock")
+                .active
+                .is_empty()
+        );
     }
 
     #[test]
