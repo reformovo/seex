@@ -1,804 +1,329 @@
-"""Capture and compare Seex Viewer performance records."""
+"""Run one bounded Seex performance comparison from a schema-v3 manifest."""
 
 from __future__ import annotations
 
 import argparse
 import datetime
-import itertools
 import json
 import math
 import os
 import pathlib
 import platform
 import queue
-import shlex
 import statistics
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Sequence
-from typing import Literal, Protocol, TypedDict, cast
+from typing import Literal, TypedDict, cast
 
-_PREFIX = "SEEX_PERF "
-_MIGRATION_PAIRS = 3
-_REQUIRED_PAIRS = 7
-_MAX_CONSECUTIVE_RSS_MISSES = 3
-_RSS_TREND_NOISE_FLOOR_BYTES = 1024 * 1024
+_PREFIX = "SEEX_BENCH "
+_ORDER: tuple[Literal["baseline", "candidate"], ...] = (
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline",
+)
+_SAMPLES = 10
+_MIN_SAMPLE_NS = 25_000_000
+_MAX_GATE_SECONDS = 120.0
+_MAX_RELATIVE_MAD = 0.02
+_MAX_MEDIAN_REGRESSION = 0.03
+_MAX_PAIR_REGRESSION = 0.05
+_RSS_INTERVAL_SECONDS = 0.05
 _DOMAINS = frozenset({"reporting", "query", "viewer"})
-_DIRECTIONS = frozenset({"higher", "lower", "neutral"})
+_DIRECTIONS = frozenset({"higher", "lower"})
 _UNITS = frozenset({"bytes", "count", "ns", "ns/op", "points/s"})
 
-Domain = Literal["reporting", "query", "viewer"]
-Direction = Literal["higher", "lower", "neutral"]
+Role = Literal["baseline", "candidate"]
+Direction = Literal["higher", "lower"]
+Verdict = Literal["running", "pass", "no_change", "regression", "inconclusive", "error"]
 
 
-class _PollableProcess(Protocol):
-    pid: int
+class Metric(TypedDict):
+    """One validated benchmark metric and its derived summary."""
 
-    def poll(self) -> int | None: ...
-
-
-class MetricSample(TypedDict):
-    """One machine-readable metric emitted by a release benchmark."""
-
-    metric: str
-    unit: str
-    batch_iterations: int
-    samples: int
-    raw_samples: list[float]
-    p50: float
-    p95: float
-    max_batch: float
-    max_single: float
-    relative_mad: float
-    reliable: bool
-
-
-class Capture(TypedDict):
-    """Repeated benchmark output plus its execution environment."""
-
-    schema_version: int
-    environment: dict[str, str | bool]
-    command: list[str]
-    runs: list[dict[str, MetricSample]]
-
-
-class Verdict(TypedDict):
-    """Comparison result consumed by the performance optimization loop."""
-
-    verdict: str
-    primary: str
-    median_improvement: float
-    improved_pairs: int
-    regressions: dict[str, float]
-    reason: str
-
-
-class RssResult(TypedDict):
-    """RSS stability result for a phase-marked child process."""
-
-    schema_version: Literal[2]
-    record_type: Literal["rss"]
-    samples: list[int]
-    phase_indexes: dict[str, int]
-    phase_rss_bytes: dict[str, int]
-    warm_index: int
-    trend_end_index: int
-    final_index: int
-    warm_rss_bytes: int
-    peak_rss_bytes: int
-    final_rss_bytes: int
-    allowed_final_rss_bytes: int
-    monotonic_growth: bool
-    verdict: str
-
-
-class RssPairVerdict(TypedDict):
-    """Stable comparison outcome for paired peak-RSS captures."""
-
-    verdict: Literal["pass", "no_change", "regression"]
-    median_improvement: float
-    improved_pairs: int
-    baseline_relative_mad: float
-    candidate_relative_mad: float
-    reason: str
-
-
-class RssPair(TypedDict):
-    """Alternating fresh-process RSS captures for one candidate."""
-
-    schema_version: Literal[2]
-    record_type: Literal["rss_pair"]
-    candidate_spec: CandidateSpec
-    environment: dict[str, str | bool]
-    execution_order: list[list[Literal["baseline", "candidate"]]]
-    baseline_command: list[str]
-    candidate_command: list[str]
-    baseline: list[RssResult]
-    candidate: list[RssResult]
-    verdict: RssPairVerdict
-
-
-class V2Metric(TypedDict):
-    """One deciding or informational metric emitted by a workload."""
-
-    domain: Domain
+    domain: str
     metric: str
     unit: str
     direction: Direction
     batch_iterations: int
-    samples: int
-    raw_samples: list[float]
-    mad: float
-    relative_mad: float
-    p50: float
+    samples: list[float]
+    median: float
     p95: float
     maximum: float
-    reliable: bool
+    relative_mad: float
+    calibrated: bool
 
 
-class V2Check(TypedDict):
-    """One correctness or resource invariant emitted by a workload."""
+class Capture(TypedDict):
+    """Metrics from one fresh baseline or candidate process."""
 
-    domain: Domain
-    check: str
-    passed: bool
-    detail: str
-
-
-class V2Output(TypedDict):
-    """Validated records emitted by one workload invocation."""
-
-    metrics: dict[str, V2Metric]
-    checks: list[V2Check]
+    role: Role
+    command: list[str]
+    metrics: dict[str, Metric]
+    phases: dict[str, int]
 
 
 class HardFloor(TypedDict):
-    """An absolute metric requirement checked for every candidate run."""
+    """An absolute requirement for every candidate capture."""
 
     metric: str
-    statistic: Literal["p50", "p95", "maximum"]
+    statistic: Literal["median", "p95", "maximum"]
     operator: Literal["at_least", "at_most"]
     value: float
 
 
-class V2Verdict(TypedDict):
-    """Stable comparison outcome for a migration or optimization."""
+class Fixture(TypedDict):
+    """Stable identity and cardinality of a prepared benchmark fixture."""
 
-    verdict: Literal["pass", "no_change", "regression"]
-    primary: str | None
-    median_improvement: float
-    improved_pairs: int
-    regressions: dict[str, float]
-    unreliable: list[str]
-    failed_checks: list[str]
-    failed_floors: list[str]
-    reason: str
+    identity: str
+    scale: dict[str, int]
 
 
-class CandidateSpec(TypedDict):
-    """Scope and policy declared before running one candidate."""
+class Manifest(TypedDict):
+    """The complete input contract for one performance decision."""
 
+    schema_version: Literal[3]
     name: str
-    candidate_type: Literal["migration", "optimization"]
+    kind: Literal["preservation", "optimization"]
+    measurement: Literal["records", "rss"]
+    fixture: Fixture
+    baseline_command: list[str]
+    candidate_command: list[str]
     primary: str | None
     protected: list[str]
     hard_floors: list[HardFloor]
-    fixture: str
-    commands: list[list[str]]
-    changed_files: list[str]
+    minimum_improvement: float
 
 
-class V2Capture(TypedDict):
-    """Repeated schema-v2 workload invocations from one binary."""
+class Result(TypedDict):
+    """A checkpointable schema-v3 gate result."""
 
-    schema_version: Literal[2]
-    record_type: Literal["capture"]
+    schema_version: Literal[3]
+    record_type: Literal["gate_result"]
+    manifest: Manifest
     environment: dict[str, str | bool]
-    command: list[str]
-    runs: list[V2Output]
+    execution_order: list[Role]
+    captures: list[Capture]
+    verdict: Verdict
+    reason: str
+    comparisons: dict[str, object]
 
 
-class V2Pair(TypedDict):
-    """Alternating baseline and candidate captures."""
-
-    schema_version: Literal[2]
-    record_type: Literal["pair"]
-    candidate_spec: CandidateSpec
-    execution_order: list[list[Literal["baseline", "candidate"]]]
-    baseline: V2Capture
-    candidate: V2Capture
-
-
-def _finite_number(record: dict[str, object], field: str) -> float:
-    value = record.get(field)
+def _number(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        raise TypeError(f"SEEX_PERF {field} must be a finite number")
+        raise TypeError(f"{field} must be a finite number")
     return float(value)
 
 
-def _domain(record: dict[str, object]) -> Domain:
-    domain = record.get("domain")
-    if domain not in _DOMAINS:
-        raise ValueError(f"SEEX_PERF domain must be one of {sorted(_DOMAINS)}")
-    return cast(Domain, domain)
+def _relative_mad(values: Sequence[float]) -> float:
+    median = statistics.median(values)
+    if median == 0:
+        return 0.0 if all(value == 0 for value in values) else math.inf
+    return statistics.median(abs(value - median) for value in values) / abs(median)
 
 
-def _calibrated(unit: str, batch_iterations: int, raw_samples: Sequence[float]) -> bool:
+def _calibrated(unit: str, batch_iterations: int, samples: Sequence[float]) -> bool:
     if unit == "ns/op":
-        elapsed = [sample * batch_iterations for sample in raw_samples]
+        elapsed = [sample * batch_iterations for sample in samples]
     elif unit == "points/s":
-        elapsed = [batch_iterations * 1_000_000_000 / sample for sample in raw_samples]
+        elapsed = [batch_iterations * 1_000_000_000 / sample for sample in samples]
     elif unit == "ns":
-        elapsed = list(raw_samples)
+        elapsed = list(samples)
     else:
         return True
-    return all(sample >= 10_000_000 for sample in elapsed)
+    return all(sample >= _MIN_SAMPLE_NS for sample in elapsed)
 
 
-def _validate_metric_summary(record: dict[str, object], raw_samples: Sequence[float]) -> dict[str, float]:
-    ordered = sorted(raw_samples)
-    p50 = float(statistics.median(ordered))
-    deviations = [abs(sample - p50) for sample in ordered]
-    mad = float(statistics.median(deviations))
-    if p50 == 0 and mad != 0:
-        raise ValueError("SEEX_PERF raw_samples with zero median have undefined relative_mad")
-    expected = {
-        "mad": mad,
-        "relative_mad": 0.0 if p50 == 0 else mad / abs(p50),
-        "p50": p50,
-        "p95": ordered[(len(ordered) * 95 + 99) // 100 - 1],
-        "max": ordered[-1],
-    }
-    parsed: dict[str, float] = {}
-    for field, expected_value in expected.items():
-        value = _finite_number(record, field)
-        absolute_tolerance = 1e-6 if field == "relative_mad" else 1e-3
-        if not math.isclose(value, expected_value, rel_tol=1e-9, abs_tol=absolute_tolerance):
-            raise ValueError(f"SEEX_PERF {field} does not match raw_samples")
-        parsed[field] = value
-    return parsed
-
-
-def parse_v2_output(output: str) -> V2Output:
-    """Parses strict schema-v2 metric and correctness records."""
-    metrics: dict[str, V2Metric] = {}
-    checks: list[V2Check] = []
+def parse_records(output: str) -> dict[str, Metric]:
+    """Parse strict raw schema-v3 benchmark records from one process."""
+    metrics: dict[str, Metric] = {}
     for line in output.splitlines():
         if not line.startswith(_PREFIX):
             continue
-        decoded = json.loads(line.removeprefix(_PREFIX))
-        if not isinstance(decoded, dict):
-            raise TypeError("SEEX_PERF record must be a JSON object")
-        if decoded.get("schema_version") != 2:
-            raise ValueError("deciding captures require SEEX_PERF schema_version 2")
-        domain = _domain(decoded)
-        record_type = decoded.get("record_type")
-        if record_type == "check":
-            name, passed, detail = decoded.get("check"), decoded.get("passed"), decoded.get("detail")
-            if not isinstance(name, str) or not name or not isinstance(passed, bool) or not isinstance(detail, str):
-                raise TypeError("SEEX_PERF check requires check, passed, and detail")
-            checks.append(V2Check(domain=domain, check=name, passed=passed, detail=detail))
-            continue
-        if record_type != "metric":
-            raise ValueError("SEEX_PERF record_type must be metric or check")
-        metric, unit, direction = decoded.get("metric"), decoded.get("unit"), decoded.get("direction")
-        batch_iterations, sample_count = decoded.get("batch_iterations"), decoded.get("samples")
-        raw_samples, reliable = decoded.get("raw_samples"), decoded.get("reliable")
-        if not isinstance(metric, str) or not metric:
-            raise ValueError("SEEX_PERF metric must be a non-empty string")
+        record = json.loads(line.removeprefix(_PREFIX))
+        if not isinstance(record, dict) or record.get("schema_version") != 3 or record.get("record_type") != "metric":
+            raise ValueError("SEEX_BENCH records require schema_version 3")
+        domain = record.get("domain")
+        metric = record.get("metric")
+        unit = record.get("unit")
+        direction = record.get("direction")
+        batch_iterations = record.get("batch_iterations")
+        raw_samples = record.get("samples")
+        if domain not in _DOMAINS or not isinstance(metric, str) or not metric:
+            raise ValueError("SEEX_BENCH requires a supported domain and metric")
         if unit not in _UNITS or direction not in _DIRECTIONS:
-            raise ValueError("SEEX_PERF metric has an unsupported unit or direction")
+            raise ValueError("SEEX_BENCH requires a supported unit and direction")
         if not isinstance(batch_iterations, int) or isinstance(batch_iterations, bool) or batch_iterations <= 0:
-            raise ValueError("SEEX_PERF batch_iterations must be positive")
-        if not isinstance(sample_count, int) or isinstance(sample_count, bool) or sample_count <= 0:
-            raise ValueError("SEEX_PERF samples must be positive")
-        if not isinstance(raw_samples, list) or len(raw_samples) != sample_count:
-            raise ValueError("SEEX_PERF raw_samples must match samples")
-        parsed = [
-            float(value) for value in raw_samples if isinstance(value, int | float) and not isinstance(value, bool)
-        ]
-        if len(parsed) != sample_count or any(not math.isfinite(value) for value in parsed):
-            raise TypeError("SEEX_PERF raw_samples must contain only finite numbers")
-        if not isinstance(reliable, bool):
-            raise TypeError("SEEX_PERF reliable must be boolean")
-        summary = _validate_metric_summary(decoded, parsed)
+            raise ValueError("SEEX_BENCH batch_iterations must be positive")
+        if not isinstance(raw_samples, list) or len(raw_samples) != _SAMPLES:
+            raise ValueError(f"SEEX_BENCH requires exactly {_SAMPLES} samples")
+        samples = [_number(value, "SEEX_BENCH sample") for value in raw_samples]
+        if any(value <= 0 for value in samples):
+            raise ValueError("SEEX_BENCH samples must be positive")
+        ordered = sorted(samples)
         key = f"{domain}.{metric}"
         if key in metrics:
-            raise ValueError(f"duplicate SEEX_PERF metric {key!r}")
-        metrics[key] = V2Metric(
-            domain=domain,
+            raise ValueError(f"duplicate SEEX_BENCH metric {key!r}")
+        metrics[key] = Metric(
+            domain=cast(str, domain),
             metric=metric,
             unit=cast(str, unit),
             direction=cast(Direction, direction),
             batch_iterations=batch_iterations,
-            samples=sample_count,
-            raw_samples=parsed,
-            mad=summary["mad"],
-            relative_mad=summary["relative_mad"],
-            p50=summary["p50"],
-            p95=summary["p95"],
-            maximum=summary["max"],
-            reliable=reliable and _calibrated(cast(str, unit), batch_iterations, parsed),
-        )
-    if not metrics and not checks:
-        raise ValueError("benchmark output contained no schema-v2 SEEX_PERF records")
-    return V2Output(metrics=metrics, checks=checks)
-
-
-def _relative_mad(values: Sequence[float]) -> float:
-    median = _median(values)
-    if median == 0:
-        return 0.0 if all(value == 0 for value in values) else math.inf
-    return _median([abs(value - median) for value in values]) / abs(median)
-
-
-def _v2_series(runs: Sequence[V2Output], metric: str) -> list[V2Metric]:
-    try:
-        return [run["metrics"][metric] for run in runs]
-    except KeyError as error:
-        raise ValueError(f"capture is missing metric {metric!r}") from error
-
-
-def _series_reliable(series: Sequence[V2Metric]) -> bool:
-    return all(metric["reliable"] and metric["relative_mad"] <= 0.02 for metric in series) and (
-        _relative_mad([metric["p50"] for metric in series]) <= 0.02
-    )
-
-
-def compare_v2_captures(
-    baseline: Sequence[V2Output],
-    candidate: Sequence[V2Output],
-    candidate_type: Literal["migration", "optimization"],
-    *,
-    primary: str | None,
-    protected: Sequence[str] = (),
-    hard_floors: Sequence[HardFloor] = (),
-) -> V2Verdict:
-    """Applies U0 correctness, reliability, migration, and optimization policy."""
-    if not baseline or len(baseline) != len(candidate):
-        raise ValueError("baseline and candidate require equal non-empty runs")
-    if candidate_type == "optimization" and len(candidate) < _REQUIRED_PAIRS:
-        raise ValueError(f"optimization requires at least {_REQUIRED_PAIRS} pairs")
-    if candidate_type == "optimization" and primary is None:
-        raise ValueError("optimization requires a primary metric")
-
-    failed_checks = [
-        f"{check['domain']}.{check['check']}"
-        for runs in (baseline, candidate)
-        for run in runs
-        for check in run["checks"]
-        if not check["passed"]
-    ]
-    failed_floors: list[str] = []
-    for floor in hard_floors:
-        for metric in _v2_series(candidate, floor["metric"]):
-            value = metric[floor["statistic"]]
-            failed = value < floor["value"] if floor["operator"] == "at_least" else value > floor["value"]
-            if failed:
-                failed_floors.append(floor["metric"])
-                break
-
-    unreliable: list[str] = []
-    regressions: dict[str, float] = {}
-    for metric_name in protected:
-        before = _v2_series(baseline, metric_name)
-        after = _v2_series(candidate, metric_name)
-        if before[0]["unit"] != after[0]["unit"] or before[0]["direction"] != after[0]["direction"]:
-            raise ValueError(f"metric contract changed for {metric_name!r}")
-        if not _series_reliable(before) or not _series_reliable(after):
-            unreliable.append(metric_name)
-            continue
-        direction = before[0]["direction"]
-        if direction == "neutral":
-            continue
-        before_median = _median([metric["p50"] for metric in before])
-        after_median = _median([metric["p50"] for metric in after])
-        regression = (after_median / before_median) - 1.0
-        if direction == "higher":
-            regression = (before_median / after_median) - 1.0
-        if regression > 0.03 + 1e-12:
-            regressions[metric_name] = regression
-
-    median_improvement = 0.0
-    improved_pairs = 0
-    primary_unreliable = False
-    if primary is not None:
-        before = _v2_series(baseline, primary)
-        after = _v2_series(candidate, primary)
-        if before[0]["direction"] == "neutral":
-            raise ValueError("primary metric must have an optimization direction")
-        primary_unreliable = not _series_reliable(before) or not _series_reliable(after)
-        if primary_unreliable:
-            unreliable.append(primary)
-        else:
-            improvements = [
-                ((left["p50"] - right["p50"]) / left["p50"])
-                if left["direction"] == "lower"
-                else ((right["p50"] - left["p50"]) / left["p50"])
-                for left, right in zip(before, after, strict=True)
-            ]
-            median_improvement = _median(improvements)
-            improved_pairs = sum(improvement > 0 for improvement in improvements)
-
-    if failed_checks or failed_floors or regressions:
-        verdict, reason = "regression", "correctness, hard floor, or protected metric failed"
-    elif candidate_type == "migration":
-        verdict, reason = "pass", "migration preserved every reliable protected metric"
-    elif primary_unreliable or improved_pairs < 6 or median_improvement + 1e-12 < 0.05:
-        verdict, reason = "no_change", "primary metric was unreliable or missed the optimization threshold"
-    else:
-        verdict, reason = "pass", "optimization improved its primary without a protected regression"
-    return V2Verdict(
-        verdict=verdict,
-        primary=primary,
-        median_improvement=median_improvement,
-        improved_pairs=improved_pairs,
-        regressions=regressions,
-        unreliable=sorted(set(unreliable)),
-        failed_checks=failed_checks,
-        failed_floors=failed_floors,
-        reason=reason,
-    )
-
-
-def validate_candidate_spec(spec: CandidateSpec) -> None:
-    """Validates the bounded scope declared for a performance candidate."""
-    if not spec["name"].strip() or not spec["fixture"].strip() or not spec["commands"]:
-        raise ValueError("candidate name, fixture, and commands are required")
-    if len(spec["changed_files"]) > 5:
-        raise ValueError("ordinary candidates may declare no more than five changed files")
-    if spec["candidate_type"] == "optimization" and spec["primary"] is None:
-        raise ValueError("optimization candidates require a primary metric")
-
-
-def capture_v2(command: Sequence[str], repeats: int = _REQUIRED_PAIRS) -> V2Capture:
-    """Runs one schema-v2 workload repeatedly in independent processes."""
-    if repeats <= 0:
-        raise ValueError("performance capture requires at least one run")
-    return V2Capture(
-        schema_version=2,
-        record_type="capture",
-        environment=_environment(),
-        command=list(command),
-        runs=[parse_v2_output(_command_output(command)) for _ in range(repeats)],
-    )
-
-
-def pair_v2(
-    baseline_command: Sequence[str],
-    candidate_command: Sequence[str],
-    spec: CandidateSpec,
-    repeats: int | None = None,
-) -> V2Pair:
-    """Captures AB/BA process pairs so fixed execution order cannot decide a result."""
-    validate_candidate_spec(spec)
-    required = _REQUIRED_PAIRS if spec["candidate_type"] == "optimization" else _MIGRATION_PAIRS
-    repeats = required if repeats is None else repeats
-    if repeats < required:
-        raise ValueError(f"{spec['candidate_type']} paired capture requires at least {required} runs")
-    baseline_runs: list[V2Output] = []
-    candidate_runs: list[V2Output] = []
-    execution_order: list[list[Literal["baseline", "candidate"]]] = []
-    for index in range(repeats):
-        order: list[Literal["baseline", "candidate"]] = (
-            ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
-        )
-        execution_order.append(order)
-        for role in order:
-            command = baseline_command if role == "baseline" else candidate_command
-            output = parse_v2_output(_command_output(command))
-            (baseline_runs if role == "baseline" else candidate_runs).append(output)
-    environment = _environment()
-    return V2Pair(
-        schema_version=2,
-        record_type="pair",
-        candidate_spec=spec,
-        execution_order=execution_order,
-        baseline=V2Capture(
-            schema_version=2,
-            record_type="capture",
-            environment=environment,
-            command=list(baseline_command),
-            runs=baseline_runs,
-        ),
-        candidate=V2Capture(
-            schema_version=2,
-            record_type="capture",
-            environment=environment,
-            command=list(candidate_command),
-            runs=candidate_runs,
-        ),
-    )
-
-
-def compare_v2_baselines(
-    original: V2Pair,
-    rolling: V2Pair,
-    spec: CandidateSpec,
-) -> dict[str, V2Verdict | str]:
-    """Reports both baselines while using rolling as the acceptance decision."""
-    validate_candidate_spec(spec)
-    for role, pair in (("original", original), ("rolling", rolling)):
-        validate_candidate_spec(pair["candidate_spec"])
-        if pair["candidate_spec"] != spec:
-            raise ValueError(f"{role} pair candidate_spec does not match comparison spec")
-    results = {
-        role: compare_v2_captures(
-            pair["baseline"]["runs"],
-            pair["candidate"]["runs"],
-            spec["candidate_type"],
-            primary=spec["primary"],
-            protected=spec["protected"],
-            hard_floors=spec["hard_floors"],
-        )
-        for role, pair in (("original", original), ("rolling", rolling))
-    }
-    return {**results, "verdict": results["rolling"]["verdict"]}
-
-
-def parse_output(output: str) -> dict[str, MetricSample]:
-    """Parses machine records from one benchmark invocation."""
-    metrics: dict[str, MetricSample] = {}
-    for line in output.splitlines():
-        if not line.startswith(_PREFIX):
-            continue
-        decoded = json.loads(line.removeprefix(_PREFIX))
-        if not isinstance(decoded, dict):
-            raise TypeError("SEEX_PERF record must be a JSON object")
-        metric = decoded.get("metric")
-        unit = decoded.get("unit")
-        batch_iterations = decoded.get("batch_iterations")
-        sample_count = decoded.get("samples")
-        raw_samples = decoded.get("raw_samples")
-        reliable = decoded.get("reliable")
-        if not isinstance(metric, str) or not metric:
-            raise ValueError("SEEX_PERF metric must be a non-empty string")
-        if not isinstance(unit, str) or not unit:
-            raise ValueError("SEEX_PERF unit must be a non-empty string")
-        if not isinstance(batch_iterations, int) or isinstance(batch_iterations, bool) or batch_iterations <= 0:
-            raise ValueError("SEEX_PERF batch_iterations must be positive")
-        if not isinstance(sample_count, int) or isinstance(sample_count, bool) or sample_count <= 0:
-            raise ValueError("SEEX_PERF samples must be positive")
-        if not isinstance(raw_samples, list) or len(raw_samples) != sample_count:
-            raise ValueError("SEEX_PERF raw_samples must match samples")
-        numbers: dict[str, float] = {}
-        for field in ("p50", "p95", "max_batch", "max_single", "relative_mad"):
-            value = decoded.get(field)
-            if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
-                raise ValueError(f"SEEX_PERF {field} must be non-negative: {value!r}")
-            numbers[field] = float(value)
-        if numbers["p50"] <= 0:
-            raise ValueError(f"SEEX_PERF p50 must be positive: {numbers['p50']!r}")
-        parsed_samples = [
-            float(value) for value in raw_samples if isinstance(value, int | float) and not isinstance(value, bool)
-        ]
-        if len(parsed_samples) != sample_count:
-            raise TypeError("SEEX_PERF raw_samples must contain only numbers")
-        if not isinstance(reliable, bool):
-            raise TypeError("SEEX_PERF reliable must be boolean")
-        metrics[metric] = MetricSample(
-            metric=metric,
-            unit=unit,
-            batch_iterations=batch_iterations,
-            samples=sample_count,
-            raw_samples=parsed_samples,
-            p50=numbers["p50"],
-            p95=numbers["p95"],
-            max_batch=numbers["max_batch"],
-            max_single=numbers["max_single"],
-            relative_mad=numbers["relative_mad"],
-            reliable=reliable,
+            samples=samples,
+            median=float(statistics.median(ordered)),
+            p95=ordered[math.ceil(len(ordered) * 0.95) - 1],
+            maximum=ordered[-1],
+            relative_mad=_relative_mad(samples),
+            calibrated=_calibrated(cast(str, unit), batch_iterations, samples),
         )
     if not metrics:
-        raise ValueError("benchmark output contained no SEEX_PERF records")
+        raise ValueError("benchmark output contained no SEEX_BENCH records")
     return metrics
 
 
-def _command_output(command: Sequence[str]) -> str:
-    completed = subprocess.run(command, check=True, capture_output=True, text=True)
-    return completed.stdout + completed.stderr
+def _command(value: object, field: str) -> list[str]:
+    if not isinstance(value, list) or not value or any(not isinstance(item, str) or not item for item in value):
+        raise TypeError(f"{field} must be a non-empty string array")
+    return cast(list[str], value)
+
+
+def _fixture(value: object) -> Fixture:
+    if not isinstance(value, dict):
+        raise TypeError("manifest fixture must be an object")
+    identity = value.get("identity")
+    scale = value.get("scale")
+    if not isinstance(identity, str) or not identity.strip():
+        raise ValueError("manifest fixture identity is required")
+    if (
+        not isinstance(scale, dict)
+        or not scale
+        or any(
+            not isinstance(key, str) or not key or not isinstance(item, int) or isinstance(item, bool) or item <= 0
+            for key, item in scale.items()
+        )
+    ):
+        raise TypeError("manifest fixture scale must contain positive integer dimensions")
+    return Fixture(identity=identity, scale=cast(dict[str, int], scale))
+
+
+def read_manifest(path: pathlib.Path) -> Manifest:
+    """Read and validate the only supported performance manifest version."""
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or value.get("schema_version") != 3:
+        raise ValueError("performance manifests require schema_version 3")
+    kind = value.get("kind")
+    measurement = value.get("measurement")
+    primary = value.get("primary")
+    protected = value.get("protected", [])
+    floors = value.get("hard_floors", [])
+    improvement = _number(value.get("minimum_improvement", 0.05), "minimum_improvement")
+    if kind not in {"preservation", "optimization"} or measurement not in {"records", "rss"}:
+        raise ValueError("manifest kind or measurement is unsupported")
+    if not isinstance(value.get("name"), str) or not value["name"].strip():
+        raise ValueError("manifest name is required")
+    if kind == "optimization" and (not isinstance(primary, str) or not primary):
+        raise ValueError("optimization manifests require a primary metric")
+    if kind == "preservation" and primary is not None:
+        raise ValueError("preservation manifests do not have a primary metric")
+    if primary is not None and not isinstance(primary, str):
+        raise TypeError("manifest primary must be a string or null")
+    if not isinstance(protected, list) or any(not isinstance(item, str) or not item for item in protected):
+        raise TypeError("manifest protected must be a string array")
+    if kind == "preservation" and not protected:
+        raise ValueError("preservation manifests require protected metrics")
+    if not isinstance(floors, list):
+        raise TypeError("manifest hard_floors must be an array")
+    parsed_floors: list[HardFloor] = []
+    for floor in floors:
+        if not isinstance(floor, dict):
+            raise TypeError("hard floor must be an object")
+        metric, statistic, operator = floor.get("metric"), floor.get("statistic"), floor.get("operator")
+        if not isinstance(metric, str) or not metric:
+            raise TypeError("hard floor metric is required")
+        if statistic not in {"median", "p95", "maximum"} or operator not in {"at_least", "at_most"}:
+            raise ValueError("hard floor statistic or operator is unsupported")
+        parsed_floors.append(
+            HardFloor(
+                metric=metric,
+                statistic=cast(Literal["median", "p95", "maximum"], statistic),
+                operator=cast(Literal["at_least", "at_most"], operator),
+                value=_number(floor.get("value"), "hard floor value"),
+            )
+        )
+    if not 0 < improvement < 1:
+        raise ValueError("minimum_improvement must be between zero and one")
+    return Manifest(
+        schema_version=3,
+        name=cast(str, value["name"]),
+        kind=cast(Literal["preservation", "optimization"], kind),
+        measurement=cast(Literal["records", "rss"], measurement),
+        fixture=_fixture(value.get("fixture")),
+        baseline_command=_command(value.get("baseline_command"), "baseline_command"),
+        candidate_command=_command(value.get("candidate_command"), "candidate_command"),
+        primary=cast(str | None, primary),
+        protected=cast(list[str], protected),
+        hard_floors=parsed_floors,
+        minimum_improvement=improvement,
+    )
 
 
 def _environment() -> dict[str, str | bool]:
-    revision = _command_output(("git", "rev-parse", "HEAD")).strip()
-    dirty = bool(_command_output(("git", "status", "--porcelain")).strip())
     return {
         "captured_at": datetime.datetime.now(datetime.UTC).isoformat(),
-        "platform": platform.platform(),
+        "git_revision": subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip(),
+        "dirty": bool(
+            subprocess.run(["git", "status", "--porcelain"], check=True, capture_output=True, text=True).stdout
+        ),
         "machine": platform.machine(),
-        "rustc": _command_output(("rustc", "--version")).strip(),
+        "platform": platform.platform(),
         "python": platform.python_version(),
-        "uv": _command_output(("uv", "--version")).strip(),
-        "display": os.environ.get("SEEX_PERF_DISPLAY", "unrecorded"),
-        "git_revision": revision,
-        "dirty": dirty,
     }
 
 
-def capture(command: Sequence[str], repeats: int = _REQUIRED_PAIRS) -> Capture:
-    """Runs a benchmark repeatedly and returns its versioned capture."""
-    if repeats < _REQUIRED_PAIRS:
-        raise ValueError(f"performance capture requires at least {_REQUIRED_PAIRS} runs")
-    runs = [parse_output(_command_output(command)) for _ in range(repeats)]
-    return Capture(
-        schema_version=1,
-        environment=_environment(),
-        command=list(command),
-        runs=runs,
-    )
+def _stop_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
 
 
-def _samples(capture_record: Capture, metric: str) -> list[MetricSample]:
-    samples: list[MetricSample] = []
-    for run in capture_record["runs"]:
-        try:
-            samples.append(run[metric])
-        except KeyError as error:
-            raise ValueError(f"capture is missing metric {metric!r}") from error
-    if len(samples) < _REQUIRED_PAIRS:
-        raise ValueError(f"metric {metric!r} has fewer than {_REQUIRED_PAIRS} samples")
-    return samples
-
-
-def _median(values: Sequence[float]) -> float:
-    ordered = sorted(values)
-    return ordered[len(ordered) // 2]
-
-
-def compare_captures(
-    baseline: Capture,
-    candidate: Capture,
-    primary: str,
-    protected: Sequence[str] = (),
-) -> Verdict:
-    """Applies the 5%, six-of-seven, and 3% regression policy."""
-    baseline_primary = _samples(baseline, primary)
-    candidate_primary = _samples(candidate, primary)
-    paired = list(zip(baseline_primary, candidate_primary, strict=True))
-    if any(not before["reliable"] or not after["reliable"] for before, after in paired):
-        return Verdict(
-            verdict="no_change",
-            primary=primary,
-            median_improvement=0.0,
-            improved_pairs=0,
-            regressions={},
-            reason="primary metric contains unreliable samples",
-        )
-    improvements = [(before["p50"] - after["p50"]) / before["p50"] for before, after in paired]
-    median_improvement = _median(improvements)
-    improved_pairs = sum(improvement > 0 for improvement in improvements)
-    regressions: dict[str, float] = {}
-    for metric in protected:
-        before = _samples(baseline, metric)
-        after = _samples(candidate, metric)
-        if any(not sample["reliable"] for sample in [*before, *after]):
-            continue
-        regression = (
-            _median([sample["p50"] for sample in after]) / _median([sample["p50"] for sample in before])
-        ) - 1.0
-        if regression > 0.03:
-            regressions[metric] = regression
-    if regressions:
-        verdict = "regression"
-        reason = "one or more protected metrics regressed by more than 3%"
-    elif improved_pairs < 6 or median_improvement < 0.05:
-        verdict = "no_change"
-        reason = "primary metric did not improve by 5% in six of seven pairs"
-    else:
-        verdict = "pass"
-        reason = "primary metric improved without a protected regression"
-    return Verdict(
-        verdict=verdict,
-        primary=primary,
-        median_improvement=median_improvement,
-        improved_pairs=improved_pairs,
-        regressions=regressions,
-        reason=reason,
-    )
-
-
-def _read_capture(path: pathlib.Path) -> Capture:
-    return cast(Capture, json.loads(path.read_text(encoding="utf-8")))
-
-
-def _read_candidate_spec(path: pathlib.Path) -> CandidateSpec:
-    value = cast(CandidateSpec, json.loads(path.read_text(encoding="utf-8")))
-    validate_candidate_spec(value)
-    return value
-
-
-def _read_v2_pair(path: pathlib.Path) -> V2Pair:
-    value = cast(V2Pair, json.loads(path.read_text(encoding="utf-8")))
-    if value.get("schema_version") != 2 or value.get("record_type") != "pair":
-        raise ValueError(f"{path} is not a schema-v2 pair")
-    return value
-
-
-def _write_json(path: pathlib.Path, value: object) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
-
-def evaluate_rss(
-    samples: Sequence[int],
-    warm_index: int,
-    final_index: int,
-    *,
-    trend_end_index: int | None = None,
-    phase_indexes: dict[str, int] | None = None,
-) -> RssResult:
-    """Evaluates the warm/peak/final RSS contract."""
-    if trend_end_index is None:
-        trend_end_index = final_index
-    if not samples or any(sample <= 0 for sample in samples):
-        raise ValueError("RSS samples must be positive")
-    if not 0 <= warm_index <= trend_end_index <= final_index < len(samples):
-        raise ValueError("RSS phase indexes do not match the samples")
-    warm = samples[warm_index]
-    final = samples[final_index]
-    trend = samples[warm_index : trend_end_index + 1]
-    meaningful_growth = trend[-1] - trend[0] > max(
-        trend[0] // 100,
-        _RSS_TREND_NOISE_FLOOR_BYTES,
-    )
-    monotonic = (
-        len(trend) >= 8 and meaningful_growth and all(before <= after for before, after in itertools.pairwise(trend))
-    )
-    allowed = max(int(warm * 1.05), warm + 32 * 1024 * 1024)
-    verdict = "pass" if final <= allowed and not monotonic else "regression"
-    phases = dict(phase_indexes or {})
-    phases.update(warm=warm_index, cycles_done=trend_end_index, final=final_index)
-    if any(not warm_index <= index <= final_index for index in phases.values()):
-        raise ValueError("RSS phase indexes must fall between warm and final")
-    return RssResult(
-        schema_version=2,
-        record_type="rss",
-        samples=list(samples),
-        phase_indexes=phases,
-        phase_rss_bytes={name: samples[index] for name, index in phases.items()},
-        warm_index=warm_index,
-        trend_end_index=trend_end_index,
-        final_index=final_index,
-        warm_rss_bytes=warm,
-        peak_rss_bytes=max(samples),
-        final_rss_bytes=final,
-        allowed_final_rss_bytes=allowed,
-        monotonic_growth=monotonic,
-        verdict=verdict,
-    )
+def _run_output(command: Sequence[str], timeout: float) -> str:
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        output, _ = process.communicate(timeout=timeout)
+    except BaseException:
+        _stop_process(process)
+        raise
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command, output=output)
+    if output:
+        print(output, end="")
+    return output
 
 
 def _rss_bytes(process_id: int) -> int:
-    output = _command_output(("ps", "-o", "rss=", "-p", str(process_id))).strip()
-    if not output:
+    process = subprocess.run(["ps", "-o", "rss=", "-p", str(process_id)], check=False, capture_output=True, text=True)
+    output = process.stdout.strip()
+    if process.returncode != 0 or not output:
         raise ProcessLookupError(f"process {process_id} has no RSS sample")
-    rss = int(output) * 1024
-    if rss <= 0:
-        raise ProcessLookupError(f"process {process_id} has no positive RSS sample")
-    return rss
+    return int(output) * 1024
 
 
-def _record_rss_sample(process: _PollableProcess, samples: list[int], consecutive_misses: int) -> int:
-    """Records one RSS sample while tolerating a child-exit sampling race."""
-    try:
-        samples.append(_rss_bytes(process.pid))
-    except ProcessLookupError:
-        if process.poll() is not None:
-            return 0
-        consecutive_misses += 1
-        if consecutive_misses >= _MAX_CONSECUTIVE_RSS_MISSES:
-            raise
-        return consecutive_misses
-    return 0
-
-
-def sample_rss(command: Sequence[str], interval: float) -> RssResult:
-    """Samples a child that emits named RSS phases from a fresh process."""
+def _sample_rss(command: Sequence[str], timeout: float) -> tuple[dict[str, Metric], dict[str, int]]:
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    if process.stdout is None:
-        raise RuntimeError("RSS child stdout pipe was not created")
     stdout = process.stdout
+    if stdout is None:
+        raise RuntimeError("RSS child stdout pipe was not created")
     lines: queue.Queue[str | None] = queue.Queue()
 
     def read_output() -> None:
@@ -806,245 +331,223 @@ def sample_rss(command: Sequence[str], interval: float) -> RssResult:
             lines.put(line)
         lines.put(None)
 
-    reader = threading.Thread(target=read_output, name="seex-rss-output", daemon=True)
-    reader.start()
+    threading.Thread(target=read_output, name="seex-rss-output", daemon=True).start()
     samples: list[int] = []
     phases: dict[str, int] = {}
     output_closed = False
-    consecutive_rss_misses = 0
-    while process.poll() is None or not output_closed:
-        while True:
+    deadline = time.monotonic() + timeout
+    try:
+        while process.poll() is None or not output_closed:
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(command, timeout)
             try:
-                line = lines.get_nowait()
+                line = lines.get(timeout=min(_RSS_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0.001)))
             except queue.Empty:
-                break
+                line = ""
             if line is None:
                 output_closed = True
-                break
-            sys.stdout.write(line)
-            marker = line.partition("SEEX_RSS_PHASE ")[2].strip()
-            if marker:
-                if marker in phases:
-                    raise ValueError(f"RSS child emitted duplicate phase {marker!r}")
-                phases[marker] = max(len(samples) - 1, 0)
-        if process.poll() is None:
-            consecutive_rss_misses = _record_rss_sample(process, samples, consecutive_rss_misses)
-            time.sleep(interval)
-    reader.join()
+            elif line:
+                print(line, end="")
+                marker = line.partition("SEEX_RSS_PHASE ")[2].strip()
+                if marker:
+                    phases[marker] = max(len(samples) - 1, 0)
+            if process.poll() is None:
+                try:
+                    samples.append(_rss_bytes(process.pid))
+                except ProcessLookupError:
+                    if process.poll() is None:
+                        raise
+    except BaseException:
+        _stop_process(process)
+        raise
     if process.returncode != 0:
         raise subprocess.CalledProcessError(process.returncode, command)
-    if not {"warm", "cycles_done", "final"}.issubset(phases):
-        raise ValueError("RSS child did not emit warm, cycles_done, and final phase markers")
-    warm_index = phases["warm"]
-    trend_end_index = phases["cycles_done"]
+    if not samples or not {"warm", "cycles_done", "final"}.issubset(phases):
+        raise ValueError("RSS workload must emit warm, cycles_done, and final phases")
     phases["final"] = len(samples) - 1
-    return evaluate_rss(
-        samples,
-        warm_index,
-        len(samples) - 1,
-        trend_end_index=trend_end_index,
-        phase_indexes=phases,
-    )
-
-
-def compare_rss_pairs(baseline: Sequence[RssResult], candidate: Sequence[RssResult]) -> RssPairVerdict:
-    """Applies the optimization policy to paired fresh-process peak RSS."""
-    if len(baseline) != len(candidate) or len(candidate) < _REQUIRED_PAIRS:
-        raise ValueError(f"paired RSS optimization requires at least {_REQUIRED_PAIRS} pairs")
-    baseline_peaks = [float(result["peak_rss_bytes"]) for result in baseline]
-    candidate_peaks = [float(result["peak_rss_bytes"]) for result in candidate]
-    baseline_relative_mad = _relative_mad(baseline_peaks)
-    candidate_relative_mad = _relative_mad(candidate_peaks)
-    improvements = [(before - after) / before for before, after in zip(baseline_peaks, candidate_peaks, strict=True)]
-    median_improvement = _median(improvements)
-    improved_pairs = sum(improvement > 0 for improvement in improvements)
-    if any(result["verdict"] != "pass" for result in candidate):
-        verdict, reason = "regression", "candidate failed RSS stability"
-    elif baseline_relative_mad > 0.02 or candidate_relative_mad > 0.02:
-        verdict, reason = "no_change", "peak RSS relative MAD exceeded 2%"
-    elif improved_pairs < 6 or median_improvement + 1e-12 < 0.05:
-        verdict, reason = "no_change", "peak RSS missed the optimization threshold"
-    else:
-        verdict, reason = "pass", "peak RSS improved in at least six of seven pairs"
-    return RssPairVerdict(
-        verdict=verdict,
-        median_improvement=median_improvement,
-        improved_pairs=improved_pairs,
-        baseline_relative_mad=baseline_relative_mad,
-        candidate_relative_mad=candidate_relative_mad,
-        reason=reason,
-    )
-
-
-def pair_rss_v2(
-    baseline_command: Sequence[str],
-    candidate_command: Sequence[str],
-    spec: CandidateSpec,
-    *,
-    interval: float = 0.05,
-    repeats: int = _REQUIRED_PAIRS,
-) -> RssPair:
-    """Runs alternating fresh-process RSS captures and compares their peaks."""
-    validate_candidate_spec(spec)
-    if spec["candidate_type"] != "optimization" or spec["primary"] != "viewer.rss.peak":
-        raise ValueError("paired RSS requires optimization primary 'viewer.rss.peak'")
-    if repeats < _REQUIRED_PAIRS:
-        raise ValueError(f"paired RSS optimization requires at least {_REQUIRED_PAIRS} pairs")
-    baseline: list[RssResult] = []
-    candidate: list[RssResult] = []
-    execution_order: list[list[Literal["baseline", "candidate"]]] = []
-    for index in range(repeats):
-        order: list[Literal["baseline", "candidate"]] = (
-            ["baseline", "candidate"] if index % 2 == 0 else ["candidate", "baseline"]
+    values = {
+        "viewer.rss.warm": samples[phases["warm"]],
+        "viewer.rss.peak": max(samples),
+        "viewer.rss.final": samples[-1],
+    }
+    metrics = {
+        key: Metric(
+            domain="viewer",
+            metric=key.removeprefix("viewer."),
+            unit="bytes",
+            direction="lower",
+            batch_iterations=1,
+            samples=[float(value)],
+            median=float(value),
+            p95=float(value),
+            maximum=float(value),
+            relative_mad=0.0,
+            calibrated=True,
         )
-        execution_order.append(order)
-        for side in order:
-            command = baseline_command if side == "baseline" else candidate_command
-            result = sample_rss(command, interval)
-            (baseline if side == "baseline" else candidate).append(result)
-    return RssPair(
-        schema_version=2,
-        record_type="rss_pair",
-        candidate_spec=spec,
+        for key, value in values.items()
+    }
+    return metrics, phases
+
+
+def _capture(role: Role, manifest: Manifest, timeout: float) -> Capture:
+    command = manifest["baseline_command"] if role == "baseline" else manifest["candidate_command"]
+    if manifest["measurement"] == "rss":
+        metrics, phases = _sample_rss(command, timeout)
+    else:
+        metrics, phases = parse_records(_run_output(command, timeout)), {}
+    return Capture(role=role, command=command, metrics=metrics, phases=phases)
+
+
+def _change(before: float, after: float, direction: Direction) -> float:
+    improvement = (before - after) / before if direction == "lower" else (after - before) / before
+    return -improvement
+
+
+def _improvement(before: float, after: float, direction: Direction) -> float:
+    return -_change(before, after, direction)
+
+
+def _selected_metrics(manifest: Manifest) -> list[str]:
+    selected = list(manifest["protected"])
+    if manifest["primary"] is not None:
+        selected.append(manifest["primary"])
+    selected.extend(floor["metric"] for floor in manifest["hard_floors"])
+    return sorted(set(selected))
+
+
+def compare(manifest: Manifest, captures: Sequence[Capture]) -> tuple[Verdict, str, dict[str, object]]:
+    """Compare two baseline and two candidate captures without extending the workload."""
+    if [capture["role"] for capture in captures] != list(_ORDER):
+        raise ValueError("performance captures must use A-B-B-A order")
+    baseline = [capture for capture in captures if capture["role"] == "baseline"]
+    candidate = [capture for capture in captures if capture["role"] == "candidate"]
+    comparisons: dict[str, object] = {}
+    selected = _selected_metrics(manifest)
+    missing = [metric for metric in selected if any(metric not in capture["metrics"] for capture in captures)]
+    if missing:
+        return "inconclusive", "selected metrics were missing", {"missing": missing}
+    for metric in selected:
+        identities = {
+            (capture["metrics"][metric]["unit"], capture["metrics"][metric]["direction"]) for capture in captures
+        }
+        if len(identities) != 1:
+            raise ValueError(f"metric {metric!r} changed unit or direction between captures")
+    unreliable: list[str] = []
+    for metric in selected:
+        records = [capture["metrics"][metric] for capture in captures]
+        if any(not record["calibrated"] or record["relative_mad"] > _MAX_RELATIVE_MAD for record in records):
+            unreliable.append(metric)
+            continue
+        for role_captures in (baseline, candidate):
+            if _relative_mad([capture["metrics"][metric]["median"] for capture in role_captures]) > _MAX_RELATIVE_MAD:
+                unreliable.append(metric)
+                break
+    if unreliable:
+        return "inconclusive", "selected metrics exceeded the noise limit", {"unreliable": sorted(set(unreliable))}
+    floor_failures: list[str] = []
+    for floor in manifest["hard_floors"]:
+        for capture in candidate:
+            value = capture["metrics"][floor["metric"]][floor["statistic"]]
+            failed = value < floor["value"] if floor["operator"] == "at_least" else value > floor["value"]
+            if failed:
+                floor_failures.append(floor["metric"])
+                break
+    if floor_failures:
+        return "regression", "candidate failed a hard floor", {"failed_floors": sorted(set(floor_failures))}
+    regressions: dict[str, object] = {}
+    for metric in manifest["protected"]:
+        direction = baseline[0]["metrics"][metric]["direction"]
+        before = [capture["metrics"][metric]["median"] for capture in baseline]
+        after = [capture["metrics"][metric]["median"] for capture in candidate]
+        pair_changes = [_change(left, right, direction) for left, right in zip(before, after, strict=True)]
+        combined = _change(statistics.median(before), statistics.median(after), direction)
+        comparisons[metric] = {"pair_changes": pair_changes, "combined_change": combined}
+        if combined > _MAX_MEDIAN_REGRESSION or any(change > _MAX_PAIR_REGRESSION for change in pair_changes):
+            regressions[metric] = comparisons[metric]
+    if regressions:
+        return "regression", "a protected metric regressed", {"regressions": regressions}
+    if manifest["kind"] == "preservation":
+        return "pass", "selected performance was preserved", comparisons
+    primary = cast(str, manifest["primary"])
+    direction = baseline[0]["metrics"][primary]["direction"]
+    before = [capture["metrics"][primary]["median"] for capture in baseline]
+    after = [capture["metrics"][primary]["median"] for capture in candidate]
+    pairs = [_improvement(left, right, direction) for left, right in zip(before, after, strict=True)]
+    combined = _improvement(statistics.median(before), statistics.median(after), direction)
+    comparisons[primary] = {"pair_improvements": pairs, "combined_improvement": combined}
+    if (pairs[0] > 0) != (pairs[1] > 0):
+        return "inconclusive", "A/B and B/A directions disagreed", comparisons
+    if combined < -_MAX_MEDIAN_REGRESSION or any(value < -_MAX_PAIR_REGRESSION for value in pairs):
+        return "regression", "the optimization primary reliably regressed", comparisons
+    if all(value > 0 for value in pairs) and combined >= manifest["minimum_improvement"]:
+        return "pass", "the primary improved without a protected regression", comparisons
+    return "no_change", "the primary did not reach its improvement target", comparisons
+
+
+def _atomic_write(path: pathlib.Path, result: Result) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def run_gate(manifest: Manifest, output: pathlib.Path) -> Result:
+    """Run the bounded comparison and checkpoint after every completed process."""
+    result = Result(
+        schema_version=3,
+        record_type="gate_result",
+        manifest=manifest,
         environment=_environment(),
-        execution_order=execution_order,
-        baseline_command=list(baseline_command),
-        candidate_command=list(candidate_command),
-        baseline=baseline,
-        candidate=candidate,
-        verdict=compare_rss_pairs(baseline, candidate),
+        execution_order=list(_ORDER),
+        captures=[],
+        verdict="running",
+        reason="capture in progress",
+        comparisons={},
     )
+    _atomic_write(output, result)
+    deadline = time.monotonic() + _MAX_GATE_SECONDS
+    try:
+        for role in _ORDER:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(manifest["name"], _MAX_GATE_SECONDS)
+            result["captures"].append(_capture(role, manifest, remaining))
+            _atomic_write(output, result)
+        verdict, reason, comparisons = compare(manifest, result["captures"])
+        result.update(verdict=verdict, reason=reason, comparisons=comparisons)
+    except BaseException as error:
+        result.update(verdict="error", reason=f"{type(error).__name__}: {error}")
+        _atomic_write(output, result)
+        raise
+    _atomic_write(output, result)
+    return result
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    capture_parser = commands.add_parser("capture")
-    capture_parser.add_argument("--output", type=pathlib.Path, required=True)
-    capture_parser.add_argument("--runs", type=int, default=_REQUIRED_PAIRS)
-    capture_parser.add_argument("command", nargs=argparse.REMAINDER)
-    capture_v2_parser = commands.add_parser("capture-v2")
-    capture_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
-    capture_v2_parser.add_argument("--runs", type=int, default=_REQUIRED_PAIRS)
-    capture_v2_parser.add_argument("command", nargs=argparse.REMAINDER)
-    compare_parser = commands.add_parser("compare")
-    compare_parser.add_argument("--baseline", type=pathlib.Path, required=True)
-    compare_parser.add_argument("--candidate", type=pathlib.Path, required=True)
-    compare_parser.add_argument("--primary", required=True)
-    compare_parser.add_argument("--protected", action="append", default=[])
-    pair_parser = commands.add_parser("pair")
-    pair_parser.add_argument("--baseline-command", required=True)
-    pair_parser.add_argument("--candidate-command", required=True)
-    pair_parser.add_argument("--primary", required=True)
-    pair_parser.add_argument("--protected", action="append", default=[])
-    pair_parser.add_argument("--output", type=pathlib.Path, required=True)
-    pair_v2_parser = commands.add_parser("pair-v2")
-    pair_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
-    pair_v2_parser.add_argument("--baseline-command", required=True)
-    pair_v2_parser.add_argument("--candidate-command", required=True)
-    pair_v2_parser.add_argument("--runs", type=int)
-    pair_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
-    pair_rss_v2_parser = commands.add_parser("pair-rss-v2")
-    pair_rss_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
-    pair_rss_v2_parser.add_argument("--baseline-command", required=True)
-    pair_rss_v2_parser.add_argument("--candidate-command", required=True)
-    pair_rss_v2_parser.add_argument("--runs", type=int, default=_REQUIRED_PAIRS)
-    pair_rss_v2_parser.add_argument("--interval", type=float, default=0.05)
-    pair_rss_v2_parser.add_argument("--output", type=pathlib.Path, required=True)
-    compare_v2_parser = commands.add_parser("compare-v2")
-    compare_v2_parser.add_argument("--spec", type=pathlib.Path, required=True)
-    compare_v2_parser.add_argument("--original", type=pathlib.Path, required=True)
-    compare_v2_parser.add_argument("--rolling", type=pathlib.Path, required=True)
-    rss_parser = commands.add_parser("rss")
-    rss_parser.add_argument("--output", type=pathlib.Path, required=True)
-    rss_parser.add_argument("--interval", type=float, default=0.05)
-    rss_parser.add_argument("command", nargs=argparse.REMAINDER)
+    run = commands.add_parser("run")
+    run.add_argument("--manifest", type=pathlib.Path, required=True)
+    run.add_argument("--output", type=pathlib.Path, required=True)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Runs capture or comparison and returns a stable process status."""
     args = _parser().parse_args(argv)
-    command: list[str] = []
-    if args.action in {"capture", "capture-v2", "rss"}:
-        command = args.command[1:] if args.command[:1] == ["--"] else args.command
-        if not command:
-            raise ValueError(f"{args.action} requires a command after --")
-    if args.action == "capture":
-        _write_json(args.output, capture(command, args.runs))
-        return 0
-    if args.action == "capture-v2":
-        _write_json(args.output, capture_v2(command, args.runs))
-        return 0
-    if args.action == "pair-v2":
-        spec = _read_candidate_spec(args.spec)
-        result = pair_v2(
-            shlex.split(args.baseline_command),
-            shlex.split(args.candidate_command),
-            spec,
-            args.runs,
-        )
-        _write_json(args.output, result)
-        return 0
-    if args.action == "pair-rss-v2":
-        result = pair_rss_v2(
-            shlex.split(args.baseline_command),
-            shlex.split(args.candidate_command),
-            _read_candidate_spec(args.spec),
-            interval=args.interval,
-            repeats=args.runs,
-        )
-        _write_json(args.output, result)
-        return {"pass": 0, "no_change": 2, "regression": 3}[result["verdict"]["verdict"]]
-    if args.action == "compare-v2":
-        result = compare_v2_baselines(
-            _read_v2_pair(args.original),
-            _read_v2_pair(args.rolling),
-            _read_candidate_spec(args.spec),
-        )
-        print(json.dumps(result, sort_keys=True))
-        return {"pass": 0, "no_change": 2, "regression": 3}[cast(str, result["verdict"])]
-    if args.action == "rss":
-        result = sample_rss(command, args.interval)
-        _write_json(args.output, result)
-        return 0 if result["verdict"] == "pass" else 3
-    if args.action == "pair":
-        baseline_runs: list[dict[str, MetricSample]] = []
-        candidate_runs: list[dict[str, MetricSample]] = []
-        baseline_command = shlex.split(args.baseline_command)
-        candidate_command = shlex.split(args.candidate_command)
-        for _ in range(_REQUIRED_PAIRS):
-            baseline_runs.append(parse_output(_command_output(baseline_command)))
-            candidate_runs.append(parse_output(_command_output(candidate_command)))
-        environment = _environment()
-        baseline = Capture(
-            schema_version=1,
-            environment=environment,
-            command=baseline_command,
-            runs=baseline_runs,
-        )
-        candidate = Capture(
-            schema_version=1,
-            environment=environment,
-            command=candidate_command,
-            runs=candidate_runs,
-        )
-        verdict = compare_captures(baseline, candidate, args.primary, args.protected)
-        _write_json(args.output, {"baseline": baseline, "candidate": candidate, "verdict": verdict})
-    else:
-        verdict = compare_captures(
-            _read_capture(args.baseline),
-            _read_capture(args.candidate),
-            args.primary,
-            args.protected,
-        )
-        print(json.dumps(verdict, sort_keys=True))
-    return {"pass": 0, "no_change": 2, "regression": 3}[verdict["verdict"]]
+    result = run_gate(read_manifest(args.manifest), args.output)
+    return {"pass": 0, "no_change": 2, "inconclusive": 2, "regression": 3}[result["verdict"]]
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
-    except (OSError, TypeError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
-        print(f"viewer performance gate failed: {error}", file=sys.stderr)
-        sys.exit(4)
+        raise SystemExit(main())
+    except (
+        KeyboardInterrupt,
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ) as error:
+        print(f"performance gate failed: {error}", file=sys.stderr)
+        raise SystemExit(4) from error

@@ -1,559 +1,461 @@
-"""Verify the Viewer performance comparison contract."""
+"""Verify the bounded schema-v3 performance gate contract."""
+
+from __future__ import annotations
 
 import json
 import pathlib
-import statistics
+import subprocess
+import sys
+from collections.abc import Sequence
+from typing import Literal, cast
 
 import pytest
 
 from scripts import performance_gate
 
 
-class _FakeRssProcess:
-    pid = 42
+def _record(
+    value: float = 100.0,
+    *,
+    metric: str = "reader.narrow",
+    unit: str = "ns/op",
+    direction: str = "lower",
+    batch_iterations: int = 300_000,
+    samples: Sequence[float] | None = None,
+) -> str:
+    values = list(samples) if samples is not None else [value] * 10
+    return "SEEX_BENCH " + json.dumps(
+        {
+            "schema_version": 3,
+            "record_type": "metric",
+            "domain": "query",
+            "metric": metric,
+            "unit": unit,
+            "direction": direction,
+            "batch_iterations": batch_iterations,
+            "samples": values,
+        }
+    )
 
-    def __init__(self, returncode: int | None) -> None:
-        self.returncode = returncode
 
-    def poll(self) -> int | None:
-        return self.returncode
+def _metric(
+    name: str,
+    value: float,
+    *,
+    direction: performance_gate.Direction = "lower",
+    relative_mad: float = 0.0,
+) -> performance_gate.Metric:
+    domain, metric = name.split(".", 1)
+    return performance_gate.Metric(
+        domain=domain,
+        metric=metric,
+        unit="ns/op",
+        direction=direction,
+        batch_iterations=300_000,
+        samples=[value] * 10,
+        median=value,
+        p95=value,
+        maximum=value,
+        relative_mad=relative_mad,
+        calibrated=True,
+    )
 
 
-def _capture(p50: float, *, reliable: bool = True, protected: float = 100.0) -> performance_gate.Capture:
-    def sample(metric: str, value: float, metric_reliable: bool = True) -> performance_gate.MetricSample:
-        return performance_gate.MetricSample(
-            metric=metric,
-            unit="ns/op",
-            batch_iterations=1,
-            samples=1,
-            raw_samples=[value],
-            p50=value,
-            p95=value,
-            max_batch=value,
-            max_single=value,
-            relative_mad=0.0,
-            reliable=metric_reliable,
-        )
-
-    runs: list[dict[str, performance_gate.MetricSample]] = []
-    for _ in range(7):
-        runs.append({"primary": sample("primary", p50, reliable), "protected": sample("protected", protected)})
+def _capture(
+    role: performance_gate.Role,
+    primary: float,
+    *,
+    protected: float = 100.0,
+    primary_mad: float = 0.0,
+) -> performance_gate.Capture:
     return performance_gate.Capture(
-        schema_version=1,
-        environment={},
-        command=["benchmark"],
-        runs=runs,
+        role=role,
+        command=[role],
+        metrics={
+            "query.reader.narrow": _metric("query.reader.narrow", primary, relative_mad=primary_mad),
+            "query.reader.full": _metric("query.reader.full", protected),
+        },
+        phases={},
     )
 
 
-def test_parse_output_extracts_machine_records() -> None:
-    parsed = performance_gate.parse_output(
-        'noise\nSEEX_PERF {"metric":"path","unit":"ns/op","batch_iterations":2,'
-        '"samples":2,"raw_samples":[40.0,45.0],"p50":42.5,"p95":45.0,'
-        '"max_batch":45.0,"max_single":46.0,"relative_mad":0.01,"reliable":true}\n'
+def _manifest(
+    *,
+    kind: Literal["preservation", "optimization"] = "optimization",
+    protected: Sequence[str] = (),
+    floors: Sequence[performance_gate.HardFloor] = (),
+) -> performance_gate.Manifest:
+    return performance_gate.Manifest(
+        schema_version=3,
+        name="reader",
+        kind=kind,
+        measurement="records",
+        fixture=performance_gate.Fixture(identity="reader-v3", scale={"runs": 1, "points": 1_000_000}),
+        baseline_command=["baseline"],
+        candidate_command=["candidate"],
+        primary="query.reader.narrow" if kind == "optimization" else None,
+        protected=list(protected),
+        hard_floors=list(floors),
+        minimum_improvement=0.05,
     )
 
-    assert parsed["path"]["raw_samples"] == [40.0, 45.0]
-    assert parsed["path"]["p95"] == 45.0
+
+def _captures(
+    baseline_first: float,
+    candidate_first: float,
+    candidate_second: float,
+    baseline_second: float,
+    *,
+    protected: Sequence[float] = (100.0, 100.0, 100.0, 100.0),
+) -> list[performance_gate.Capture]:
+    values = (baseline_first, candidate_first, candidate_second, baseline_second)
+    roles: tuple[performance_gate.Role, ...] = ("baseline", "candidate", "candidate", "baseline")
+    return [
+        _capture(role, value, protected=protected_value)
+        for role, value, protected_value in zip(roles, values, protected, strict=True)
+    ]
 
 
-def _v2_metric(**updates: object) -> str:
-    raw_samples = updates.get("raw_samples", [10.0, 11.0, 12.0])
-    assert isinstance(raw_samples, list)
-    ordered = sorted(float(value) for value in raw_samples)
-    p50 = statistics.median(ordered)
-    deviations = [abs(sample - p50) for sample in ordered]
-    mad = statistics.median(deviations)
-    record: dict[str, object] = {
-        "schema_version": 2,
-        "record_type": "metric",
-        "domain": "query",
-        "metric": "duckdb.step.full",
-        "unit": "ns/op",
-        "direction": "lower",
-        "batch_iterations": 2,
-        "samples": 3,
-        "raw_samples": raw_samples,
-        "mad": mad,
-        "relative_mad": mad / p50 if p50 else 0.0,
-        "p50": p50,
-        "p95": ordered[(len(ordered) * 95 + 99) // 100 - 1],
-        "max": ordered[-1],
-        "reliable": False,
-    }
-    record.update(updates)
-    return "SEEX_PERF " + __import__("json").dumps(record)
+def test_parse_records_derives_statistics_from_ten_raw_samples() -> None:
+    samples = [100.0] * 5 + [102.0] * 5
 
+    parsed = performance_gate.parse_records(f"noise\n{_record(samples=samples)}\n")
 
-def test_parse_v2_output_validates_metrics_and_checks() -> None:
-    check = (
-        'SEEX_PERF {"schema_version":2,"record_type":"check","domain":"query",'
-        '"check":"parity","passed":true,"detail":"matched"}'
-    )
-
-    parsed = performance_gate.parse_v2_output(f"{_v2_metric()}\n{check}")
-
-    assert parsed["metrics"]["query.duckdb.step.full"]["batch_iterations"] == 2
-    assert parsed["checks"] == [performance_gate.V2Check(domain="query", check="parity", passed=True, detail="matched")]
-
-
-def test_v2_timing_below_ten_milliseconds_is_non_deciding() -> None:
-    short = performance_gate.parse_v2_output(
-        _v2_metric(batch_iterations=1_000, raw_samples=[1_000.0] * 3, relative_mad=0.0, reliable=True)
-    )
-    calibrated = performance_gate.parse_v2_output(
-        _v2_metric(batch_iterations=10_000, raw_samples=[1_000.0] * 3, relative_mad=0.0, reliable=True)
-    )
-
-    assert not short["metrics"]["query.duckdb.step.full"]["reliable"]
-    assert calibrated["metrics"]["query.duckdb.step.full"]["reliable"]
-
-
-def test_parse_v2_output_accepts_even_sample_statistics() -> None:
-    parsed = performance_gate.parse_v2_output(_v2_metric(samples=4, raw_samples=[10.0, 10.0, 12.0, 12.0]))
-
-    metric = parsed["metrics"]["query.duckdb.step.full"]
-    assert metric["p50"] == 11.0
-    assert metric["mad"] == 1.0
+    metric = parsed["query.reader.narrow"]
+    assert metric["samples"] == samples
+    assert metric["median"] == 101.0
+    assert metric["p95"] == 102.0
+    assert metric["maximum"] == 102.0
+    assert metric["relative_mad"] == pytest.approx(1 / 101)
+    assert metric["calibrated"]
 
 
 @pytest.mark.parametrize(
     "updates, message",
     [
-        ({"schema_version": 1}, "schema_version 2"),
-        ({"unit": "milliseconds"}, "unsupported"),
-        ({"raw_samples": [10.0]}, "must match"),
-        ({"raw_samples": [10.0, float("nan"), 12.0]}, "finite"),
-        ({"p50": 10.0}, "p50 does not match"),
-        ({"p95": 11.0}, "p95 does not match"),
-        ({"max": 11.0}, "max does not match"),
-        ({"mad": 2.0}, "mad does not match"),
-        ({"relative_mad": 0.0}, "relative_mad does not match"),
+        ({"schema_version": 2}, "schema_version 3"),
+        ({"record_type": "check"}, "schema_version 3"),
+        ({"samples": [100.0] * 9}, "exactly 10"),
+        ({"samples": [100.0] * 9 + [float("nan")]}, "finite"),
+        ({"direction": "neutral"}, "supported unit and direction"),
+        ({"batch_iterations": 0}, "positive"),
     ],
 )
-def test_parse_v2_output_rejects_invalid_deciding_records(updates: dict[str, object], message: str) -> None:
+def test_parse_records_rejects_invalid_records(updates: dict[str, object], message: str) -> None:
+    record = json.loads(_record().removeprefix("SEEX_BENCH "))
+    record.update(updates)
+
     with pytest.raises((TypeError, ValueError), match=message):
-        performance_gate.parse_v2_output(_v2_metric(**updates))
+        performance_gate.parse_records("SEEX_BENCH " + json.dumps(record))
 
 
-def _v2_runs(value: float, **updates: object) -> list[performance_gate.V2Output]:
-    values: dict[str, object] = {
-        "batch_iterations": 200_000,
-        "raw_samples": [value] * 3,
-        "reliable": True,
+@pytest.mark.parametrize(
+    "unit,batch_iterations,value,calibrated",
+    [
+        ("ns/op", 250_000, 100.0, True),
+        ("ns/op", 249_999, 100.0, False),
+        ("ns", 1, 25_000_000.0, True),
+        ("points/s", 2_500, 100_000.0, True),
+        ("points/s", 2_499, 100_000.0, False),
+    ],
+)
+def test_timing_and_throughput_calibration(unit: str, batch_iterations: int, value: float, calibrated: bool) -> None:
+    parsed = performance_gate.parse_records(_record(unit=unit, batch_iterations=batch_iterations, samples=[value] * 10))
+
+    assert parsed["query.reader.narrow"]["calibrated"] is calibrated
+
+
+def test_read_manifest_validates_fixture_and_defaults_target(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "name": "query preservation",
+                "kind": "preservation",
+                "measurement": "records",
+                "fixture": {"identity": "query-v3", "scale": {"runs": 1, "points": 1_000_000}},
+                "baseline_command": ["baseline", "--fixture", "prepared"],
+                "candidate_command": ["candidate", "--fixture", "prepared"],
+                "protected": ["query.reader.full"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = performance_gate.read_manifest(path)
+
+    assert manifest["minimum_improvement"] == 0.05
+    assert manifest["fixture"]["scale"]["points"] == 1_000_000
+    assert manifest["primary"] is None
+
+
+@pytest.mark.parametrize(
+    "updates, message",
+    [
+        ({"schema_version": 2}, "schema_version 3"),
+        ({"fixture": "query-v2"}, "fixture must be an object"),
+        ({"fixture": {"identity": "query", "scale": {}}}, "positive integer dimensions"),
+        ({"primary": "query.reader.full"}, "do not have a primary"),
+        ({"protected": []}, "require protected metrics"),
+        ({"baseline_command": "benchmark"}, "string array"),
+    ],
+)
+def test_read_manifest_rejects_invalid_contract(
+    tmp_path: pathlib.Path, updates: dict[str, object], message: str
+) -> None:
+    value: dict[str, object] = {
+        "schema_version": 3,
+        "name": "preservation",
+        "kind": "preservation",
+        "measurement": "records",
+        "fixture": {"identity": "query-v3", "scale": {"points": 1}},
+        "baseline_command": ["baseline"],
+        "candidate_command": ["candidate"],
+        "protected": ["query.reader.full"],
     }
-    values.update(updates)
-    return [performance_gate.parse_v2_output(_v2_metric(**values)) for _ in range(7)]
+    value.update(updates)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        performance_gate.read_manifest(path)
 
 
-def test_v2_optimization_accepts_six_of_seven_and_five_percent() -> None:
-    candidate = _v2_runs(94.0)
-    candidate[-1] = _v2_runs(101.0)[0]
+def test_preservation_enforces_combined_and_ordered_limits() -> None:
+    manifest = _manifest(kind="preservation", protected=["query.reader.full"])
+    accepted = _captures(100.0, 100.0, 100.0, 100.0, protected=(100.0, 102.0, 103.0, 100.0))
+    pair_regression = _captures(100.0, 100.0, 100.0, 100.0, protected=(98.0, 104.0, 100.0, 102.0))
 
-    verdict = performance_gate.compare_v2_captures(
-        _v2_runs(100.0), candidate, "optimization", primary="query.duckdb.step.full"
+    assert performance_gate.compare(manifest, accepted)[0] == "pass"
+    verdict, _, details = performance_gate.compare(manifest, pair_regression)
+    assert verdict == "regression"
+    assert "query.reader.full" in cast(dict[str, object], details["regressions"])
+
+
+@pytest.mark.parametrize(
+    "candidate_first,candidate_second,expected",
+    [(94.0, 94.0, "pass"), (97.0, 97.0, "no_change"), (106.0, 106.0, "regression")],
+)
+def test_optimization_verdicts(candidate_first: float, candidate_second: float, expected: str) -> None:
+    verdict, _, _ = performance_gate.compare(_manifest(), _captures(100.0, candidate_first, candidate_second, 100.0))
+
+    assert verdict == expected
+
+
+def test_optimization_direction_conflict_is_inconclusive() -> None:
+    verdict, reason, _ = performance_gate.compare(_manifest(), _captures(100.0, 99.0, 101.0, 100.0))
+
+    assert verdict == "inconclusive"
+    assert "directions disagreed" in reason
+
+
+def test_protected_regression_and_hard_floor_block_optimization() -> None:
+    floor = performance_gate.HardFloor(metric="query.reader.narrow", statistic="p95", operator="at_most", value=95.0)
+    protected = _manifest(protected=["query.reader.full"])
+    floored = _manifest(floors=[floor])
+
+    assert (
+        performance_gate.compare(
+            protected,
+            _captures(100.0, 90.0, 90.0, 100.0, protected=(100.0, 106.0, 106.0, 100.0)),
+        )[0]
+        == "regression"
     )
-
-    assert verdict["verdict"] == "pass"
-    assert verdict["improved_pairs"] == 6
+    assert performance_gate.compare(floored, _captures(100.0, 96.0, 96.0, 100.0))[0] == "regression"
 
 
-def test_v2_migration_checks_hard_floors_and_protected_regressions() -> None:
-    floor = performance_gate.HardFloor(
-        metric="query.duckdb.step.full", statistic="p95", operator="at_most", value=110.0
-    )
-    candidate = _v2_runs(104.0, raw_samples=[104.0, 104.0, 111.0])
-    candidate[0]["checks"].append(
-        performance_gate.V2Check(domain="query", check="parity", passed=False, detail="mismatch")
-    )
+def test_noise_and_missing_metrics_are_inconclusive() -> None:
+    noisy = _captures(100.0, 90.0, 90.0, 100.0)
+    noisy[1]["metrics"]["query.reader.narrow"]["relative_mad"] = 0.03
+    missing = _captures(100.0, 90.0, 90.0, 100.0)
+    del missing[0]["metrics"]["query.reader.narrow"]
 
-    verdict = performance_gate.compare_v2_captures(
-        _v2_runs(100.0),
-        candidate,
-        "migration",
-        primary=None,
-        protected=["query.duckdb.step.full"],
-        hard_floors=[floor],
-    )
-
-    assert verdict["verdict"] == "regression"
-    assert verdict["failed_checks"] == ["query.parity"]
-    assert verdict["failed_floors"] == ["query.duckdb.step.full"]
-    assert verdict["regressions"]["query.duckdb.step.full"] > 0.03
+    assert performance_gate.compare(_manifest(), noisy)[0] == "inconclusive"
+    assert performance_gate.compare(_manifest(), missing)[0] == "inconclusive"
 
 
-def test_v2_migration_accepts_zero_neutral_protected_metric() -> None:
-    neutral = _v2_runs(
-        0.0,
-        batch_iterations=1,
-        direction="neutral",
-        unit="count",
-    )
+def test_cross_process_noise_is_inconclusive() -> None:
+    captures = _captures(90.0, 80.0, 80.0, 110.0)
 
-    verdict = performance_gate.compare_v2_captures(
-        neutral,
-        neutral,
-        "migration",
-        primary=None,
-        protected=["query.duckdb.step.full"],
-    )
+    verdict, reason, _ = performance_gate.compare(_manifest(), captures)
 
-    assert verdict["verdict"] == "pass"
-    assert verdict["regressions"] == {}
+    assert verdict == "inconclusive"
+    assert "noise" in reason
 
 
-def test_v2_migration_rejects_baseline_check_failures() -> None:
-    baseline = _v2_runs(100.0)
-    baseline[0]["checks"].append(
-        performance_gate.V2Check(domain="query", check="parity", passed=False, detail="mismatch")
-    )
+def test_metric_identity_must_not_change_between_captures() -> None:
+    captures = _captures(100.0, 90.0, 90.0, 100.0)
+    captures[1]["metrics"]["query.reader.narrow"]["direction"] = "higher"
 
-    verdict = performance_gate.compare_v2_captures(
-        baseline,
-        _v2_runs(100.0),
-        "migration",
-        primary=None,
-    )
-
-    assert verdict["verdict"] == "regression"
-    assert verdict["failed_checks"] == ["query.parity"]
+    with pytest.raises(ValueError, match="unit or direction"):
+        performance_gate.compare(_manifest(), captures)
 
 
-def test_v2_unreliable_primary_is_no_change() -> None:
-    candidate = _v2_runs(80.0, reliable=False)
-
-    verdict = performance_gate.compare_v2_captures(
-        _v2_runs(100.0), candidate, "optimization", primary="query.duckdb.step.full"
-    )
-
-    assert verdict["verdict"] == "no_change"
-    assert verdict["unreliable"] == ["query.duckdb.step.full"]
-
-
-def test_v2_pair_alternates_execution_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands: list[list[str]] = []
-
-    def fake_output(command: list[str]) -> str:
-        commands.append(command)
-        return _v2_metric()
-
-    monkeypatch.setattr(performance_gate, "_command_output", fake_output)
-    monkeypatch.setattr(performance_gate, "_environment", dict)
-
-    spec = performance_gate.CandidateSpec(
-        name="migration",
-        candidate_type="migration",
-        primary=None,
-        protected=[],
-        hard_floors=[],
-        fixture="fixture-v2",
-        commands=[["benchmark"]],
-        changed_files=[],
-    )
-    pair = performance_gate.pair_v2(["baseline"], ["candidate"], spec)
-
-    assert pair["execution_order"][:2] == [["baseline", "candidate"], ["candidate", "baseline"]]
-    assert len(pair["execution_order"]) == 3
-    assert commands[:4] == [["baseline"], ["candidate"], ["candidate"], ["baseline"]]
-    with pytest.raises(ValueError, match="at least 3"):
-        performance_gate.pair_v2(["baseline"], ["candidate"], spec, repeats=2)
-
-
-def test_v2_pair_keeps_seven_runs_for_optimizations(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(performance_gate, "_command_output", lambda command: _v2_metric())
-    monkeypatch.setattr(performance_gate, "_environment", dict)
-    spec = performance_gate.CandidateSpec(
-        name="optimization",
-        candidate_type="optimization",
-        primary="query.duckdb.step.full",
-        protected=[],
-        hard_floors=[],
-        fixture="fixture-v2",
-        commands=[["benchmark"]],
-        changed_files=[],
-    )
-
-    pair = performance_gate.pair_v2(["baseline"], ["candidate"], spec)
-
-    assert len(pair["execution_order"]) == 7
-    with pytest.raises(ValueError, match="at least 7"):
-        performance_gate.pair_v2(["baseline"], ["candidate"], spec, repeats=3)
-
-
-def test_candidate_spec_enforces_scope_and_optimization_primary() -> None:
-    spec = performance_gate.CandidateSpec(
-        name="candidate",
-        candidate_type="optimization",
-        primary=None,
-        protected=[],
-        hard_floors=[],
-        fixture="fixture-v2",
-        commands=[["benchmark"]],
-        changed_files=[],
-    )
-    with pytest.raises(ValueError, match="primary"):
-        performance_gate.validate_candidate_spec(spec)
-    spec["primary"] = "query.duckdb.step.full"
-    spec["changed_files"] = [f"file-{index}" for index in range(6)]
-    with pytest.raises(ValueError, match="five"):
-        performance_gate.validate_candidate_spec(spec)
-
-
-def test_compare_v2_requires_the_captured_candidate_spec() -> None:
-    spec = performance_gate.CandidateSpec(
-        name="migration",
-        candidate_type="migration",
-        primary=None,
-        protected=[],
-        hard_floors=[],
-        fixture="fixture-v2",
-        commands=[["benchmark"]],
-        changed_files=[],
-    )
-    capture = performance_gate.V2Capture(
-        schema_version=2,
-        record_type="capture",
-        environment={},
-        command=["benchmark"],
-        runs=_v2_runs(100.0),
-    )
-    pair = performance_gate.V2Pair(
-        schema_version=2,
-        record_type="pair",
-        candidate_spec=spec,
-        execution_order=[],
-        baseline=capture,
-        candidate=capture,
-    )
-    different = performance_gate.CandidateSpec(**{**spec, "protected": ["query.duckdb.step.full"]})
-
-    with pytest.raises(ValueError, match="original pair candidate_spec"):
-        performance_gate.compare_v2_baselines(pair, pair, different)
-
-
-def test_compare_accepts_consistent_improvement() -> None:
-    verdict = performance_gate.compare_captures(
-        _capture(100.0),
-        _capture(90.0),
-        "primary",
-        ["protected"],
-    )
-
-    assert verdict["verdict"] == "pass"
-    assert verdict["improved_pairs"] == 7
-
-
-def test_compare_rejects_no_change_and_unreliable_samples() -> None:
-    unchanged = performance_gate.compare_captures(_capture(100.0), _capture(96.0), "primary")
-    unreliable = performance_gate.compare_captures(
-        _capture(100.0),
-        _capture(80.0, reliable=False),
-        "primary",
-    )
-
-    assert unchanged["verdict"] == "no_change"
-    assert unreliable["reason"] == "primary metric contains unreliable samples"
-
-
-def test_compare_rejects_protected_regression() -> None:
-    verdict = performance_gate.compare_captures(
-        _capture(100.0),
-        _capture(90.0, protected=104.0),
-        "primary",
-        ["protected"],
-    )
-
-    assert verdict["verdict"] == "regression"
-    assert verdict["regressions"]["protected"] > 0.03
-
-
-def test_capture_cli_strips_remainder_separator(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
-    captured: list[list[str]] = []
-
-    def fake_capture(command: list[str], repeats: int) -> performance_gate.Capture:
-        captured.append(command)
-        return performance_gate.Capture(schema_version=1, environment={}, command=command, runs=[])
-
-    monkeypatch.setattr(performance_gate, "capture", fake_capture)
-    output = tmp_path / "capture.json"
-
-    assert performance_gate.main(["capture", "--output", str(output), "--", "benchmark"]) == 0
-    assert captured == [["benchmark"]]
-
-
-def test_pair_v2_cli_requires_and_records_candidate_spec(
+def test_run_gate_uses_abba_and_checkpoints_each_capture(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
-    spec = {
-        "name": "migration",
-        "candidate_type": "migration",
-        "primary": None,
-        "protected": [],
-        "hard_floors": [],
-        "fixture": "fixture-v2",
-        "commands": [["benchmark"]],
-        "changed_files": ["file.rs"],
-    }
-    spec_path, output = tmp_path / "spec.json", tmp_path / "pair.json"
-    spec_path.write_text(json.dumps(spec), encoding="utf-8")
-    monkeypatch.setattr(
-        performance_gate,
-        "pair_v2",
-        lambda baseline, candidate, spec, repeats: {
-            "baseline": baseline,
-            "candidate": candidate,
-            "spec": spec["name"],
-            "runs": repeats,
-        },
-    )
+    calls: list[performance_gate.Role] = []
+    checkpoint_sizes: list[int] = []
+    atomic_write = performance_gate._atomic_write
 
-    status = performance_gate.main(
-        [
-            "pair-v2",
-            "--spec",
-            str(spec_path),
-            "--baseline-command",
-            "old binary",
-            "--candidate-command",
-            "new binary",
-            "--runs",
-            "3",
-            "--output",
-            str(output),
-        ]
-    )
+    def fake_capture(
+        role: performance_gate.Role, manifest: performance_gate.Manifest, timeout: float
+    ) -> performance_gate.Capture:
+        del manifest
+        assert timeout > 0
+        calls.append(role)
+        return _capture(role, 100.0 if role == "baseline" else 94.0)
 
-    assert status == 0
-    assert json.loads(output.read_text(encoding="utf-8")) == {
-        "baseline": ["old", "binary"],
-        "candidate": ["new", "binary"],
-        "spec": "migration",
-        "runs": 3,
-    }
+    def record_checkpoint(path: pathlib.Path, result: performance_gate.Result) -> None:
+        checkpoint_sizes.append(len(result["captures"]))
+        atomic_write(path, result)
 
-
-def test_rss_gate_accepts_stable_memory_and_rejects_growth() -> None:
-    stable = performance_gate.evaluate_rss([100_000_000, 110_000_000, 105_000_000, 103_000_000], 0, 3)
-    flat = performance_gate.evaluate_rss([100_000_000] * 10, 0, 9)
-    lazy_page = performance_gate.evaluate_rss([100_000_000] * 5 + [100_016_384] * 5, 0, 9)
-    growing = performance_gate.evaluate_rss([100_000_000 + index * 2_000_000 for index in range(10)], 0, 9)
-
-    assert stable["verdict"] == "pass"
-    assert stable["schema_version"] == 2
-    assert stable["record_type"] == "rss"
-    assert stable["samples"] == [100_000_000, 110_000_000, 105_000_000, 103_000_000]
-    assert (stable["warm_index"], stable["final_index"]) == (0, 3)
-    assert stable["peak_rss_bytes"] == 110_000_000
-    assert flat["verdict"] == "pass"
-    assert not flat["monotonic_growth"]
-    assert lazy_page["verdict"] == "pass"
-    assert not lazy_page["monotonic_growth"]
-    assert growing["verdict"] == "regression"
-    assert growing["monotonic_growth"]
-
-
-def test_rss_gate_records_named_phases() -> None:
-    result = performance_gate.evaluate_rss(
-        [100_000_000, 102_000_000, 104_000_000, 103_000_000],
-        0,
-        3,
-        trend_end_index=2,
-        phase_indexes={"warm": 0, "dual_view": 1, "cycles_done": 2, "final": 3},
-    )
-
-    assert result["phase_indexes"]["dual_view"] == 1
-    assert result["phase_rss_bytes"]["dual_view"] == 102_000_000
-
-
-def test_rss_trend_excludes_final_settle_allocation() -> None:
-    result = performance_gate.evaluate_rss(
-        [100_000_000] * 10 + [110_000_000],
-        0,
-        10,
-        trend_end_index=9,
-    )
-
-    assert result["verdict"] == "pass"
-    assert result["trend_end_index"] == 9
-    assert result["final_rss_bytes"] == 110_000_000
-
-    with pytest.raises(ValueError, match="positive"):
-        performance_gate.evaluate_rss([100_000_000, 0], 0, 1)
-
-
-def test_rss_sampler_tolerates_only_bounded_process_lookup_misses(monkeypatch: pytest.MonkeyPatch) -> None:
-    def missing_rss(_: int) -> int:
-        raise ProcessLookupError("process exited between poll and RSS sample")
-
-    monkeypatch.setattr(performance_gate, "_rss_bytes", missing_rss)
-    samples: list[int] = []
-
-    assert performance_gate._record_rss_sample(_FakeRssProcess(0), samples, 0) == 0
-    assert performance_gate._record_rss_sample(_FakeRssProcess(None), samples, 0) == 1
-    assert performance_gate._record_rss_sample(_FakeRssProcess(None), samples, 1) == 2
-    with pytest.raises(ProcessLookupError, match="exited"):
-        performance_gate._record_rss_sample(_FakeRssProcess(None), samples, 2)
-    assert not samples
-
-
-def _rss_result(peak: int, *, verdict: str = "pass") -> performance_gate.RssResult:
-    return performance_gate.RssResult(
-        schema_version=2,
-        record_type="rss",
-        samples=[peak],
-        phase_indexes={"warm": 0, "cycles_done": 0, "final": 0},
-        phase_rss_bytes={"warm": peak, "cycles_done": peak, "final": peak},
-        warm_index=0,
-        trend_end_index=0,
-        final_index=0,
-        warm_rss_bytes=peak,
-        peak_rss_bytes=peak,
-        final_rss_bytes=peak,
-        allowed_final_rss_bytes=peak,
-        monotonic_growth=False,
-        verdict=verdict,
-    )
-
-
-def test_rss_pair_requires_reliable_six_of_seven_improvement() -> None:
-    baseline = [_rss_result(100_000_000)] * 7
-    candidate = [_rss_result(94_000_000)] * 6 + [_rss_result(101_000_000)]
-
-    accepted = performance_gate.compare_rss_pairs(baseline, candidate)
-    noisy = performance_gate.compare_rss_pairs(
-        baseline,
-        [_rss_result(value) for value in [80_000_000, 90_000_000, 100_000_000] * 2 + [80_000_000]],
-    )
-
-    assert accepted["verdict"] == "pass"
-    assert accepted["improved_pairs"] == 6
-    assert noisy["verdict"] == "no_change"
-    assert noisy["candidate_relative_mad"] > 0.02
-
-
-def test_rss_pair_alternates_fresh_processes(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands: list[list[str]] = []
-
-    def fake_sample(command: list[str], interval: float) -> performance_gate.RssResult:
-        commands.append(command)
-        assert interval == 0.1
-        return _rss_result(100_000_000 if command == ["baseline"] else 90_000_000)
-
-    monkeypatch.setattr(performance_gate, "sample_rss", fake_sample)
+    monkeypatch.setattr(performance_gate, "_capture", fake_capture)
     monkeypatch.setattr(performance_gate, "_environment", dict)
-    spec = performance_gate.CandidateSpec(
-        name="rss optimization",
-        candidate_type="optimization",
-        primary="viewer.rss.peak",
-        protected=[],
-        hard_floors=[],
-        fixture="viewer-10x6",
-        commands=[["benchmark"]],
-        changed_files=[],
+    monkeypatch.setattr(performance_gate, "_atomic_write", record_checkpoint)
+    output = tmp_path / "result.json"
+
+    result = performance_gate.run_gate(_manifest(), output)
+
+    checkpoint = json.loads(output.read_text(encoding="utf-8"))
+    assert calls == ["baseline", "candidate", "candidate", "baseline"]
+    assert checkpoint_sizes == [0, 1, 2, 3, 4, 4]
+    assert result["verdict"] == "pass"
+    assert checkpoint["verdict"] == "pass"
+    assert len(checkpoint["captures"]) == 4
+    assert not output.with_suffix(".json.tmp").exists()
+
+
+def test_timeout_preserves_completed_checkpoint(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> None:
+    calls = 0
+
+    def fake_capture(
+        role: performance_gate.Role, manifest: performance_gate.Manifest, timeout: float
+    ) -> performance_gate.Capture:
+        nonlocal calls
+        del manifest
+        calls += 1
+        if calls == 2:
+            raise subprocess.TimeoutExpired(role, timeout)
+        return _capture(role, 100.0)
+
+    monkeypatch.setattr(performance_gate, "_capture", fake_capture)
+    monkeypatch.setattr(performance_gate, "_environment", dict)
+    output = tmp_path / "result.json"
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        performance_gate.run_gate(_manifest(), output)
+
+    checkpoint = json.loads(output.read_text(encoding="utf-8"))
+    assert checkpoint["verdict"] == "error"
+    assert len(checkpoint["captures"]) == 1
+
+
+@pytest.mark.parametrize("verdict,status", [("pass", 0), ("no_change", 2), ("inconclusive", 2), ("regression", 3)])
+def test_main_returns_stable_verdict_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, verdict: str, status: int
+) -> None:
+    manifest = _manifest()
+    result = performance_gate.Result(
+        schema_version=3,
+        record_type="gate_result",
+        manifest=manifest,
+        environment={},
+        execution_order=["baseline", "candidate", "candidate", "baseline"],
+        captures=[],
+        verdict=cast(performance_gate.Verdict, verdict),
+        reason="test",
+        comparisons={},
+    )
+    monkeypatch.setattr(performance_gate, "read_manifest", lambda path: manifest)
+    monkeypatch.setattr(performance_gate, "run_gate", lambda loaded, output: result)
+
+    assert (
+        performance_gate.main(
+            ["run", "--manifest", str(tmp_path / "manifest.json"), "--output", str(tmp_path / "result.json")]
+        )
+        == status
     )
 
-    pair = performance_gate.pair_rss_v2(["baseline"], ["candidate"], spec, interval=0.1)
 
-    assert pair["verdict"]["verdict"] == "pass"
-    assert pair["execution_order"][:2] == [["baseline", "candidate"], ["candidate", "baseline"]]
-    assert commands[:4] == [["baseline"], ["candidate"], ["candidate"], ["baseline"]]
+def test_cli_returns_four_for_tool_errors(tmp_path: pathlib.Path) -> None:
+    manifest = tmp_path / "invalid.json"
+    manifest.write_text("{}", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(pathlib.Path(performance_gate.__file__)),
+            "run",
+            "--manifest",
+            str(manifest),
+            "--output",
+            str(tmp_path / "result.json"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 4
+    assert "schema_version 3" in completed.stderr
+
+
+class _InterruptedProcess:
+    returncode: int | None = None
+
+    def __init__(self) -> None:
+        self.terminated = False
+
+    def communicate(self, timeout: float) -> tuple[str, None]:
+        del timeout
+        raise KeyboardInterrupt
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        assert self.returncode is not None
+        return self.returncode
+
+
+def test_sigint_stops_active_child(monkeypatch: pytest.MonkeyPatch) -> None:
+    process = _InterruptedProcess()
+    monkeypatch.setattr(performance_gate.subprocess, "Popen", lambda *args, **kwargs: process)
+
+    with pytest.raises(KeyboardInterrupt):
+        performance_gate._run_output(["benchmark"], 1.0)
+
+    assert process.terminated
+
+
+def test_rss_sampler_records_compact_workload_phases() -> None:
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import time; "
+            "print('SEEX_RSS_PHASE warm', flush=True); time.sleep(.06); "
+            "print('SEEX_RSS_PHASE cycles_done', flush=True); time.sleep(.06); "
+            "print('SEEX_RSS_PHASE final', flush=True); time.sleep(.06)"
+        ),
+    ]
+
+    metrics, phases = performance_gate._sample_rss(command, 2.0)
+
+    assert set(phases) == {"warm", "cycles_done", "final"}
+    assert metrics["viewer.rss.peak"]["median"] > 0
+
+
+def test_rss_lookup_converts_child_exit_race(monkeypatch: pytest.MonkeyPatch) -> None:
+    completed = subprocess.CompletedProcess(["ps"], 1, stdout="", stderr="missing")
+    monkeypatch.setattr(performance_gate.subprocess, "run", lambda *args, **kwargs: completed)
+
+    with pytest.raises(ProcessLookupError, match="no RSS sample"):
+        performance_gate._rss_bytes(42)

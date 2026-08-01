@@ -1,10 +1,17 @@
 """Verify reporting benchmark modes and machine records."""
 
+import json
 from typing import Any
 
 import pytest
 
-from scripts import bench_log_persistence, bench_log_throughput, performance_gate
+from scripts import bench_log_persistence, bench_log_throughput
+
+
+def _legacy_records(output: str) -> list[dict[str, Any]]:
+    return [
+        json.loads(line.removeprefix("SEEX_PERF ")) for line in output.splitlines() if line.startswith("SEEX_PERF ")
+    ]
 
 
 class FakeRun:
@@ -35,8 +42,7 @@ def test_throughput_result_emits_v2_metric(capsys: pytest.CaptureFixture[str]) -
 
     bench_log_throughput.print_result(result)
 
-    parsed = performance_gate.parse_v2_output(capsys.readouterr().out)
-    metric = parsed["metrics"]["reporting.python.explicit_single.admission"]
+    metric = _legacy_records(capsys.readouterr().out)[0]
     assert metric["unit"] == "points/s"
     assert metric["batch_iterations"] == 100_000
 
@@ -66,6 +72,7 @@ def test_persistence_result_emits_phase_metrics_and_check(capsys: pytest.Capture
 
     bench_log_persistence.emit_performance_records({"reports_per_repeat": 1_000, "repeat_results": [repeat]})
 
-    parsed = performance_gate.parse_v2_output(capsys.readouterr().out)
-    assert parsed["metrics"]["reporting.python.drain_persistence"]["p50"] == 2_000_000.0
-    assert parsed["checks"][0]["passed"]
+    records = _legacy_records(capsys.readouterr().out)
+    drain = next(record for record in records if record.get("metric") == "python.drain_persistence")
+    assert drain["p50"] == 2_000_000.0
+    assert records[-1]["passed"]

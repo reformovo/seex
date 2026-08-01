@@ -16,9 +16,13 @@
 - Type-check all Python code under `python/`, `scripts/`, and `tests/`; keep suppressions narrow and inline for deliberate type-contract violations.
 - Add or update tests for new behavior. Rust logic should have Rust tests where possible; Python-facing behavior should have `pytest` coverage.
 - Run the relevant verification commands after edits and report any command you could not run.
-- Match performance verification to risk: scoped checks for routine items, three
-  AB/BA pairs for migration checkpoints, and seven pairs for optimizations and
-  milestone exit gates.
+- Match performance verification to risk. Run a performance gate only when a
+  change can affect a measured hot path, and select only the affected boundary.
+- Performance gates use one bounded A-B-B-A comparison. Timing and throughput
+  captures contain ten internally calibrated samples of at least 25 ms each;
+  the complete workload must finish within 120 seconds.
+- Benchmarks emit measurements, gates make decisions, acceptance tests verify
+  correctness, and profiles or stress workloads never block a commit.
 - Update this file in the same change when project conventions or required commands change.
 
 ## Must Never
@@ -43,8 +47,7 @@
 - Python lint: `uv run --group linting ruff check python scripts tests`
 - Python type-check: `uv run pyright`
 - Python tests: `uv run pytest`
-- Migration performance pair: `python scripts/performance_gate.py pair-v2 --runs 3 ...`
-- Optimization/exit performance pair: `python scripts/performance_gate.py pair-v2 --runs 7 ...`
+- Performance gate: `python scripts/performance_gate.py run --manifest <candidate.json> --output <result.json>`
 - Develop install: `uv run maturin develop --uv`
 - Wheel build: `uv run maturin build --out dist`
 
