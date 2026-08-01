@@ -639,6 +639,7 @@ fn execute(
             *session = Some(sessions.open()?);
         }
         let session = session.as_ref().ok_or(WorkerError::SessionUnavailable)?;
+        session.reader().refresh_diagnostics(generation.0);
         Ok(Some(match request {
             ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(&request)?),
             ReadRequest::Overview(request) => {

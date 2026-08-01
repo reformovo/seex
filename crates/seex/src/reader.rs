@@ -1,5 +1,7 @@
 //! Public read-query contracts.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -66,6 +68,9 @@ impl ReaderBuilder {
                     connection: None,
                     standalone: Some(standalone),
                     run_metadata: RefCell::new(HashMap::new()),
+                    diagnostics: RefCell::new(DiagnosticsCache::default()),
+                    #[cfg(test)]
+                    diagnostics_loads: Cell::new(0),
                 });
             }
         };
@@ -91,6 +96,9 @@ impl ReaderBuilder {
             connection: Some(ProjectConnection::new(connection)),
             standalone: None,
             run_metadata: RefCell::new(HashMap::new()),
+            diagnostics: RefCell::new(DiagnosticsCache::default()),
+            #[cfg(test)]
+            diagnostics_loads: Cell::new(0),
         })
     }
 }
@@ -100,12 +108,30 @@ pub struct Reader {
     connection: Option<ProjectConnection>,
     standalone: Option<StandaloneMetricReader>,
     run_metadata: RefCell<HashMap<RunId, RunMetadata>>,
+    diagnostics: RefCell<DiagnosticsCache>,
+    #[cfg(test)]
+    diagnostics_loads: Cell<usize>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RunMetadata {
+    project_id: Option<ProjectId>,
     started_at_millis: i64,
     status: RunStatus,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct DiagnosticsKey {
+    project_id: Option<ProjectId>,
+    run_id: RunId,
+    metric_key: MetricKey,
+}
+
+#[derive(Default)]
+struct DiagnosticsCache {
+    generation: Option<u64>,
+    finished: HashMap<DiagnosticsKey, SeriesDiagnostics>,
+    volatile: HashMap<DiagnosticsKey, SeriesDiagnostics>,
 }
 
 impl Reader {
@@ -170,7 +196,18 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
     ) -> SdkResult<MetricSeries> {
+        self.diagnostics.borrow_mut().volatile.clear();
         self.query_metric_impl(run_id, metric_key, query, false)
+    }
+
+    /// Selects the current Desktop storage generation for volatile diagnostics.
+    #[doc(hidden)]
+    pub fn refresh_diagnostics(&self, generation: u64) {
+        let mut cache = self.diagnostics.borrow_mut();
+        if cache.generation != Some(generation) {
+            cache.generation = Some(generation);
+            cache.volatile.clear();
+        }
     }
 
     /// Desktop-only query retaining one real sample outside each range edge.
@@ -240,7 +277,7 @@ impl Reader {
             ),
         };
         if axis == MetricAxis::Step && !retain_neighbors {
-            return self.query_step_metric(run_id, metric_key, query, run_status);
+            return self.query_step_metric(run_id, metric_key, query, &metadata);
         }
         let viewport = match bounds {
             Some((start, end)) => AlignmentViewport::new(start, end - 1),
@@ -271,7 +308,7 @@ impl Reader {
             _ => return Err(Error::Storage),
         }
         .map_err(|_| Error::Storage)?;
-        let diagnostics = self.series_diagnostics(run_id, metric_key);
+        let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
         let neighbor_count = result
             .points
             .iter()
@@ -322,7 +359,7 @@ impl Reader {
         run_id: &RunId,
         metric_key: &MetricKey,
         query: &MetricQuery,
-        run_status: RunStatus,
+        metadata: &RunMetadata,
     ) -> SdkResult<MetricSeries> {
         let (start, end) = match query.range() {
             MetricRange::All(MetricAxis::Step) => (None, None),
@@ -346,7 +383,7 @@ impl Reader {
             _ => return Err(Error::Storage),
         }
         .map_err(|_| Error::Storage)?;
-        let diagnostics = self.series_diagnostics(run_id, metric_key);
+        let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
         let mut samples = result
             .points
             .into_iter()
@@ -358,7 +395,7 @@ impl Reader {
         if let Some(max_points) = query.max_points() {
             samples = enforce_point_bound(samples, max_points);
         }
-        let (completeness, reasons) = qualify_series(Vec::new(), diagnostics, run_status);
+        let (completeness, reasons) = qualify_series(Vec::new(), diagnostics, metadata.status);
         MetricSeries::from_samples(
             MetricAxis::Step,
             samples,
@@ -373,18 +410,44 @@ impl Reader {
         &self,
         run_id: &RunId,
         metric_key: &MetricKey,
+        metadata: &RunMetadata,
     ) -> Option<SeriesDiagnostics> {
-        match (&self.connection, &self.standalone) {
+        let key = DiagnosticsKey {
+            project_id: metadata.project_id.clone(),
+            run_id: run_id.clone(),
+            metric_key: metric_key.clone(),
+        };
+        let finished = metadata.status == RunStatus::Finished;
+        let cached = self.diagnostics.borrow();
+        let diagnostics = if finished {
+            cached.finished.get(&key)
+        } else {
+            cached.volatile.get(&key)
+        };
+        if let Some(diagnostics) = diagnostics {
+            return Some(*diagnostics);
+        }
+        drop(cached);
+        #[cfg(test)]
+        self.diagnostics_loads.set(self.diagnostics_loads.get() + 1);
+        let loaded = match (&self.connection, &self.standalone) {
             (Some(connection), None) => ProjectMetricReader::new(connection)
                 .series_diagnostics(run_id, metric_key)
                 .ok(),
             (None, Some(reader)) => reader.series_diagnostics(run_id, metric_key).ok(),
             _ => None,
+        }?;
+        let mut cache = self.diagnostics.borrow_mut();
+        if finished {
+            cache.finished.insert(key, loaded);
+        } else {
+            cache.volatile.insert(key, loaded);
         }
+        Some(loaded)
     }
 
     fn metadata(&self, run_id: &RunId) -> SdkResult<RunMetadata> {
-        if let Some(metadata) = self.run_metadata.borrow().get(run_id).copied() {
+        if let Some(metadata) = self.run_metadata.borrow().get(run_id).cloned() {
             return Ok(metadata);
         }
         let metadata = match &self.connection {
@@ -393,13 +456,14 @@ impl Reader {
                 RunMetadata::from(&run)
             }
             None => RunMetadata {
+                project_id: None,
                 started_at_millis: 0,
                 status: RunStatus::Finished,
             },
         };
         self.run_metadata
             .borrow_mut()
-            .insert(run_id.clone(), metadata);
+            .insert(run_id.clone(), metadata.clone());
         Ok(metadata)
     }
 
@@ -414,6 +478,7 @@ impl Reader {
 impl From<&Run> for RunMetadata {
     fn from(run: &Run) -> Self {
         Self {
+            project_id: Some(run.project_id.clone()),
             started_at_millis: run.started_at.timestamp_millis(),
             status: run.status,
         }
@@ -1061,6 +1126,44 @@ mod tests {
             EvidenceCompleteness::Invalid
         );
         assert_eq!(standalone_timestamps, timestamps);
+        assert_eq!(reader.diagnostics_loads.get(), 1);
+        reader.refresh_diagnostics(1);
+        let cache_query = MetricQuery::new(
+            MetricRange::Steps {
+                start: Step::new(1),
+                end: Step::new(4),
+            },
+            Some(2),
+        )?;
+        reader.query_metric_for_desktop(
+            &run.run_id,
+            &MetricKey::from_string("loss"),
+            &cache_query,
+        )?;
+        assert_eq!(reader.diagnostics_loads.get(), 1);
+
+        reader
+            .run_metadata
+            .borrow_mut()
+            .get_mut(&run.run_id)
+            .expect("test Run metadata should be cached")
+            .status = RunStatus::Running;
+        reader.refresh_diagnostics(2);
+        for _ in 0..2 {
+            reader.query_metric_for_desktop(
+                &run.run_id,
+                &MetricKey::from_string("loss"),
+                &cache_query,
+            )?;
+        }
+        assert_eq!(reader.diagnostics_loads.get(), 2);
+        reader.refresh_diagnostics(3);
+        reader.query_metric_for_desktop(
+            &run.run_id,
+            &MetricKey::from_string("loss"),
+            &cache_query,
+        )?;
+        assert_eq!(reader.diagnostics_loads.get(), 3);
         Ok(())
     }
 
