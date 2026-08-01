@@ -852,24 +852,38 @@ mod tests {
     #[test]
     fn reader_opens_without_a_writer_and_discovers_catalog_resources()
     -> Result<(), Box<dyn std::error::Error>> {
-        use seex_core::engine::client::NativeClient;
+        use crate::storage::MetricWrite;
+        use crate::storage::bootstrap::open_native_connection;
         use seex_model::run::RunId;
 
         let root = tempfile::tempdir()?;
-        let client = NativeClient::open_with_storage_config(root.path(), None, None, 1024)?;
+        let connection = ProjectConnection::new(open_native_connection(root.path())?);
         let project_id = ProjectId::from_string("project-1");
-        let project = client.create_project("reader", Some(project_id.clone()))?;
-        let run = client.create_run(
-            &project.project_id,
-            "baseline",
-            Some(RunId::from_string("run-1")),
-        )?;
-        let handle = client.run_handle(run.clone());
-        for step in 0..5 {
-            handle.log_metric_at_step("loss", step, step as f64)?;
-        }
-        client.finish_run(&run.run_id)?;
-        client.shutdown(None)?;
+        let created_at = crate::storage::time::current_timestamp("created_at")?;
+        let project = Project {
+            project_id: project_id.clone(),
+            name: String::from("reader"),
+            created_at,
+        };
+        connection.create_project(&project)?;
+        let run =
+            connection.create_run(&project.project_id, "baseline", RunId::from_string("run-1"))?;
+        let started_at = run.started_at.timestamp_millis();
+        let rows = (0..5)
+            .map(|step| MetricWrite {
+                run_id: run.run_id.as_str().to_owned(),
+                metric_key: String::from("loss"),
+                step,
+                timestamp_millis: started_at + step,
+                value_f64: step as f64,
+                ingested_at_millis: started_at + step,
+            })
+            .collect::<Vec<_>>();
+        connection.append_metric_batch(&rows)?;
+        connection.rebuild_metric_aggregates_for_run(&run.run_id)?;
+        connection.mark_run_terminal(&run.run_id, RunStatus::Finished, created_at)?;
+        connection.flush_metric_points()?;
+        drop(connection);
         std::fs::write(
             root.path().join(".seex/config.toml"),
             "schema_version = 1\ncatalog_path = '.seex/catalog.ducklake'\n\

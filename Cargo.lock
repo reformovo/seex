@@ -5444,7 +5444,6 @@ version = "0.1.0-beta.0"
 dependencies = [
  "chrono",
  "duckdb",
- "seex-core",
  "seex-model",
  "seex-storage",
  "tempfile",
