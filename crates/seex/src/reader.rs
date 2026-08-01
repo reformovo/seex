@@ -8,7 +8,10 @@ use seex_model::alignment::{
     AlignmentViewport,
 };
 use seex_model::comparison::{EvidenceCompleteness, EvidenceReason};
-use seex_model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
+use seex_model::metric::{
+    MetricAggregate, MetricKey, MetricPoint, MetricQuery as StorageMetricQuery, ReductionPolicy,
+    Step,
+};
 use seex_model::run::{Run, RunId, RunStatus};
 use seex_model::types::{Project, ProjectId};
 use seex_storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
@@ -219,6 +222,9 @@ impl Reader {
                 }),
             ),
         };
+        if axis == MetricAxis::Step && !retain_neighbors {
+            return self.query_step_metric(run_id, metric_key, query, run_status);
+        }
         let viewport = match bounds {
             Some((start, end)) => AlignmentViewport::new(start, end - 1),
             None => AlignmentViewport::new(i64::MIN, i64::MAX),
@@ -291,6 +297,64 @@ impl Reader {
         let (completeness, reasons) = qualify_series(&samples, result.reasons, run_status);
         MetricSeries::from_samples(axis, samples, source_count, completeness, reasons)
             .map_err(|_| Error::Storage)
+    }
+
+    fn query_step_metric(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+        run_status: RunStatus,
+    ) -> SdkResult<MetricSeries> {
+        let (start, end) = match query.range() {
+            MetricRange::All(MetricAxis::Step) => (None, None),
+            MetricRange::Steps { start, end } => (Some(*start), Some(*end)),
+            _ => return Err(Error::UnsupportedQuery),
+        };
+        let reduction = query
+            .max_points()
+            .map_or(Ok(ReductionPolicy::Full), |limit| {
+                ReductionPolicy::screen_budget(u32::try_from(limit).unwrap_or(u32::MAX), 1)
+            })
+            .map_err(|_| Error::UnsupportedQuery)?;
+        let storage_query =
+            StorageMetricQuery::new(run_id.clone(), metric_key.clone(), start, end, reduction)
+                .map_err(|_| Error::UnsupportedQuery)?;
+        let result = match (&self.connection, &self.standalone) {
+            (Some(connection), None) => {
+                ProjectMetricReader::new(connection).query_metric(&storage_query)
+            }
+            (None, Some(reader)) => reader.query_metric(&storage_query),
+            _ => return Err(Error::Storage),
+        }
+        .map_err(|_| Error::Storage)?;
+        let alignment_reasons = result
+            .points
+            .iter()
+            .any(|point| point.step.value() < 0)
+            .then_some(AlignmentReason::NegativeAxis)
+            .into_iter()
+            .collect();
+        let mut samples = result
+            .points
+            .into_iter()
+            .map(|point| MetricSample {
+                coordinate: MetricCoordinate::Step(point.step),
+                point,
+            })
+            .collect::<Vec<_>>();
+        if let Some(max_points) = query.max_points() {
+            samples = enforce_point_bound(samples, max_points);
+        }
+        let (completeness, reasons) = qualify_series(&samples, alignment_reasons, run_status);
+        MetricSeries::from_samples(
+            MetricAxis::Step,
+            samples,
+            result.source_row_count,
+            completeness,
+            reasons,
+        )
+        .map_err(|_| Error::Storage)
     }
 }
 
