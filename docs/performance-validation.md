@@ -185,3 +185,38 @@ two opt-in MinIO tests skipped; release maturin develop install and wheel
 build. `cargo test` retained one existing default-feature test-only unused
 import warning, while the required all-feature Clippy warnings-as-errors gate
 passed. U0 is closed; U1 may begin from the frozen original/rolling baseline.
+
+## U1 gate closure
+
+U1 closed at code revision `12752de267dfa7e46e27e16d4db03ccd343444a0`.
+Desktop discovery and curves use the facade Reader, public queries contain no
+pixel inputs, the Desktop adapter retains at most one real neighbor per side,
+and the shipped Python surface is unchanged behind its temporary MetricSeries
+adapter and Arrow PyCapsule bridge.
+
+The first three-pair Reader checkpoint exposed a 52.8% DuckDB narrow-Step
+regression because public Step queries used the alignment plan. Restoring the
+strict native Step plan removed that regression. A second checkpoint was
+3.018% slower on SQLite narrow Step, just beyond the 3% limit; caching Reader
+Run metadata removed its repeated catalog lookup. The final three-pair
+checkpoint passed with no reliable protected regression.
+
+The milestone exit used seven AB/BA pairs for each protected timing domain.
+Query, reporting, and Viewer CPU all passed with no failed correctness checks,
+hard floors, or reliable regressions above 3%. Unreliable metrics remain
+non-deciding rather than being promoted to evidence. The artifacts are under
+`/tmp/seex-perf/u1/` as `query-exit-pair-12752de.json`,
+`reporting-exit-pair-12752de.json`, and
+`viewer-cpu-exit-pair-12752de.json`.
+
+Single-View RSS was 171,016,192/175,013,888/170,999,808 bytes for
+warm/peak/final; dual-View RSS was
+170,803,200/174,440,448/170,786,816 bytes. Both passed without monotonic growth.
+Relative to U0, the dual-View peak increased about 0.17%, and the single-View
+peak decreased. Both workload matrices preserved four-way concurrency and
+retained zero stale snapshots.
+
+Final correctness passed workspace Rust format, check, tests, Clippy with
+warnings denied, doc tests, and `cargo doc -p seex --no-deps`; Python Ruff,
+Pyright, 144 tests with two opt-in MinIO skips, editable extension build, and
+ABI3 wheel build also passed.

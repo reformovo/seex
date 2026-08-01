@@ -1,9 +1,9 @@
 {
   "schema_version": 2,
-  "status": "u0-complete",
+  "status": "u1-complete",
   "original": {
     "source_revision": "e1f248fbb66eed7c49d36ef393e263f6c72df721",
-    "rolling_revision": "e1f248fbb66eed7c49d36ef393e263f6c72df721",
+    "rolling_revision": "12752de267dfa7e46e27e16d4db03ccd343444a0",
     "environment": {
       "captured_at": "2026-07-31",
       "dirty": false,
@@ -262,6 +262,62 @@
       "instrumentation_cpu_pair": {
         "path": "/tmp/seex-perf/u0/instrumentation-cpu-pair-9610248.json",
         "sha256": "62a2606509f8d06e3a7b888b43339846680b926ff299e560586748161deebe36"
+      }
+    }
+  },
+  "u1": {
+    "source_revision": "12752de267dfa7e46e27e16d4db03ccd343444a0",
+    "status": "pass",
+    "correctness": {
+      "rust": "pass: workspace format, check, tests, Clippy, doc tests, and seex docs",
+      "python": "pass: Ruff, Pyright, 144 tests, 2 opt-in MinIO skips, editable extension and ABI3 wheel",
+      "reader": "pass: native/standalone parity, all axes/ranges, strict bounds, Desktop neighbors, missing metadata and Arrow",
+      "viewer": "pass: four-way concurrency and zero retained stale snapshots"
+    },
+    "performance": {
+      "reader_checkpoint": "pass: 3 AB/BA pairs after strict Step plan and Run metadata cache corrections",
+      "query_exit": "pass: 7 AB/BA pairs; no reliable protected regression above 3%",
+      "reporting_exit": "pass: 7 AB/BA pairs; no reliable protected regression above 3%",
+      "viewer_cpu_exit": "pass: 7 AB/BA pairs; no reliable protected regression above 3%",
+      "viewer_single_rss": {
+        "warm_bytes": 171016192,
+        "peak_bytes": 175013888,
+        "final_bytes": 170999808,
+        "monotonic_growth": false,
+        "verdict": "pass"
+      },
+      "viewer_dual_rss": {
+        "warm_bytes": 170803200,
+        "peak_bytes": 174440448,
+        "final_bytes": 170786816,
+        "monotonic_growth": false,
+        "verdict": "pass"
+      }
+    },
+    "raw_artifacts": {
+      "reader_checkpoint": {
+        "path": "/tmp/seex-perf/u1/reader-migration-pair-12752de.json",
+        "sha256": "af7c982e400156f9e68da3e075d7127ded6bfb18094c2fc611a511dd19a4b2e7"
+      },
+      "query_exit": {
+        "path": "/tmp/seex-perf/u1/query-exit-pair-12752de.json",
+        "sha256": "632f5224a778f6d0d076c9f104a005bc9ffc7c7d2f237c78ea9f83d71bbb608a"
+      },
+      "reporting_exit": {
+        "path": "/tmp/seex-perf/u1/reporting-exit-pair-12752de.json",
+        "sha256": "31742a3a1aababa0e61402918caae9625972035428b1ee23642730a2c65b5a18"
+      },
+      "viewer_cpu_exit": {
+        "path": "/tmp/seex-perf/u1/viewer-cpu-exit-pair-12752de.json",
+        "sha256": "d5b2014c785a9cd053fef21b5eacbe23e60a3fa9a3d0381d57f02db8188e590c"
+      },
+      "viewer_single_rss": {
+        "path": "/tmp/seex-perf/u1/viewer-single-rss-12752de.json",
+        "sha256": "9582f20c39ee9f3ad97544a446a3018cf880a705d429ed4b1429fd4a1876c7e6"
+      },
+      "viewer_dual_rss": {
+        "path": "/tmp/seex-perf/u1/viewer-dual-rss-12752de.json",
+        "sha256": "a8412b5fb81c771c4bdb032a1cd9806af0980d8cfca2ea778fcfe704d60b6980"
       }
     }
   }

@@ -164,25 +164,25 @@ and the shipped Python API remains unchanged until U4.
   target buildable.
 - [x] Define public `Reader`/`ReaderBuilder`, `MetricAxis`, typed half-open
   ranges, strict caller-selected `max_points`, and `MetricSeries`.
-- [ ] Keep pixels out of public Rust and Python queries. Desktop alone converts
+- [x] Keep pixels out of public Rust and Python queries. Desktop alone converts
   a closed viewport into crate-private options for one real neighbor on each
   side, without weakening the public point bound.
-- [ ] Make `MetricSeries` retain real samples, source count, downsampled state,
+- [x] Make `MetricSeries` retain real samples, source count, downsampled state,
   completeness, and reasons, and expose an Arrow PyCapsule stream directly.
 - [x] Keep `ProjectConnection`, `ProjectMetricReader`, `NativeQueryStore`,
   storage errors, DuckDB types, and local-only source policy private.
-- [ ] Migrate Desktop discovery and curve reads to Reader over configured
+- [x] Migrate Desktop discovery and curve reads to Reader over configured
   Source aliases and Project allowlists. Preserve four-way scheduling,
   generation reconciliation, hover/locked-cursor real-sample semantics, and
   source-specific failures.
-- [ ] Route PyO3 through a temporary compatibility adapter without changing the
+- [x] Route PyO3 through a temporary compatibility adapter without changing the
   shipped Python surface; defer the breaking public API switch to U4.
-- [ ] Cover configuration layering, path bases, schema and alias conflicts,
+- [x] Cover configuration layering, path bases, schema and alias conflicts,
   allowlists, TOML round trips, source preservation, concurrent edits, and
   byte-for-byte SDK non-mutation, plus Reader/native/standalone parity, all
   axes and range types, strict bounds, Desktop neighbors, missing metadata,
   and Arrow output.
-- [ ] Exit U1 only when configuration and Reader correctness pass and query,
+- [x] Exit U1 only when configuration and Reader correctness pass and query,
   reporting, Viewer CPU, and RSS protected metrics are reliable and regress by
   no more than 3% from the rolling baseline.
 
