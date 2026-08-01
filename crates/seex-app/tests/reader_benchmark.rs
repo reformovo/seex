@@ -68,13 +68,14 @@ fn fixture_root() -> Result<PathBuf, Box<dyn Error>> {
         .ok_or_else(|| "SEEX_QUERY_BENCH_ROOT must name the prepared fixture".into())
 }
 
-fn narrow_range() -> Result<bool, Box<dyn Error>> {
+fn selected_ranges() -> Result<Vec<bool>, Box<dyn Error>> {
     match env::var("SEEX_QUERY_BENCH_RANGE")
         .as_deref()
         .unwrap_or("narrow")
     {
-        "narrow" => Ok(true),
-        "full" => Ok(false),
+        "narrow" => Ok(vec![true]),
+        "full" => Ok(vec![false]),
+        "both" => Ok(vec![true, false]),
         value => Err(format!("unsupported query benchmark range: {value}").into()),
     }
 }
@@ -177,9 +178,10 @@ fn reader_benchmark() -> Result<(), Box<dyn Error>> {
     );
     let backend = backend()?;
     let axis = Axis::selected()?;
-    let narrow = narrow_range()?;
     let reader = Reader::builder(fixture_root()?).open()?;
-    let (iterations, samples) = capture(&reader, axis, narrow)?;
-    println!("{}", record(backend, axis, narrow, iterations, &samples));
+    for narrow in selected_ranges()? {
+        let (iterations, samples) = capture(&reader, axis, narrow)?;
+        println!("{}", record(backend, axis, narrow, iterations, &samples));
+    }
     Ok(())
 }
