@@ -63,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--samples", type=positive_int, default=SAMPLES, help=argparse.SUPPRESS)
+    parser.add_argument("--fixed-batch", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -114,6 +115,7 @@ def child_main(args: argparse.Namespace) -> int:
         queue_capacity=args.queue_capacity,
         mode=args.mode,
         sample_count=args.samples,
+        fixed_batch=args.fixed_batch,
     )
     print_result(result)
     # The parent owns cleanup; skip implicit client drain in this timed benchmark.
@@ -127,6 +129,7 @@ def run_benchmark(
     queue_capacity: int,
     mode: str,
     sample_count: int = SAMPLES,
+    fixed_batch: bool = False,
 ) -> tuple[dict[str, Any], Any]:
     import seex
 
@@ -134,9 +137,14 @@ def run_benchmark(
     project = client.create_project("benchmark", project_id="bench-project")
     run = client.create_run(project.project_id, "throughput", run_id="bench-run")
 
-    calibrated_reports, samples = calibrated_samples(
-        lambda batch_reports: log_reports(run, mode, batch_reports), reports, sample_count
-    )
+    measure = lambda batch_reports: log_reports(run, mode, batch_reports)
+    if fixed_batch:
+        elapsed = measure(reports)
+        if elapsed < MINIMUM_SAMPLE_SECONDS:
+            raise RuntimeError("fixed reporting sample completed in less than 25 ms")
+        calibrated_reports, samples = reports, [reports / elapsed]
+    else:
+        calibrated_reports, samples = calibrated_samples(measure, reports, sample_count)
 
     return (
         {
@@ -168,6 +176,8 @@ def run_child(args: argparse.Namespace, project_path: Path, *, reports: int) -> 
         "--path",
         str(project_path),
     ]
+    if project_path.name != "calibration":
+        command.append("--fixed-batch")
     completed = subprocess.run(command, check=False, text=True, capture_output=True)
     if completed.returncode != 0:
         if completed.stdout:
@@ -218,8 +228,8 @@ def calibrated_samples(
     while elapsed < MINIMUM_SAMPLE_SECONDS:
         reports *= 2
         elapsed = float(measure(reports))
-    samples = [reports / elapsed]
-    for _ in range(sample_count - 1):
+    samples: list[float] = []
+    for _ in range(sample_count):
         elapsed = float(measure(reports))
         if elapsed < MINIMUM_SAMPLE_SECONDS:
             raise RuntimeError("calibrated reporting sample completed in less than 25 ms")

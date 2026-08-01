@@ -45,7 +45,7 @@ def test_throughput_result_emits_raw_v3_samples(capsys: pytest.CaptureFixture[st
 
 
 def test_throughput_calibrates_once_then_collects_ten_samples() -> None:
-    durations = iter([0.01, 0.02] + [0.03] * 10)
+    durations = iter([0.01, 0.02] + [0.03] * 11)
     batches: list[int] = []
 
     def measure(reports: int) -> float:
@@ -55,7 +55,7 @@ def test_throughput_calibrates_once_then_collects_ten_samples() -> None:
     reports, samples = bench_log_throughput.calibrated_samples(measure, 100)
 
     assert reports == 400
-    assert batches == [100, 200] + [400] * 10
+    assert batches == [100, 200] + [400] * 11
     assert samples == pytest.approx([400 / 0.03] * 10)
 
 

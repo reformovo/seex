@@ -112,7 +112,7 @@ fn query(reader: &Reader, axis: Axis, narrow: bool) -> Result<usize, Box<dyn Err
 
 fn capture(reader: &Reader, axis: Axis, narrow: bool) -> Result<(usize, Vec<f64>), Box<dyn Error>> {
     let mut iterations = 1;
-    let first = loop {
+    loop {
         let started = Instant::now();
         for _ in 0..iterations {
             let points = query(reader, axis, narrow)?;
@@ -122,12 +122,12 @@ fn capture(reader: &Reader, axis: Axis, narrow: bool) -> Result<(usize, Vec<f64>
         }
         let elapsed = started.elapsed();
         if elapsed >= TARGET {
-            break elapsed.as_nanos() as f64 / iterations as f64;
+            break;
         }
         iterations *= 2;
-    };
-    let mut samples = vec![first];
-    for _ in 1..SAMPLES {
+    }
+    let mut samples = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
         let started = Instant::now();
         for _ in 0..iterations {
             black_box(query(reader, axis, narrow)?);
