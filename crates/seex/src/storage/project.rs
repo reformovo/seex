@@ -316,3 +316,35 @@ pub struct MetricWrite {
     pub value_f64: f64,
     pub ingested_at_millis: i64,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn read_interrupt_stops_the_bound_connection_query() -> Result<(), Box<dyn std::error::Error>> {
+        let connection = ProjectConnection::new(duckdb::Connection::open_in_memory()?);
+        let interrupt = connection.interrupt_handle();
+        let query = thread::spawn(move || {
+            connection.query_row(
+                "SELECT sum(sin(i::DOUBLE)) FROM range(1000000000) AS values(i)",
+                [],
+                |row| row.get::<_, f64>(0),
+            )
+        });
+
+        thread::sleep(Duration::from_millis(25));
+        interrupt.interrupt();
+
+        assert!(
+            query
+                .join()
+                .expect("query thread should not panic")
+                .is_err()
+        );
+        Ok(())
+    }
+}

@@ -9,6 +9,8 @@ use std::thread::{self, JoinHandle};
 #[cfg(all(test, feature = "desktop", target_os = "macos"))]
 use std::time::{Duration, Instant};
 
+use seex_storage::ReadInterrupt;
+
 use crate::data::query::{
     CurveSnapshot, DetailRequest, InspectorRequest, InspectorSnapshot, OverviewRequest, QueryError,
 };
@@ -274,33 +276,54 @@ impl RequestIdentity {
 #[derive(Default)]
 struct RequestRegistry {
     latest: HashMap<RequestKey, (Generation, RequestToken)>,
-    active: HashMap<RequestKey, (Generation, RequestToken)>,
+    active: HashMap<RequestKey, ActiveRequest>,
+}
+
+struct ActiveRequest {
+    generation: Generation,
+    token: RequestToken,
+    interrupts: Vec<ReadInterrupt>,
 }
 
 impl RequestRegistry {
-    fn mark_latest(&mut self, identity: &RequestIdentity) {
+    fn mark_latest(&mut self, identity: &RequestIdentity) -> Option<Vec<ReadInterrupt>> {
         let value = (identity.generation, identity.token);
         if self
             .latest
             .get(&identity.key)
-            .is_none_or(|latest| value > *latest)
+            .is_some_and(|latest| value <= *latest)
         {
-            self.latest.insert(identity.key.clone(), value);
+            return None;
         }
+        self.latest.insert(identity.key.clone(), value);
+        self.active
+            .get(&identity.key)
+            .filter(|active| (active.generation, active.token) < value)
+            .map(|active| active.interrupts.clone())
     }
 
-    fn begin(&mut self, identity: &RequestIdentity) -> bool {
+    fn begin(&mut self, identity: &RequestIdentity, interrupts: Vec<ReadInterrupt>) -> bool {
         if !self.is_current(identity) {
             return false;
         }
-        self.active
-            .insert(identity.key.clone(), (identity.generation, identity.token));
+        self.active.insert(
+            identity.key.clone(),
+            ActiveRequest {
+                generation: identity.generation,
+                token: identity.token,
+                interrupts,
+            },
+        );
         true
     }
 
     fn finish(&mut self, identity: &RequestIdentity) {
         let value = (identity.generation, identity.token);
-        if self.active.get(&identity.key) == Some(&value) {
+        if self
+            .active
+            .get(&identity.key)
+            .is_some_and(|active| (active.generation, active.token) == value)
+        {
             self.active.remove(&identity.key);
         }
     }
@@ -447,10 +470,16 @@ impl ReadWorker {
             request,
             _ticket: ticket,
         };
-        self.registry
+        let interrupts = self
+            .registry
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .mark_latest(&RequestIdentity::new(&tagged));
+        if let Some(interrupts) = interrupts {
+            for interrupt in interrupts {
+                interrupt.interrupt();
+            }
+        }
         self.requests
             .as_ref()
             .ok_or(WorkerClosed)?
@@ -698,6 +727,10 @@ fn worker_loop(
         ) else {
             continue;
         };
+        let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
+        if !registry.is_current(&identity) {
+            continue;
+        }
         if !events.send(event) {
             return;
         }
@@ -729,7 +762,7 @@ fn execute(
         if !registry
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .begin(identity)
+            .begin(identity, session.interrupt_handles().into())
         {
             return Ok(None);
         }
@@ -1002,18 +1035,22 @@ mod tests {
         let unrelated = identity("accuracy", 1, 3);
         let mut registry = RequestRegistry::default();
 
-        registry.mark_latest(&old);
-        assert!(registry.begin(&old));
-        registry.mark_latest(&current);
-        registry.mark_latest(&unrelated);
+        assert!(registry.mark_latest(&old).is_none());
+        assert!(registry.begin(&old, Vec::new()));
+        assert!(registry.mark_latest(&current).is_some());
+        assert!(registry.mark_latest(&unrelated).is_none());
         assert!(!registry.is_current(&old));
         assert!(registry.is_current(&current));
         assert!(registry.is_current(&unrelated));
-        assert!(registry.begin(&current));
+        assert!(registry.begin(&current, Vec::new()));
         registry.finish(&old);
+        let active = registry
+            .active
+            .get(&current.key)
+            .expect("new token must remain active");
         assert_eq!(
-            registry.active.get(&current.key),
-            Some(&(Generation(2), RequestToken(2)))
+            (active.generation, active.token),
+            (Generation(2), RequestToken(2))
         );
     }
 
