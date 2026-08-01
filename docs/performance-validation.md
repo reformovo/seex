@@ -54,9 +54,10 @@ are outside the 120-second workload deadline. After every child process, the
 runner atomically checkpoints the result. Timeout or interruption terminates
 the active child and preserves completed captures.
 
-Selected metrics are Inconclusive when relative MAD exceeds 2%, an A/B and B/A
-direction conflicts, or a deciding metric is missing. The runner never adds
-samples or processes automatically.
+Selected metrics are Inconclusive when relative MAD exceeds 2% or a deciding
+metric is missing. An optimization primary is also Inconclusive when its A/B
+and B/A directions conflict. Protected metrics use only the preservation
+limits below. The runner never adds samples or processes automatically.
 
 - Preservation passes when the combined protected regression is at most 3%
   and neither order pair regresses more than 5%.

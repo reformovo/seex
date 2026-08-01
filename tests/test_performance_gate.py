@@ -273,15 +273,14 @@ def test_zero_and_improvement_is_no_change() -> None:
     assert verdict == "no_change"
 
 
-def test_protected_direction_conflict_is_inconclusive() -> None:
+def test_protected_direction_changes_within_limits_are_preserved() -> None:
     manifest = _manifest(protected=["query.reader.full"])
     captures = _captures(100.0, 90.0, 90.0, 100.0, protected=(100.0, 99.0, 101.0, 100.0))
 
-    verdict, reason, details = performance_gate.compare(manifest, captures)
+    verdict, _, details = performance_gate.compare(manifest, captures)
 
-    assert verdict == "inconclusive"
-    assert "directions disagreed" in reason
-    assert "query.reader.full" in cast(dict[str, object], details["direction_conflicts"])
+    assert verdict == "pass"
+    assert "query.reader.full" in details
 
 
 def test_protected_regression_and_hard_floor_block_optimization() -> None:

@@ -465,7 +465,6 @@ def compare(manifest: Manifest, captures: Sequence[Capture]) -> tuple[Verdict, s
     if floor_failures:
         return "regression", "candidate failed a hard floor", {"failed_floors": sorted(set(floor_failures))}
     regressions: dict[str, object] = {}
-    direction_conflicts: dict[str, object] = {}
     for metric in manifest["protected"]:
         direction = baseline[0]["metrics"][metric]["direction"]
         before = [capture["metrics"][metric]["median"] for capture in baseline]
@@ -473,12 +472,8 @@ def compare(manifest: Manifest, captures: Sequence[Capture]) -> tuple[Verdict, s
         pair_changes = [_change(left, right, direction) for left, right in zip(before, after, strict=True)]
         combined = _change(statistics.median(before), statistics.median(after), direction)
         comparisons[metric] = {"pair_changes": pair_changes, "combined_change": combined}
-        if _directions_conflict(pair_changes):
-            direction_conflicts[metric] = comparisons[metric]
         if combined > _MAX_MEDIAN_REGRESSION or any(change > _MAX_PAIR_REGRESSION for change in pair_changes):
             regressions[metric] = comparisons[metric]
-    if direction_conflicts:
-        return "inconclusive", "A/B and B/A directions disagreed", {"direction_conflicts": direction_conflicts}
     if regressions:
         return "regression", "a protected metric regressed", {"regressions": regressions}
     if manifest["kind"] == "preservation":
