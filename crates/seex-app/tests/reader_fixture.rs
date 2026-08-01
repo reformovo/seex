@@ -62,6 +62,7 @@ fn prepare(root: &Path, backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let run_id = RunId::from_string("run-1");
     client.create_run(&project_id, "run", Some(run_id.clone()))?;
     client.shutdown(None)?;
+    drop(client);
     let connection = ProjectConnection::new(open_native_connection_with_config(
         NativeStorageConfig::with_backend_and_s3_config(
             backend,

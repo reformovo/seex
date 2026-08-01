@@ -87,6 +87,7 @@ pub(super) fn prepare_viewer_performance_fixture(root: &Path) -> Result<(), Box<
         client.create_run(&project.project_id, run_id.as_str(), Some(run_id.clone()))?;
     }
     client.shutdown(None)?;
+    drop(client);
     let resolved = resolve_storage_config(root, None, None, None)?;
     let connection = ProjectConnection::new(open_existing_native_connection_with_config(
         NativeStorageConfig::with_backend_and_s3_config(
