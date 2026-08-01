@@ -1,5 +1,7 @@
 """Verify reporting benchmark modes and machine records."""
 
+import argparse
+import pathlib
 from typing import Any
 
 import pytest
@@ -55,6 +57,30 @@ def test_throughput_calibrates_once_then_collects_ten_samples() -> None:
     assert reports == 400
     assert batches == [100, 200] + [400] * 10
     assert samples == pytest.approx([400 / 0.03] * 10)
+
+
+def test_throughput_parent_aggregates_fresh_sample_children(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    paths: list[pathlib.Path] = []
+
+    def sample_child(args: argparse.Namespace, project_path: pathlib.Path, *, reports: int) -> dict[str, Any]:
+        del args
+        paths.append(project_path)
+        batch = 100 if project_path.name == "calibration" else reports
+        return {"batch_iterations": batch, "samples": [1_000_000.0]}
+
+    monkeypatch.setattr(bench_log_throughput, "run_child", sample_child)
+    args = bench_log_throughput.build_parser().parse_args(["--path", str(tmp_path)])
+
+    assert bench_log_throughput.parent_main(args) == 0
+
+    metric = performance_gate.parse_records(capsys.readouterr().out)["reporting.python.explicit_single.admission"]
+    assert metric["batch_iterations"] == 300
+    assert metric["samples"] == [1_000_000.0] * 10
+    assert [path.name for path in paths] == ["calibration"] + [f"sample-{index}" for index in range(10)]
 
 
 def test_mapping_mode_requires_complete_groups() -> None:

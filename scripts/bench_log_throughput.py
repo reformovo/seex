@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 import shutil
 import statistics
 import subprocess
@@ -63,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="keep the benchmark project directory after completion",
     )
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--samples", type=positive_int, default=SAMPLES, help=argparse.SUPPRESS)
     return parser
 
 
@@ -76,30 +76,30 @@ def parent_main(args: argparse.Namespace) -> int:
         project_path.mkdir(parents=True, exist_ok=True)
 
     try:
-        command = [
-            sys.executable,
-            __file__,
-            "--child",
-            "--reports",
-            str(args.reports),
-            "--queue-capacity",
-            str(args.queue_capacity),
-            "--mode",
-            args.mode,
-            "--path",
-            str(project_path),
-        ]
-        completed = subprocess.run(
-            command,
-            check=False,
-            text=True,
-            capture_output=True,
+        calibration = run_child(
+            args,
+            project_path / "calibration",
+            reports=args.reports,
         )
-        if completed.stdout:
-            print(completed.stdout, end="")
-        if completed.stderr:
-            print(completed.stderr, end="", file=sys.stderr)
-        return completed.returncode
+        reports = int(calibration["batch_iterations"]) * 3
+        if reports > args.queue_capacity:
+            raise RuntimeError("calibrated admission sample exceeds the metric queue capacity")
+        samples = [
+            float(run_child(args, project_path / f"sample-{index}", reports=reports)["samples"][0])
+            for index in range(SAMPLES)
+        ]
+        print_result(
+            {
+                "benchmark": "run_log_admission",
+                "mode": args.mode,
+                "requested_reports": args.reports,
+                "reports": reports,
+                "samples": samples,
+                "calls_per_second": statistics.median(samples),
+                "queue_capacity": args.queue_capacity,
+            }
+        )
+        return 0
     finally:
         if temp_dir is not None and not args.keep_data:
             shutil.rmtree(temp_dir)
@@ -108,11 +108,12 @@ def parent_main(args: argparse.Namespace) -> int:
 def child_main(args: argparse.Namespace) -> int:
     if args.path is None:
         raise argparse.ArgumentTypeError("--path is required in child mode")
-    result = run_benchmark(
+    result, _client = run_benchmark(
         project_path=args.path,
         reports=args.reports,
         queue_capacity=args.queue_capacity,
         mode=args.mode,
+        sample_count=args.samples,
     )
     print_result(result)
     # The parent owns cleanup; skip implicit client drain in this timed benchmark.
@@ -125,7 +126,8 @@ def run_benchmark(
     reports: int,
     queue_capacity: int,
     mode: str,
-) -> dict[str, Any]:
+    sample_count: int = SAMPLES,
+) -> tuple[dict[str, Any], Any]:
     import seex
 
     client = seex.init(project_path, metric_queue_capacity=queue_capacity)
@@ -133,21 +135,57 @@ def run_benchmark(
     run = client.create_run(project.project_id, "throughput", run_id="bench-run")
 
     calibrated_reports, samples = calibrated_samples(
-        lambda batch_reports: log_reports(run, mode, batch_reports), reports
+        lambda batch_reports: log_reports(run, mode, batch_reports), reports, sample_count
     )
 
-    return {
-        "benchmark": "run_log_admission",
-        "mode": mode,
-        "requested_reports": reports,
-        "reports": calibrated_reports,
-        "samples": samples,
-        "calls_per_second": statistics.median(samples),
-        "queue_capacity": queue_capacity,
-        "diagnostics_after_log": diagnostics_to_dict(client.diagnostics()),
-        "environment": environment(getattr(seex, "__version__", "unknown")),
-        "project_path": str(project_path),
-    }
+    return (
+        {
+            "benchmark": "run_log_admission",
+            "mode": mode,
+            "requested_reports": reports,
+            "reports": calibrated_reports,
+            "samples": samples,
+            "calls_per_second": statistics.median(samples),
+            "queue_capacity": queue_capacity,
+        },
+        client,
+    )
+
+
+def run_child(args: argparse.Namespace, project_path: Path, *, reports: int) -> dict[str, Any]:
+    command = [
+        sys.executable,
+        __file__,
+        "--child",
+        "--reports",
+        str(reports),
+        "--queue-capacity",
+        str(args.queue_capacity),
+        "--mode",
+        args.mode,
+        "--samples",
+        "1",
+        "--path",
+        str(project_path),
+    ]
+    completed = subprocess.run(command, check=False, text=True, capture_output=True)
+    if completed.returncode != 0:
+        if completed.stdout:
+            print(completed.stdout, end="", file=sys.stderr)
+        if completed.stderr:
+            print(completed.stderr, end="", file=sys.stderr)
+        raise subprocess.CalledProcessError(completed.returncode, command)
+    records = [
+        json.loads(line.removeprefix("SEEX_BENCH "))
+        for line in completed.stdout.splitlines()
+        if line.startswith("SEEX_BENCH ")
+    ]
+    if len(records) != 1:
+        raise RuntimeError("admission sample child did not emit exactly one metric")
+    record = records[0]
+    if record.get("batch_iterations") != reports and project_path.name != "calibration":
+        raise RuntimeError("admission sample missed the calibrated batch size")
+    return record
 
 
 def print_result(result: dict[str, Any]) -> None:
@@ -172,15 +210,17 @@ def print_result(result: dict[str, Any]) -> None:
     )
 
 
-def calibrated_samples(measure: Callable[[int], float], initial_reports: int) -> tuple[int, list[float]]:
-    """Collect ten throughput samples after reaching the 25 ms timing floor."""
+def calibrated_samples(
+    measure: Callable[[int], float], initial_reports: int, sample_count: int = SAMPLES
+) -> tuple[int, list[float]]:
+    """Collect throughput samples after reaching the 25 ms timing floor."""
     reports = initial_reports
     elapsed = float(measure(reports))
     while elapsed < MINIMUM_SAMPLE_SECONDS:
         reports *= 2
         elapsed = float(measure(reports))
     samples = [reports / elapsed]
-    for _ in range(SAMPLES - 1):
+    for _ in range(sample_count - 1):
         elapsed = float(measure(reports))
         if elapsed < MINIMUM_SAMPLE_SECONDS:
             raise RuntimeError("calibrated reporting sample completed in less than 25 ms")
@@ -206,31 +246,6 @@ def log_reports(run: Any, mode: str, reports: int) -> float:
         for step in range(reports):
             run.log("train/loss", step, float(step))
     return time.perf_counter() - started
-
-
-def diagnostics_to_dict(diagnostics: Any) -> dict[str, Any]:
-    return {
-        "pending_reports": diagnostics.pending_reports,
-        "queue_full_errors": diagnostics.queue_full_errors,
-        "persisted_reports": diagnostics.persisted_reports,
-        "writer_state": diagnostics.writer_state,
-        "last_write_error": diagnostics.last_write_error,
-        "last_flush_run_id": diagnostics.last_flush_run_id,
-        "last_flush_status": diagnostics.last_flush_status,
-        "last_flush_error": diagnostics.last_flush_error,
-    }
-
-
-def environment(seex_version: str) -> dict[str, str]:
-    return {
-        "machine": platform.machine(),
-        "platform": platform.platform(),
-        "processor": platform.processor(),
-        "python": sys.version.replace("\n", " "),
-        "python_implementation": platform.python_implementation(),
-        "seex_version": seex_version,
-        "working_directory": os.getcwd(),
-    }
 
 
 def positive_int(value: str) -> int:
