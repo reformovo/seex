@@ -10,14 +10,11 @@ publish = false
 [dependencies]
 chrono = "0.4"
 duckdb = { version = "~1.10504.0", features = ["bundled"] }
-seex-model = { path = "../seex-model" }
 thiserror = "2"
 toml = "1.1.2"
 uuid = { version = "1.0", features = ["v4"] }
 
 [dev-dependencies]
-seex-model = { path = "../seex-model" }
-seex-storage = { path = "../seex-storage" }
 tempfile = "3"
 
 [lib]

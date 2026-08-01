@@ -23,20 +23,22 @@
 #![forbid(unsafe_code)]
 
 mod error;
+#[doc(hidden)]
+pub mod model;
 mod reader;
 #[doc(hidden)]
 pub mod storage;
 
+pub use crate::model::comparison::{
+    ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
+    EvidenceCompleteness, EvidenceReason, MetricComparisonResult, ObjectiveDirection,
+    ObjectiveEvidence, ObjectiveMetric, RankingEntry, RankingResult,
+};
+pub use crate::model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
+pub use crate::model::run::{Run, RunId, RunStatus};
+pub use crate::model::types::{Project, ProjectId};
 pub use error::{Error, Result};
 pub use reader::{
     MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, MetricSample,
     MetricSeries, MetricSeriesError, Reader, ReaderBuilder, RelativeTime, Timestamp,
 };
-pub use seex_model::comparison::{
-    ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
-    EvidenceCompleteness, EvidenceReason, MetricComparisonResult, ObjectiveDirection,
-    ObjectiveEvidence, ObjectiveMetric, RankingEntry, RankingResult,
-};
-pub use seex_model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
-pub use seex_model::run::{Run, RunId, RunStatus};
-pub use seex_model::types::{Project, ProjectId};

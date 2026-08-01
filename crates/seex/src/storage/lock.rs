@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::path::Path;
 
-use seex_model::run::RunId;
+use crate::model::run::RunId;
 
 use crate::storage::{StorageError, percent_encode_metric_key};
 

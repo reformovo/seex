@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::types::ProjectId;
+use crate::model::types::ProjectId;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct RunId(String);

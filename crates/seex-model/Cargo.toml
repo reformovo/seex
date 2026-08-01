@@ -5,10 +5,10 @@ edition = "2024"
 description = "Shared product and query types for Seex."
 license = "MIT"
 repository = "https://github.com/reformovo/seex"
+publish = false
 
 [dependencies]
-chrono = "0.4"
-thiserror = "2"
+seex = { path = "../seex" }
 
 [lib]
 name = "seex_model"

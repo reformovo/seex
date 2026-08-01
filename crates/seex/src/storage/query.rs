@@ -1,6 +1,8 @@
+use crate::model::alignment::{
+    AlignmentAxis, AlignmentQuery, AlignmentQueryResult, AlignmentReason,
+};
+use crate::model::metric::{MetricQuery, MetricQueryResult};
 use duckdb::Connection;
-use seex_model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult, AlignmentReason};
-use seex_model::metric::{MetricQuery, MetricQueryResult};
 
 use crate::storage::alignment_query::{
     AlignmentSource, query_aligned_metric, validate_alignment_identity,
@@ -274,9 +276,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use seex_model::alignment::{AlignmentReduction, AlignmentViewport};
-    use seex_model::metric::{MetricKey, ReductionPolicy, Step};
-    use seex_model::run::RunId;
+    use crate::model::alignment::{AlignmentReduction, AlignmentViewport};
+    use crate::model::metric::{MetricKey, ReductionPolicy, Step};
+    use crate::model::run::RunId;
 
     use super::*;
 

@@ -13,8 +13,8 @@ mod sql;
 pub mod time;
 pub mod write;
 
-use seex_model::alignment::{AlignmentQuery, AlignmentQueryResult};
-use seex_model::metric::{MetricQuery, MetricQueryResult};
+use crate::model::alignment::{AlignmentQuery, AlignmentQueryResult};
+use crate::model::metric::{MetricQuery, MetricQueryResult};
 
 pub use lock::RunWriterGuard;
 pub use metric_query::{ProjectMetricReader, percent_encode_metric_key};

@@ -1,12 +1,12 @@
 use std::path::Path;
 
-use chrono::{TimeZone, Utc};
-use duckdb::Connection;
-use seex_model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult};
-use seex_model::metric::{
+use crate::model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult};
+use crate::model::metric::{
     MetricAggregate, MetricKey, MetricPoint, MetricQuery, MetricQueryResult, ReductionPolicy, Step,
 };
-use seex_model::run::{RunId, RunStatus};
+use crate::model::run::{RunId, RunStatus};
+use chrono::{TimeZone, Utc};
+use duckdb::Connection;
 
 use crate::storage::alignment_query::{
     AlignmentSource, query_aligned_metric, validate_alignment_identity,

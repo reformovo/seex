@@ -1,10 +1,10 @@
-use duckdb::Connection;
-use seex_model::alignment::{
+use crate::model::alignment::{
     AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentQueryResult, AlignmentReason,
     AlignmentReduction,
 };
-use seex_model::metric::{MetricKey, MetricPoint, Step};
-use seex_model::run::RunId;
+use crate::model::metric::{MetricKey, MetricPoint, Step};
+use crate::model::run::RunId;
+use duckdb::Connection;
 
 use crate::storage::StorageError;
 use crate::storage::metric_query::percent_encode_metric_key;
@@ -286,7 +286,7 @@ fn stored_alignment_row(
 mod tests {
     use std::error::Error;
 
-    use seex_model::alignment::{AlignmentReduction, AlignmentViewport};
+    use crate::model::alignment::{AlignmentReduction, AlignmentViewport};
 
     use super::*;
     use crate::storage::ProjectMetricReader;

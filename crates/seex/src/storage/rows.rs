@@ -1,8 +1,8 @@
+use crate::model::metric::{MetricAggregate, MetricKey, Step};
+use crate::model::run::{Run, RunId, RunStatus};
+use crate::model::types::ProjectId;
 use crate::storage::StorageError;
 use crate::storage::time::timestamp_from_millis;
-use seex_model::metric::{MetricAggregate, MetricKey, Step};
-use seex_model::run::{Run, RunId, RunStatus};
-use seex_model::types::ProjectId;
 
 pub struct StoredRun {
     pub run_id: String,

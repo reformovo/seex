@@ -6,22 +6,22 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result as SdkResult};
+use crate::model::alignment::{
+    AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
+    AlignmentViewport,
+};
+use crate::model::comparison::{EvidenceCompleteness, EvidenceReason};
+use crate::model::metric::{
+    MetricAggregate, MetricKey, MetricPoint, MetricQuery as StorageMetricQuery, ReductionPolicy,
+    Step,
+};
+use crate::model::run::{Run, RunId, RunStatus};
+use crate::model::types::{Project, ProjectId};
 use crate::storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
 use crate::storage::{
     ParquetSource, ProjectConnection, ProjectMetricReader, StandaloneMetricReader,
 };
-use seex_model::alignment::{
-    AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
-    AlignmentViewport,
-};
-use seex_model::comparison::{EvidenceCompleteness, EvidenceReason};
-use seex_model::metric::{
-    MetricAggregate, MetricKey, MetricPoint, MetricQuery as StorageMetricQuery, ReductionPolicy,
-    Step,
-};
-use seex_model::run::{Run, RunId, RunStatus};
-use seex_model::types::{Project, ProjectId};
 
 /// Builder for opening one existing native or standalone store read-only.
 pub struct ReaderBuilder {
@@ -760,8 +760,8 @@ mod tests {
             .expect("test timestamp should parse");
         MetricSample {
             point: MetricPoint {
-                run_id: seex_model::run::RunId::from_string("run-1"),
-                metric_key: seex_model::metric::MetricKey::from_string("loss"),
+                run_id: crate::model::run::RunId::from_string("run-1"),
+                metric_key: crate::model::metric::MetricKey::from_string("loss"),
                 step: Step::new(7),
                 timestamp,
                 value_f64: 0.5,
@@ -852,9 +852,9 @@ mod tests {
     #[test]
     fn reader_opens_without_a_writer_and_discovers_catalog_resources()
     -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::run::RunId;
         use crate::storage::MetricWrite;
         use crate::storage::bootstrap::open_native_connection;
-        use seex_model::run::RunId;
 
         let root = tempfile::tempdir()?;
         let connection = ProjectConnection::new(open_native_connection(root.path())?);

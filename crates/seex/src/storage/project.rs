@@ -1,8 +1,8 @@
 use std::ops::Deref;
 
+use crate::model::run::{Run, RunId, RunStatus};
+use crate::model::types::{Project, ProjectId};
 use chrono::{DateTime, Utc};
-use seex_model::run::{Run, RunId, RunStatus};
-use seex_model::types::{Project, ProjectId};
 
 use crate::storage::rows::{StoredRun, status_as_str};
 use crate::storage::time::{timestamp_as_rfc3339, timestamp_from_millis};

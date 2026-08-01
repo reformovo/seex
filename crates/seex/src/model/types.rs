@@ -23,10 +23,10 @@ pub struct Project {
 #[cfg(test)]
 mod tests {
     use super::{Project, ProjectId};
-    use crate::metric::{
+    use crate::model::metric::{
         MetricAggregate, MetricKey, MetricPoint, MetricQuery, ReductionPolicy, Step,
     };
-    use crate::run::{Run, RunId, RunStatus};
+    use crate::model::run::{Run, RunId, RunStatus};
 
     #[test]
     fn v1_native_model_keeps_typed_identity_lifecycle_and_metric_shape() {

@@ -5444,8 +5444,6 @@ version = "0.1.0-beta.0"
 dependencies = [
  "chrono",
  "duckdb",
- "seex-model",
- "seex-storage",
  "tempfile",
  "thiserror 2.0.18",
  "toml 1.1.2+spec-1.1.0",
@@ -5487,8 +5485,7 @@ dependencies = [
 name = "seex-model"
 version = "0.1.0-beta.0"
 dependencies = [
- "chrono",
- "thiserror 2.0.18",
+ "seex",
 ]
 
 [[package]]
