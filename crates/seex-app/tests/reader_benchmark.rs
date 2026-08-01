@@ -100,14 +100,21 @@ fn query(reader: &Reader, axis: Axis, narrow: bool) -> Result<usize, Box<dyn Err
             end: Timestamp::from_millis(EPOCH_MILLIS + end),
         },
     };
-    Ok(reader
-        .query_metric(
+    let query = MetricQuery::new(range, Some(5_000))?;
+    let series = if narrow {
+        reader.query_metric_for_desktop(
             &RunId::from_string("run-1"),
             &MetricKey::from_string("loss"),
-            &MetricQuery::new(range, Some(5_000))?,
+            &query,
         )?
-        .samples()
-        .len())
+    } else {
+        reader.query_metric(
+            &RunId::from_string("run-1"),
+            &MetricKey::from_string("loss"),
+            &query,
+        )?
+    };
+    Ok(series.samples().len())
 }
 
 fn capture(reader: &Reader, axis: Axis, narrow: bool) -> Result<(usize, Vec<f64>), Box<dyn Error>> {
@@ -116,7 +123,7 @@ fn capture(reader: &Reader, axis: Axis, narrow: bool) -> Result<(usize, Vec<f64>
         let started = Instant::now();
         for _ in 0..iterations {
             let points = query(reader, axis, narrow)?;
-            if points == 0 || points > 5_000 {
+            if points == 0 || points > 5_000 + usize::from(narrow) * 2 {
                 return Err("Reader benchmark violated its point budget".into());
             }
         }

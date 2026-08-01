@@ -197,7 +197,7 @@ impl Reader {
         query: &MetricQuery,
     ) -> SdkResult<MetricSeries> {
         self.diagnostics.borrow_mut().volatile.clear();
-        self.query_metric_impl(run_id, metric_key, query, false)
+        self.query_metric_impl(run_id, metric_key, query, false, false)
     }
 
     /// Selects the current Desktop storage generation for volatile diagnostics.
@@ -226,7 +226,18 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
     ) -> SdkResult<MetricSeries> {
-        self.query_metric_impl(run_id, metric_key, query, true)
+        self.query_metric_impl(run_id, metric_key, query, true, false)
+    }
+
+    /// Desktop Overview query retaining neighbors on the incumbent plan.
+    #[doc(hidden)]
+    pub fn query_metric_overview_for_desktop(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+    ) -> SdkResult<MetricSeries> {
+        self.query_metric_impl(run_id, metric_key, query, true, true)
     }
 
     fn query_metric_impl(
@@ -235,9 +246,11 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
         retain_neighbors: bool,
+        force_full_step: bool,
     ) -> SdkResult<MetricSeries> {
         let metadata = self.metadata(run_id)?;
         let (run_start, run_status) = (metadata.started_at_millis, metadata.status);
+        let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
         let standalone = self.standalone.is_some();
         let (axis, storage_axis, bounds) = match query.range() {
             MetricRange::All(axis) => (
@@ -277,7 +290,7 @@ impl Reader {
             ),
         };
         if axis == MetricAxis::Step && !retain_neighbors {
-            return self.query_step_metric(run_id, metric_key, query, &metadata);
+            return self.query_step_metric(run_id, metric_key, query, &metadata, diagnostics);
         }
         let viewport = match bounds {
             Some((start, end)) => AlignmentViewport::new(start, end - 1),
@@ -297,18 +310,22 @@ impl Reader {
             viewport,
             reduction,
         };
-        let result = match (&self.connection, &self.standalone) {
-            (Some(connection), None) => {
+        let narrow_step = use_narrow_step_plan(axis, bounds, diagnostics, force_full_step);
+        let result = match (&self.connection, &self.standalone, narrow_step) {
+            (Some(connection), None, true) => {
+                ProjectMetricReader::new(connection).query_narrow_step_metric(&storage_query)
+            }
+            (None, Some(reader), true) => reader.query_narrow_step_metric(&storage_query),
+            (Some(connection), None, false) => {
                 ProjectMetricReader::new(connection).query_aligned_metric(&storage_query)
             }
-            (None, Some(reader)) if axis == MetricAxis::Timestamp => {
+            (None, Some(reader), false) if axis == MetricAxis::Timestamp => {
                 reader.query_timestamp_metric(&storage_query)
             }
-            (None, Some(reader)) => reader.query_aligned_metric(&storage_query),
+            (None, Some(reader), false) => reader.query_aligned_metric(&storage_query),
             _ => return Err(Error::Storage),
         }
         .map_err(|_| Error::Storage)?;
-        let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
         let neighbor_count = result
             .points
             .iter()
@@ -360,6 +377,7 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
         metadata: &RunMetadata,
+        diagnostics: Option<SeriesDiagnostics>,
     ) -> SdkResult<MetricSeries> {
         let (start, end) = match query.range() {
             MetricRange::All(MetricAxis::Step) => (None, None),
@@ -383,7 +401,6 @@ impl Reader {
             _ => return Err(Error::Storage),
         }
         .map_err(|_| Error::Storage)?;
-        let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
         let mut samples = result
             .points
             .into_iter()
@@ -482,6 +499,24 @@ impl From<&Run> for RunMetadata {
             started_at_millis: run.started_at.timestamp_millis(),
             status: run.status,
         }
+    }
+}
+
+fn use_narrow_step_plan(
+    axis: MetricAxis,
+    bounds: Option<(i64, i64)>,
+    diagnostics: Option<SeriesDiagnostics>,
+    force_full: bool,
+) -> bool {
+    let (Some((start, end)), Some(diagnostics)) = (bounds, diagnostics) else {
+        return false;
+    };
+    if force_full || axis != MetricAxis::Step || diagnostics.effective_count == 0 {
+        return false;
+    }
+    match (diagnostics.min_step, diagnostics.max_step) {
+        (Some(min_step), Some(max_step)) => !(start <= min_step && max_step < end),
+        _ => false,
     }
 }
 
@@ -890,6 +925,37 @@ mod tests {
             Err(MetricQueryError::MaxPointsTooSmall { max_points: 1 })
         );
         assert!(MetricQuery::new(MetricRange::All(MetricAxis::Step), Some(2)).is_ok());
+    }
+
+    #[test]
+    fn narrow_step_plan_requires_an_incomplete_cached_boundary() {
+        let diagnostics = SeriesDiagnostics {
+            effective_count: 10,
+            min_step: Some(0),
+            max_step: Some(9),
+            has_negative_step: false,
+            has_decreasing_timestamp: false,
+            has_non_finite_value: false,
+        };
+
+        assert!(use_narrow_step_plan(
+            MetricAxis::Step,
+            Some((2, 8)),
+            Some(diagnostics),
+            false
+        ));
+        assert!(!use_narrow_step_plan(
+            MetricAxis::Step,
+            Some((0, 10)),
+            Some(diagnostics),
+            false
+        ));
+        assert!(!use_narrow_step_plan(
+            MetricAxis::Step,
+            Some((2, 8)),
+            Some(diagnostics),
+            true
+        ));
     }
 
     #[test]

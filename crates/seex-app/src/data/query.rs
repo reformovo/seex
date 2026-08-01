@@ -163,6 +163,7 @@ impl ReadSession {
             &request.selection,
             viewport,
             overview_budget(request.logical_width),
+            true,
             is_superseded,
         )
     }
@@ -187,6 +188,7 @@ impl ReadSession {
             &request.selection,
             request.viewport,
             detail_budget(request.logical_width),
+            false,
             is_superseded,
         )
     }
@@ -252,6 +254,7 @@ fn query_curves(
     selection: &CurveSelection,
     viewport: AlignmentViewport,
     point_budget: u32,
+    force_full_step: bool,
     is_superseded: &mut dyn FnMut() -> bool,
 ) -> Result<Option<CurveSnapshot>, QueryError> {
     let run_ids = selection
@@ -278,11 +281,17 @@ fn query_curves(
             desktop_metric_range(selection.axis, viewport),
             Some(point_budget as usize),
         )?;
-        let evidence = session.reader().query_metric_for_desktop(
-            &run.run_id,
-            &selection.metric_key,
-            &query,
-        )?;
+        let evidence = if force_full_step {
+            session.reader().query_metric_overview_for_desktop(
+                &run.run_id,
+                &selection.metric_key,
+                &query,
+            )?
+        } else {
+            session
+                .reader()
+                .query_metric_for_desktop(&run.run_id, &selection.metric_key, &query)?
+        };
         let drawable = matches!(
             evidence.completeness(),
             EvidenceCompleteness::Complete | EvidenceCompleteness::Partial
