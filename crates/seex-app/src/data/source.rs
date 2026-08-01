@@ -26,6 +26,7 @@ pub enum SourceError {
 /// Read session for one existing local native Seex store.
 pub struct ReadSession {
     root_path: PathBuf,
+    reader: Reader,
     connection: ProjectConnection,
 }
 
@@ -49,8 +50,10 @@ impl ReadSession {
             None,
         );
         let connection = open_existing_native_connection_with_config(config)?;
+        let reader = Reader::builder(root_path).open()?;
         Ok(Self {
             root_path: root_path.to_owned(),
+            reader,
             connection: ProjectConnection::new(connection),
         })
     }
@@ -58,6 +61,7 @@ impl ReadSession {
     pub(crate) fn try_clone(&self) -> Result<Self, SourceError> {
         Ok(Self {
             root_path: self.root_path.clone(),
+            reader: Reader::builder(&self.root_path).open()?,
             connection: self.connection.try_clone()?,
         })
     }
@@ -71,8 +75,7 @@ impl ReadSession {
     ///
     /// Returns [`SourceError`] when a catalog query fails.
     pub fn discover(&self, request: &DiscoveryRequest) -> Result<CatalogSnapshot, SourceError> {
-        let reader = Reader::builder(&self.root_path).open()?;
-        let mut projects = reader.projects()?;
+        let mut projects = self.reader.projects()?;
         if let Some(allowlist) = &request.project_allowlist {
             let allowed = allowlist.iter().collect::<HashSet<_>>();
             projects.retain(|project| allowed.contains(&project.project_id));
@@ -88,7 +91,7 @@ impl ReadSession {
         );
         let mut runs = Vec::new();
         for project_id in projects_to_load {
-            let mut project_runs = reader.runs(project_id)?;
+            let mut project_runs = self.reader.runs(project_id)?;
             project_runs.reverse();
             runs.extend(project_runs);
         }
@@ -120,7 +123,7 @@ impl ReadSession {
                 continue;
             }
             known_runs.extend(
-                reader
+                self.reader
                     .runs(requested_project)?
                     .into_iter()
                     .map(|run| ((run.project_id.clone(), run.run_id.clone()), run)),
@@ -131,7 +134,7 @@ impl ReadSession {
             let Some(run) = known_runs.get(&(project_id, run_id)) else {
                 continue;
             };
-            for aggregate in reader.metrics(run)? {
+            for aggregate in self.reader.metrics(run)? {
                 metric_keys.insert(
                     aggregate.metric_key.as_str().to_owned(),
                     aggregate.metric_key,
@@ -147,6 +150,10 @@ impl ReadSession {
 
     pub(crate) const fn connection(&self) -> &ProjectConnection {
         &self.connection
+    }
+
+    pub(crate) const fn reader(&self) -> &Reader {
+        &self.reader
     }
 }
 

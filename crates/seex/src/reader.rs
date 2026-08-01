@@ -125,6 +125,12 @@ impl Reader {
             .map_err(|_| Error::Storage)
     }
 
+    /// Loads Desktop-selected Runs in request order.
+    #[doc(hidden)]
+    pub fn runs_for_desktop(&self, run_ids: &[RunId]) -> SdkResult<Vec<Run>> {
+        self.native()?.get_runs(run_ids).map_err(|_| Error::Storage)
+    }
+
     /// Lists persisted Metric summaries for one Run.
     pub fn metrics(&self, run: &Run) -> SdkResult<Vec<MetricAggregate>> {
         ProjectMetricReader::new(self.native()?)
