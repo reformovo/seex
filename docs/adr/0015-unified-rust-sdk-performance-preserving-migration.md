@@ -4,6 +4,12 @@ status: accepted
 
 # Unify the public Rust SDK without hiding performance changes
 
+The fixed three/seven-pair and permanent-original-baseline validation policy in
+this ADR is superseded by
+[ADR 0016](0016-lightweight-performance-validation.md). The SDK architecture,
+migration order, query decisions, and requirement to measure hot-path changes
+remain accepted.
+
 Seex will publish one Rust crate named `seex`. The Desktop, Python extension,
 and plot implementation remain private workspace crates, while model, storage,
 and engine become modules behind the public facade. This replaces Cargo

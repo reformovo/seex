@@ -29,9 +29,10 @@ U0 gates -> U1 configuration + Reader -> U2 storage/query
          -> U6 Viewer configuration/workbench -> U7 release gates
 ```
 
-No later phase may remove a boundary or baseline needed by an earlier phase.
-U1 may begin only after U0 freezes the original baseline. Physical source moves
-begin only after Desktop uses Reader.
+No later phase may remove a boundary needed by an earlier phase. Performance
+decisions compare only with the current rolling baseline; original revisions
+remain non-blocking release history. Physical source moves begin only after
+Desktop uses Reader.
 
 ### Execution Contract
 
@@ -47,21 +48,21 @@ begin only after Desktop uses Reader.
 - [ ] Keep mechanical migration and performance optimization in separate
   candidates. Use Git renames for source moves and leave the workspace buildable
   after every accepted candidate.
-- [ ] Run migration checkpoints at boundary switches and after a coherent
-  migration slice, not after every scaffolding commit. Accept them only when
-  correctness and hard floors pass and three alternating baseline/candidate
-  pairs keep every reliable protected median within 3%. They need not improve
-  performance.
-- [ ] Accept an optimization candidate only when correctness and hard floors
-  pass; at least 6 of 7 alternating baseline/candidate pairs improve; the
-  primary median improves by at least 5%; protected medians regress by no more
-  than 3%; and each deciding metric has relative MAD no greater than 2%.
-- [ ] Keep milestone exit gates at seven alternating pairs across every affected
-  domain. The original baseline is permanent; update the rolling baseline only
-  after an accepted migration checkpoint, optimization, or milestone exit.
-- [ ] Treat an improvement below 5%, an unreliable metric, or inconsistent
-  pairs as no change. Reject correctness, schema, API parity, and hard-gate
-  failures immediately.
+- [ ] Run one bounded A-B-B-A performance gate only after a coherent change to
+  a measured hot path. Select only the affected boundary, backend, mode, axis,
+  or range; do not run a full matrix by default.
+- [ ] Require ten internally calibrated samples of at least 25 ms in each
+  timing or throughput capture. Stop the complete workload after 120 seconds,
+  checkpoint after each child, and never add processes automatically.
+- [ ] Accept preservation when protected combined regression is at most 3% and
+  neither order pair regresses more than 5%. Accept optimization only when both
+  order pairs improve, the combined primary reaches its declared target, and
+  protected metrics stay within those limits.
+- [ ] Treat noise above 2%, order-direction conflict, or a missing deciding
+  metric as Inconclusive. A smaller non-regressing improvement is No-change;
+  reliable regression or a hard-floor failure is Regression.
+- [ ] Update the rolling baseline only after Pass. Keep original revisions and
+  old stress results as non-blocking history.
 - [ ] Revert only the rejected candidate's declared hunks. Do not use
   `git reset` or `git checkout`, and do not touch user or accepted changes.
   Profile a no-change or regression with DuckDB plans, RSS, `heap`/`vmmap`,
@@ -73,60 +74,16 @@ begin only after Desktop uses Reader.
   syntax-preserving configuration candidate. Review that dependency change
   separately from document codecs, Source management, and SDK migration.
 
-### U0: Unified Performance Gates and Migration Baseline
+### U0: Lightweight Performance Contract
 
-U0 generalizes the existing Viewer performance work into one migration gate.
-It changes no production behavior and requires no performance improvement.
-
-#### Gate format and comparator
-
-- [x] Define version 2 performance JSON with `reporting`, `query`, and `viewer`
-  domains. Record environment, commit and dirty-worktree identity, fixture,
-  commands, units, batch size, raw samples, MAD, p50, p95, max, RSS phases, and
-  original/rolling comparison results.
-- [x] Implement the typed collector and comparator with the standard libraries
-  already available to the repository. Keep raw traces and per-iteration trace
-  artifacts outside the repository; commit only stable statistics and human
-  conclusions.
-- [x] Calibrate each timing batch until one sample lasts at least 10 ms. Mark a
-  metric with relative MAD above 2% as non-deciding; it cannot accept a
-  migration or optimization candidate.
-- [x] Encode migration and optimization policies from the Execution Contract,
-  including hard floors, Pass, No-change, and Regression outcomes.
-- [x] Keep resource counters behind test-support/release test configuration and
-  prove an ordinary release build contains no counter state or production log.
-
-#### Workloads
-
-- [x] Cover reporting at the Rust engine and Python/PyO3 boundaries: explicit
-  step, implicit single metric, multi-metric Mapping, queue admission,
-  drain/persistence, finalization, and peak RSS.
-- [x] Cover Reader queries on DuckDB and SQLite with 10 Runs and 1,000,000
-  points per series: full and narrow ranges, Step/relative-time/timestamp axes,
-  neighbors, duplicates, spikes, last-write-wins, completeness, and reasons.
-- [x] Use identical read-only fixtures, independent release binaries, and
-  alternating execution order for baseline and candidate query samples.
-- [x] Cover Viewer with 10 Runs and at least six visible Metrics: single and
-  dual View, sparse/dense windows, 1x/2x/3x, 30 zoom cycles, stale generation,
-  query concurrency, snapshot/path counters, CPU, RSS, and Metal trace metadata.
-  The deciding 280 Hz trace uses the reset 10-Run/six-Metric workbench and
-  user-performed zoom; the failed automated interaction is not baseline evidence.
-- [x] Run automated RSS workloads in a fresh process. Record warm, peak, final,
-  phase trend, and retained stale-snapshot counts from an external sampler.
-
-#### Baseline freeze and exit
-
-- [x] Freeze the pre-migration worktree as the permanent original baseline and
-  first rolling baseline. Preserve the current accepted logical-budget,
-  compact-snapshot, bounded-geometry, and shared-DuckDB improvements. The
-  corrected U0 code baseline is `e1f248fbb66eed7c49d36ef393e263f6c72df721`.
-- [x] Record exact machine, OS, Rust toolchain, display/scale, fixture identity,
-  sample count, commands, and known environmental blockers in the performance
-  validation document.
-- [x] Verify gate instrumentation does not change ordinary release API,
-  behavior, binary dependencies, or reliable CPU results by more than 3%.
-- [x] Exit U0 only when all three domains can compare a candidate against both
-  baselines and reproduce correctness and resource results.
+- [x] Separate Acceptance, Benchmark, Performance gate, and Profile work.
+- [x] Replace executable v1/v2 gates and stress matrices with schema v3,
+  calibrated raw samples, one A-B-B-A sequence, atomic checkpoints, and a
+  120-second workload budget.
+- [x] Keep historical U0/U1 measurements and source workloads under
+  `docs/reference/`; they do not decide new candidates.
+- [ ] Freeze scoped v3 rolling identities for reporting admission, Reader query,
+  compact dual-View RSS, and chart CPU without running unrelated boundaries.
 
 ### U1: Configuration Foundation, Public `seex` Facade, and Reader First
 
@@ -245,10 +202,11 @@ different execution plans; one universal SQL plan is not a goal.
 
 - [ ] Pass full/narrow correctness, DuckDB/SQLite parity, last-write-wins,
   neighbors, diagnostics, and nearest-real-sample hover tests.
-- [ ] Keep every reliable full-query protected metric within 3% of the rolling
-  baseline. Improve the narrow primary metric by at least 5% with 6 of 7 pairs.
-- [ ] Reduce peak RSS for the frozen single- and dual-View real workload by at
-  least 25% from the U0 original baseline.
+- [ ] Pass the narrow Reader optimization gate against the rolling baseline;
+  protect the incumbent full query within the 3% combined and 5% ordered-pair
+  limits.
+- [ ] Pass the compact 4 Run × 2 Metric dual-View RSS optimization gate with its
+  declared target. Record original-revision trend only as history.
 - [ ] Prove superseded queries merge no snapshot and retain no working set.
 
 ### U3: Engine Migration and Rust Run SDK
@@ -381,23 +339,15 @@ management, autosave, and export/import as separate candidates.
 U7 begins after U0–U6 pass. CI/release workflow changes remain a separate
 review slice and require explicit approval under the repository boundary.
 
-- [ ] Re-run complete Reader, reporting, Python, package, Viewer configuration,
-  workbench, correctness, CPU, RSS, and stale-generation gates against original
-  and rolling baselines.
-- [ ] With 10 Runs and at least six visible Metrics, verify 2x Detail returned
-  points are approximately halved and compact snapshot storage is at least 60%
-  below the original baseline.
-- [ ] Reduce real single- and dual-View peak RSS by at least 25% from the U0
-  original baseline. Record automated warm, peak, final, and phase trend.
-- [ ] After warm-up, complete 30 zoom-in/out cycles without monotonic RSS
-  growth. Final RSS must remain within `max(5%, 32 MiB)` of warm steady state,
-  and stale reads must retain no snapshot or query working set.
-- [ ] On the active 280 Hz display, trace the converged brush/ruler/chart pan,
-  wheel/pinch and keyboard zoom, hover/locked cursors, track scroll, View switch,
-  and inspector path. No Viewer-caused presentation may span two refresh
-  periods; at 280 Hz the two-period boundary is approximately 7.14 ms.
-- [ ] Record RSS, allocation high-water marks, Metal instance-buffer growth,
-  exact commands, environment, fixtures, raw/rolling deltas, and conclusion.
+- [ ] Pass complete correctness and release Acceptance, then run only the
+  reporting, Reader, Viewer CPU, and Viewer RSS gates affected since their
+  rolling revisions.
+- [ ] Use the compact dual-View workload for automated peak RSS: 4 Runs, 2
+  Metrics, 100,000 points per series, three zoom round-trips, and four-way reads.
+- [ ] Prove stale requests and cancellation retain no snapshot or query working
+  set with ordinary small-fixture tests, not an RSS stress matrix.
+- [ ] Run Instruments, Metal, allocation, or display Profiles only when a gate
+  or acceptance failure needs diagnosis. Record them as non-blocking evidence.
 - [ ] Only after every resource gate passes, add a separately reviewed macOS
   ARM64 CI job that verifies the Xcode Metal Toolchain and builds the unsigned
   Viewer without changing the Python wheel matrix.

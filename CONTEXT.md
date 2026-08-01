@@ -144,3 +144,19 @@ _Avoid_: Metric key partition
 A local OS advisory lock that allows only one active writer client to hold a
 writable handle for a run.
 _Avoid_: Lock table, lease, heartbeat, stale-lock cleanup service
+
+**Acceptance**:
+A deterministic verification of product behavior, structure, compatibility, or
+release readiness. Any failure blocks the associated change.
+
+**Benchmark**:
+A bounded workload that emits raw measurements without deciding whether a
+change is acceptable.
+
+**Performance gate**:
+A comparison of a candidate with the current rolling baseline that returns
+Pass, No-change, Regression, or Inconclusive.
+
+**Profile**:
+A manual diagnostic observation used to explain performance behavior. A
+Profile is evidence for choosing work, not an automated acceptance condition.
