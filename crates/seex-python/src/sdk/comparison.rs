@@ -302,19 +302,6 @@ fn reason_value(reason: EvidenceReason) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn diagnostics_unavailable_has_a_stable_python_value() {
-        assert_eq!(
-            reason_value(EvidenceReason::DiagnosticsUnavailable),
-            "diagnostics_unavailable"
-        );
-    }
-}
-
 fn outcome_value(outcome: ComparisonOutcome) -> &'static str {
     match outcome {
         ComparisonOutcome::Improved => "improved",
@@ -329,5 +316,18 @@ fn preference_value(preference: ComparisonPreference) -> &'static str {
         ComparisonPreference::Reference => "reference",
         ComparisonPreference::NoPreference => "no_preference",
         ComparisonPreference::Inconclusive => "inconclusive",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnostics_unavailable_has_a_stable_python_value() {
+        assert_eq!(
+            reason_value(EvidenceReason::DiagnosticsUnavailable),
+            "diagnostics_unavailable"
+        );
     }
 }
