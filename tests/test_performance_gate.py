@@ -139,6 +139,7 @@ def test_parse_records_derives_statistics_from_ten_raw_samples() -> None:
         ({"samples": [100.0] * 9 + [float("nan")]}, "finite"),
         ({"direction": "neutral"}, "supported unit and direction"),
         ({"batch_iterations": 0}, "positive"),
+        ({"p95": 100.0}, "only raw v3 fields"),
     ],
 )
 def test_parse_records_rejects_invalid_records(updates: dict[str, object], message: str) -> None:

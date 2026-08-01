@@ -35,6 +35,9 @@ _RSS_INTERVAL_SECONDS = 0.05
 _DOMAINS = frozenset({"reporting", "query", "viewer"})
 _DIRECTIONS = frozenset({"higher", "lower"})
 _UNITS = frozenset({"bytes", "count", "ns", "ns/op", "points/s"})
+_RECORD_FIELDS = frozenset(
+    {"schema_version", "record_type", "domain", "metric", "unit", "direction", "batch_iterations", "samples"}
+)
 
 Role = Literal["baseline", "candidate"]
 Direction = Literal["higher", "lower"]
@@ -146,6 +149,8 @@ def parse_records(output: str) -> dict[str, Metric]:
         record = json.loads(line.removeprefix(_PREFIX))
         if not isinstance(record, dict) or record.get("schema_version") != 3 or record.get("record_type") != "metric":
             raise ValueError("SEEX_BENCH records require schema_version 3")
+        if set(record) != _RECORD_FIELDS:
+            raise ValueError("SEEX_BENCH metric records must contain only raw v3 fields")
         domain = record.get("domain")
         metric = record.get("metric")
         unit = record.get("unit")
