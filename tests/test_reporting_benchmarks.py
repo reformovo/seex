@@ -78,7 +78,7 @@ def test_throughput_parent_aggregates_fresh_sample_children(
     assert bench_log_throughput.parent_main(args) == 0
 
     metric = performance_gate.parse_records(capsys.readouterr().out)["reporting.python.explicit_single.admission"]
-    assert metric["batch_iterations"] == 300
+    assert metric["batch_iterations"] == 917_504
     assert metric["samples"] == [1_000_000.0] * 10
     assert [path.name for path in paths] == ["calibration"] + [f"sample-{index}" for index in range(10)]
 
@@ -106,14 +106,15 @@ def test_persistence_emits_only_durability_v3_samples(capsys: pytest.CaptureFixt
         "diagnostics_after_shutdown": diagnostics,
     }
 
-    bench_log_persistence.emit_performance_records({"reports_per_repeat": 1_000, "repeat_results": [repeat] * 10})
+    bench_log_persistence.emit_performance_records({"reports_per_repeat": 1_000, "repeat_results": [repeat] * 30})
 
     metrics = performance_gate.parse_records(capsys.readouterr().out)
     assert set(metrics) == {"reporting.python.drain_persistence", "reporting.python.finalization"}
-    assert metrics["reporting.python.drain_persistence"]["samples"] == [25_000_000.0] * 10
+    assert metrics["reporting.python.drain_persistence"]["samples"] == pytest.approx([75_000_000.0] * 10)
+    assert metrics["reporting.python.drain_persistence"]["batch_iterations"] == 3
     assert metrics["reporting.python.finalization"]["calibrated"]
 
 
 def test_persistence_rejects_partial_sample_sets() -> None:
-    with pytest.raises(ValueError, match="exactly ten"):
+    with pytest.raises(ValueError, match="exactly thirty"):
         bench_log_persistence.emit_performance_records({"repeat_results": []})

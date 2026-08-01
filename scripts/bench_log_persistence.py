@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_REPORTS = 1_000
-DEFAULT_REPEATS = 10
+DEFAULT_REPEATS = 30
 DEFAULT_QUEUE_CAPACITY = 65_536
 DEFAULT_DRAIN_TIMEOUT_SECONDS = 120.0
 DEFAULT_DRAIN_POLL_SECONDS = 0.01
@@ -47,7 +47,6 @@ def main() -> int:
             metric_key=args.metric_key,
             object_storage_configs=args.object_storage_config,
         )
-        print(json.dumps(result, indent=2, sort_keys=True), flush=True)
         emit_performance_records(result)
         print("SEEX_RSS_PHASE cycles_done", flush=True)
         print("SEEX_RSS_PHASE final", flush=True)
@@ -346,10 +345,14 @@ def summarize_values(values: list[float]) -> dict[str, float]:
 def emit_performance_records(result: dict[str, Any]) -> None:
     """Emits raw schema-v3 durability samples for the local target."""
     repeats = result["repeat_results"]
-    if len(repeats) != 10:
-        raise ValueError("persistence benchmark requires exactly ten repeats")
+    batch_iterations = 3
+    if len(repeats) != 10 * batch_iterations:
+        raise ValueError("persistence benchmark requires exactly thirty repeats")
     for label, field in (("drain_persistence", "drain_seconds"), ("finalization", "finalization_seconds")):
-        raw = [float(repeat[field]) * 1_000_000_000 for repeat in repeats]
+        raw = [
+            sum(float(repeat[field]) for repeat in repeats[index : index + batch_iterations]) * 1_000_000_000
+            for index in range(0, len(repeats), batch_iterations)
+        ]
         record = {
             "schema_version": 3,
             "record_type": "metric",
@@ -357,7 +360,7 @@ def emit_performance_records(result: dict[str, Any]) -> None:
             "metric": f"python.{label}",
             "unit": "ns",
             "direction": "lower",
-            "batch_iterations": 1,
+            "batch_iterations": batch_iterations,
             "samples": raw,
         }
         print("SEEX_BENCH " + json.dumps(record, separators=(",", ":")), flush=True)

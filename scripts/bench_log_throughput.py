@@ -81,8 +81,8 @@ def parent_main(args: argparse.Namespace) -> int:
             project_path / "calibration",
             reports=args.reports,
         )
-        reports = int(calibration["batch_iterations"]) * 3
-        if reports > args.queue_capacity:
+        reports = args.queue_capacity * 7 // 8
+        if reports < int(calibration["batch_iterations"]):
             raise RuntimeError("calibrated admission sample exceeds the metric queue capacity")
         samples = [
             float(run_child(args, project_path / f"sample-{index}", reports=reports)["samples"][0])
@@ -189,7 +189,6 @@ def run_child(args: argparse.Namespace, project_path: Path, *, reports: int) -> 
 
 
 def print_result(result: dict[str, Any]) -> None:
-    print(json.dumps(result, indent=2, sort_keys=True), flush=True)
     mode = str(result["mode"])
     print(
         "SEEX_BENCH "
