@@ -153,11 +153,12 @@ different execution plans; one universal SQL plan is not a goal.
 
 #### U2.1: Mechanical storage move
 
-- [ ] Move model, storage, and query implementation into private
+- [x] Move model, storage, and query implementation into private
   `seex::{model, storage}` modules with Git renames. Leave the old unpublished
   crates as re-exports until all consumers migrate.
-- [ ] Run the migration gate without SQL, reduction, allocation, schema, or
-  behavior changes. Reject reliable protected-metric regression above 3%.
+- [x] Run the migration gate without SQL, reduction, allocation, schema, or
+  behavior changes. The scoped Reader preservation gate passed: narrow changed
+  -0.14% and full changed -0.64%, with no ordered-pair regression above 1%.
 
 #### U2.2: Split query plans
 
