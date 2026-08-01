@@ -565,8 +565,8 @@ impl Drop for ReadPermit<'_> {
 impl Drop for ReadWorker {
     fn drop(&mut self) {
         self.requests.take();
-        // A native query cannot currently be cancelled. Detach it so dropping
-        // viewer state never blocks the UI thread while the query finishes.
+        // Dropping Viewer state must not block the UI thread on any request
+        // that was not superseded before the sender closed.
         if self.outstanding.load(Ordering::Acquire) == 0 {
             for thread in self.threads.drain(..) {
                 let _ = thread.join();
@@ -814,7 +814,7 @@ fn execute(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, AtomicUsize};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, Condvar, Mutex, mpsc};
     use std::thread;
     use std::time::Duration;
@@ -825,9 +825,9 @@ mod tests {
 
     use super::{
         DataSourceId, DiscoveryRequest, Generation, OverviewRequest, PendingRequests,
-        ReadConcurrencyGate, ReadKind, ReadRequest, ReadWorker, RequestIdentity, RequestKey,
-        RequestQueue, RequestRegistry, RequestTicket, RequestToken, TaggedRequest, next_request,
-        read_event_channel, request_is_superseded,
+        ReadConcurrencyGate, ReadKind, ReadRequest, ReadSessionPool, ReadWorker, RequestIdentity,
+        RequestKey, RequestQueue, RequestRegistry, RequestTicket, RequestToken, TaggedRequest,
+        execute, next_request, read_event_channel, request_is_superseded,
     };
 
     fn overview_request(metric: &str) -> ReadRequest {
@@ -1017,6 +1017,46 @@ mod tests {
             next_request(&queue).map(|request| request.generation),
             Some(Generation(2))
         );
+    }
+
+    #[test]
+    fn superseded_storage_error_emits_no_event() {
+        let root = tempfile::tempdir().expect("test directory should initialize");
+        let sessions = ReadSessionPool::new(root.path().to_owned());
+        let request = TaggedRequest {
+            source_id: DataSourceId::new("source").expect("test alias should be valid"),
+            generation: Generation(1),
+            token: RequestToken(1),
+            request: ReadRequest::Discover(DiscoveryRequest::default()),
+            _ticket: RequestTicket::default(),
+        };
+        let identity = RequestIdentity::new(&request);
+        let newer = RequestIdentity {
+            key: identity.key.clone(),
+            generation: Generation(2),
+            token: RequestToken(2),
+        };
+        let registry = Mutex::new(RequestRegistry::default());
+        {
+            let mut registry = registry.lock().expect("test registry should lock");
+            let _ = registry.mark_latest(&identity);
+            let _ = registry.mark_latest(&newer);
+        }
+
+        let event = execute(&sessions, &mut None, request, &identity, &registry, || true);
+
+        assert!(event.is_none());
+    }
+
+    #[test]
+    fn request_ticket_releases_outstanding_work() {
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let ticket = RequestTicket::tracked(Arc::clone(&outstanding));
+        assert_eq!(outstanding.load(Ordering::Acquire), 1);
+
+        drop(ticket);
+
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
     }
 
     #[test]

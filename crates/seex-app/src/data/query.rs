@@ -471,7 +471,7 @@ mod tests {
         let first = points.first().expect("fixture should have points").x as i64;
         let last = points.last().expect("fixture should have points").x as i64;
         let detail = session.query_detail(&DetailRequest {
-            selection,
+            selection: selection.clone(),
             viewport: AlignmentViewport::new(first, last)?,
             logical_width: 500,
         })?;
@@ -484,6 +484,36 @@ mod tests {
                 .iter()
                 .all(|point| point.x >= first as f64 && point.x <= last as f64)
         );
+
+        let mut duplicate_selection = selection.clone();
+        duplicate_selection.runs.push(selection.runs[0].clone());
+        let mut between_checks = 0;
+        let between_runs = session.query_detail_until(
+            &DetailRequest {
+                selection: duplicate_selection,
+                viewport: AlignmentViewport::new(first, last)?,
+                logical_width: 500,
+            },
+            &mut || {
+                between_checks += 1;
+                between_checks == 2
+            },
+        )?;
+        let mut merge_checks = 0;
+        let before_merge = session.query_detail_until(
+            &DetailRequest {
+                selection,
+                viewport: AlignmentViewport::new(first, last)?,
+                logical_width: 500,
+            },
+            &mut || {
+                merge_checks += 1;
+                merge_checks == 2
+            },
+        )?;
+
+        assert!(between_runs.is_none());
+        assert!(before_merge.is_none());
         Ok(())
     }
 }
