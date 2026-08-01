@@ -9,6 +9,16 @@ import pytest
 from scripts import performance_gate
 
 
+class _FakeRssProcess:
+    pid = 42
+
+    def __init__(self, returncode: int | None) -> None:
+        self.returncode = returncode
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+
 def _capture(p50: float, *, reliable: bool = True, protected: float = 100.0) -> performance_gate.Capture:
     def sample(metric: str, value: float, metric_reliable: bool = True) -> performance_gate.MetricSample:
         return performance_gate.MetricSample(
@@ -469,6 +479,21 @@ def test_rss_trend_excludes_final_settle_allocation() -> None:
 
     with pytest.raises(ValueError, match="positive"):
         performance_gate.evaluate_rss([100_000_000, 0], 0, 1)
+
+
+def test_rss_sampler_tolerates_only_bounded_process_lookup_misses(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing_rss(_: int) -> int:
+        raise ProcessLookupError("process exited between poll and RSS sample")
+
+    monkeypatch.setattr(performance_gate, "_rss_bytes", missing_rss)
+    samples: list[int] = []
+
+    assert performance_gate._record_rss_sample(_FakeRssProcess(0), samples, 0) == 0
+    assert performance_gate._record_rss_sample(_FakeRssProcess(None), samples, 0) == 1
+    assert performance_gate._record_rss_sample(_FakeRssProcess(None), samples, 1) == 2
+    with pytest.raises(ProcessLookupError, match="exited"):
+        performance_gate._record_rss_sample(_FakeRssProcess(None), samples, 2)
+    assert not samples
 
 
 def _rss_result(peak: int, *, verdict: str = "pass") -> performance_gate.RssResult:

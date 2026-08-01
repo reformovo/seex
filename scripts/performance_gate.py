@@ -18,11 +18,12 @@ import sys
 import threading
 import time
 from collections.abc import Sequence
-from typing import Literal, TypedDict, cast
+from typing import Literal, Protocol, TypedDict, cast
 
 _PREFIX = "SEEX_PERF "
 _MIGRATION_PAIRS = 3
 _REQUIRED_PAIRS = 7
+_MAX_CONSECUTIVE_RSS_MISSES = 3
 _RSS_TREND_NOISE_FLOOR_BYTES = 1024 * 1024
 _DOMAINS = frozenset({"reporting", "query", "viewer"})
 _DIRECTIONS = frozenset({"higher", "lower", "neutral"})
@@ -30,6 +31,12 @@ _UNITS = frozenset({"bytes", "count", "ns", "ns/op", "points/s"})
 
 Domain = Literal["reporting", "query", "viewer"]
 Direction = Literal["higher", "lower", "neutral"]
+
+
+class _PollableProcess(Protocol):
+    pid: int
+
+    def poll(self) -> int | None: ...
 
 
 class MetricSample(TypedDict):
@@ -772,6 +779,20 @@ def _rss_bytes(process_id: int) -> int:
     return rss
 
 
+def _record_rss_sample(process: _PollableProcess, samples: list[int], consecutive_misses: int) -> int:
+    """Records one RSS sample while tolerating a child-exit sampling race."""
+    try:
+        samples.append(_rss_bytes(process.pid))
+    except ProcessLookupError:
+        if process.poll() is not None:
+            return 0
+        consecutive_misses += 1
+        if consecutive_misses >= _MAX_CONSECUTIVE_RSS_MISSES:
+            raise
+        return consecutive_misses
+    return 0
+
+
 def sample_rss(command: Sequence[str], interval: float) -> RssResult:
     """Samples a child that emits named RSS phases from a fresh process."""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -790,6 +811,7 @@ def sample_rss(command: Sequence[str], interval: float) -> RssResult:
     samples: list[int] = []
     phases: dict[str, int] = {}
     output_closed = False
+    consecutive_rss_misses = 0
     while process.poll() is None or not output_closed:
         while True:
             try:
@@ -806,11 +828,7 @@ def sample_rss(command: Sequence[str], interval: float) -> RssResult:
                     raise ValueError(f"RSS child emitted duplicate phase {marker!r}")
                 phases[marker] = max(len(samples) - 1, 0)
         if process.poll() is None:
-            try:
-                samples.append(_rss_bytes(process.pid))
-            except ProcessLookupError:
-                if process.poll() is None:
-                    raise
+            consecutive_rss_misses = _record_rss_sample(process, samples, consecutive_rss_misses)
             time.sleep(interval)
     reader.join()
     if process.returncode != 0:
