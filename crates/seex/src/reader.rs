@@ -4,7 +4,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use seex_model::alignment::{
-    AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction, AlignmentViewport,
+    AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
+    AlignmentViewport,
 };
 use seex_model::comparison::{EvidenceCompleteness, EvidenceReason};
 use seex_model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
@@ -138,6 +139,35 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
     ) -> SdkResult<MetricSeries> {
+        self.query_metric_impl(run_id, metric_key, query, false)
+    }
+
+    /// Desktop-only query retaining one real sample outside each range edge.
+    ///
+    /// The stable [`Reader::query_metric`] contract never returns these
+    /// neighbors. `max_points` bounds in-range samples; this adapter may return
+    /// at most two additional samples.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] for unsupported queries or storage failures.
+    #[doc(hidden)]
+    pub fn query_metric_for_desktop(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+    ) -> SdkResult<MetricSeries> {
+        self.query_metric_impl(run_id, metric_key, query, true)
+    }
+
+    fn query_metric_impl(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+        retain_neighbors: bool,
+    ) -> SdkResult<MetricSeries> {
         let (run_start, run_status) = match &self.connection {
             Some(connection) => {
                 let run = connection.get_run(run_id).map_err(|_| Error::Storage)?;
@@ -217,10 +247,17 @@ impl Reader {
             .iter()
             .filter(|point| !in_half_open_range(point.axis_value, bounds))
             .count() as u64;
-        let mut samples = result
-            .points
+        let points = if retain_neighbors {
+            bounded_desktop_points(result.points, bounds, query.max_points())
+        } else {
+            result
+                .points
+                .into_iter()
+                .filter(|point| in_half_open_range(point.axis_value, bounds))
+                .collect()
+        };
+        let mut samples = points
             .into_iter()
-            .filter(|point| in_half_open_range(point.axis_value, bounds))
             .map(|point| {
                 let coordinate = match axis {
                     MetricAxis::Step => MetricCoordinate::Step(Step::new(point.axis_value)),
@@ -237,10 +274,14 @@ impl Reader {
                 }
             })
             .collect::<Vec<_>>();
-        if let Some(max_points) = query.max_points() {
+        if !retain_neighbors && let Some(max_points) = query.max_points() {
             samples = enforce_point_bound(samples, max_points);
         }
-        let source_count = result.source_row_count.saturating_sub(neighbor_count);
+        let source_count = if retain_neighbors {
+            result.source_row_count
+        } else {
+            result.source_row_count.saturating_sub(neighbor_count)
+        };
         let (completeness, reasons) = qualify_series(&samples, result.reasons, run_status);
         MetricSeries::from_samples(axis, samples, source_count, completeness, reasons)
             .map_err(|_| Error::Storage)
@@ -251,7 +292,36 @@ fn in_half_open_range(value: i64, bounds: Option<(i64, i64)>) -> bool {
     bounds.is_none_or(|(start, end)| start <= value && value < end)
 }
 
-fn enforce_point_bound(samples: Vec<MetricSample>, max_points: usize) -> Vec<MetricSample> {
+fn bounded_desktop_points(
+    points: Vec<AlignedMetricPoint>,
+    bounds: Option<(i64, i64)>,
+    max_points: Option<usize>,
+) -> Vec<AlignedMetricPoint> {
+    let Some((start, end)) = bounds else {
+        return match max_points {
+            Some(limit) => enforce_point_bound(points, limit),
+            None => points,
+        };
+    };
+    let mut left = None;
+    let mut right = None;
+    let mut inside = Vec::new();
+    for point in points {
+        if point.axis_value < start {
+            left = Some(point);
+        } else if point.axis_value >= end {
+            right.get_or_insert(point);
+        } else {
+            inside.push(point);
+        }
+    }
+    if let Some(limit) = max_points {
+        inside = enforce_point_bound(inside, limit);
+    }
+    left.into_iter().chain(inside).chain(right).collect()
+}
+
+fn enforce_point_bound<T: Clone>(samples: Vec<T>, max_points: usize) -> Vec<T> {
     if samples.len() <= max_points {
         return samples;
     }
@@ -699,6 +769,17 @@ mod tests {
                 Some(2),
             )?,
         )?;
+        let desktop_series = reader.query_metric_for_desktop(
+            &runs[0].run_id,
+            &MetricKey::from_string("loss"),
+            &MetricQuery::new(
+                MetricRange::Steps {
+                    start: Step::new(1),
+                    end: Step::new(4),
+                },
+                Some(2),
+            )?,
+        )?;
         let relative = reader.query_metric(
             &runs[0].run_id,
             &MetricKey::from_string("loss"),
@@ -767,6 +848,9 @@ mod tests {
             (1..4).contains(&step)
         }));
         assert_eq!(series.completeness(), EvidenceCompleteness::Complete);
+        assert_eq!(desktop_series.samples().len(), 4);
+        assert_eq!(desktop_series.samples()[0].point.step, Step::new(0));
+        assert_eq!(desktop_series.samples()[3].point.step, Step::new(4));
         assert_eq!(relative.axis(), MetricAxis::RelativeTime);
         assert!(relative.samples().len() <= 3);
         assert!(relative.samples().iter().all(|sample| matches!(
