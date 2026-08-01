@@ -434,7 +434,8 @@ fn cpu_record_contains_only_ten_raw_v3_samples() {
 }
 
 fn measure_cpu_budget(label: &str, mut operation: impl FnMut()) {
-    const CALIBRATION_TARGET: Duration = Duration::from_millis(25);
+    const CALIBRATION_TARGET: Duration = Duration::from_millis(50);
+    const MINIMUM_SAMPLE: Duration = Duration::from_millis(25);
 
     for _ in 0..20 {
         operation();
@@ -458,7 +459,7 @@ fn measure_cpu_budget(label: &str, mut operation: impl FnMut()) {
         }
         let elapsed = started.elapsed();
         assert!(
-            elapsed >= CALIBRATION_TARGET,
+            elapsed >= MINIMUM_SAMPLE,
             "calibrated CPU sample completed in less than 25 ms"
         );
         elapsed_ns.push(elapsed.as_nanos() as f64 / f64::from(batch_iterations));
