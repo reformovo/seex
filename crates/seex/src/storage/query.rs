@@ -5,7 +5,7 @@ use crate::model::metric::{MetricQuery, MetricQueryResult};
 use duckdb::Connection;
 
 use crate::storage::alignment_query::{
-    AlignmentSource, query_aligned_metric, validate_alignment_identity,
+    AlignmentSource, query_aligned_metric, query_narrow_step_metric, validate_alignment_identity,
 };
 use crate::storage::metric_query::{
     MetricSource, SeriesDiagnostics, query_metric, query_series_diagnostics,
@@ -211,6 +211,18 @@ impl StandaloneMetricReader {
             AlignmentSource::Parquet(self.source.location()),
             query,
             None,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn query_narrow_step_metric(
+        &self,
+        query: &AlignmentQuery,
+    ) -> Result<AlignmentQueryResult, StorageError> {
+        query_narrow_step_metric(
+            &self.connection,
+            AlignmentSource::Parquet(self.source.location()),
+            query,
         )
     }
 
@@ -465,6 +477,15 @@ mod tests {
             AlignmentViewport::new(2, 4)?,
             AlignmentReduction::Full,
         ))?;
+        let narrow = query_narrow_step_metric(
+            &connection,
+            AlignmentSource::Parquet(&parquet.location),
+            &aligned_query(
+                AlignmentAxis::Step,
+                AlignmentViewport::new(2, 4)?,
+                AlignmentReduction::Full,
+            ),
+        )?;
 
         assert_eq!(
             result
@@ -476,6 +497,7 @@ mod tests {
         );
         assert_eq!(result.source_row_count, 5);
         assert!(result.reasons.is_empty());
+        assert_eq!(narrow, result);
 
         let screen = reader.query_aligned_metric(&aligned_query(
             AlignmentAxis::Step,

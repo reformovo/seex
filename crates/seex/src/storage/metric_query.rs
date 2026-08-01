@@ -9,7 +9,7 @@ use chrono::{TimeZone, Utc};
 use duckdb::Connection;
 
 use crate::storage::alignment_query::{
-    AlignmentSource, query_aligned_metric, validate_alignment_identity,
+    AlignmentSource, query_aligned_metric, query_narrow_step_metric, validate_alignment_identity,
 };
 use crate::storage::rows::StoredMetricAggregate;
 use crate::storage::sql::string_literal as sql_string_literal;
@@ -83,6 +83,14 @@ impl<'connection> ProjectMetricReader<'connection> {
             query,
             run_start_millis,
         )
+    }
+
+    #[doc(hidden)]
+    pub fn query_narrow_step_metric(
+        &self,
+        query: &AlignmentQuery,
+    ) -> Result<AlignmentQueryResult, StorageError> {
+        query_narrow_step_metric(self.connection, AlignmentSource::Project, query)
     }
 
     fn run_start_millis(&self, run_id: &RunId) -> Result<i64, StorageError> {
