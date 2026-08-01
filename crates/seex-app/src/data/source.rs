@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use seex::Reader;
 use seex_storage::bootstrap::{
     NativeStorageConfig, is_s3_data_path, open_existing_native_connection_with_config,
 };
 use seex_storage::config::{InitConfigError, resolve_storage_config};
-use seex_storage::{ProjectConnection, ProjectMetricReader, StorageError};
+use seex_storage::{ProjectConnection, StorageError};
 
 use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
@@ -18,10 +19,13 @@ pub enum SourceError {
     Config(#[from] InitConfigError),
     #[error(transparent)]
     Storage(#[from] StorageError),
+    #[error(transparent)]
+    Sdk(#[from] seex::Error),
 }
 
 /// Read session for one existing local native Seex store.
 pub struct ReadSession {
+    root_path: PathBuf,
     connection: ProjectConnection,
 }
 
@@ -46,12 +50,14 @@ impl ReadSession {
         );
         let connection = open_existing_native_connection_with_config(config)?;
         Ok(Self {
+            root_path: root_path.to_owned(),
             connection: ProjectConnection::new(connection),
         })
     }
 
     pub(crate) fn try_clone(&self) -> Result<Self, SourceError> {
         Ok(Self {
+            root_path: self.root_path.clone(),
             connection: self.connection.try_clone()?,
         })
     }
@@ -65,7 +71,8 @@ impl ReadSession {
     ///
     /// Returns [`SourceError`] when a catalog query fails.
     pub fn discover(&self, request: &DiscoveryRequest) -> Result<CatalogSnapshot, SourceError> {
-        let mut projects = self.connection.list_projects()?;
+        let reader = Reader::builder(&self.root_path).open()?;
+        let mut projects = reader.projects()?;
         if let Some(allowlist) = &request.project_allowlist {
             let allowed = allowlist.iter().collect::<HashSet<_>>();
             projects.retain(|project| allowed.contains(&project.project_id));
@@ -81,7 +88,7 @@ impl ReadSession {
         );
         let mut runs = Vec::new();
         for project_id in projects_to_load {
-            let mut project_runs = self.connection.list_runs(project_id, None, None, 0)?;
+            let mut project_runs = reader.runs(project_id)?;
             project_runs.reverse();
             runs.extend(project_runs);
         }
@@ -100,9 +107,9 @@ impl ReadSession {
                 .iter()
                 .any(|project| &project.project_id == project_id)
         });
-        let mut statuses = runs
+        let mut known_runs = runs
             .iter()
-            .map(|run| ((run.project_id.clone(), run.run_id.clone()), run.status))
+            .map(|run| ((run.project_id.clone(), run.run_id.clone()), run.clone()))
             .collect::<HashMap<_, _>>();
         for requested_project in requested
             .iter()
@@ -112,20 +119,19 @@ impl ReadSession {
             if project_id == Some(requested_project) {
                 continue;
             }
-            statuses.extend(
-                self.connection
-                    .list_runs(requested_project, None, None, 0)?
+            known_runs.extend(
+                reader
+                    .runs(requested_project)?
                     .into_iter()
-                    .map(|run| ((run.project_id, run.run_id), run.status)),
+                    .map(|run| ((run.project_id.clone(), run.run_id.clone()), run)),
             );
         }
-        let reader = ProjectMetricReader::new(&self.connection);
         let mut metric_keys = BTreeMap::new();
         for (project_id, run_id) in requested {
-            let Some(status) = statuses.get(&(project_id, run_id.clone())) else {
+            let Some(run) = known_runs.get(&(project_id, run_id)) else {
                 continue;
             };
-            for aggregate in reader.list_metrics(&run_id, *status)? {
+            for aggregate in reader.metrics(run)? {
                 metric_keys.insert(
                     aggregate.metric_key.as_str().to_owned(),
                     aggregate.metric_key,
