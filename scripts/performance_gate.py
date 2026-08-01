@@ -358,8 +358,7 @@ def _sample_rss(command: Sequence[str], timeout: float) -> tuple[dict[str, Metri
                 try:
                     samples.append(_rss_bytes(process.pid))
                 except ProcessLookupError:
-                    if process.poll() is None:
-                        raise
+                    pass
     except BaseException:
         _stop_process(process)
         raise
