@@ -222,6 +222,17 @@ def test_read_manifest_rejects_invalid_contract(
         performance_gate.read_manifest(path)
 
 
+def test_baseline_registry_contains_only_scoped_v3_fields() -> None:
+    path = pathlib.Path(__file__).parents[1] / "docs/performance-baselines.json"
+    registry = json.loads(path.read_text(encoding="utf-8"))
+
+    assert set(registry) == {"schema_version", "benchmarks"}
+    assert registry["schema_version"] == 3
+    for benchmark in registry["benchmarks"].values():
+        assert set(benchmark) == {"fixture", "revision", "stable_summary", "artifact_sha256"}
+        assert set(benchmark["fixture"]) == {"identity", "scale"}
+
+
 def test_preservation_enforces_combined_and_ordered_limits() -> None:
     manifest = _manifest(kind="preservation", protected=["query.reader.full"])
     accepted = _captures(100.0, 100.0, 100.0, 100.0, protected=(100.0, 102.0, 103.0, 100.0))

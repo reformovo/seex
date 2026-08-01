@@ -1,7 +1,5 @@
 {
   "schema_version": 3,
-  "rolling_revision": "9edd1cdb9c34f16b7064d782edfb0ce74ac2fad4",
-  "status": "frozen_with_inconclusive_metrics",
   "benchmarks": {
     "reporting.python.explicit_single.admission": {
       "fixture": {
