@@ -7,16 +7,20 @@ import json
 import os
 import platform
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 DEFAULT_REPORTS = 100_000
 DEFAULT_QUEUE_CAPACITY = 1_048_576
 MODES = ("explicit_single", "implicit_single", "mapping_8")
+SAMPLES = 10
+MINIMUM_SAMPLE_SECONDS = 0.025
 
 
 def main() -> int:
@@ -128,14 +132,17 @@ def run_benchmark(
     project = client.create_project("benchmark", project_id="bench-project")
     run = client.create_run(project.project_id, "throughput", run_id="bench-run")
 
-    elapsed = log_reports(run, mode, reports)
+    calibrated_reports, samples = calibrated_samples(
+        lambda batch_reports: log_reports(run, mode, batch_reports), reports
+    )
 
     return {
         "benchmark": "run_log_admission",
         "mode": mode,
-        "reports": reports,
-        "elapsed_seconds": elapsed,
-        "calls_per_second": reports / elapsed,
+        "requested_reports": reports,
+        "reports": calibrated_reports,
+        "samples": samples,
+        "calls_per_second": statistics.median(samples),
         "queue_capacity": queue_capacity,
         "diagnostics_after_log": diagnostics_to_dict(client.diagnostics()),
         "environment": environment(getattr(seex, "__version__", "unknown")),
@@ -145,32 +152,40 @@ def run_benchmark(
 
 def print_result(result: dict[str, Any]) -> None:
     print(json.dumps(result, indent=2, sort_keys=True), flush=True)
-    throughput = float(result["calls_per_second"])
     mode = str(result["mode"])
     print(
-        "SEEX_PERF "
+        "SEEX_BENCH "
         + json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "record_type": "metric",
                 "domain": "reporting",
                 "metric": f"python.{mode}.admission",
                 "unit": "points/s",
                 "direction": "higher",
                 "batch_iterations": int(result["reports"]),
-                "samples": 1,
-                "raw_samples": [throughput],
-                "mad": 0.0,
-                "relative_mad": 0.0,
-                "p50": throughput,
-                "p95": throughput,
-                "max": throughput,
-                "reliable": True,
+                "samples": result["samples"],
             },
             separators=(",", ":"),
         ),
         flush=True,
     )
+
+
+def calibrated_samples(measure: Callable[[int], float], initial_reports: int) -> tuple[int, list[float]]:
+    """Collect ten throughput samples after reaching the 25 ms timing floor."""
+    reports = initial_reports
+    elapsed = float(measure(reports))
+    while elapsed < MINIMUM_SAMPLE_SECONDS:
+        reports *= 2
+        elapsed = float(measure(reports))
+    samples = [reports / elapsed]
+    for _ in range(SAMPLES - 1):
+        elapsed = float(measure(reports))
+        if elapsed < MINIMUM_SAMPLE_SECONDS:
+            raise RuntimeError("calibrated reporting sample completed in less than 25 ms")
+        samples.append(reports / elapsed)
+    return reports, samples
 
 
 def log_reports(run: Any, mode: str, reports: int) -> float:
