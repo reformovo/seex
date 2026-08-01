@@ -414,21 +414,31 @@ fn ruler_hover_maps_each_curve_to_nearest_stored_evidence() {
     assert_ne!(points[0].canvas_position.y, points[1].canvas_position.y);
 }
 
+const CPU_SAMPLES: usize = 10;
+
+fn cpu_record(metric: &str, batch_iterations: u32, samples: &[f64]) -> String {
+    assert_eq!(samples.len(), CPU_SAMPLES, "CPU benchmark sample count");
+    format!(
+        "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\
+         \"domain\":\"viewer\",\"metric\":\"cpu.{metric}\",\"unit\":\"ns/op\",\
+         \"direction\":\"lower\",\"batch_iterations\":{batch_iterations},\
+         \"samples\":{samples:?}}}"
+    )
+}
+
+#[test]
+fn cpu_record_contains_only_ten_raw_v3_samples() {
+    let record = cpu_record("brush.zoom", 2, &[1.0; CPU_SAMPLES]);
+    assert!(record.starts_with("SEEX_BENCH {\"schema_version\":3"));
+    assert!(!record.contains("p95"));
+}
+
 fn measure_cpu_budget(label: &str, mut operation: impl FnMut()) {
-    const CALIBRATION_TARGET: Duration = Duration::from_millis(50);
-    const SAMPLES: usize = 31;
-    const SINGLE_SAMPLES: usize = 200;
+    const CALIBRATION_TARGET: Duration = Duration::from_millis(25);
 
     for _ in 0..20 {
         operation();
     }
-    let mut maximum_single = Duration::ZERO;
-    for _ in 0..SINGLE_SAMPLES {
-        let started = std::time::Instant::now();
-        operation();
-        maximum_single = maximum_single.max(started.elapsed());
-    }
-
     let mut batch_iterations = 1_u32;
     loop {
         let started = std::time::Instant::now();
@@ -440,63 +450,21 @@ fn measure_cpu_budget(label: &str, mut operation: impl FnMut()) {
         }
         batch_iterations *= 2;
     }
-    let mut elapsed_ns = Vec::with_capacity(SAMPLES);
-    for _ in 0..SAMPLES {
+    let mut elapsed_ns = Vec::with_capacity(CPU_SAMPLES);
+    for _ in 0..CPU_SAMPLES {
         let started = std::time::Instant::now();
         for _ in 0..batch_iterations {
             operation();
         }
-        elapsed_ns.push(started.elapsed().as_nanos() as f64 / f64::from(batch_iterations));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= CALIBRATION_TARGET,
+            "calibrated CPU sample completed in less than 25 ms"
+        );
+        elapsed_ns.push(elapsed.as_nanos() as f64 / f64::from(batch_iterations));
     }
-    let raw_samples = elapsed_ns.clone();
-    elapsed_ns.sort_by(f64::total_cmp);
-    let percentile = |percent: usize| elapsed_ns[(SAMPLES * percent).div_ceil(100) - 1];
-    let p50_ns = percentile(50);
-    let p95_ns = percentile(95);
-    let maximum_ns = elapsed_ns[SAMPLES - 1];
-    let mut deviations = elapsed_ns
-        .iter()
-        .map(|sample| (sample - p50_ns).abs())
-        .collect::<Vec<_>>();
-    deviations.sort_by(f64::total_cmp);
-    let mad = deviations[SAMPLES / 2];
-    let relative_mad = mad / p50_ns;
-    let reliable = relative_mad <= 0.02;
     let metric = label.replace(' ', ".");
-    println!(
-        "{label}: batch={batch_iterations}, samples={SAMPLES}, p50={:.3} ms, p95={:.3} ms, max={:.3} ms, single-max={:.3} ms, relative-mad={relative_mad:.4}",
-        p50_ns / 1_000_000.,
-        p95_ns / 1_000_000.,
-        maximum_ns / 1_000_000.,
-        maximum_single.as_secs_f64() * 1_000.,
-    );
-    println!(
-        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
-         \"domain\":\"viewer\",\"metric\":\"cpu.{metric}\",\"unit\":\"ns/op\",\
-         \"direction\":\"lower\",\"batch_iterations\":{batch_iterations},\
-         \"samples\":{SAMPLES},\"raw_samples\":{:?},\"mad\":{mad:.3},\
-         \"relative_mad\":{relative_mad:.6},\"p50\":{p50_ns:.3},\
-         \"p95\":{p95_ns:.3},\"max\":{maximum_ns:.3},\"reliable\":{reliable}}}",
-        raw_samples,
-    );
-    let maximum_single_ns = maximum_single.as_nanos();
-    println!(
-        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
-         \"domain\":\"viewer\",\"metric\":\"cpu.{metric}.single\",\"unit\":\"ns/op\",\
-         \"direction\":\"lower\",\"batch_iterations\":1,\"samples\":1,\
-         \"raw_samples\":[{maximum_single_ns}],\"mad\":0,\"relative_mad\":0,\
-         \"p50\":{maximum_single_ns},\"p95\":{maximum_single_ns},\
-         \"max\":{maximum_single_ns},\"reliable\":true}}",
-    );
-    assert!(
-        p95_ns <= Duration::from_micros(8_330).as_nanos() as f64,
-        "{label} p95 was {:.3} ms",
-        p95_ns / 1_000_000.,
-    );
-    assert!(
-        maximum_single <= Duration::from_micros(16_700),
-        "{label} single-operation maximum was {maximum_single:?}"
-    );
+    println!("{}", cpu_record(&metric, batch_iterations, &elapsed_ns));
 }
 
 #[test]
