@@ -489,7 +489,7 @@ fn validate_backend(backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     let events = worker
         .take_event_receiver()
         .ok_or("worker event receiver should be available")?;
-    let source_id = DataSourceId::from_path(&root);
+    let source_id = DataSourceId::new("scale-source").expect("test alias should be valid");
     let project_id = ProjectId::from_string("viewer-scale");
     let backend_name = if backend == CatalogBackend::DuckDb {
         "duckdb"
@@ -889,7 +889,7 @@ fn retained_multi_track_fixture_supports_product_tracing() -> Result<(), Box<dyn
     let events = worker
         .take_event_receiver()
         .ok_or("worker event receiver should be available")?;
-    let source_id = DataSourceId::from_path(&root);
+    let source_id = DataSourceId::new("trace-source").expect("test alias should be valid");
     let project_id = ProjectId::from_string("viewer-scale");
     for (index, metric_key) in TRACE_METRICS.into_iter().enumerate() {
         let selection = CurveSelection {

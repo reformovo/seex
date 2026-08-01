@@ -175,9 +175,8 @@ pending tasks, or other ephemeral interaction state.
 
 Autosave coalesces semantic changes, serializes off the GPUI thread, and
 atomically replaces the local file. Invalid or unsupported schema versions are
-reported without overwriting the offending document. The legacy
-`seex-workbench 1` format is not migrated; this is an intentional pre-1.0
-format break.
+reported without overwriting the offending document. Unsupported documents are
+not migrated.
 
 ## Export and Import
 
@@ -226,4 +225,4 @@ recovery and disappear only through explicit cleanup or unimport.
 
 Version 1 does not provide database-backed UI state, automatic cloud or
 shared-file sync, team sharing, embedded Project data, multiple named
-workbenches, workbench merging, or migration from `seex-workbench 1`.
+workbenches, workbench merging, or document migration.

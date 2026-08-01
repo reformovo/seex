@@ -24,7 +24,7 @@ fn run_limit_allows_removal_and_is_independent_per_view() {
     let mut views = AnalysisViews::default();
     let run = |index: usize| {
         RunRef::new(
-            DataSourceId::from_string("source"),
+            DataSourceId::new("source").expect("test alias should be valid"),
             ProjectId::from_string("project"),
             RunId::from_string(format!("run-{index}")),
         )
@@ -61,7 +61,7 @@ fn run_visibility_changes_preserve_loaded_panel_state() {
     let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
     views.begin_active_panel_read(&panel_id, ReadKind::Detail, Generation(7));
     let run = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("run"),
     );
@@ -96,7 +96,7 @@ fn run_organization_changes_preserve_loaded_panel_state() {
     let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
     views.begin_active_panel_read(&panel_id, ReadKind::Detail, Generation(9));
     let run = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("run"),
     );
@@ -121,7 +121,7 @@ fn run_organization_changes_preserve_loaded_panel_state() {
 fn duplicated_views_copy_selection_without_sharing_mutation() {
     let mut views = AnalysisViews::default();
     let run = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         seex_model::types::ProjectId::from_string("project"),
         seex_model::run::RunId::from_string("run"),
     );
@@ -129,7 +129,7 @@ fn duplicated_views_copy_selection_without_sharing_mutation() {
         .toggle_active_run(run, true)
         .expect("first Run should be selected");
     let baseline = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("baseline"),
     );
@@ -137,7 +137,7 @@ fn duplicated_views_copy_selection_without_sharing_mutation() {
         .set_active_baseline(Some(baseline.clone()), true)
         .expect("baseline should fit the visible Run limit");
     let pinned = RunRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("pinned"),
     );
@@ -327,7 +327,7 @@ fn view_organization_is_local_while_archived_runs_are_shared() {
     let mut views = AnalysisViews::default();
     let run = |name: &str| {
         RunRef::new(
-            DataSourceId::from_string("source"),
+            DataSourceId::new("source").expect("test alias should be valid"),
             ProjectId::from_string("project"),
             RunId::from_string(name),
         )
@@ -365,7 +365,7 @@ fn view_organization_is_local_while_archived_runs_are_shared() {
 fn removed_projects_clear_every_view_without_touching_other_projects() {
     let mut views = AnalysisViews::default();
     let project = ProjectRef::new(
-        DataSourceId::from_string("source"),
+        DataSourceId::new("source").expect("test alias should be valid"),
         ProjectId::from_string("removed"),
     );
     let run = |name: &str| {
@@ -451,7 +451,7 @@ fn metric_panels_keep_independent_generations_and_source_errors() {
         PanelReadMode::Replace,
         None,
         vec![SourceReadFailure {
-            source_id: DataSourceId::from_string("source-b"),
+            source_id: DataSourceId::new("source-b").expect("test alias should be valid"),
             message: "unavailable".to_owned(),
         }],
     ));

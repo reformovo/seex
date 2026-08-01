@@ -11,6 +11,7 @@ use seex_model::alignment::AlignmentAxis;
 use seex_model::run::RunId;
 use seex_model::types::ProjectId;
 
+use crate::config::ConfiguredSource;
 use crate::data::worker::ReadKind;
 use crate::domain::{DataSourceId, RunRef, SourceAlias};
 use crate::workbench::toml_document::{
@@ -178,6 +179,9 @@ pub(super) fn open_viewer(
     cx: &mut TestAppContext,
     project_path: Option<PathBuf>,
 ) -> (WindowHandle<ViewerApp>, VisualTestContext) {
+    let configured = project_path
+        .as_deref()
+        .map(|path| configured_source("test-source", path));
     let window = cx.update(|cx| {
         cx.open_window(
             WindowOptions {
@@ -187,12 +191,46 @@ pub(super) fn open_viewer(
                 ))),
                 ..WindowOptions::default()
             },
-            move |window, cx| cx.new(|cx| ViewerApp::new(project_path, window, cx)),
+            move |window, cx| {
+                cx.new(|cx| {
+                    let mut viewer = ViewerApp::new(project_path, window, cx);
+                    if let Some(source) = configured {
+                        viewer.open_configured_sources(vec![source], cx);
+                    }
+                    viewer
+                })
+            },
         )
         .expect("test viewer window should open")
     });
     let visual = VisualTestContext::from_window(window.into(), cx);
     (window, visual)
+}
+
+pub(super) fn configured_source(alias: &str, root_path: &std::path::Path) -> ConfiguredSource {
+    let reader = seex::Reader::builder(root_path)
+        .open()
+        .expect("test Source should open");
+    let projects = reader
+        .projects()
+        .expect("test Source projects should load")
+        .into_iter()
+        .map(|project| project.project_id)
+        .collect::<Vec<_>>();
+    assert!(!projects.is_empty(), "test Source should contain a Project");
+    ConfiguredSource {
+        alias: SourceAlias::new(alias).expect("test Source alias should be valid"),
+        root_path: root_path.to_owned(),
+        projects,
+    }
+}
+
+pub(super) fn source_id(alias: &str) -> DataSourceId {
+    DataSourceId::from_alias(&SourceAlias::new(alias).expect("test Source alias should be valid"))
+}
+
+pub(super) fn test_source_id() -> DataSourceId {
+    source_id("test-source")
 }
 
 #[track_caller]

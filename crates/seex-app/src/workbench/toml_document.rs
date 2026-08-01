@@ -56,13 +56,6 @@ impl TomlWorkbenchDocument {
     /// Returns [`TomlWorkbenchError`] when the TOML, schema version, or a typed
     /// workbench field is invalid.
     pub fn decode(raw: &str) -> Result<Self, TomlWorkbenchError> {
-        if raw
-            .lines()
-            .next()
-            .is_some_and(|line| line.trim() == "seex-workbench 1")
-        {
-            return Err(TomlWorkbenchError::LegacyFormat);
-        }
         let document = raw.parse::<DocumentMut>()?;
         if document["schema_version"].as_integer() != Some(WORKBENCH_SCHEMA_VERSION) {
             return Err(TomlWorkbenchError::UnsupportedSchema);
@@ -193,8 +186,6 @@ pub enum TomlWorkbenchError {
         #[source]
         source: io::Error,
     },
-    #[error("legacy seex-workbench 1 documents are unsupported")]
-    LegacyFormat,
     #[error("workbench schema_version must be 1")]
     UnsupportedSchema,
     #[error("invalid workbench field {0}")]
@@ -645,14 +636,6 @@ mod tests {
                 .lines()
                 .any(|line| line.trim_start().starts_with("path ="))
         );
-    }
-
-    #[test]
-    fn legacy_document_is_rejected_without_migration() {
-        let error = TomlWorkbenchDocument::decode("seex-workbench 1\nactive 0\n")
-            .expect_err("legacy workbench should be rejected");
-
-        assert!(matches!(error, TomlWorkbenchError::LegacyFormat));
     }
 
     #[test]

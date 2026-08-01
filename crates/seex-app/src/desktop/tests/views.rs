@@ -241,7 +241,10 @@ fn top_refresh_requests_every_source_from_an_empty_view(cx: &mut TestAppContext)
     wait_for_viewer(window, &cx, source_catalog_loaded);
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_source(second.path().to_path_buf(), cx);
+            viewer.open_configured_sources(
+                vec![configured_source("second-source", second.path())],
+                cx,
+            );
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {

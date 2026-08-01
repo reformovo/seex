@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 
 use crate::desktop::{
-    ClearLockedCursor, OpenProject, Refresh, ResetView, ShowMetricInspector, ToggleBottomInspector,
+    ClearLockedCursor, Refresh, ResetView, ShowMetricInspector, ToggleBottomInspector,
     ToggleMetricSidebar, ToggleProjectSidebar, UseElapsed, UseStep, ZoomIn, ZoomOut,
 };
-use gpui::{Context, PathPromptOptions, SharedString, Window};
+use gpui::{Context, Window};
 use seex_model::alignment::{AlignmentAxis, AlignmentViewport};
 use seex_model::metric::MetricKey;
 
@@ -12,9 +12,9 @@ use crate::domain::RunRef;
 use crate::workbench::ProjectRef;
 use crate::workbench::panel_reads::{AnalysisViewId, MetricPanelId};
 
+use super::ViewerApp;
 use super::project_sidebar::ProjectPlacement;
 use super::session::WorkbenchSession;
-use super::{ViewerApp, picked_directory};
 
 #[derive(Clone, Debug)]
 pub(crate) enum WorkbenchCommand {
@@ -511,45 +511,6 @@ impl ViewerApp {
         }
     }
 
-    pub(super) fn open_picker(&mut self, cx: &mut Context<Self>) {
-        let prompt = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some(SharedString::from("Import Seex Source")),
-        });
-        cx.spawn(async move |this, cx| {
-            let result = prompt.await;
-            this.update(cx, |this, cx| {
-                match result {
-                    Ok(Ok(paths)) => {
-                        if let Some(path) = picked_directory(paths) {
-                            this.open_source(path, cx);
-                        }
-                    }
-                    Ok(Err(error)) => {
-                        this.session.update(cx, |session, session_cx| {
-                            session.transient_error = Some(error.to_string());
-                            session.publish_snapshot();
-                            session_cx.notify();
-                        });
-                    }
-                    Err(error) => {
-                        this.session.update(cx, |session, session_cx| {
-                            session.transient_error = Some(error.to_string());
-                            session.publish_snapshot();
-                            session_cx.notify();
-                        });
-                    }
-                }
-                cx.notify();
-            })
-        })
-        .detach();
-    }
-    pub(super) fn on_open(&mut self, _: &OpenProject, _: &mut Window, cx: &mut Context<Self>) {
-        self.open_picker(cx);
-    }
     pub(super) fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |session, session_cx| {
             session.transient_error = None;

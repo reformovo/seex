@@ -24,12 +24,12 @@ fn range(start: f64, end: f64) -> AxisRange {
 #[test]
 fn series_colors_derive_from_composite_run_identity() {
     let first = RunRef::new(
-        DataSourceId::from_string("duckdb-source"),
+        DataSourceId::new("duckdb-source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("run"),
     );
     let second = RunRef::new(
-        DataSourceId::from_string("sqlite-source"),
+        DataSourceId::new("sqlite-source").expect("test alias should be valid"),
         ProjectId::from_string("project"),
         RunId::from_string("run"),
     );
@@ -268,7 +268,7 @@ fn hover_maps_a_rendered_point_back_to_stored_evidence() -> Result<(), Box<dyn s
     let events = worker
         .take_event_receiver()
         .ok_or("worker event receiver should be available")?;
-    let source_id = DataSourceId::from_path(root.path());
+    let source_id = DataSourceId::new("source").expect("test alias should be valid");
     let run_ref = RunRef::new(
         source_id.clone(),
         run.project_id.clone(),
@@ -319,7 +319,7 @@ fn synthetic_snapshot(series_count: usize, point_count: i64) -> CurveSnapshot {
     let timestamp = "2026-01-01T00:00:00Z"
         .parse()
         .expect("fixed timestamp should parse");
-    let source_id = DataSourceId::from_string("synthetic-source");
+    let source_id = DataSourceId::new("synthetic-source").expect("test alias should be valid");
     let project_id = ProjectId::from_string("viewer-scale");
     let metric_key = MetricKey::from_string("loss");
     let series = (0..series_count)

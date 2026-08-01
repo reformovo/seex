@@ -1,5 +1,4 @@
 use std::fmt;
-use std::path::Path;
 
 use seex_model::run::{Run, RunId, RunStatus};
 use seex_model::types::ProjectId;
@@ -55,22 +54,22 @@ pub enum SourceAliasError {
 
 /// Stable viewer-local identity for one imported native source.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct DataSourceId(String);
+pub struct DataSourceId(SourceAlias);
 
 impl DataSourceId {
-    pub fn from_string(value: impl Into<String>) -> Self {
-        Self(value.into())
-    }
-
-    pub fn from_path(path: &Path) -> Self {
-        Self(path.to_string_lossy().into_owned())
+    pub fn new(value: impl Into<String>) -> Result<Self, SourceAliasError> {
+        SourceAlias::new(value).map(Self)
     }
 
     pub fn from_alias(alias: &SourceAlias) -> Self {
-        Self(alias.as_str().to_owned())
+        Self(alias.clone())
     }
 
     pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub const fn alias(&self) -> &SourceAlias {
         &self.0
     }
 }
@@ -148,7 +147,7 @@ mod tests {
 
     fn run_ref(source: &str, project: &str, run: &str) -> RunRef {
         RunRef::new(
-            DataSourceId::from_string(source),
+            DataSourceId::new(source).expect("test Source alias should be valid"),
             ProjectId::from_string(project),
             RunId::from_string(run),
         )

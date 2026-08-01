@@ -149,7 +149,7 @@ and the shipped Python API remains unchanged until U4.
   references by alias rather than path. Validate alias conflicts and Source
   Project allowlists, and load Runs only for allowed Projects.
 - [x] Implement schema version 1 TOML workbench encoding, decoding, and
-  validation. Reject the legacy `seex-workbench 1` format without migration.
+  validation. Reject malformed and unsupported documents without migration.
 - [x] Use the approved direct `toml_edit` dependency for Desktop
   read-modify-write. Preserve comments, unknown fields, native storage fields,
   and secrets; require owner-only permissions for global secrets; write through
@@ -372,7 +372,7 @@ management, autosave, and export/import as separate candidates.
   missing-reference recovery, archive/unimport behavior, and failed import
   without a live-state switch.
 - [ ] Pass pure Rust tests for configuration, permissions, aliases, codecs,
-  legacy rejection, and source preservation; pass GPUI tests for Source
+  unsupported-schema rejection, and source preservation; pass GPUI tests for Source
   confirmation, reload, autosave, archive/unimport, recovery, export, and
   import. Run `cargo check`, `cargo test`, and the protected Viewer gates.
 

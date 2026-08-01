@@ -9,7 +9,7 @@ use gpui::{
     div, prelude::*,
 };
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
 
 #[path = "assets.rs"]
@@ -203,12 +203,7 @@ impl ViewerApp {
             }
         }
         match crate::config::load_sources_for_scope(project_path.as_deref()) {
-            Ok(sources) if !sources.is_empty() => app.open_configured_sources(sources, cx),
-            Ok(_) => {
-                if let Some(path) = project_path {
-                    app.open_source(path, cx);
-                }
-            }
+            Ok(sources) => app.open_configured_sources(sources, cx),
             Err(error) => {
                 app.session.update(cx, |session, cx| {
                     session.transient_error = Some(error.to_string());
@@ -352,7 +347,6 @@ impl Render for ViewerApp {
                     });
                 }),
             )
-            .on_action(cx.listener(Self::on_open))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
@@ -397,8 +391,4 @@ impl Render for ViewerApp {
                     ),
             )
     }
-}
-
-fn picked_directory(paths: Option<Vec<PathBuf>>) -> Option<PathBuf> {
-    paths.and_then(|paths| paths.into_iter().next())
 }

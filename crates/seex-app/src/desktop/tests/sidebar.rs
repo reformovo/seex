@@ -675,7 +675,7 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
         .update(&mut cx, |viewer, _, cx| {
             viewer.session.update(cx, |session, session_cx| {
                 session.views.active_mut().runs.push(RunRef::new(
-                    DataSourceId::from_string("offline-source"),
+                    DataSourceId::new("offline-source").expect("test alias should be valid"),
                     project_id.clone(),
                     RunId::from_string("offline-run"),
                 ));
@@ -979,7 +979,7 @@ fn project_row_click_toggles_runs_without_changing_analysis(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn project_sidebar_retains_multiple_imported_sources(cx: &mut TestAppContext) {
+fn project_sidebar_retains_multiple_configured_sources(cx: &mut TestAppContext) {
     let (first, _, _) = fixture_with_metric("loss");
     let (second, _, _) = fixture_with_metric("accuracy");
     cx.executor().allow_parking();
@@ -994,7 +994,10 @@ fn project_sidebar_retains_multiple_imported_sources(cx: &mut TestAppContext) {
     });
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_source(second.path().to_path_buf(), cx);
+            viewer.open_configured_sources(
+                vec![configured_source("second-source", second.path())],
+                cx,
+            );
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {

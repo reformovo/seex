@@ -20,9 +20,9 @@ fn metric_rows_ignore_unavailable_selections(cx: &mut TestAppContext) {
     let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
     wait_for_viewer(window, &cx, source_catalog_loaded);
 
-    let source_id = DataSourceId::from_path(root.path());
+    let source_id = test_source_id();
     let ghost = RunRef::new(
-        DataSourceId::from_string("missing-source"),
+        DataSourceId::new("missing-source").expect("test alias should be valid"),
         ProjectId::from_string("missing-project"),
         RunId::from_string("missing-run"),
     );
@@ -84,7 +84,7 @@ fn metric_without_drawable_evidence_renders_an_empty_chart(cx: &mut TestAppConte
     wait_for_viewer(window, &cx, first_panel_detail_is_settled);
 
     let second = RunRef::new(
-        DataSourceId::from_path(root.path()),
+        test_source_id(),
         project_id,
         RunId::from_string("run-1-with-a-very-long-identifier-that-requires-horizontal-scrolling"),
     );
@@ -92,11 +92,7 @@ fn metric_without_drawable_evidence_renders_an_empty_chart(cx: &mut TestAppConte
         .update(&mut cx, |viewer, _, cx| {
             viewer.toggle_run(second.clone(), cx);
             viewer.toggle_run(
-                RunRef::new(
-                    DataSourceId::from_path(root.path()),
-                    second.project_id.clone(),
-                    first_run_id,
-                ),
+                RunRef::new(test_source_id(), second.project_id.clone(), first_run_id),
                 cx,
             );
         })
@@ -128,7 +124,10 @@ fn shared_timeline_unions_extents_from_multiple_sources(cx: &mut TestAppContext)
     wait_for_viewer(window, &cx, source_catalog_loaded);
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_source(second.path().to_path_buf(), cx);
+            viewer.open_configured_sources(
+                vec![configured_source("second-source", second.path())],
+                cx,
+            );
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
@@ -138,11 +137,10 @@ fn shared_timeline_unions_extents_from_multiple_sources(cx: &mut TestAppContext)
             })
     });
 
-    for (root, project_id, run_id) in [
-        (first.path(), first_project, first_run),
-        (second.path(), second_project, second_run),
+    for (source_id, project_id, run_id) in [
+        (test_source_id(), first_project, first_run),
+        (source_id("second-source"), second_project, second_run),
     ] {
-        let source_id = DataSourceId::from_path(root);
         window
             .update(&mut cx, |viewer, _, cx| {
                 viewer.activate_tree_project(source_id.clone(), project_id.clone(), cx);

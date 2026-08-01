@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use gpui::{Context, px};
 use seex_model::alignment::AlignmentViewport;
@@ -39,20 +38,6 @@ impl WorkbenchSession {
             let source_id = self.sources.configure(source);
             self.request_discovery(source_id, visible_runs, cx);
         }
-    }
-
-    pub(crate) fn import_source(
-        &mut self,
-        path: PathBuf,
-        visible_runs: &[RunRef],
-        cx: &mut Context<Self>,
-    ) -> DataSourceId {
-        let source_id = self.sources.import(path);
-        self.transient_error = None;
-        self.persistence_dirty = true;
-        self.publish_snapshot();
-        self.request_discovery(source_id.clone(), visible_runs, cx);
-        source_id
     }
 
     pub(crate) fn refresh_sources(
@@ -275,13 +260,6 @@ impl ViewerApp {
         let visible_runs = self.active_visible_runs(cx);
         self.session.update(cx, |session, cx| {
             session.refresh_sources(restored.available_source_ids, &visible_runs, cx);
-        });
-    }
-
-    pub(in crate::desktop::app) fn open_source(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let visible_runs = self.active_visible_runs(cx);
-        self.session.update(cx, |session, cx| {
-            session.import_source(path, &visible_runs, cx);
         });
     }
 

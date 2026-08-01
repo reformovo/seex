@@ -4,13 +4,14 @@ use std::path::Path;
 use std::time::Duration;
 
 use seex_app::SourceError;
+use seex_app::config::ConfiguredSource;
 use seex_app::data::DiscoveryRequest;
 use seex_app::data::query::{CurveAxis, CurveSelection, DetailRequest, OverviewRequest};
 use seex_app::data::registry::{SourceRegistry, SourceStatus};
 use seex_app::data::worker::{
     Generation, ReadEventReceiver, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
 };
-use seex_app::domain::{DataSourceId, RunRef};
+use seex_app::domain::{DataSourceId, RunRef, SourceAlias};
 use seex_core::engine::client::NativeClient;
 use seex_model::alignment::AlignmentViewport;
 use seex_model::comparison::EvidenceCompleteness;
@@ -60,7 +61,7 @@ impl Fixture {
     }
 
     fn source_id(&self) -> DataSourceId {
-        DataSourceId::from_path(self.root_path())
+        DataSourceId::new("source").expect("test alias should be valid")
     }
 
     fn run_ref(&self, run_id: &RunId) -> RunRef {
@@ -353,8 +354,16 @@ fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Erro
     let duckdb = fixture(CatalogBackend::DuckDb, false)?;
     let sqlite = fixture(CatalogBackend::Sqlite, true)?;
     let mut registry = SourceRegistry::default();
-    let duckdb_id = registry.import(duckdb.root_path().to_path_buf());
-    let sqlite_id = registry.import(sqlite.root_path().to_path_buf());
+    let duckdb_id = registry.configure(ConfiguredSource {
+        alias: SourceAlias::new("duckdb").expect("test alias should be valid"),
+        root_path: duckdb.root_path().to_path_buf(),
+        projects: vec![duckdb.project_id.clone()],
+    });
+    let sqlite_id = registry.configure(ConfiguredSource {
+        alias: SourceAlias::new("sqlite").expect("test alias should be valid"),
+        root_path: sqlite.root_path().to_path_buf(),
+        projects: vec![sqlite.project_id.clone()],
+    });
     let duckdb_events = registry
         .activate(&duckdb_id)?
         .ok_or("DuckDB source should return an event stream")?;
@@ -403,7 +412,7 @@ fn worker_reports_a_missing_catalog_without_creating_it() -> Result<(), Box<dyn 
     let events = worker
         .take_event_receiver()
         .ok_or("worker event receiver should be available")?;
-    let source_id = DataSourceId::from_path(root.path());
+    let source_id = DataSourceId::new("missing").expect("test alias should be valid");
     worker.submit(
         source_id.clone(),
         Generation(1),

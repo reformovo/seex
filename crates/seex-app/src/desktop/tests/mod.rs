@@ -1,6 +1,5 @@
 #[cfg(feature = "test-support")]
 use std::collections::HashMap;
-use std::path::PathBuf;
 #[cfg(feature = "test-support")]
 use std::sync::Arc;
 #[cfg(feature = "test-support")]
@@ -140,27 +139,21 @@ impl ViewerTestActions for ViewerApp {
 }
 
 #[test]
-fn picker_cancellation_has_no_source_effect() {
-    assert_eq!(picked_directory(None), None);
-    assert_eq!(picked_directory(Some(Vec::new())), None);
-}
-
-#[test]
-fn picker_uses_the_single_selected_directory() {
-    assert_eq!(
-        picked_directory(Some(vec![PathBuf::from("project")])),
-        Some(PathBuf::from("project"))
-    );
-}
-
-#[test]
 fn duplicate_project_names_are_qualified_by_source_identity() {
     assert_eq!(
-        project_tree_label("viewer", &DataSourceId::from_string("source-b"), true),
+        project_tree_label(
+            "viewer",
+            &DataSourceId::new("source-b").expect("test alias should be valid"),
+            true,
+        ),
         "viewer — source-b"
     );
     assert_eq!(
-        project_tree_label("viewer", &DataSourceId::from_string("source-b"), false),
+        project_tree_label(
+            "viewer",
+            &DataSourceId::new("source-b").expect("test alias should be valid"),
+            false,
+        ),
         "viewer"
     );
 }
@@ -169,7 +162,7 @@ fn duplicate_project_names_are_qualified_by_source_identity() {
 fn hover_values_format_visible_and_contextual_evidence() {
     let hover = HoverPoint {
         run_ref: RunRef::new(
-            DataSourceId::from_string("source"),
+            DataSourceId::new("source").expect("test alias should be valid"),
             ProjectId::from_string("project"),
             RunId::from_string("run"),
         ),
@@ -224,7 +217,7 @@ fn inspector_sort_preserves_roles_and_cycles_numeric_order() {
     let make_row =
         |run: &str, value: Option<f64>, baseline: bool, pinned: bool, order| InspectorRow {
             run_ref: RunRef::new(
-                DataSourceId::from_string("source"),
+                DataSourceId::new("source").expect("test alias should be valid"),
                 ProjectId::from_string("project"),
                 RunId::from_string(run),
             ),

@@ -67,7 +67,7 @@ mod tests {
     fn interaction_changes_are_reported_without_mutating_other_channels() {
         let mut interaction = WorkbenchInteraction::default();
         let run = RunRef::new(
-            DataSourceId::from_string("source"),
+            DataSourceId::new("source").expect("test alias should be valid"),
             ProjectId::from_string("project"),
             RunId::from_string("run"),
         );

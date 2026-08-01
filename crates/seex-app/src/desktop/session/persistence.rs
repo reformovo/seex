@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{AppContext, Context};
 
-use crate::domain::{DataSourceId, RunRef, SourceAlias};
+use crate::domain::{DataSourceId, RunRef};
 use crate::workbench::ProjectRef;
 use crate::workbench::toml_document::{
     SavedAnalysisView as TomlAnalysisView, SavedLayout, SavedProjectRef as TomlProjectRef,
@@ -107,22 +107,14 @@ impl WorkbenchSession {
     }
 
     fn workbench_document(&self, layout: ViewerLayoutState) -> TomlWorkbenchDocument {
-        let save_project = |project: &ProjectRef| {
-            SourceAlias::new(project.source_id.as_str())
-                .ok()
-                .map(|source_alias| TomlProjectRef {
-                    source_alias,
-                    project_id: project.project_id.clone(),
-                })
+        let save_project = |project: &ProjectRef| TomlProjectRef {
+            source_alias: project.source_id.alias().clone(),
+            project_id: project.project_id.clone(),
         };
-        let save_run = |run: &RunRef| {
-            SourceAlias::new(run.source_id.as_str())
-                .ok()
-                .map(|source_alias| TomlRunRef {
-                    source_alias,
-                    project_id: run.project_id.clone(),
-                    run_id: run.run_id.clone(),
-                })
+        let save_run = |run: &RunRef| TomlRunRef {
+            source_alias: run.source_id.alias().clone(),
+            project_id: run.project_id.clone(),
+            run_id: run.run_id.clone(),
         };
         let views = self
             .views
@@ -130,9 +122,9 @@ impl WorkbenchSession {
             .iter()
             .map(|view| TomlAnalysisView {
                 name: view.name.clone(),
-                runs: view.runs.iter().filter_map(&save_run).collect(),
-                baseline: view.baseline.as_ref().and_then(&save_run),
-                pinned_runs: view.pinned_runs.iter().filter_map(&save_run).collect(),
+                runs: view.runs.iter().map(&save_run).collect(),
+                baseline: view.baseline.as_ref().map(&save_run),
+                pinned_runs: view.pinned_runs.iter().map(&save_run).collect(),
                 metrics: view
                     .panels
                     .iter()
@@ -168,20 +160,15 @@ impl WorkbenchSession {
                 .views
                 .pinned_projects()
                 .iter()
-                .filter_map(&save_project)
+                .map(&save_project)
                 .collect(),
             archived_projects: self
                 .views
                 .archived_projects()
                 .iter()
-                .filter_map(&save_project)
+                .map(&save_project)
                 .collect(),
-            archived_runs: self
-                .views
-                .archived_runs()
-                .iter()
-                .filter_map(&save_run)
-                .collect(),
+            archived_runs: self.views.archived_runs().iter().map(&save_run).collect(),
             views,
         }
     }

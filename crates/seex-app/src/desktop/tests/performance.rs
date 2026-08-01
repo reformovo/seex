@@ -131,10 +131,13 @@ fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut 
         })
         .expect("viewer should remain open")
         .expect("representative View should have a shared viewport");
-    let pending_source_id = DataSourceId::from_path(pending_root.path());
+    let pending_source_id = source_id("pending-source");
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_source(pending_root.path().to_path_buf(), cx);
+            viewer.open_configured_sources(
+                vec![configured_source("pending-source", pending_root.path())],
+                cx,
+            );
             assert!(matches!(
                 viewer
                     .session_snapshot(cx)

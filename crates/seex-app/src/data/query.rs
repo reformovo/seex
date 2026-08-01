@@ -438,7 +438,7 @@ mod tests {
         client.finish_run(&run.run_id)?;
         client.shutdown(None)?;
         let session = ReadSession::open_existing(root.path())?;
-        let source_id = DataSourceId::from_path(root.path());
+        let source_id = DataSourceId::new("source").expect("test alias should be valid");
         let selection = CurveSelection {
             source_id: source_id.clone(),
             runs: vec![RunRef::new(source_id, project.project_id, run.run_id)],
