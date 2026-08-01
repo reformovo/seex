@@ -1,17 +1,14 @@
 use std::collections::{BTreeMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use crate::desktop::{
-    ClearLockedCursor, ImportSource, Refresh, ResetView, ShowMetricInspector,
-    ToggleBottomInspector, ToggleMetricSidebar, ToggleProjectSidebar, UseElapsed, UseStep, ZoomIn,
-    ZoomOut,
+    ClearLockedCursor, Refresh, ResetView, ShowMetricInspector, ToggleBottomInspector,
+    ToggleMetricSidebar, ToggleProjectSidebar, UseElapsed, UseStep, ZoomIn, ZoomOut,
 };
-use gpui::{Context, PathPromptOptions, SharedString, Window};
+use gpui::{Context, Window};
 use seex_model::alignment::{AlignmentAxis, AlignmentViewport};
 use seex_model::metric::MetricKey;
 
-use crate::config::ConfiguredSource;
-use crate::domain::{RunRef, SourceAlias};
+use crate::domain::RunRef;
 use crate::workbench::ProjectRef;
 use crate::workbench::panel_reads::{AnalysisViewId, MetricPanelId};
 
@@ -514,52 +511,6 @@ impl ViewerApp {
         }
     }
 
-    pub(super) fn open_source_picker(&mut self, cx: &mut Context<Self>) {
-        let prompt = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some(SharedString::from("Import Seex Source")),
-        });
-        cx.spawn(async move |this, cx| {
-            let picked = match prompt.await {
-                Ok(Ok(paths)) => picked_directory(paths),
-                Ok(Err(error)) => return publish_import_error(&this, error.to_string(), cx),
-                Err(error) => return publish_import_error(&this, error.to_string(), cx),
-            };
-            let Some(path) = picked else {
-                return;
-            };
-            let imported = cx
-                .background_executor()
-                .spawn(async move { configured_source_from_path(path) })
-                .await;
-            let _ = this.update(cx, |this, cx| match imported {
-                Ok(source) => this.open_configured_sources(vec![source], cx),
-                Err(error) => this.set_import_error(error, cx),
-            });
-        })
-        .detach();
-    }
-
-    fn set_import_error(&mut self, error: String, cx: &mut Context<Self>) {
-        self.session.update(cx, |session, session_cx| {
-            session.transient_error = Some(error);
-            session.publish_snapshot();
-            session_cx.notify();
-        });
-        cx.notify();
-    }
-
-    pub(super) fn on_import_source(
-        &mut self,
-        _: &ImportSource,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_source_picker(cx);
-    }
-
     pub(super) fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |session, session_cx| {
             session.transient_error = None;
@@ -735,95 +686,5 @@ impl ViewerApp {
             .collect::<BTreeMap<_, _>>()
             .into_values()
             .collect()
-    }
-}
-
-fn picked_directory(paths: Option<Vec<PathBuf>>) -> Option<PathBuf> {
-    paths.and_then(|paths| paths.into_iter().next())
-}
-
-fn configured_source_from_path(path: PathBuf) -> Result<ConfiguredSource, String> {
-    let alias = source_alias_from_path(&path)?;
-    let reader = seex::Reader::builder(&path)
-        .open()
-        .map_err(|error| error.to_string())?;
-    let projects = reader
-        .projects()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(|project| project.project_id)
-        .collect::<Vec<_>>();
-    if projects.is_empty() {
-        return Err("selected Source contains no Projects".to_owned());
-    }
-    Ok(ConfiguredSource {
-        alias,
-        root_path: path,
-        projects,
-    })
-}
-
-fn source_alias_from_path(path: &Path) -> Result<SourceAlias, String> {
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("source");
-    let mut alias = String::new();
-    for character in name.chars() {
-        if character.is_ascii_alphanumeric() {
-            alias.push(character.to_ascii_lowercase());
-        } else if !alias.is_empty() && !alias.ends_with('-') {
-            alias.push('-');
-        }
-    }
-    while alias.ends_with('-') {
-        alias.pop();
-    }
-    if alias.is_empty() {
-        alias.push_str("source");
-    }
-    SourceAlias::new(alias).map_err(|error| error.to_string())
-}
-
-fn publish_import_error(
-    viewer: &gpui::WeakEntity<ViewerApp>,
-    error: String,
-    cx: &mut gpui::AsyncApp,
-) {
-    let _ = viewer.update(cx, |viewer, cx| viewer.set_import_error(error, cx));
-}
-
-#[cfg(test)]
-mod import_source_tests {
-    use seex_core::engine::client::NativeClient;
-    use seex_model::types::ProjectId;
-
-    use super::*;
-
-    #[test]
-    fn picker_and_default_alias_are_deterministic() {
-        let alias = source_alias_from_path(Path::new("/tmp/My Source"))
-            .expect("display path should produce a portable alias");
-
-        assert_eq!(alias.as_str(), "my-source");
-        assert_eq!(picked_directory(None), None);
-        assert_eq!(
-            picked_directory(Some(vec![PathBuf::from("project")])),
-            Some(PathBuf::from("project"))
-        );
-    }
-
-    #[test]
-    fn configured_source_preflights_projects() -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let client = NativeClient::open(root.path())?;
-        let project = client.create_project("viewer", Some(ProjectId::from_string("project")))?;
-        client.shutdown(None)?;
-
-        let source = configured_source_from_path(root.path().to_owned())?;
-
-        assert_eq!(source.root_path, root.path());
-        assert_eq!(source.projects, [project.project_id]);
-        Ok(())
     }
 }

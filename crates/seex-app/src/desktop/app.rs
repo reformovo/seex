@@ -347,7 +347,6 @@ impl Render for ViewerApp {
                     });
                 }),
             )
-            .on_action(cx.listener(Self::on_import_source))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
