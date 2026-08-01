@@ -109,8 +109,8 @@ jobs:
         run: python -m pytest tests/test_minio_acceptance.py
       - name: Run local acceptance for both catalog backends
         run: python -m pytest tests/test_catalog_backend_parity.py
-      - name: Run read-amplification gate for both catalog backends
-        run: python scripts/bench_minio_metric_query.py
+      - name: Accept partition pruning for both catalog backends
+        run: python scripts/accept_minio_partition_pruning.py
       - name: Validate online and offline LTTB paths from the wheel
         run: python scripts/rc_lttb_validation.py
 

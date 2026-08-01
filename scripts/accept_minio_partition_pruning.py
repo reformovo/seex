@@ -1,4 +1,4 @@
-"""Benchmark partition-pruned metric queries against opt-in MinIO storage."""
+"""Accept partition-pruned metric queries against opt-in MinIO storage."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import json
 import os
 import pathlib
 import shutil
-import statistics
 import subprocess
 import tempfile
 import time
@@ -18,7 +17,6 @@ from typing import Any, Literal
 
 _CatalogBackend = Literal["duckdb", "sqlite"]
 _BACKENDS: tuple[_CatalogBackend, ...] = ("duckdb", "sqlite")
-_LOGICAL_POINT_BYTES = 24
 _REQUIRED_ENV = (
     "SEEX_MINIO_ENDPOINT",
     "SEEX_MINIO_BUCKET",
@@ -40,11 +38,10 @@ class MinioConfig:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-count", type=int, default=3)
-    parser.add_argument("--metric-key-count", type=int, default=4)
-    parser.add_argument("--steps", type=int, default=10_000)
-    parser.add_argument("--start-step", type=int, default=4_000)
-    parser.add_argument("--end-step", type=int, default=6_000)
-    parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument("--metric-key-count", type=int, default=3)
+    parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument("--start-step", type=int, default=40)
+    parser.add_argument("--end-step", type=int, default=60)
     return parser
 
 
@@ -54,7 +51,7 @@ def main() -> int:
     if shutil.which("mc") is None:
         raise RuntimeError("MinIO client `mc` is required")
     results = [run_backend(config, backend, args) for backend in _BACKENDS]
-    print(json.dumps({"benchmark": "minio_metric_query", "results": results}, indent=2))
+    print(json.dumps({"acceptance": "minio_partition_pruning", "results": results}, indent=2))
     return 0
 
 
@@ -63,18 +60,18 @@ def run_backend(
     catalog_backend: _CatalogBackend,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    if min(args.run_count, args.metric_key_count, args.steps, args.repeats) <= 0:
-        raise ValueError("run, metric-key, step, and repeat counts must be positive")
+    if min(args.run_count, args.metric_key_count, args.steps) <= 0:
+        raise ValueError("run, metric-key, and step counts must be positive")
     valid_range = 0 <= args.start_step < args.end_step <= args.steps
     if not valid_range:
         raise ValueError("step range must satisfy 0 <= start < end <= steps")
-    prefix = f"seex-query-bench/{uuid.uuid4().hex}/{catalog_backend}"
+    prefix = f"seex-partition-acceptance/{uuid.uuid4().hex}/{catalog_backend}"
     target_run_id = f"run-{args.run_count // 2}"
     target_key_index = args.metric_key_count // 2
     target_metric_key = f"metric/{target_key_index}"
     try:
-        with tempfile.TemporaryDirectory(prefix="seex-query-bench-") as root:
-            latencies, observed_points, remote = _populate_and_query(
+        with tempfile.TemporaryDirectory(prefix="seex-partition-acceptance-") as root:
+            observed_points, remote = _populate_and_query(
                 pathlib.Path(root),
                 config,
                 prefix,
@@ -88,7 +85,9 @@ def run_backend(
         target_files = sum(target_partition in key for key in parquet_keys)
         expected_files = args.run_count * args.metric_key_count
         if len(parquet_keys) < expected_files or target_files == 0:
-            raise RuntimeError("benchmark dataset did not produce the requested files")
+            raise RuntimeError("acceptance dataset did not produce the requested files")
+        if observed_points != args.end_step - args.start_step:
+            raise RuntimeError("partition-pruning query returned unexpected points")
         return {
             "catalog_backend": catalog_backend,
             "run_count": args.run_count,
@@ -99,8 +98,6 @@ def run_backend(
             "target_metric_key": target_metric_key,
             "step_range": {"start": args.start_step, "end": args.end_step},
             "points_per_query": observed_points,
-            "repeated_query_seconds": latencies,
-            "latency_seconds": _summarize(latencies),
             "remote": remote,
         }
     finally:
@@ -115,10 +112,9 @@ def _populate_and_query(
     args: argparse.Namespace,
     target_run_id: str,
     target_metric_key: str,
-) -> tuple[list[float], int, dict[str, Any]]:
+) -> tuple[int, dict[str, Any]]:
     import seex
 
-    latencies: list[float] = []
     points: list[seex.MetricPoint] = []
     events: list[dict[str, Any]] = []
     with seex.init(
@@ -132,9 +128,9 @@ def _populate_and_query(
         s3_path_style=True,
         s3_use_ssl=config.use_ssl,
     ) as client:
-        project = client.create_project("query benchmark", project_id="benchmark")
+        project = client.create_project("partition acceptance", project_id="acceptance")
         for run_index in range(args.run_count):
-            run = client.create_run(project.project_id, "benchmark", run_id=f"run-{run_index}")
+            run = client.create_run(project.project_id, "acceptance", run_id=f"run-{run_index}")
             for step in range(args.steps):
                 for key_index in range(args.metric_key_count):
                     run.log(f"metric/{key_index}", step, float(step + key_index))
@@ -142,19 +138,16 @@ def _populate_and_query(
         trace = _start_trace(config, prefix)
         time.sleep(0.25)
         try:
-            for _ in range(args.repeats):
-                started = time.perf_counter()
-                points = client.query_metric(
-                    target_run_id,
-                    target_metric_key,
-                    start_step=args.start_step,
-                    end_step=args.end_step,
-                )
-                latencies.append(time.perf_counter() - started)
+            points = client.query_metric(
+                target_run_id,
+                target_metric_key,
+                start_step=args.start_step,
+                end_step=args.end_step,
+            )
         finally:
             events = _stop_trace(trace)
-    remote = _trace_metrics(events, target_run_id, target_metric_key, len(points), args.repeats)
-    return latencies, len(points), remote
+    remote = _trace_metrics(events, target_run_id, target_metric_key)
+    return len(points), remote
 
 
 def _start_trace(config: MinioConfig, prefix: str) -> subprocess.Popen[str]:
@@ -186,8 +179,6 @@ def _trace_metrics(
     events: list[dict[str, Any]],
     run_id: str,
     metric_key: str,
-    points_per_query: int,
-    repeats: int,
 ) -> dict[str, Any]:
     parquet_reads = [
         event
@@ -205,16 +196,9 @@ def _trace_metrics(
         raise RuntimeError("query trace captured no Parquet reads")
     if unrelated:
         raise RuntimeError("query read an unrelated run or metric-key partition")
-    response_bytes = sum(int(event.get("callStats", {}).get("tx", 0)) for event in events)
-    parquet_bytes = sum(int(event.get("callStats", {}).get("tx", 0)) for event in parquet_reads)
-    logical_bytes = points_per_query * repeats * _LOGICAL_POINT_BYTES
     return {
         "request_count": len(events),
-        "response_bytes": response_bytes,
         "parquet_get_count": len(parquet_reads),
-        "parquet_response_bytes": parquet_bytes,
-        "logical_result_bytes": logical_bytes,
-        "read_amplification": parquet_bytes / logical_bytes,
         "unrelated_partition_reads": 0,
     }
 
@@ -264,10 +248,6 @@ def _config_from_environment() -> MinioConfig:
         region=os.environ.get("SEEX_MINIO_REGION", "us-east-1"),
         use_ssl=os.environ.get("SEEX_MINIO_USE_SSL", "false").lower() == "true",
     )
-
-
-def _summarize(values: list[float]) -> dict[str, float]:
-    return {"min": min(values), "median": statistics.median(values), "max": max(values)}
 
 
 if __name__ == "__main__":
