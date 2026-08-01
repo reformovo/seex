@@ -212,14 +212,19 @@ conflict. It was not rerun, and the rolling baseline remains `9edd1cd`.
 
 #### U2 exit gates
 
-- [ ] Pass full/narrow correctness, DuckDB/SQLite parity, last-write-wins,
+- [x] Pass full/narrow correctness, DuckDB/SQLite parity, last-write-wins,
   neighbors, diagnostics, and nearest-real-sample hover tests.
 - [ ] Pass the narrow Reader optimization gate against the rolling baseline;
   protect the incumbent full query within the 3% combined and 5% ordered-pair
   limits.
 - [ ] Pass the compact 4 Run × 2 Metric dual-View RSS optimization gate with its
   declared target. Record original-revision trend only as history.
-- [ ] Prove superseded queries merge no snapshot and retain no working set.
+- [x] Prove superseded queries merge no snapshot and retain no working set.
+
+Ordinary small-fixture tests cover cancellation before execution, between Runs,
+before merge, connection-bound interruption, unrelated request keys, old-token
+completion, stale-event suppression, zero retained stale snapshots, and release
+of both the active registry entry and outstanding request ticket.
 
 The compact Viewer gate observed a 10.2% combined peak-RSS improvement, but
 peak and warm RSS exceeded the 2% cross-process noise limit. It is
