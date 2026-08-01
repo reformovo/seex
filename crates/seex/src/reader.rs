@@ -1,5 +1,7 @@
 //! Public read-query contracts.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -61,6 +63,7 @@ impl ReaderBuilder {
                 return Ok(Reader {
                     connection: None,
                     standalone: Some(standalone),
+                    run_metadata: RefCell::new(HashMap::new()),
                 });
             }
         };
@@ -85,6 +88,7 @@ impl ReaderBuilder {
         Ok(Reader {
             connection: Some(ProjectConnection::new(connection)),
             standalone: None,
+            run_metadata: RefCell::new(HashMap::new()),
         })
     }
 }
@@ -93,6 +97,13 @@ impl ReaderBuilder {
 pub struct Reader {
     connection: Option<ProjectConnection>,
     standalone: Option<StandaloneMetricReader>,
+    run_metadata: RefCell<HashMap<RunId, RunMetadata>>,
+}
+
+#[derive(Clone, Copy)]
+struct RunMetadata {
+    started_at_millis: i64,
+    status: RunStatus,
 }
 
 impl Reader {
@@ -123,19 +134,28 @@ impl Reader {
 
     /// Lists Runs for one Project.
     pub fn runs(&self, project_id: &ProjectId) -> SdkResult<Vec<Run>> {
-        self.native()?
+        let runs = self
+            .native()?
             .list_runs(project_id, None, None, 0)
-            .map_err(|_| Error::Storage)
+            .map_err(|_| Error::Storage)?;
+        self.remember_runs(&runs);
+        Ok(runs)
     }
 
     /// Loads Desktop-selected Runs in request order.
     #[doc(hidden)]
     pub fn runs_for_desktop(&self, run_ids: &[RunId]) -> SdkResult<Vec<Run>> {
-        self.native()?.get_runs(run_ids).map_err(|_| Error::Storage)
+        let runs = self
+            .native()?
+            .get_runs(run_ids)
+            .map_err(|_| Error::Storage)?;
+        self.remember_runs(&runs);
+        Ok(runs)
     }
 
     /// Lists persisted Metric summaries for one Run.
     pub fn metrics(&self, run: &Run) -> SdkResult<Vec<MetricAggregate>> {
+        self.remember_runs(std::slice::from_ref(run));
         ProjectMetricReader::new(self.native()?)
             .list_metrics(&run.run_id, run.status)
             .map_err(|_| Error::Storage)
@@ -177,13 +197,8 @@ impl Reader {
         query: &MetricQuery,
         retain_neighbors: bool,
     ) -> SdkResult<MetricSeries> {
-        let (run_start, run_status) = match &self.connection {
-            Some(connection) => {
-                let run = connection.get_run(run_id).map_err(|_| Error::Storage)?;
-                (run.started_at.timestamp_millis(), run.status)
-            }
-            None => (0, RunStatus::Finished),
-        };
+        let metadata = self.metadata(run_id)?;
+        let (run_start, run_status) = (metadata.started_at_millis, metadata.status);
         let standalone = self.standalone.is_some();
         let (axis, storage_axis, bounds) = match query.range() {
             MetricRange::All(axis) => (
@@ -355,6 +370,42 @@ impl Reader {
             reasons,
         )
         .map_err(|_| Error::Storage)
+    }
+
+    fn metadata(&self, run_id: &RunId) -> SdkResult<RunMetadata> {
+        if let Some(metadata) = self.run_metadata.borrow().get(run_id).copied() {
+            return Ok(metadata);
+        }
+        let metadata = match &self.connection {
+            Some(connection) => {
+                let run = connection.get_run(run_id).map_err(|_| Error::Storage)?;
+                RunMetadata::from(&run)
+            }
+            None => RunMetadata {
+                started_at_millis: 0,
+                status: RunStatus::Finished,
+            },
+        };
+        self.run_metadata
+            .borrow_mut()
+            .insert(run_id.clone(), metadata);
+        Ok(metadata)
+    }
+
+    fn remember_runs(&self, runs: &[Run]) {
+        self.run_metadata.borrow_mut().extend(
+            runs.iter()
+                .map(|run| (run.run_id.clone(), RunMetadata::from(run))),
+        );
+    }
+}
+
+impl From<&Run> for RunMetadata {
+    fn from(run: &Run) -> Self {
+        Self {
+            started_at_millis: run.started_at.timestamp_millis(),
+            status: run.status,
+        }
     }
 }
 
