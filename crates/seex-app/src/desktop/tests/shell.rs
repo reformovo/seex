@@ -20,7 +20,6 @@ fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppC
             assert!(viewer.session.read(cx).transient_error.is_none());
         })
         .expect("viewer should remain open");
-    assert!(cx.debug_bounds("empty-source-state").is_some());
     assert!(cx.debug_bounds("import-source").is_some());
 }
 

@@ -60,6 +60,7 @@ pub(crate) struct ProjectSidebar {
 pub(crate) enum ProjectSidebarEvent {
     Command(WorkbenchCommand),
     DismissOtherPopovers,
+    OpenSource,
     HoveredRun {
         run: RunRef,
         region: SharedString,
@@ -415,6 +416,21 @@ impl ProjectSidebar {
                             .gap_1()
                             .flex()
                             .items_center()
+                            .child(
+                                components::top_bar_icon_button(
+                                    "import-source",
+                                    theme,
+                                    false,
+                                    false,
+                                )
+                                .debug_selector(|| "import-source".to_owned())
+                                .tooltip(components::label_tooltip("Import Source", theme))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|_, _, _, cx| {
+                                    cx.emit(ProjectSidebarEvent::OpenSource);
+                                }))
+                                .child(components::icon(IconName::Plus, theme)),
+                            )
                             .child(
                                 components::top_bar_icon_button(
                                     "hide-project-sidebar",
@@ -997,6 +1013,7 @@ impl ViewerApp {
                     }
                 });
             }
+            ProjectSidebarEvent::OpenSource => self.open_source_picker(cx),
             ProjectSidebarEvent::HoveredRun {
                 run,
                 region,
