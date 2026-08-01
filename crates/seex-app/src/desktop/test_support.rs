@@ -179,9 +179,22 @@ pub(super) fn open_viewer(
     cx: &mut TestAppContext,
     project_path: Option<PathBuf>,
 ) -> (WindowHandle<ViewerApp>, VisualTestContext) {
-    let configured = project_path
-        .as_deref()
-        .map(|path| configured_source("test-source", path));
+    open_viewer_with_optional_source(cx, project_path, None)
+}
+
+pub(super) fn open_viewer_with_configured_source(
+    cx: &mut TestAppContext,
+    project_path: PathBuf,
+) -> (WindowHandle<ViewerApp>, VisualTestContext) {
+    let source = configured_source("test-source", &project_path);
+    open_viewer_with_optional_source(cx, Some(project_path), Some(source))
+}
+
+fn open_viewer_with_optional_source(
+    cx: &mut TestAppContext,
+    project_path: Option<PathBuf>,
+    source: Option<ConfiguredSource>,
+) -> (WindowHandle<ViewerApp>, VisualTestContext) {
     let window = cx.update(|cx| {
         cx.open_window(
             WindowOptions {
@@ -194,7 +207,7 @@ pub(super) fn open_viewer(
             move |window, cx| {
                 cx.new(|cx| {
                     let mut viewer = ViewerApp::new(project_path, window, cx);
-                    if let Some(source) = configured {
+                    if let Some(source) = source {
                         viewer.open_configured_sources(vec![source], cx);
                     }
                     viewer

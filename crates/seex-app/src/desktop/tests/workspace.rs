@@ -17,7 +17,7 @@ fn metric_metadata_reports_run_and_drawable_counts() {
 fn metric_rows_ignore_unavailable_selections(cx: &mut TestAppContext) {
     let (root, _, _) = fixture_with_complete_runs(1, 9);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
 
     let source_id = test_source_id();
@@ -73,7 +73,7 @@ fn metric_rows_ignore_unavailable_selections(cx: &mut TestAppContext) {
 fn metric_without_drawable_evidence_renders_an_empty_chart(cx: &mut TestAppContext) {
     let (root, project_id, first_run_id) = fixture_with_runs(1, 2);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id.clone(), first_run_id.clone(), 1);
     window
@@ -120,7 +120,7 @@ fn shared_timeline_unions_extents_from_multiple_sources(cx: &mut TestAppContext)
     let (first, first_project, first_run) = fixture_with_extent(10);
     let (second, second_project, second_run) = fixture_with_extent(20);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(first.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, first.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     window
         .update(&mut cx, |viewer, _, cx| {
@@ -199,7 +199,7 @@ fn shared_timeline_unions_extents_from_multiple_sources(cx: &mut TestAppContext)
 fn metrics_appended_after_initial_layout_all_receive_detail(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 2);
 
@@ -255,7 +255,7 @@ fn metrics_appended_after_initial_layout_all_receive_detail(cx: &mut TestAppCont
 fn metric_picker_lists_only_metrics_not_already_in_the_view(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(20);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 20);
     window
@@ -371,7 +371,7 @@ fn metric_picker_lists_only_metrics_not_already_in_the_view(cx: &mut TestAppCont
 fn hover_and_locked_cursors_coexist_on_the_shared_ruler(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
@@ -463,7 +463,7 @@ fn hover_and_locked_cursors_coexist_on_the_shared_ruler(cx: &mut TestAppContext)
 fn hover_frames_reuse_static_metric_chart_preparation(cx: &mut TestAppContext) {
     let (root, project_id, first_run_id) = fixture_with_complete_runs(3, 2);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 3);
     window
@@ -586,7 +586,7 @@ fn hover_frames_reuse_static_metric_chart_preparation(cx: &mut TestAppContext) {
 fn chart_pointer_drives_the_shared_hover_cursor_without_a_curve_hit(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
@@ -641,7 +641,7 @@ fn chart_pointer_drives_the_shared_hover_cursor_without_a_curve_hit(cx: &mut Tes
 fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(3, 1);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 3);
     window
@@ -845,7 +845,7 @@ fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppCont
 fn ruler_drag_pans_the_shared_viewport_within_home(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
@@ -903,7 +903,7 @@ fn ruler_drag_pans_the_shared_viewport_within_home(cx: &mut TestAppContext) {
 fn ruler_scroll_pans_the_viewport_and_clamps_to_home(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
@@ -967,7 +967,7 @@ fn ruler_scroll_pans_the_viewport_and_clamps_to_home(cx: &mut TestAppContext) {
 fn modified_ruler_scroll_zooms_around_the_pointer(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
@@ -1035,7 +1035,7 @@ fn modified_ruler_scroll_zooms_around_the_pointer(cx: &mut TestAppContext) {
 fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(10);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     cx.simulate_resize(size(px(600.), px(420.)));
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 10);
@@ -1178,7 +1178,7 @@ fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppCo
 fn zoom_debounce_commits_only_the_latest_viewport(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
@@ -1287,7 +1287,7 @@ fn zoom_debounce_commits_only_the_latest_viewport(cx: &mut TestAppContext) {
 fn keyboard_zoom_reprojects_immediately_and_debounces_detail(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
-    let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id, run_id, 1);
     window
