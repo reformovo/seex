@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "rolling_revision": "1968628eac00d6245a9439e3095fc89676705268",
+  "rolling_revision": "9edd1cdb9c34f16b7064d782edfb0ce74ac2fad4",
   "status": "frozen_with_inconclusive_metrics",
   "benchmarks": {
     "reporting.python.explicit_single.admission": {
@@ -37,17 +37,17 @@
         "identity": "reader-1x1x1m-v3",
         "scale": {"runs": 1, "metrics": 1, "points_per_series": 1000000, "samples": 10}
       },
-      "revision": "1968628eac00d6245a9439e3095fc89676705268",
+      "revision": "9edd1cdb9c34f16b7064d782edfb0ce74ac2fad4",
       "stable_summary": {
         "verdict": "pass",
-        "elapsed_seconds": 11.29,
-        "combined_median_narrow_ns_per_query": 37038094.0,
-        "combined_median_full_ns_per_query": 212773000.0,
-        "combined_narrow_change": -0.00138,
-        "combined_full_change": -0.006385,
-        "maximum_capture_relative_mad": 0.015506
+        "elapsed_seconds": 11.26,
+        "combined_median_narrow_ns_per_query": 36483916.75,
+        "combined_median_full_ns_per_query": 211749041.75,
+        "combined_narrow_change": -0.004344,
+        "combined_full_change": -0.004946,
+        "maximum_capture_relative_mad": 0.018282
       },
-      "artifact_sha256": "6b751aeec22c755fa3fce43eeb7251158e6828b6bb785ed7c78d92caf202e46d"
+      "artifact_sha256": "b6f66cdbcea4a296be7094de7d08e98b323b60abf43093aa226d92e3e338d3c5"
     },
     "viewer.cpu.interactive_chart": {
       "fixture": {

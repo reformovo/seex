@@ -177,11 +177,13 @@ different execution plans; one universal SQL plan is not a goal.
 
 #### U2.3: Diagnostics and cancellation
 
-- [ ] Separate whole-series negative/decreasing/completeness diagnostics from
+- [x] Separate whole-series negative/decreasing/completeness diagnostics from
   viewport selection. Finished Runs cache by source/project/run/metric;
   Running Runs invalidate on refresh or storage-generation change.
-- [ ] Propagate diagnostics failure as incomplete evidence with an explicit
-  reason. Never manufacture complete evidence or silently repair an axis.
+- [x] Propagate diagnostics failure as incomplete evidence with an explicit
+  reason. The scoped Reader checkpoint passed with narrow -0.43% and full
+  -0.49%; failures retain available points as Partial with
+  `DiagnosticsUnavailable`.
 - [ ] Give every cloned DuckDB connection an interrupt handle and request token.
   A superseded generation interrupts only its current request; interruption is
   stale cancellation and never becomes an error snapshot.
