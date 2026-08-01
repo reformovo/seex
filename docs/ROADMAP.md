@@ -162,18 +162,23 @@ different execution plans; one universal SQL plan is not a goal.
 
 #### U2.2: Split query plans
 
-- [ ] Preserve the incumbent Overview/full-span SQL and its materialized
+- [x] Preserve the incumbent Overview/full-span SQL and its materialized
   ordered plan. Protect its reliable latency and RSS metrics from regression
   above 3%.
-- [ ] Add a narrow Step plan that filters the viewport before expensive
+- [x] Add a narrow Step plan that filters the viewport before expensive
   materialization and bucket windows while retaining every same-step
   replacement until last-write-wins.
-- [ ] Return one real effective neighbor on each side and reduce only the
+- [x] Return one real effective neighbor on each side and reduce only the
   cropped effective rows. Preserve duplicates, spikes, strict point budgets,
   evidence reasons, and DuckDB/SQLite parity.
-- [ ] Initially keep relative-time and timestamp queries on the incumbent plan;
+- [x] Initially keep relative-time and timestamp queries on the incumbent plan;
   a replacement may change its timestamp, so time filtering cannot precede
   last-write-wins without a separate proof.
+
+The scoped Reader gate observed a 28.93% combined narrow improvement, while
+full changed by 1.18% with no ordered-pair regression above 3.02%. The result
+is Inconclusive because the protected full metric had an A-B/B-A direction
+conflict. It was not rerun, and the rolling baseline remains `9edd1cd`.
 
 #### U2.3: Diagnostics and cancellation
 
@@ -184,10 +189,10 @@ different execution plans; one universal SQL plan is not a goal.
   reason. The scoped Reader checkpoint passed with narrow -0.43% and full
   -0.49%; failures retain available points as Partial with
   `DiagnosticsUnavailable`.
-- [ ] Give every cloned DuckDB connection an interrupt handle and request token.
+- [x] Give every cloned DuckDB connection an interrupt handle and request token.
   A superseded generation interrupts only its current request; interruption is
   stale cancellation and never becomes an error snapshot.
-- [ ] Check supersession before query execution and between Runs. Stale results
+- [x] Check supersession before query execution and between Runs. Stale results
   must not enter a merged snapshot or retain their query working set.
 
 #### U2.4: Evidence-driven fallbacks
@@ -213,6 +218,11 @@ different execution plans; one universal SQL plan is not a goal.
 - [ ] Pass the compact 4 Run × 2 Metric dual-View RSS optimization gate with its
   declared target. Record original-revision trend only as history.
 - [ ] Prove superseded queries merge no snapshot and retain no working set.
+
+The compact Viewer gate observed a 10.2% combined peak-RSS improvement, but
+peak and warm RSS exceeded the 2% cross-process noise limit. It is
+Inconclusive, was not rerun, and does not close an exit gate. See
+[`reference/u2-performance-observations.md`](reference/u2-performance-observations.md).
 
 ### U3: Engine Migration and Rust Run SDK
 
