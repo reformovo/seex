@@ -44,3 +44,46 @@ Historical U0 Viewer results used different fixtures and workloads. They are
 not comparable evidence for the compact gate's target. The earlier U2
 single-View seven-pair result remains historical only, and the interrupted
 dual-View attempt produced no result file.
+
+## Bounded reducer fallback
+
+A single manual profile of the accepted narrow SQL reported approximately
+155,070,992 bytes of DuckDB peak buffer memory. It scanned 1,000,000 Step values
+to determine real neighbors, then applied last-write-wins and four bucket
+windows to 100,002 rows. The profile artifact is
+`/tmp/seex-u2-narrow-profile.json`, SHA-256
+`d4f4f86ecba0d14f62eccdb6a2f0c16fe220041dfa1468a4b9d9b0d39a7408b3`.
+
+The bounded candidate kept DuckDB responsible for neighbor selection,
+last-write-wins, and one Step order, then retained first/last/min/max per
+Step-axis bucket in Rust. Its source-query profile reported 74,145,360 bytes
+of peak buffer memory, but transferred all 100,002 effective rows. That profile
+is `/tmp/seex-u2-bounded-axis-source-profile.json`, SHA-256
+`164b5dde72ca741879d7174161548b4e5e372d690fb5b030510bee91d97fab79`.
+
+The fixed Query A-B-B-A captures are stored at
+`/tmp/seex-perf/u2-bounded-axis-candidate/query-optimization-result.json`,
+SHA-256
+`c82eb0dc6ea51b786f90e3448e9a0630c8f8e5a56b3aa682ae4e8db111febf6e`.
+The artifact was initially classified with a transient comparator that also
+required protected metrics to have matching directions. Re-evaluating the
+same captures under corrected comparator revision `8351c48`, without running
+another workload, returns Pass: narrow improves 40.20% and 39.92% in the two
+orders, with a 40.06% combined improvement; full changes by approximately
+-0.004% and +0.018%, with a 0.0068% combined regression.
+
+The compact Viewer gate is stored at
+`/tmp/seex-perf/u2-bounded-axis-candidate/viewer-rss-result.json`, SHA-256
+`6413d5a153f0edb7db3b977d729dd3bb58c32aff689afc2fe134c20ef5c1e11e`.
+Baseline peak captures were 479,281,152 and 473,071,616 bytes; candidate peaks
+were 443,432,960 and 389,447,680 bytes. The combined observation improves about
+12.5%, below the declared 25% target, and candidate variation exceeds 2%, so
+the verdict is Inconclusive. It was not rerun. The uncommitted bounded reducer
+was reverted and no rolling baseline changed.
+
+`parquet_metadata` reports nine row groups with disjoint Step ranges covering
+0 through 999,999. The bounded scan received the dynamic filter
+`step>=449999 AND step<=550000`; the current neighbor-bound scan remained the
+only full-series Step scan. This is evidence that Step statistics and
+dynamic pruning are already available, not evidence for a physical-ordering or
+row-group-setting candidate. No schema or partition change was attempted.

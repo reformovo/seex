@@ -197,14 +197,16 @@ conflict. It was not rerun, and the rolling baseline remains `9edd1cd`.
 
 #### U2.4: Evidence-driven fallbacks
 
-- [ ] If narrow Step SQL improves real-workload RSS by less than 5%, profile it
-  and test a separate narrow-only bounded reducer: DuckDB performs early
-  filtering, last-write-wins, and one Step order; Rust retains only
-  first/last/min/max candidates for each bucket.
-- [ ] If the bounded reducer still misses the RSS target, profile Parquet
+- [x] When narrow Step SQL did not close the compact RSS gate, profile and test
+  a separate narrow-only bounded reducer. Its existing Query captures
+  reclassify as Pass under the corrected primary-only direction rule, but its
+  compact Viewer RSS observation improved only 12.5%, missed the 25% target,
+  and was Inconclusive above the 2% noise limit. The candidate was reverted.
+- [x] After the bounded reducer missed the RSS target, profile Parquet
   physical ordering and row-group sizing as the next independent candidate.
-  Preserve the Parquet schema and partition contract.
-- [ ] Do not retry generic `HASH_GROUP_BY` extrema, memory limits, DuckDB thread
+  The fixture has Step-range row-group statistics and the narrow scan receives
+  a Step dynamic filter, so no physical-layout candidate was opened.
+- [x] Do not retry generic `HASH_GROUP_BY` extrema, memory limits, DuckDB thread
   caps, allocator relief scheduling, or removal of the beneficial full-span
   ordered window without new contradictory profile evidence.
 
