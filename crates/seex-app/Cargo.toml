@@ -18,6 +18,7 @@ desktop = ["dep:gpui"]
 test-support = ["desktop", "gpui/test-support"]
 
 [dependencies]
+seex = { path = "../seex" }
 seex-chart-core = { path = "../seex-chart-core" }
 seex-core = { path = "../seex-core" }
 seex-model = { path = "../seex-model" }
