@@ -82,8 +82,10 @@ Desktop uses Reader.
   120-second workload budget.
 - [x] Keep historical U0/U1 measurements and source workloads under
   `docs/reference/`; they do not decide new candidates.
-- [ ] Freeze scoped v3 rolling identities for reporting admission, Reader query,
-  compact dual-View RSS, and chart CPU without running unrelated boundaries.
+- [x] Freeze scoped v3 rolling identities without running unrelated boundaries.
+  Admission and Reader self-comparisons passed; durability, chart CPU, and
+  compact dual-View RSS returned Inconclusive under the fixed 2% noise policy
+  and were recorded without reruns or expanded workloads.
 
 ### U1: Configuration Foundation, Public `seex` Facade, and Reader First
 

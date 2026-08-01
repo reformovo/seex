@@ -1,31 +1,75 @@
 {
   "schema_version": 3,
-  "rolling_revision": null,
-  "status": "pending_v3_freeze",
+  "rolling_revision": "20a51dc3342a2e54a039d0c587e1253a466d0d76",
+  "status": "frozen_with_inconclusive_metrics",
   "benchmarks": {
     "reporting.python.explicit_single.admission": {
-      "fixture": {"identity": "reporting-local-v3", "scale": {"samples": 10}},
-      "revision": null,
-      "stable_summary": null,
-      "artifact_sha256": null
+      "fixture": {
+        "identity": "reporting-local-v3",
+        "scale": {"initial_reports": 10000, "batch_iterations": 917504, "samples": 10}
+      },
+      "revision": "1886c7c72d034d86511a71eef517c544633ffc7e",
+      "stable_summary": {
+        "verdict": "pass",
+        "elapsed_seconds": 33.06,
+        "combined_median_points_per_second": 1474922.404,
+        "maximum_capture_relative_mad": 0.006446
+      },
+      "artifact_sha256": "e87557b111fe8a6aa06c2520321ea5325232b891a7b33e2a260c04a2e1328002"
     },
     "reporting.python.durability": {
       "fixture": {
         "identity": "reporting-local-durability-v3",
-        "scale": {"reports_per_sample": 1000, "samples": 10}
+        "scale": {"reports_per_repeat": 1000, "repeats_per_sample": 3, "samples": 10}
       },
-      "revision": null,
-      "stable_summary": null,
-      "artifact_sha256": null
+      "revision": "e34e351d85f1ce324b31fb890fd0cf79be7aba3b",
+      "stable_summary": {
+        "verdict": "inconclusive",
+        "elapsed_seconds": 15.27,
+        "combined_median_drain_ns": 145359562.535,
+        "combined_median_finalization_ns": 35781250.452,
+        "unreliable_metrics": ["reporting.python.drain_persistence", "reporting.python.finalization"]
+      },
+      "artifact_sha256": "14c9bfc8b13448b78b171b08e426a58215371efbf71a27e24f46b182fc08da6a"
     },
     "query.duckdb.reader.step": {
       "fixture": {
         "identity": "reader-1x1x1m-v3",
-        "scale": {"runs": 1, "metrics": 1, "points_per_series": 1000000}
+        "scale": {"runs": 1, "metrics": 1, "points_per_series": 1000000, "samples": 10}
       },
-      "revision": null,
-      "stable_summary": null,
-      "artifact_sha256": null
+      "revision": "1886c7c72d034d86511a71eef517c544633ffc7e",
+      "stable_summary": {
+        "verdict": "pass",
+        "elapsed_seconds": 12.48,
+        "combined_median_narrow_ns_per_query": 37565187.5,
+        "combined_median_full_ns_per_query": 216874937.5,
+        "maximum_capture_relative_mad": 0.011247
+      },
+      "artifact_sha256": "f0cab57e92277211a1ad4bbae2f2b005e2e9cbcfc292c9517f4ce7186d6aab1d"
+    },
+    "viewer.cpu.interactive_chart": {
+      "fixture": {
+        "identity": "viewer-chart-cpu-v3",
+        "scale": {"operations": 7, "samples": 10}
+      },
+      "revision": "fcbbeb6337e46a27ab07d7466a9f5a24deb46ec7",
+      "stable_summary": {
+        "verdict": "inconclusive",
+        "elapsed_seconds": 23.84,
+        "combined_median_ns_per_operation": {
+          "brush_zoom": 27.173,
+          "hit_testing": 206457.56,
+          "ruler_hover_evidence": 2140.474,
+          "uncached_path_preparation": 2191531.258
+        },
+        "unreliable_metrics": [
+          "viewer.cpu.brush.pan",
+          "viewer.cpu.brush.resize",
+          "viewer.cpu.cached.path.preparation",
+          "viewer.cpu.uncached.path.preparation"
+        ]
+      },
+      "artifact_sha256": "b649da421895e862dfac0a8fd2a5dff9a87848372e380d91db9bfaf160b5f065"
     },
     "viewer.rss.peak": {
       "fixture": {
@@ -39,18 +83,15 @@
           "read_concurrency": 4
         }
       },
-      "revision": null,
-      "stable_summary": null,
-      "artifact_sha256": null
-    },
-    "viewer.cpu.interactive_chart": {
-      "fixture": {
-        "identity": "viewer-chart-cpu-v3",
-        "scale": {"operations": 7, "samples": 10}
+      "revision": "20a51dc3342a2e54a039d0c587e1253a466d0d76",
+      "stable_summary": {
+        "verdict": "inconclusive",
+        "elapsed_seconds": 8.76,
+        "combined_median_peak_bytes": 465494016,
+        "combined_median_warm_bytes": 431603712,
+        "capture_peak_bytes": [462438400, 479019008, 453951488, 468549632]
       },
-      "revision": null,
-      "stable_summary": null,
-      "artifact_sha256": null
+      "artifact_sha256": "6c115f1ae20350985f4ba3831de341436cfd0f55c8bf5e86a091e377d2d67012"
     }
   }
 }
