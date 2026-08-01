@@ -10,7 +10,8 @@ use arrow::record_batch::{RecordBatch, RecordBatchIterator};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
 
-use crate::model::metric::{MetricAggregate, MetricPoint};
+use crate::model::metric::MetricAggregate;
+use seex::MetricSeries;
 
 #[pyclass(name = "ArrowTable", module = "seex._seex")]
 pub struct PyArrowTable {
@@ -20,11 +21,7 @@ pub struct PyArrowTable {
 }
 
 impl PyArrowTable {
-    pub fn from_metric_points(
-        points: &[MetricPoint],
-        source_row_count: u64,
-        downsampled: bool,
-    ) -> Result<Self, ArrowError> {
+    pub fn from_metric_series(series: &MetricSeries) -> Result<Self, ArrowError> {
         let schema = Arc::new(Schema::new(vec![
             Field::new("run_id", DataType::Utf8, false),
             Field::new("metric_key", DataType::Utf8, false),
@@ -43,38 +40,49 @@ impl PyArrowTable {
         ]));
         let columns: Vec<ArrayRef> = vec![
             Arc::new(StringArray::from_iter_values(
-                points.iter().map(|point| point.run_id.as_str()),
+                series
+                    .samples()
+                    .iter()
+                    .map(|sample| sample.point.run_id.as_str()),
             )),
             Arc::new(StringArray::from_iter_values(
-                points.iter().map(|point| point.metric_key.as_str()),
+                series
+                    .samples()
+                    .iter()
+                    .map(|sample| sample.point.metric_key.as_str()),
             )),
             Arc::new(Int64Array::from_iter_values(
-                points.iter().map(|point| point.step.value()),
+                series
+                    .samples()
+                    .iter()
+                    .map(|sample| sample.point.step.value()),
             )),
             Arc::new(
                 TimestampMillisecondArray::from_iter_values(
-                    points
+                    series
+                        .samples()
                         .iter()
-                        .map(|point| point.timestamp.timestamp_millis()),
+                        .map(|sample| sample.point.timestamp.timestamp_millis()),
                 )
                 .with_timezone("UTC"),
             ),
             Arc::new(Float64Array::from_iter_values(
-                points.iter().map(|point| point.value_f64),
+                series.samples().iter().map(|sample| sample.point.value_f64),
             )),
             Arc::new(
                 TimestampMillisecondArray::from_iter_values(
-                    points
+                    series
+                        .samples()
                         .iter()
-                        .map(|point| point.ingested_at.timestamp_millis()),
+                        .map(|sample| sample.point.ingested_at.timestamp_millis()),
                 )
                 .with_timezone("UTC"),
             ),
         ];
         Ok(Self {
             batch: RecordBatch::try_new(schema, columns)?,
-            source_row_count,
-            downsampled,
+            source_row_count: series.source_count(),
+            downsampled: series.downsampled(),
         })
     }
 
@@ -125,12 +133,32 @@ mod tests {
     use chrono::{TimeZone, Utc};
 
     use super::*;
-    use crate::model::metric::{MetricKey, Step};
+    use crate::model::comparison::EvidenceCompleteness;
+    use crate::model::metric::{MetricKey, MetricPoint, Step};
     use crate::model::run::RunId;
+    use seex::{MetricAxis, MetricCoordinate, MetricSample};
+
+    fn metric_series(points: Vec<MetricPoint>, source_count: u64) -> MetricSeries {
+        let samples = points
+            .into_iter()
+            .map(|point| MetricSample {
+                coordinate: MetricCoordinate::Step(point.step),
+                point,
+            })
+            .collect();
+        MetricSeries::from_samples(
+            MetricAxis::Step,
+            samples,
+            source_count,
+            EvidenceCompleteness::Complete,
+            Vec::new(),
+        )
+        .expect("test series should be valid")
+    }
 
     #[test]
     fn metric_point_table_uses_public_schema_without_partition_key() -> Result<(), ArrowError> {
-        let table = PyArrowTable::from_metric_points(&[], 0, false)?;
+        let table = PyArrowTable::from_metric_series(&metric_series(Vec::new(), 0))?;
         let fields = table.batch.schema_ref().fields();
         let actual: Vec<(&str, DataType)> = fields
             .iter()
@@ -194,7 +222,7 @@ mod tests {
             value_f64: 0.25,
             ingested_at: timestamp,
         };
-        let table = PyArrowTable::from_metric_points(&[point], 1, false)?;
+        let table = PyArrowTable::from_metric_series(&metric_series(vec![point], 2))?;
         let timestamps = table.batch.column(3);
         let timestamps = timestamps
             .as_any()
@@ -202,6 +230,8 @@ mod tests {
             .expect("timestamp column must use millisecond Arrow storage");
 
         assert_eq!(timestamps.value(0), 1_750_000_000_123);
+        assert_eq!(table.source_row_count, 2);
+        assert!(table.downsampled);
         Ok(())
     }
 }
