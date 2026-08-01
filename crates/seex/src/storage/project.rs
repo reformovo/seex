@@ -4,10 +4,10 @@ use chrono::{DateTime, Utc};
 use seex_model::run::{Run, RunId, RunStatus};
 use seex_model::types::{Project, ProjectId};
 
-use crate::rows::{StoredRun, status_as_str};
-use crate::time::{timestamp_as_rfc3339, timestamp_from_millis};
-use crate::write::NativeWriteStore;
-use crate::{StorageError, percent_encode_metric_key};
+use crate::storage::rows::{StoredRun, status_as_str};
+use crate::storage::time::{timestamp_as_rfc3339, timestamp_from_millis};
+use crate::storage::write::NativeWriteStore;
+use crate::storage::{StorageError, percent_encode_metric_key};
 
 /// Owning connection for one native Seex project store.
 pub struct ProjectConnection {

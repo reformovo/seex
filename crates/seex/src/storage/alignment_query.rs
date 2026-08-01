@@ -6,9 +6,9 @@ use seex_model::alignment::{
 use seex_model::metric::{MetricKey, MetricPoint, Step};
 use seex_model::run::RunId;
 
-use crate::StorageError;
-use crate::metric_query::percent_encode_metric_key;
-use crate::time::timestamp_from_millis;
+use crate::storage::StorageError;
+use crate::storage::metric_query::percent_encode_metric_key;
+use crate::storage::time::timestamp_from_millis;
 
 const EXTREMA_PER_BUCKET: usize = 4;
 
@@ -289,7 +289,7 @@ mod tests {
     use seex_model::alignment::{AlignmentReduction, AlignmentViewport};
 
     use super::*;
-    use crate::ProjectMetricReader;
+    use crate::storage::ProjectMetricReader;
 
     fn connection() -> Result<Connection, Box<dyn Error>> {
         let connection = Connection::open_in_memory()?;

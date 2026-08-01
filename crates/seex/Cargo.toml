@@ -8,11 +8,16 @@ repository = "https://github.com/reformovo/seex"
 publish = false
 
 [dependencies]
-seex-core = { path = "../seex-core" }
+chrono = "0.4"
+duckdb = { version = "~1.10504.0", features = ["bundled"] }
 seex-model = { path = "../seex-model" }
-seex-storage = { path = "../seex-storage" }
+thiserror = "2"
+toml = "1.1.2"
+uuid = { version = "1.0", features = ["v4"] }
 
 [dev-dependencies]
+seex-core = { path = "../seex-core" }
+seex-storage = { path = "../seex-storage" }
 tempfile = "3"
 
 [lib]

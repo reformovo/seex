@@ -5,6 +5,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::error::{Error, Result as SdkResult};
+use crate::storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
+use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
+use crate::storage::{
+    ParquetSource, ProjectConnection, ProjectMetricReader, StandaloneMetricReader,
+};
 use seex_model::alignment::{
     AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
     AlignmentViewport,
@@ -16,11 +22,6 @@ use seex_model::metric::{
 };
 use seex_model::run::{Run, RunId, RunStatus};
 use seex_model::types::{Project, ProjectId};
-use seex_storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
-use seex_storage::config::{S3ConnectionOverrides, resolve_init_config};
-use seex_storage::{ParquetSource, ProjectConnection, ProjectMetricReader, StandaloneMetricReader};
-
-use crate::error::{Error, Result as SdkResult};
 
 /// Builder for opening one existing native or standalone store read-only.
 pub struct ReaderBuilder {

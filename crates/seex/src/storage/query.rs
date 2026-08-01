@@ -2,9 +2,13 @@ use duckdb::Connection;
 use seex_model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult, AlignmentReason};
 use seex_model::metric::{MetricQuery, MetricQueryResult};
 
-use crate::alignment_query::{AlignmentSource, query_aligned_metric, validate_alignment_identity};
-use crate::metric_query::{MetricSource, query_metric};
-use crate::{ColumnSchema, MetricReader, SchemaReport, StorageError, validate_metric_point_schema};
+use crate::storage::alignment_query::{
+    AlignmentSource, query_aligned_metric, validate_alignment_identity,
+};
+use crate::storage::metric_query::{MetricSource, query_metric};
+use crate::storage::{
+    ColumnSchema, MetricReader, SchemaReport, StorageError, validate_metric_point_schema,
+};
 
 /// A DuckDB-readable Parquet file, glob, or object-store URI.
 #[derive(Clone, Debug, Eq, PartialEq)]

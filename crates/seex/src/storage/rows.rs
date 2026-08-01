@@ -1,5 +1,5 @@
-use crate::StorageError;
-use crate::time::timestamp_from_millis;
+use crate::storage::StorageError;
+use crate::storage::time::timestamp_from_millis;
 use seex_model::metric::{MetricAggregate, MetricKey, Step};
 use seex_model::run::{Run, RunId, RunStatus};
 use seex_model::types::ProjectId;

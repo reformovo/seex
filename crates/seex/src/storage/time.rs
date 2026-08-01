@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::StorageError;
+use crate::storage::StorageError;
 
 pub fn timestamp_as_rfc3339(timestamp: DateTime<Utc>) -> String {
     timestamp.to_rfc3339()

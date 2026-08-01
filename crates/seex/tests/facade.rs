@@ -17,3 +17,12 @@ fn facade_exports_common_product_types_without_storage_inputs() {
     assert_eq!(Step::new(7).value(), 7);
     assert!(EvidenceCompleteness::Complete < EvidenceCompleteness::Unavailable);
 }
+
+#[test]
+fn legacy_storage_path_reexports_the_migrated_type() {
+    fn round_trip(value: seex::storage::ProjectConnection) -> seex_storage::ProjectConnection {
+        value
+    }
+
+    let _same_type = round_trip;
+}

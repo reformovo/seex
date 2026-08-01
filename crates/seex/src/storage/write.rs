@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 
-use crate::rows::{StoredRun, status_as_str};
-use crate::time::{current_timestamp, timestamp_as_rfc3339};
-use crate::{StorageError, percent_encode_metric_key};
+use crate::storage::rows::{StoredRun, status_as_str};
+use crate::storage::time::{current_timestamp, timestamp_as_rfc3339};
+use crate::storage::{StorageError, percent_encode_metric_key};
 use seex_model::metric::{MetricKey, MetricPoint, Step};
 use seex_model::run::{Run, RunId, RunStatus};
 use seex_model::types::ProjectId;

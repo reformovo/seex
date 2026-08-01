@@ -24,6 +24,8 @@
 
 mod error;
 mod reader;
+#[doc(hidden)]
+pub mod storage;
 
 pub use error::{Error, Result};
 pub use reader::{

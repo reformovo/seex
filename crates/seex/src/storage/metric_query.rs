@@ -8,10 +8,12 @@ use seex_model::metric::{
 };
 use seex_model::run::{RunId, RunStatus};
 
-use crate::alignment_query::{AlignmentSource, query_aligned_metric, validate_alignment_identity};
-use crate::rows::StoredMetricAggregate;
-use crate::sql::string_literal as sql_string_literal;
-use crate::{MetricReader, StorageError};
+use crate::storage::alignment_query::{
+    AlignmentSource, query_aligned_metric, validate_alignment_identity,
+};
+use crate::storage::rows::StoredMetricAggregate;
+use crate::storage::sql::string_literal as sql_string_literal;
+use crate::storage::{MetricReader, StorageError};
 
 const EXTREMA_PER_BUCKET: usize = 4;
 const LTTB_AUTO_INSTALL_ENV: &str = "SEEX_LTTB_AUTO_INSTALL";

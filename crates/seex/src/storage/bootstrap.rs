@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use crate::StorageError;
-use crate::sql::string_literal as sql_string_literal;
+use crate::storage::StorageError;
+use crate::storage::sql::string_literal as sql_string_literal;
 
 const DUCKLAKE_ALIAS: &str = "dl";
 const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
