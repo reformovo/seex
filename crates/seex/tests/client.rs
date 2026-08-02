@@ -212,6 +212,72 @@ fn subprocess_clients_get_or_create_one_project() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+#[test]
+fn different_roots_share_store_locks() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = tempfile::tempdir()?;
+    let left_root = fixture.path().join("left");
+    let right_root = fixture.path().join("right");
+    let catalog_path = fixture.path().join("shared/catalog.sqlite");
+    let data_path = fixture.path().join("shared/data");
+    let open = |root: &Path| {
+        Client::builder(root)
+            .catalog_backend(CatalogBackend::Sqlite)
+            .catalog_path(&catalog_path)
+            .data_path(&data_path)
+            .open()
+    };
+    open(&left_root)?.shutdown()?;
+    let left = open(&left_root)?;
+    let right = open(&right_root)?;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let left_barrier = std::sync::Arc::clone(&barrier);
+    let right_barrier = std::sync::Arc::clone(&barrier);
+    let left_thread = std::thread::spawn(move || {
+        left_barrier.wait();
+        let run = left.start_run(RunOptions::new("shared").id("left"))?;
+        Ok::<_, Error>((left, run))
+    });
+    let right_thread = std::thread::spawn(move || {
+        right_barrier.wait();
+        let run = right.start_run(RunOptions::new("shared").id("right"))?;
+        Ok::<_, Error>((right, run))
+    });
+    let (left, left_run) = left_thread.join().expect("left client should not panic")?;
+    let (right, right_run) = right_thread
+        .join()
+        .expect("right client should not panic")?;
+
+    assert!(matches!(
+        right.start_run(
+            RunOptions::new("shared")
+                .id("left")
+                .resume(ResumePolicy::Must)
+        ),
+        Err(Error::RunAlreadyActive { .. })
+    ));
+    drop((left_run, right_run));
+    left.shutdown()?;
+    right.shutdown()?;
+
+    let reader_root = fixture.path().join("reader/.seex");
+    fs::create_dir_all(&reader_root)?;
+    fs::write(
+        reader_root.join("config.toml"),
+        format!(
+            "schema_version = 1\ncatalog_backend = \"sqlite\"\ncatalog_path = {:?}\ndata_path = {:?}\n",
+            catalog_path.to_string_lossy(),
+            data_path.to_string_lossy()
+        ),
+    )?;
+    let reader = Reader::builder(fixture.path().join("reader")).open()?;
+    assert_eq!(reader.projects()?.len(), 1);
+    assert_eq!(
+        reader.runs(&seex::ProjectId::from_string("shared"))?.len(),
+        2
+    );
+    Ok(())
+}
+
 fn wait_for_drain(client: &Client) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while client.diagnostics().pending_reports != 0 {

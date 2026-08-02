@@ -8,7 +8,7 @@ use crate::storage::{ProjectConnection, RunWriterGuard};
 
 use crate::engine::EngineError;
 use crate::engine::bootstrap::{
-    CatalogBackend, NativeStorageConfig, S3ConnectionConfig,
+    CatalogBackend, NativeStorageConfig, S3ConnectionConfig, catalog_lock_namespace,
     open_existing_native_connection_with_config, open_native_connection_with_config,
 };
 use crate::engine::query::NativeQueryStore;
@@ -19,7 +19,7 @@ use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 
 pub struct NativeClient {
-    root_path: PathBuf,
+    lock_namespace: PathBuf,
     reporter: MetricReporter,
     connection: Arc<Mutex<ProjectConnection>>,
     active_runs: Arc<Mutex<HashMap<RunId, Arc<ActiveRun>>>>,
@@ -110,17 +110,19 @@ impl NativeClient {
             data_path,
             s3_connection,
         );
+        let catalog_path = storage_config.catalog_path().to_owned();
         let connection = if must_exist {
             open_existing_native_connection_with_config(storage_config)?
         } else {
             open_native_connection_with_config(storage_config)?
         };
+        let lock_namespace = catalog_lock_namespace(&catalog_path)?;
         let connection = Arc::new(Mutex::new(ProjectConnection::new(connection)));
         let reporter =
             MetricReporter::open_with_capacity(Arc::clone(&connection), metric_queue_capacity);
 
         Ok(Self {
-            root_path,
+            lock_namespace,
             reporter,
             connection,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -370,6 +372,10 @@ impl NativeClient {
         self.reporter.diagnostics()
     }
 
+    pub(crate) fn lock_namespace(&self) -> &Path {
+        self.lock_namespace.as_path()
+    }
+
     pub fn greatest_persisted_step(&self, run_id: &RunId) -> Result<Option<Step>, EngineError> {
         let value = self
             .connection()?
@@ -555,7 +561,7 @@ impl NativeClient {
             return Ok(Arc::clone(active_run));
         }
 
-        let writer_guard = RunWriterGuard::acquire(&self.root_path, run_id)?;
+        let writer_guard = RunWriterGuard::acquire(&self.lock_namespace, run_id)?;
         let active_run = Arc::new(ActiveRun::open(writer_guard));
         active_runs.insert(run_id.clone(), Arc::clone(&active_run));
         Ok(active_run)
@@ -1044,7 +1050,7 @@ mod tests {
             &root_path,
         )?)));
         let client = NativeClient {
-            root_path: root_path.clone(),
+            lock_namespace: root_path.join(".seex/locks"),
             reporter: MetricReporter::blocked_for_test(1),
             connection,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -1378,7 +1384,7 @@ mod tests {
             &root_path,
         )?)));
         let client = NativeClient {
-            root_path: root_path.clone(),
+            lock_namespace: root_path.join(".seex/locks"),
             reporter: MetricReporter::blocked_for_test(2),
             connection,
             active_runs: Arc::new(Mutex::new(HashMap::new())),

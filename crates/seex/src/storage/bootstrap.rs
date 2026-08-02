@@ -169,6 +169,39 @@ impl NativeStorageConfig {
             s3_connection,
         }
     }
+
+    pub(crate) fn catalog_path(&self) -> &Path {
+        self.catalog_path.as_path()
+    }
+}
+
+pub(crate) fn catalog_lock_namespace(catalog_path: &Path) -> Result<PathBuf, StorageError> {
+    let catalog_path =
+        std::fs::canonicalize(catalog_path).map_err(|source| StorageError::Storage {
+            operation: "resolving catalog lock identity",
+            name: path_basename(catalog_path),
+            source,
+        })?;
+    let parent = catalog_path.parent().ok_or_else(|| StorageError::Storage {
+        operation: "resolving catalog lock identity",
+        name: path_basename(&catalog_path),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "catalog path has no parent",
+        ),
+    })?;
+    let filename = catalog_path.file_name().unwrap_or_default();
+    let conventional = parent.file_name().is_some_and(|name| name == ".seex")
+        && matches!(
+            filename.to_str(),
+            Some("catalog.ducklake" | "catalog.sqlite")
+        );
+    if conventional {
+        return Ok(parent.join("locks"));
+    }
+    let mut namespace = filename.to_os_string();
+    namespace.push(".seex-locks");
+    Ok(parent.join(namespace))
 }
 
 pub fn open_native_connection(root_path: &Path) -> Result<duckdb::Connection, StorageError> {

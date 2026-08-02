@@ -102,7 +102,6 @@ impl ClientBuilder {
         .map_err(Error::from)?;
         Ok(Client {
             inner: Arc::new(inner),
-            root_path: self.root_path,
             run_states: Mutex::new(HashMap::new()),
         })
     }
@@ -111,7 +110,6 @@ impl ClientBuilder {
 /// Native metric writer and Run factory.
 pub struct Client {
     pub(crate) inner: Arc<NativeClient>,
-    root_path: PathBuf,
     run_states: Mutex<HashMap<RunId, Arc<Mutex<FacadeRunState>>>>,
 }
 
@@ -185,7 +183,7 @@ impl Client {
             return Err(Error::InvalidRunOptions { field: "project" });
         }
         let project_id = ProjectId::from_string(raw_project);
-        let _guard = ProjectCreateGuard::acquire(&self.root_path, &project_id)
+        let _guard = ProjectCreateGuard::acquire(self.inner.lock_namespace(), &project_id)
             .map_err(|_| Error::Storage)?;
         match self.inner.get_project(&project_id) {
             Ok(project) => Ok(project),

@@ -18,8 +18,8 @@ impl RunWriterGuard {
     ///
     /// Returns [`StorageError::RunAlreadyActive`] when another process owns the
     /// lock, or a storage error when the lock file cannot be prepared.
-    pub fn acquire(root_path: &Path, run_id: &RunId) -> Result<Self, StorageError> {
-        let lock_dir = root_path.join(".seex").join("locks").join("runs");
+    pub fn acquire(lock_namespace: &Path, run_id: &RunId) -> Result<Self, StorageError> {
+        let lock_dir = lock_namespace.join("runs");
         std::fs::create_dir_all(&lock_dir).map_err(|source| StorageError::Storage {
             operation: "creating run lock directory",
             name: path_basename(&lock_dir),
@@ -66,8 +66,11 @@ pub(crate) struct ProjectCreateGuard {
 }
 
 impl ProjectCreateGuard {
-    pub(crate) fn acquire(root_path: &Path, project_id: &ProjectId) -> Result<Self, StorageError> {
-        let lock_dir = root_path.join(".seex").join("locks").join("projects");
+    pub(crate) fn acquire(
+        lock_namespace: &Path,
+        project_id: &ProjectId,
+    ) -> Result<Self, StorageError> {
+        let lock_dir = lock_namespace.join("projects");
         std::fs::create_dir_all(&lock_dir).map_err(|source| StorageError::Storage {
             operation: "creating project lock directory",
             name: path_basename(&lock_dir),
