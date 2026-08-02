@@ -610,9 +610,10 @@ fn qualify_series(
                 | EvidenceReason::NonFiniteValue
         )
     });
+    let missing_run_start = reasons.contains(&EvidenceReason::MissingRunStart);
     let mut completeness = if invalid {
         EvidenceCompleteness::Invalid
-    } else if missing_metric {
+    } else if missing_metric || missing_run_start {
         EvidenceCompleteness::Unavailable
     } else {
         EvidenceCompleteness::Complete

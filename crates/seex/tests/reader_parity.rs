@@ -1,8 +1,9 @@
 use seex::storage::bootstrap::open_native_connection;
 use seex::storage::{MetricWrite, ProjectConnection};
 use seex::{
-    Error, EvidenceReason, MetricAxis, MetricCoordinate, MetricKey, MetricQuery, MetricRange,
-    Project, ProjectId, Reader, RelativeTime, RunId, RunStatus, Step, Timestamp,
+    Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate, MetricKey,
+    MetricQuery, MetricRange, Project, ProjectId, Reader, RelativeTime, RunId, RunStatus, Step,
+    Timestamp,
 };
 
 struct Fixture {
@@ -144,6 +145,7 @@ fn standalone_relative_ranges_report_missing_run_start() -> Result<(), Box<dyn s
         assert!(!native.samples().is_empty());
         assert!(native.samples().len() <= 2);
         assert!(standalone.samples().is_empty());
+        assert_eq!(standalone.completeness(), EvidenceCompleteness::Unavailable);
         assert_eq!(standalone.reasons(), [EvidenceReason::MissingRunStart]);
     }
     Ok(())
