@@ -4,9 +4,9 @@ use std::rc::Rc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use seex::{ProjectId, Reader, Run, RunId, RunStatus};
+use seex::{MetricKey, ProjectId, Reader, Run, RunId, RunStatus};
 
-use crate::sdk::client::{ApiClosedError, PyProject};
+use crate::sdk::client::{ApiClosedError, PyMetricSummary, PyProject};
 use crate::sdk::run::sdk_error;
 use crate::sdk::settings::PySettings;
 
@@ -123,6 +123,16 @@ impl PyRunRecord {
         }
         Ok(())
     }
+
+    fn with_reader<T>(&self, read: impl FnOnce(&Reader) -> PyResult<T>) -> PyResult<T> {
+        self.ensure_open()?;
+        let reader = self.reader.borrow();
+        read(
+            reader
+                .as_ref()
+                .ok_or_else(|| ApiClosedError::new_err("The read-only API is closed."))?,
+        )
+    }
 }
 
 #[pymethods]
@@ -171,6 +181,24 @@ impl PyRunRecord {
     fn finished_at(&self) -> PyResult<Option<String>> {
         self.ensure_open()?;
         Ok(self.run.finished_at.map(|value| value.to_rfc3339()))
+    }
+
+    fn metrics(&self) -> PyResult<Vec<PyMetricSummary>> {
+        self.with_reader(|reader| {
+            reader
+                .metrics(&self.run)
+                .map(|metrics| metrics.into_iter().map(PyMetricSummary::from).collect())
+                .map_err(sdk_error)
+        })
+    }
+
+    fn metric_summary(&self, metric_key: &str) -> PyResult<Option<PyMetricSummary>> {
+        self.with_reader(|reader| {
+            reader
+                .metric_summary(&self.run, &MetricKey::from_string(metric_key))
+                .map(|summary| summary.map(PyMetricSummary::from))
+                .map_err(sdk_error)
+        })
     }
 }
 

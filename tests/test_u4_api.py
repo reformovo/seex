@@ -11,6 +11,7 @@ def _finished_run(root: pathlib.Path) -> None:
     from seex import _seex
 
     run = _seex._start_run(project="project-1", dir=root, id="run-1", name="baseline")
+    run.log({"loss": 0.25})
     run.finish()
 
 
@@ -27,6 +28,10 @@ def test_api_discovers_projects_and_project_scoped_runs(tmp_path: pathlib.Path) 
     assert api.run("project-1/run-1").name == "baseline"
     assert api.run("other/run-1") is None
     assert api.run("project-1/missing") is None
+    record = api.run("project-1/run-1")
+    assert [metric.metric_key for metric in record.metrics()] == ["loss"]
+    assert record.metric_summary("loss").last_value_f64 == 0.25
+    assert record.metric_summary("missing") is None
 
     with pytest.raises(ValueError, match="project_id/run_id"):
         api.run("run-1")
