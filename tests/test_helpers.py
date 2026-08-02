@@ -11,6 +11,7 @@ from tests import helpers
 
 if TYPE_CHECKING:
     import seex
+    from seex import _seex
 
 
 @dataclasses.dataclass(frozen=True)
@@ -39,7 +40,7 @@ class _FakeClient:
 
 
 def test_wait_for_metric_points_timeout_includes_context() -> None:
-    client = cast("seex.Client", _FakeClient())
+    client = cast("_seex.Client", _FakeClient())
 
     with pytest.raises(AssertionError) as error:
         helpers.wait_for_metric_points(

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import seex
+    from seex import _seex
 
 DIAGNOSTIC_FIELDS = (
     "pending_reports",
@@ -30,7 +31,7 @@ UNSUPPORTED_DIAGNOSTIC_FIELDS = (
 
 
 def wait_for_metric_points(
-    client: seex.Client,
+    client: _seex.Client,
     run_id: str,
     metric_key: str,
     expected_count: int,
