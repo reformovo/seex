@@ -66,8 +66,8 @@ impl PyApi {
     }
 
     fn run(&self, path: &str) -> PyResult<Option<PyRunRecord>> {
-        let (project_id, run_id) = parse_run_path(path)?;
         self.with_reader(|reader| {
+            let (project_id, run_id) = parse_run_path(path)?;
             reader
                 .run(
                     &ProjectId::from_string(project_id),
@@ -86,8 +86,8 @@ impl PyApi {
         metric_key: &str,
         direction: &str,
     ) -> PyResult<PyComparisonResult> {
-        let objective = objective(metric_key, direction)?;
         self.with_reader(|reader| {
+            let objective = objective(metric_key, direction)?;
             reader
                 .compare_runs(
                     &RunId::from_string(candidate_run_id),
@@ -106,12 +106,12 @@ impl PyApi {
         metric_key: &str,
         direction: &str,
     ) -> PyResult<PyRankingResult> {
-        let objective = objective(metric_key, direction)?;
-        let run_ids = run_ids
-            .into_iter()
-            .map(RunId::from_string)
-            .collect::<Vec<_>>();
         self.with_reader(|reader| {
+            let objective = objective(metric_key, direction)?;
+            let run_ids = run_ids
+                .into_iter()
+                .map(RunId::from_string)
+                .collect::<Vec<_>>();
             reader
                 .rank_runs(&run_ids, &objective)
                 .map(PyRankingResult::from)
@@ -253,8 +253,8 @@ impl PyRunRecord {
         end: Option<&Bound<'_, PyAny>>,
         max_points: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyMetricSeries> {
-        let query = metric_query(x_axis, start, end, max_points)?;
         self.with_reader(|reader| {
+            let query = metric_query(x_axis, start, end, max_points)?;
             reader
                 .query_metric(
                     &self.run.run_id,
