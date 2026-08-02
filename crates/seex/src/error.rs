@@ -16,6 +16,12 @@ pub enum Error {
     RunNotFound { run_id: String },
     InvalidRunState { run_id: String },
     RunProjectMismatch { run_id: String },
+    InvalidMetricMapping,
+    MetricMappingTooLarge { count: usize, maximum: usize },
+    MetricQueueFull,
+    RunClosed { run_id: String },
+    StepRegression { cursor: i64, attempted: i64 },
+    StepOverflow { step: i64 },
     MetricWriterFailed,
     MetricDrainTimeout,
     ClientClosed,
@@ -44,6 +50,22 @@ impl fmt::Display for Error {
             Self::RunProjectMismatch { run_id } => {
                 write!(formatter, "Run belongs to a different Project: {run_id}")
             }
+            Self::InvalidMetricMapping => formatter.write_str("metric Mapping is invalid"),
+            Self::MetricMappingTooLarge { count, maximum } => {
+                write!(
+                    formatter,
+                    "metric Mapping has {count} points; maximum is {maximum}"
+                )
+            }
+            Self::MetricQueueFull => formatter.write_str("Seex metric queue is full"),
+            Self::RunClosed { run_id } => write!(formatter, "Run is closed: {run_id}"),
+            Self::StepRegression { cursor, attempted } => write!(
+                formatter,
+                "committed step {attempted} regresses from cursor {cursor}"
+            ),
+            Self::StepOverflow { step } => {
+                write!(formatter, "step {step} has no representable successor")
+            }
             Self::MetricWriterFailed => formatter.write_str("Seex metric writer failed"),
             Self::MetricDrainTimeout => formatter.write_str("Seex metric drain timed out"),
             Self::ClientClosed => formatter.write_str("Seex client is closed"),
@@ -64,6 +86,16 @@ impl From<crate::engine::EngineError> for Error {
             EngineError::RunAlreadyActive { run_id } => Self::RunAlreadyActive { run_id },
             EngineError::RunNotFound { run_id } => Self::RunNotFound { run_id },
             EngineError::InvalidRunTransition { run_id, .. } => Self::InvalidRunState { run_id },
+            EngineError::MetricQueueFull => Self::MetricQueueFull,
+            EngineError::InvalidMetricBatch { count } => Self::MetricMappingTooLarge {
+                count,
+                maximum: 8_192,
+            },
+            EngineError::RunClosed { run_id } => Self::RunClosed { run_id },
+            EngineError::StepRegression { cursor, attempted } => {
+                Self::StepRegression { cursor, attempted }
+            }
+            EngineError::StepOverflow { step } => Self::StepOverflow { step },
             EngineError::MetricWriterFailed { .. } => Self::MetricWriterFailed,
             EngineError::MetricDrainTimeout => Self::MetricDrainTimeout,
             EngineError::ClientClosed => Self::ClientClosed,

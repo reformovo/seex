@@ -244,14 +244,14 @@ candidates.
   private `seex::engine`; keep `seex-core` as an unpublished re-export until
   consumers migrate. Record a scoped migration comparison using the 3%
   preservation threshold.
-- [ ] Implement public `Client`/`ClientBuilder`, `RunHandle`, `RunOptions`,
+- [x] Implement public `Client`/`ClientBuilder`, `RunHandle`, `RunOptions`,
   `LogOptions`, `ResumePolicy`, and matchable `Error`/`Result`.
-- [ ] Make `RunHandle: Clone + Send + Sync`; clones share one admission lock,
+- [x] Make `RunHandle: Clone + Send + Sync`; clones share one admission lock,
   step cursor, queue, and terminal state.
-- [ ] Admit a non-empty Mapping atomically with at most 8,192 numeric metrics.
+- [x] Admit a non-empty Mapping atomically with at most 8,192 numeric metrics.
   Failure admits no subset and does not advance the cursor; queue capacity and
   diagnostics count points consistently.
-- [ ] Default explicit-step `commit` to false and implicit-step `commit` to
+- [x] Default explicit-step `commit` to false and implicit-step `commit` to
   true. Start a new Run at step zero, resume from the greatest persisted step,
   and reject committed-step regression.
 - [ ] Make matching terminal operations retry incomplete drain/flush work.

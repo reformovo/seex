@@ -52,6 +52,10 @@ pub enum EngineError {
     MetricQueueFull,
     #[error("metric batch must contain between 1 and 8192 points, got {count}")]
     InvalidMetricBatch { count: usize },
+    #[error("committed step {attempted} regresses from cursor {cursor}")]
+    StepRegression { cursor: i64, attempted: i64 },
+    #[error("step {step} has no representable successor")]
+    StepOverflow { step: i64 },
     #[error("metric writer failed: {message}")]
     MetricWriterFailed { message: String },
     #[error("metric drain timed out")]

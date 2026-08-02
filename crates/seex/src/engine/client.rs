@@ -370,6 +370,18 @@ impl NativeClient {
         self.reporter.diagnostics()
     }
 
+    pub fn greatest_persisted_step(&self, run_id: &RunId) -> Result<Option<Step>, EngineError> {
+        let value = self
+            .connection()?
+            .query_row(
+                "SELECT max(step) FROM dl.metric_points WHERE run_id = ?",
+                [run_id.as_str()],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(crate::storage::StorageError::from)?;
+        Ok(value.map(Step::new))
+    }
+
     pub fn query_metric(
         &self,
         run_id: &RunId,
@@ -626,6 +638,16 @@ pub struct NativeRun {
 }
 
 impl NativeRun {
+    pub fn initialize_cursor(&self, next_step: Step) -> Result<(), EngineError> {
+        let mut state = self
+            .active_run
+            .admission
+            .lock()
+            .map_err(|_| EngineError::ConnectionLockPoisoned)?;
+        state.cursor.get_or_insert(next_step.value());
+        Ok(())
+    }
+
     pub fn log_metric_at_step(
         &self,
         metric_key: &str,
@@ -657,18 +679,77 @@ impl NativeRun {
             )
         })
     }
+
+    pub fn log_metrics_with_cursor(
+        &self,
+        metrics: Vec<(MetricKey, f64)>,
+        explicit_step: Option<Step>,
+        commit: Option<bool>,
+    ) -> Result<(), EngineError> {
+        let mut state = self
+            .active_run
+            .admission
+            .lock()
+            .map_err(|_| EngineError::ConnectionLockPoisoned)?;
+        if state.phase != RunAdmission::Open {
+            return Err(EngineError::RunClosed {
+                run_id: self.run_id.as_str().to_owned(),
+            });
+        }
+        let cursor = state.cursor.ok_or(EngineError::ConnectionLockPoisoned)?;
+        let step = explicit_step.unwrap_or_else(|| Step::new(cursor));
+        let commit = commit.unwrap_or(explicit_step.is_none());
+        let next_cursor = if commit {
+            if step.value() < cursor {
+                return Err(EngineError::StepRegression {
+                    cursor,
+                    attempted: step.value(),
+                });
+            }
+            Some(
+                step.value()
+                    .checked_add(1)
+                    .ok_or(EngineError::StepOverflow { step: step.value() })?,
+            )
+        } else {
+            None
+        };
+        self.reporter.report_metrics(
+            self.run_id.clone(),
+            metrics
+                .into_iter()
+                .map(|(metric_key, value_f64)| MetricValue {
+                    metric_key,
+                    step,
+                    value_f64,
+                })
+                .collect(),
+        )?;
+        if let Some(next_cursor) = next_cursor {
+            state.cursor = Some(next_cursor);
+        }
+        Ok(())
+    }
 }
 
 struct ActiveRun {
     writer_guard: Mutex<Option<RunWriterGuard>>,
-    admission: Mutex<RunAdmission>,
+    admission: Mutex<RunAdmissionState>,
+}
+
+struct RunAdmissionState {
+    phase: RunAdmission,
+    cursor: Option<i64>,
 }
 
 impl ActiveRun {
     fn open(writer_guard: RunWriterGuard) -> Self {
         Self {
             writer_guard: Mutex::new(Some(writer_guard)),
-            admission: Mutex::new(RunAdmission::Open),
+            admission: Mutex::new(RunAdmissionState {
+                phase: RunAdmission::Open,
+                cursor: None,
+            }),
         }
     }
 
@@ -676,14 +757,20 @@ impl ActiveRun {
     fn open_for_test() -> Self {
         Self {
             writer_guard: Mutex::new(None),
-            admission: Mutex::new(RunAdmission::Open),
+            admission: Mutex::new(RunAdmissionState {
+                phase: RunAdmission::Open,
+                cursor: None,
+            }),
         }
     }
 
     fn closed() -> Arc<Self> {
         Arc::new(Self {
             writer_guard: Mutex::new(None),
-            admission: Mutex::new(RunAdmission::Terminal),
+            admission: Mutex::new(RunAdmissionState {
+                phase: RunAdmission::Terminal,
+                cursor: None,
+            }),
         })
     }
 
@@ -696,7 +783,7 @@ impl ActiveRun {
             .admission
             .lock()
             .map_err(|_| EngineError::ConnectionLockPoisoned)?;
-        match *admission {
+        match admission.phase {
             RunAdmission::Open => report(),
             RunAdmission::Closing | RunAdmission::Terminal => Err(EngineError::RunClosed {
                 run_id: run_id.as_str().to_owned(),
@@ -709,7 +796,7 @@ impl ActiveRun {
             .admission
             .lock()
             .map_err(|_| EngineError::ConnectionLockPoisoned)?;
-        *admission = RunAdmission::Closing;
+        admission.phase = RunAdmission::Closing;
         Ok(())
     }
 
@@ -718,7 +805,7 @@ impl ActiveRun {
             .admission
             .lock()
             .map_err(|_| EngineError::ConnectionLockPoisoned)?;
-        *admission = RunAdmission::Open;
+        admission.phase = RunAdmission::Open;
         Ok(())
     }
 
@@ -727,7 +814,7 @@ impl ActiveRun {
             .admission
             .lock()
             .map_err(|_| EngineError::ConnectionLockPoisoned)?;
-        *admission = RunAdmission::Terminal;
+        admission.phase = RunAdmission::Terminal;
         Ok(())
     }
 

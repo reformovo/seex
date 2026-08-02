@@ -1,5 +1,6 @@
 //! Public writer client facade.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -8,12 +9,14 @@ use crate::engine::client::NativeClient;
 use crate::engine::client::NativeRun;
 use crate::engine::reporting::MetricReporterDiagnostics;
 use crate::error::{Error, Result};
+use crate::model::metric::{MetricKey, Step};
 use crate::model::run::{RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 use crate::storage::ProjectCreateGuard;
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
 
 const DEFAULT_METRIC_QUEUE_CAPACITY: usize = 65_536;
+const MAX_METRICS_PER_LOG: usize = 8_192;
 
 /// Builder for a native writer [`Client`].
 pub struct ClientBuilder {
@@ -134,17 +137,21 @@ impl Client {
             return Err(Error::InvalidRunOptions { field: "id" });
         }
         let name = options.name.unwrap_or_else(|| run_id.as_str().to_owned());
-        let run = match options.resume {
-            ResumePolicy::Never => self
-                .inner
-                .create_run(&project.project_id, &name, Some(run_id))
-                .map_err(Error::from)?,
-            ResumePolicy::Allow => match self.inner.get_run(&run_id) {
-                Ok(existing) => self.resume_existing(existing, &project.project_id)?,
-                Err(crate::engine::EngineError::RunNotFound { .. }) => self
-                    .inner
+        let (run, next_step) = match options.resume {
+            ResumePolicy::Never => (
+                self.inner
                     .create_run(&project.project_id, &name, Some(run_id))
                     .map_err(Error::from)?,
+                Step::new(0),
+            ),
+            ResumePolicy::Allow => match self.inner.get_run(&run_id) {
+                Ok(existing) => self.resume_existing(existing, &project.project_id)?,
+                Err(crate::engine::EngineError::RunNotFound { .. }) => (
+                    self.inner
+                        .create_run(&project.project_id, &name, Some(run_id))
+                        .map_err(Error::from)?,
+                    Step::new(0),
+                ),
                 Err(error) => return Err(error.into()),
             },
             ResumePolicy::Must => {
@@ -155,7 +162,8 @@ impl Client {
                 self.resume_existing(existing, &project.project_id)?
             }
         };
-        let native = self.inner.run_handle(run);
+        let native = Arc::new(self.inner.run_handle(run));
+        native.initialize_cursor(next_step).map_err(Error::from)?;
         Ok(RunHandle {
             native,
             client: Arc::clone(&self.inner),
@@ -179,13 +187,30 @@ impl Client {
         }
     }
 
-    fn resume_existing(&self, run: crate::Run, project_id: &ProjectId) -> Result<crate::Run> {
+    fn resume_existing(
+        &self,
+        run: crate::Run,
+        project_id: &ProjectId,
+    ) -> Result<(crate::Run, Step)> {
         if &run.project_id != project_id {
             return Err(Error::RunProjectMismatch {
                 run_id: run.run_id.as_str().to_owned(),
             });
         }
-        self.inner.resume_run(&run.run_id).map_err(Error::from)
+        let next_step = match self
+            .inner
+            .greatest_persisted_step(&run.run_id)
+            .map_err(Error::from)?
+        {
+            Some(step) => Step::new(
+                step.value()
+                    .checked_add(1)
+                    .ok_or(Error::StepOverflow { step: step.value() })?,
+            ),
+            None => Step::new(0),
+        };
+        let resumed = self.inner.resume_run(&run.run_id).map_err(Error::from)?;
+        Ok((resumed, next_step))
     }
 
     /// Drains queued reports and closes this client without finalizing Runs.
@@ -217,6 +242,32 @@ pub struct RunOptions {
     id_was_missing: bool,
 }
 
+/// Step and cursor behavior for one metric Mapping.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LogOptions {
+    step: Option<i64>,
+    commit: Option<bool>,
+}
+
+impl LogOptions {
+    pub const fn new() -> Self {
+        Self {
+            step: None,
+            commit: None,
+        }
+    }
+
+    pub const fn step(mut self, value: i64) -> Self {
+        self.step = Some(value);
+        self
+    }
+
+    pub const fn commit(mut self, value: bool) -> Self {
+        self.commit = Some(value);
+        self
+    }
+}
+
 impl RunOptions {
     pub fn new(project: impl Into<String>) -> Self {
         Self {
@@ -246,13 +297,56 @@ impl RunOptions {
 }
 
 /// Writable handle for one running Run.
+#[derive(Clone)]
 pub struct RunHandle {
-    native: NativeRun,
+    native: Arc<NativeRun>,
     #[expect(dead_code, reason = "retained for Run-scoped lifecycle operations")]
     client: Arc<NativeClient>,
 }
 
 impl RunHandle {
+    pub fn log<I, K>(&self, data: I) -> Result<()>
+    where
+        I: IntoIterator<Item = (K, f64)>,
+        K: Into<String>,
+    {
+        self.log_with(data, LogOptions::new())
+    }
+
+    /// Atomically admits one numeric metric Mapping.
+    ///
+    /// # Errors
+    ///
+    /// Returns a validation, queue, writer, closed-Run, or cursor error. No
+    /// metric or cursor update is admitted on error.
+    pub fn log_with<I, K>(&self, data: I, options: LogOptions) -> Result<()>
+    where
+        I: IntoIterator<Item = (K, f64)>,
+        K: Into<String>,
+    {
+        let mut keys = HashSet::new();
+        let mut metrics = Vec::new();
+        for (key, value) in data {
+            let key = key.into();
+            if !keys.insert(key.clone()) {
+                return Err(Error::InvalidMetricMapping);
+            }
+            metrics.push((MetricKey::from_string(key), value));
+            if metrics.len() > MAX_METRICS_PER_LOG {
+                return Err(Error::MetricMappingTooLarge {
+                    count: metrics.len(),
+                    maximum: MAX_METRICS_PER_LOG,
+                });
+            }
+        }
+        if metrics.is_empty() {
+            return Err(Error::InvalidMetricMapping);
+        }
+        self.native
+            .log_metrics_with_cursor(metrics, options.step.map(Step::new), options.commit)
+            .map_err(Error::from)
+    }
+
     pub fn run_id(&self) -> &RunId {
         &self.native.run_id
     }
@@ -265,7 +359,7 @@ impl RunHandle {
         &self.native.name
     }
 
-    pub const fn status(&self) -> RunStatus {
+    pub fn status(&self) -> RunStatus {
         self.native.status
     }
 }
