@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from seex import _seex
 
 from tests import helpers
 
@@ -14,7 +15,7 @@ def test_log_requires_explicit_step_and_reports_diagnostics(
 ) -> None:
     import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
 

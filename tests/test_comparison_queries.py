@@ -7,18 +7,19 @@ import pathlib
 
 import pytest
 import seex
+from seex import _seex
 
 from tests import helpers
 
 
 def _create_objective_run(
-    client: seex.Client,
+    client: _seex.Client,
     project_id: str,
     run_id: str,
     value: float | None,
     *,
     terminal: str | None = "finished",
-) -> seex.Run:
+) -> _seex.Run:
     run = client.create_run(project_id, run_id, run_id=run_id)
     if value is not None:
         run.log("loss", 1, value)
@@ -33,7 +34,7 @@ def _create_objective_run(
 def test_aligned_metric_queries_step_and_elapsed_evidence(
     tmp_path: pathlib.Path,
 ) -> None:
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("alignment", project_id="project-1")
     run = client.create_run(project.project_id, "curve", run_id="run-1")
     for step, value in enumerate([4.0, 3.0, 2.0, 1.0]):
@@ -57,8 +58,8 @@ def test_aligned_metric_queries_step_and_elapsed_evidence(
         points_per_pixel=1,
     )
 
-    assert isinstance(step_result, seex.AlignedMetricResult)
-    assert all(isinstance(point, seex.AlignedMetricPoint) for point in step_result.points)
+    assert isinstance(step_result, _seex.AlignedMetricResult)
+    assert all(isinstance(point, _seex.AlignedMetricPoint) for point in step_result.points)
     assert [point.axis_value for point in step_result.points] == [0, 1, 2, 3]
     assert step_result.completeness == "partial"
     assert step_result.reasons == ["run_running"]
@@ -71,7 +72,7 @@ def test_aligned_metric_queries_step_and_elapsed_evidence(
 def test_aligned_metric_rejects_invalid_public_arguments(
     tmp_path: pathlib.Path,
 ) -> None:
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
 
     with pytest.raises(ValueError, match="axis must be"):
         client.query_aligned_metric(
@@ -90,7 +91,7 @@ def test_aligned_metric_rejects_invalid_public_arguments(
 def test_aligned_metric_marks_non_finite_evidence_invalid(
     tmp_path: pathlib.Path,
 ) -> None:
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("alignment", project_id="project-1")
     run = client.create_run(project.project_id, "curve", run_id="run-1")
     run.log("loss", 0, float("nan"))
@@ -113,7 +114,7 @@ def test_aligned_metric_marks_non_finite_evidence_invalid(
 def test_compare_runs_reports_complete_partial_and_unavailable_evidence(
     tmp_path: pathlib.Path,
 ) -> None:
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("comparison", project_id="project-1")
     reference = _create_objective_run(client, project.project_id, "reference", 0.0)
     candidate = _create_objective_run(client, project.project_id, "candidate", 1.0)
@@ -154,7 +155,7 @@ def test_compare_runs_reports_complete_partial_and_unavailable_evidence(
 def test_rank_runs_keeps_ineligible_entries_and_rejects_duplicates(
     tmp_path: pathlib.Path,
 ) -> None:
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("ranking", project_id="project-1")
     tied_a = _create_objective_run(client, project.project_id, "tied-a", 1.0)
     tied_b = _create_objective_run(client, project.project_id, "tied-b", 1.0)

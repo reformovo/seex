@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from seex import _seex
 
 from tests import helpers
 
@@ -14,7 +15,7 @@ def test_client_queries_metric_points_and_terminal_summaries(
 ) -> None:
     import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.25)
@@ -45,9 +46,8 @@ def test_client_queries_metric_points_and_terminal_summaries(
 
 
 def test_table_queries_preserve_object_query_results(tmp_path: pathlib.Path) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.25)
@@ -78,9 +78,8 @@ def test_table_queries_preserve_object_query_results(tmp_path: pathlib.Path) -> 
 
 
 def test_empty_arrow_tables_preserve_public_schemas(tmp_path: pathlib.Path) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     point_table = client.query_metric_table("missing-run", "train/loss")
     summary_table = client.query_metric_summaries_table([], "train/loss")
 
@@ -110,9 +109,8 @@ def test_empty_arrow_tables_preserve_public_schemas(tmp_path: pathlib.Path) -> N
 def test_active_run_discovery_and_summaries_use_persisted_points(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("eval/accuracy", 0, 0.8)
@@ -145,7 +143,7 @@ def test_terminal_run_metric_discovery_uses_rebuilt_aggregate_state(
 ) -> None:
     import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("eval/accuracy", 0, 0.8)
@@ -163,9 +161,8 @@ def test_terminal_run_metric_discovery_uses_rebuilt_aggregate_state(
 
 
 def test_summary_comparison_preserves_mixed_run_order(tmp_path: pathlib.Path) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     terminal = client.create_run(project.project_id, "terminal", run_id="terminal")
     terminal.log("train/loss", 0, 0.5)
@@ -191,9 +188,8 @@ def test_summary_comparison_preserves_mixed_run_order(tmp_path: pathlib.Path) ->
 def test_client_query_metric_applies_range_filters_and_short_max_points(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     for step in range(100):
@@ -241,7 +237,7 @@ def test_sdk_downsampling_does_not_install_lttb_without_opt_in(
     monkeypatch.setenv("HOME", str(isolated_home))
     monkeypatch.delenv("SEEX_LTTB_AUTO_INSTALL", raising=False)
     monkeypatch.delenv("SEEX_LTTB_EXTENSION_PATH", raising=False)
-    client = seex.init(tmp_path / "project")
+    client = _seex.init(tmp_path / "project")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     for step in range(201):
