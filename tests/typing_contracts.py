@@ -72,3 +72,19 @@ def check_rejected_calls(api: seex.Api, record: seex.RunRecord) -> None:
         metric_key="loss",
         direction="lower",  # type: ignore[reportArgumentType]
     )
+
+
+def check_rejected_mutation(
+    settings: seex.Settings,
+    run: seex.Run,
+    record: seex.RunRecord,
+    point: seex.MetricPoint,
+    summary: seex.MetricSummary,
+    project: seex.Project,
+) -> None:
+    settings.catalog_backend = "sqlite"  # type: ignore[reportAttributeAccessIssue]
+    run.run_id = "other"  # type: ignore[reportAttributeAccessIssue]
+    record.status = "failed"  # type: ignore[reportAttributeAccessIssue]
+    point.step = 2  # type: ignore[reportAttributeAccessIssue]
+    summary.effective_count = 0  # type: ignore[reportAttributeAccessIssue]
+    project.name = "other"  # type: ignore[reportAttributeAccessIssue]
