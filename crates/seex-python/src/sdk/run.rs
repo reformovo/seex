@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -14,8 +15,9 @@ use crate::sdk::settings::PySettings;
 
 #[pyclass(name = "_Run", module = "seex._seex", unsendable)]
 pub struct PyTargetRun {
-    pub(crate) _client: Client,
+    pub(crate) client: Client,
     pub(crate) handle: RunHandle,
+    client_closed: Cell<bool>,
 }
 
 #[pymethods]
@@ -42,6 +44,44 @@ impl PyTargetRun {
             RunStatus::Finished => "finished",
             RunStatus::Failed => "failed",
         }
+    }
+
+    #[pyo3(signature = (exit_code=None))]
+    fn finish(&self, exit_code: Option<i64>) -> PyResult<()> {
+        self.finalize(exit_code).map_err(sdk_error)
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        exc_type: &Bound<'_, PyAny>,
+        exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> PyResult<bool> {
+        if exc_type.is_none() {
+            self.finalize(None).map_err(sdk_error)?;
+        } else if let Err(error) = self.finalize(Some(1)) {
+            attach_exception_context(exc_value, sdk_error(error));
+        }
+        Ok(false)
+    }
+}
+
+impl PyTargetRun {
+    fn finalize(&self, exit_code: Option<i64>) -> seex::Result<()> {
+        if exit_code.is_none_or(|value| value == 0) {
+            self.handle.finish()?;
+        } else {
+            self.handle.fail()?;
+        }
+        if !self.client_closed.get() {
+            self.client.shutdown()?;
+            self.client_closed.set(true);
+        }
+        Ok(())
     }
 }
 
@@ -71,9 +111,16 @@ pub fn start_run(
     }
     let handle = client.start_run(options).map_err(sdk_error)?;
     Ok(PyTargetRun {
-        _client: client,
+        client,
         handle,
+        client_closed: Cell::new(false),
     })
+}
+
+fn attach_exception_context(exc_value: &Bound<'_, PyAny>, finalization_error: PyErr) {
+    if !exc_value.is_none() {
+        let _ = exc_value.setattr("__context__", finalization_error.value(exc_value.py()));
+    }
 }
 
 fn parse_resume(value: Option<&Bound<'_, PyAny>>) -> PyResult<ResumePolicy> {
