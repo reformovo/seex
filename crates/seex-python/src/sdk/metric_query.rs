@@ -1,4 +1,4 @@
-//! Temporary adapters preserving the shipped Python query surface during U1.
+//! Metric-query conversion between the native engine and public series model.
 
 use pyo3::prelude::*;
 use seex::{
@@ -48,7 +48,7 @@ fn metric_series(result: MetricQueryResult) -> PyResult<MetricSeries> {
         completeness,
         reasons,
     )
-    .map_err(|error| SeexError::new_err(format!("invalid compatibility metric series: {error}")))
+    .map_err(|error| SeexError::new_err(format!("invalid metric series: {error}")))
 }
 
 #[cfg(test)]
@@ -56,7 +56,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_legacy_results_become_unavailable_step_series() -> PyResult<()> {
+    fn empty_query_results_become_unavailable_step_series() -> PyResult<()> {
         let series = metric_series(MetricQueryResult {
             points: Vec::new(),
             source_row_count: 0,

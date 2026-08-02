@@ -1,8 +1,7 @@
 //! Unified Rust SDK facade for Seex.
 //!
-//! During U1 this unpublished facade introduces the stable read surface over
-//! the existing workspace crates. Storage engines, their errors, and native
-//! connection types remain implementation details.
+//! This facade exposes the stable read surface while keeping storage engines,
+//! their errors, and native connection types as implementation details.
 //!
 //! ```compile_fail
 //! use seex::ProjectConnection;
