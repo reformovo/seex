@@ -785,7 +785,11 @@ fn execute(
                 ReadSnapshot::Detail(snapshot)
             }
             ReadRequest::Inspector(request) => {
-                ReadSnapshot::Inspector(session.query_inspector(&request)?)
+                let Some(snapshot) = session.query_inspector_until(&request, &mut is_superseded)?
+                else {
+                    return Ok(None);
+                };
+                ReadSnapshot::Inspector(snapshot)
             }
         }))
     })();
