@@ -12,9 +12,9 @@ import pathlib
 import shutil
 import sys
 from collections.abc import Sequence
+from typing import Literal, NamedTuple
 
 import seex
-from seex import _seex
 
 _JSON_SCHEMA_VERSION = 2
 _APP_BINARY = "seex-app"
@@ -41,6 +41,11 @@ class _CliRequestError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class _ComparisonReport(NamedTuple):
+    primary: seex.ComparisonResult
+    secondary: list[seex.ComparisonResult]
 
 
 def _non_negative_int(value: str) -> int:
@@ -350,15 +355,16 @@ def _run_record(api: seex.Api, run_id: str) -> seex.RunRecord:
     raise _CliRequestError("run_not_found", f"run not found: {run_id}")
 
 
-def _run_analysis(client: _seex.Client, args: argparse.Namespace) -> str:
+def _run_analysis(api: seex.Api, args: argparse.Namespace) -> str:
     if args.resource == "autoresearch":
         if args.action == "leaderboard":
-            return _run_autoresearch_leaderboard(client, args)
+            return _run_autoresearch_leaderboard(api, args)
         if args.action == "best":
-            return _run_autoresearch_best(client, args)
-        return _run_autoresearch_compare(client, args)
+            return _run_autoresearch_best(api, args)
+        return _run_autoresearch_compare(api, args)
     candidate_run_ids = [run_id for run_id in args.run_ids if run_id != args.baseline]
-    reports = client._comparison_reports(
+    reports = _comparison_reports(
+        api,
         candidate_run_ids,
         args.baseline,
         metric_key=args.metric_key,
@@ -368,13 +374,56 @@ def _run_analysis(client: _seex.Client, args: argparse.Namespace) -> str:
     return _render_comparison_reports(reports, args.format, reference_role="baseline")
 
 
-def _ranking_run_ids(client: _seex.Client, project_id: str, requested_run_ids: Sequence[str]) -> list[str]:
+def _analysis_run_record(api: seex.Api, run_id: str) -> seex.RunRecord:
+    for project in api.projects():
+        record = api.run(f"{project.project_id}/{run_id}")
+        if record is not None:
+            return record
+    raise seex.StorageError(f"run not found: {run_id}")
+
+
+def _comparison_reports(
+    api: seex.Api,
+    candidate_run_ids: Sequence[str],
+    reference_run_id: str,
+    *,
+    metric_key: str,
+    direction: Literal["minimize", "maximize"],
+    secondary_metric_keys: Sequence[str],
+) -> list[_ComparisonReport]:
+    _analysis_run_record(api, reference_run_id)
+    for candidate_run_id in candidate_run_ids:
+        _analysis_run_record(api, candidate_run_id)
+    return [
+        _ComparisonReport(
+            api.compare_runs(
+                candidate_run_id,
+                reference_run_id,
+                metric_key=metric_key,
+                direction=direction,
+            ),
+            [
+                api.compare_runs(
+                    candidate_run_id,
+                    reference_run_id,
+                    metric_key=secondary_key,
+                    direction=direction,
+                )
+                for secondary_key in secondary_metric_keys
+            ],
+        )
+        for candidate_run_id in candidate_run_ids
+    ]
+
+
+def _ranking_run_ids(api: seex.Api, project_id: str, requested_run_ids: Sequence[str]) -> list[str]:
     if not requested_run_ids:
-        return [run.run_id for run in client.list_runs(project_id)]
-    client.get_project(project_id)
+        return [run.run_id for run in api.runs(project_id)]
+    if api.project(project_id) is None:
+        raise seex.StorageError(f"project not found: {project_id}")
     run_ids: list[str] = []
     for run_id in requested_run_ids:
-        run = client.get_run(run_id)
+        run = _analysis_run_record(api, run_id)
         if run.project_id != project_id:
             raise _CliRequestError(
                 "run_project_mismatch",
@@ -384,11 +433,11 @@ def _ranking_run_ids(client: _seex.Client, project_id: str, requested_run_ids: S
     return run_ids
 
 
-def _ranking_entry_document(entry: _seex.RankingEntry) -> dict[str, object]:
+def _ranking_entry_document(entry: seex.RankingEntry) -> dict[str, object]:
     return {"rank": entry.rank, "evidence": _evidence_document(entry.evidence)}
 
 
-def _ranking_meta(project_id: str, result: _seex.RankingResult) -> dict[str, object]:
+def _ranking_meta(project_id: str, result: seex.RankingResult) -> dict[str, object]:
     return {
         "project_id": project_id,
         "objective": {
@@ -401,7 +450,7 @@ def _ranking_meta(project_id: str, result: _seex.RankingResult) -> dict[str, obj
 
 
 def _ranking_rows(
-    entries: Sequence[_seex.RankingEntry],
+    entries: Sequence[seex.RankingEntry],
 ) -> list[tuple[object, ...]]:
     return [
         (
@@ -417,9 +466,9 @@ def _ranking_rows(
     ]
 
 
-def _run_autoresearch_leaderboard(client: _seex.Client, args: argparse.Namespace) -> str:
-    run_ids = _ranking_run_ids(client, args.project_id, args.run_ids)
-    result = client.rank_runs(run_ids, metric_key=args.metric, direction=args.direction)
+def _run_autoresearch_leaderboard(api: seex.Api, args: argparse.Namespace) -> str:
+    run_ids = _ranking_run_ids(api, args.project_id, args.run_ids)
+    result = api.rank_runs(run_ids, metric_key=args.metric, direction=args.direction)
     limit = None if args.all else args.limit
     stop = None if limit is None else args.offset + limit
     entries = result.entries[args.offset : stop]
@@ -452,9 +501,9 @@ def _run_autoresearch_leaderboard(client: _seex.Client, args: argparse.Namespace
     )
 
 
-def _run_autoresearch_best(client: _seex.Client, args: argparse.Namespace) -> str:
-    run_ids = _ranking_run_ids(client, args.project_id, args.run_ids)
-    result = client.rank_runs(run_ids, metric_key=args.metric, direction=args.direction)
+def _run_autoresearch_best(api: seex.Api, args: argparse.Namespace) -> str:
+    run_ids = _ranking_run_ids(api, args.project_id, args.run_ids)
+    result = api.rank_runs(run_ids, metric_key=args.metric, direction=args.direction)
     best = next((entry for entry in result.entries if entry.rank == 1), None)
     if args.format == "table":
         if best is None:
@@ -482,21 +531,39 @@ def _run_autoresearch_best(client: _seex.Client, args: argparse.Namespace) -> st
     )
 
 
-def _run_autoresearch_compare(client: _seex.Client, args: argparse.Namespace) -> str:
+def _objective_evidence(api: seex.Api, run_id: str, metric_key: str) -> seex.ObjectiveEvidence:
+    result = api.rank_runs([run_id], metric_key=metric_key, direction="maximize")
+    return result.entries[0].evidence
+
+
+def _best_eligible_run(
+    api: seex.Api,
+    run_ids: list[str],
+    *,
+    metric_key: str,
+    direction: Literal["minimize", "maximize"],
+) -> str | None:
+    result = api.rank_runs(run_ids, metric_key=metric_key, direction=direction)
+    best = next((entry for entry in result.entries if entry.rank == 1), None)
+    return None if best is None else best.evidence.run_id
+
+
+def _run_autoresearch_compare(api: seex.Api, args: argparse.Namespace) -> str:
     incumbent = args.against
     if incumbent is None:
-        client.get_run(args.candidate_run_id)
-        incumbent = client._best_eligible_run(
+        _analysis_run_record(api, args.candidate_run_id)
+        incumbent = _best_eligible_run(
+            api,
             args.comparator,
             metric_key=args.metric,
             direction=args.direction,
         )
         if incumbent is None:
-            primary = client._objective_evidence(args.candidate_run_id, args.metric)
+            primary = _objective_evidence(api, args.candidate_run_id, args.metric)
             secondary = [
                 (
                     metric_key,
-                    client._objective_evidence(args.candidate_run_id, metric_key),
+                    _objective_evidence(api, args.candidate_run_id, metric_key),
                 )
                 for metric_key in args.secondary
             ]
@@ -507,7 +574,8 @@ def _run_autoresearch_compare(client: _seex.Client, args: argparse.Namespace) ->
                 args.direction,
                 args.format,
             )
-    reports = client._comparison_reports(
+    reports = _comparison_reports(
+        api,
         [args.candidate_run_id],
         incumbent,
         metric_key=args.metric,
@@ -519,7 +587,7 @@ def _run_autoresearch_compare(client: _seex.Client, args: argparse.Namespace) ->
 
 def _unresolved_metric_document(
     metric_key: str,
-    candidate: _seex.ObjectiveEvidence,
+    candidate: seex.ObjectiveEvidence,
 ) -> dict[str, object]:
     return {
         "metric_key": metric_key,
@@ -532,8 +600,8 @@ def _unresolved_metric_document(
 
 
 def _render_insufficient_comparison(
-    primary: _seex.ObjectiveEvidence,
-    secondary: Sequence[tuple[str, _seex.ObjectiveEvidence]],
+    primary: seex.ObjectiveEvidence,
+    secondary: Sequence[tuple[str, seex.ObjectiveEvidence]],
     metric_key: str,
     direction: str,
     output_format: str,
@@ -613,7 +681,7 @@ def _render_insufficient_comparison(
     )
 
 
-def _evidence_document(evidence: _seex.ObjectiveEvidence) -> dict[str, object]:
+def _evidence_document(evidence: seex.ObjectiveEvidence) -> dict[str, object]:
     return {
         "run_id": evidence.run_id,
         "run_status": evidence.run_status,
@@ -624,7 +692,7 @@ def _evidence_document(evidence: _seex.ObjectiveEvidence) -> dict[str, object]:
     }
 
 
-def _primary_document(result: _seex.ComparisonResult) -> dict[str, object]:
+def _primary_document(result: seex.ComparisonResult) -> dict[str, object]:
     return {
         "metric_key": result.objective.metric_key,
         "direction": result.objective.direction,
@@ -640,10 +708,10 @@ def _primary_document(result: _seex.ComparisonResult) -> dict[str, object]:
 
 
 def _secondary_document(
-    result: _seex._MetricComparisonResult,
+    result: seex.ComparisonResult,
 ) -> dict[str, object]:
     return {
-        "metric_key": result.metric_key,
+        "metric_key": result.objective.metric_key,
         "candidate": _evidence_document(result.candidate),
         "reference": _evidence_document(result.reference),
         "completeness": result.completeness,
@@ -653,7 +721,7 @@ def _secondary_document(
 
 
 def _comparison_rows(
-    report: _seex._ComparisonReport,
+    report: _ComparisonReport,
 ) -> list[tuple[object, ...]]:
     primary = report.primary
     primary_reasons = ",".join((*primary.candidate.reasons, *primary.reference.reasons))
@@ -679,7 +747,7 @@ def _comparison_rows(
             "secondary",
             item.candidate.run_id,
             item.reference.run_id,
-            item.metric_key,
+            item.objective.metric_key,
             item.candidate.last_value_f64,
             item.reference.last_value_f64,
             item.raw_delta,
@@ -696,7 +764,7 @@ def _comparison_rows(
 
 
 def _render_comparison_reports(
-    reports: Sequence[_seex._ComparisonReport],
+    reports: Sequence[_ComparisonReport],
     output_format: str,
     *,
     reference_role: str,
@@ -737,7 +805,7 @@ def _render_comparison_reports(
 
 
 def _render_summaries(
-    summaries: Sequence[_seex.MetricSummary],
+    summaries: Sequence[seex.MetricSummary],
     *,
     include_metric_key: bool,
     output_format: str,
@@ -821,22 +889,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         data_path = _resolve_cli_path(project_path, args.data_path)
         catalog_path = _resolve_cli_path(project_path, args.catalog_path)
-        if args.resource == "autoresearch" or (args.resource == "metrics" and args.action == "compare"):
-            with _seex.init(
-                project_path,
-                data_path=data_path,
-                catalog_backend=args.catalog_backend,
-                catalog_path=catalog_path,
-                _must_exist=True,
-            ) as client:
-                print(_run_analysis(client, args))
-        else:
-            settings = seex.Settings(
-                data_path=data_path,
-                catalog_backend=args.catalog_backend,
-                catalog_path=catalog_path,
-            )
-            with seex.Api(project_path, settings) as api:
+        settings = seex.Settings(
+            data_path=data_path,
+            catalog_backend=args.catalog_backend,
+            catalog_path=catalog_path,
+        )
+        with seex.Api(project_path, settings) as api:
+            if args.resource == "autoresearch" or (args.resource == "metrics" and args.action == "compare"):
+                print(_run_analysis(api, args))
+            else:
                 print(_run_read(api, args))
     except _CliRequestError as error:
         message = str(error)
