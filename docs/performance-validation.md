@@ -32,8 +32,9 @@ python scripts/performance_gate.py run \
 The manifest contains `schema_version: 3`, a name, `kind` (`preservation` or
 `optimization`), `measurement` (`records` or `rss`), fixture identity and
 positive integer scale, baseline/candidate command arrays, protected metrics,
-optional hard floors, and an optimization primary. The default primary target
-is 5%.
+optional hard floors, and an optimization primary. RSS manifests may set
+`domain` to `reporting`, `query`, or `viewer`; omitted values retain the
+historical `viewer` default. The default primary target is 5%.
 
 A records benchmark writes one line per metric:
 

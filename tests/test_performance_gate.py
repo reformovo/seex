@@ -90,6 +90,7 @@ def _manifest(
         name="reader",
         kind=kind,
         measurement="records",
+        domain="query",
         fixture=performance_gate.Fixture(identity="reader-benchmark", scale={"runs": 1, "points": 1_000_000}),
         baseline_command=["baseline"],
         candidate_command=["candidate"],
@@ -189,6 +190,7 @@ def test_read_manifest_validates_fixture_and_defaults_target(tmp_path: pathlib.P
     assert manifest["minimum_improvement"] == 0.05
     assert manifest["fixture"]["scale"]["points"] == 1_000_000
     assert manifest["primary"] is None
+    assert manifest["domain"] == "viewer"
 
 
 @pytest.mark.parametrize(
@@ -200,6 +202,7 @@ def test_read_manifest_validates_fixture_and_defaults_target(tmp_path: pathlib.P
         ({"primary": "query.reader.full"}, "do not have a primary"),
         ({"protected": []}, "require protected metrics"),
         ({"baseline_command": "benchmark"}, "string array"),
+        ({"domain": "storage"}, "domain is unsupported"),
     ],
 )
 def test_read_manifest_rejects_invalid_contract(
@@ -518,6 +521,28 @@ def test_rss_sampler_records_compact_workload_phases() -> None:
     assert set(phases) == {"warm", "cycles_done", "final"}
     assert metrics["viewer.rss.peak"]["median"] > 0
     assert metrics["viewer.rss.final"]["median"] > 0
+
+
+def test_rss_sampler_attributes_metrics_to_manifest_domain() -> None:
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import time; "
+            "print('SEEX_RSS_PHASE warm', flush=True); time.sleep(.06); "
+            "print('SEEX_RSS_PHASE cycles_done', flush=True); time.sleep(.06); "
+            "print('SEEX_RSS_PHASE final', flush=True); time.sleep(.06)"
+        ),
+    ]
+
+    metrics, _ = performance_gate._sample_rss(command, 2.0, "reporting")
+
+    assert set(metrics) == {
+        "reporting.rss.warm",
+        "reporting.rss.peak",
+        "reporting.rss.final",
+    }
+    assert {metric["domain"] for metric in metrics.values()} == {"reporting"}
 
 
 def test_rss_lookup_converts_child_exit_race(monkeypatch: pytest.MonkeyPatch) -> None:

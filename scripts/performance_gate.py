@@ -42,6 +42,7 @@ _RECORD_FIELDS = frozenset(
 
 Role = Literal["baseline", "candidate"]
 Direction = Literal["higher", "lower"]
+Domain = Literal["reporting", "query", "viewer"]
 Verdict = Literal["running", "pass", "no_change", "regression", "inconclusive", "error"]
 
 
@@ -93,6 +94,7 @@ class Manifest(TypedDict):
     name: str
     kind: Literal["preservation", "optimization"]
     measurement: Literal["records", "rss"]
+    domain: Domain
     fixture: Fixture
     baseline_command: list[str]
     candidate_command: list[str]
@@ -223,12 +225,15 @@ def read_manifest(path: pathlib.Path) -> Manifest:
         raise ValueError("performance manifests require schema_version 3")
     kind = value.get("kind")
     measurement = value.get("measurement")
+    domain = value.get("domain", "viewer")
     primary = value.get("primary")
     protected = value.get("protected", [])
     floors = value.get("hard_floors", [])
     improvement = _number(value.get("minimum_improvement", 0.05), "minimum_improvement")
     if kind not in {"preservation", "optimization"} or measurement not in {"records", "rss"}:
         raise ValueError("manifest kind or measurement is unsupported")
+    if domain not in _DOMAINS:
+        raise ValueError("manifest domain is unsupported")
     if not isinstance(value.get("name"), str) or not value["name"].strip():
         raise ValueError("manifest name is required")
     if kind == "optimization" and (not isinstance(primary, str) or not primary):
@@ -267,6 +272,7 @@ def read_manifest(path: pathlib.Path) -> Manifest:
         name=cast(str, value["name"]),
         kind=cast(Literal["preservation", "optimization"], kind),
         measurement=cast(Literal["records", "rss"], measurement),
+        domain=cast(Domain, domain),
         fixture=_fixture(value.get("fixture")),
         baseline_command=_command(value.get("baseline_command"), "baseline_command"),
         candidate_command=_command(value.get("candidate_command"), "candidate_command"),
@@ -340,7 +346,9 @@ def _rss_bytes(process_id: int) -> int:
     return rss_bytes
 
 
-def _sample_rss(command: Sequence[str], timeout: float) -> tuple[dict[str, Metric], dict[str, int]]:
+def _sample_rss(
+    command: Sequence[str], timeout: float, domain: Domain = "viewer"
+) -> tuple[dict[str, Metric], dict[str, int]]:
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -391,14 +399,14 @@ def _sample_rss(command: Sequence[str], timeout: float) -> tuple[dict[str, Metri
     if not samples or not {"warm", "cycles_done", "final"}.issubset(phases):
         raise ValueError("RSS workload must emit warm, cycles_done, and final phases")
     values = {
-        "viewer.rss.warm": samples[phases["warm"]],
-        "viewer.rss.peak": max(samples),
-        "viewer.rss.final": samples[phases["final"]],
+        f"{domain}.rss.warm": samples[phases["warm"]],
+        f"{domain}.rss.peak": max(samples),
+        f"{domain}.rss.final": samples[phases["final"]],
     }
     metrics = {
         key: Metric(
-            domain="viewer",
-            metric=key.removeprefix("viewer."),
+            domain=domain,
+            metric=key.removeprefix(f"{domain}."),
             unit="bytes",
             direction="lower",
             batch_iterations=1,
@@ -417,7 +425,7 @@ def _sample_rss(command: Sequence[str], timeout: float) -> tuple[dict[str, Metri
 def _capture(role: Role, manifest: Manifest, timeout: float) -> Capture:
     command = manifest["baseline_command"] if role == "baseline" else manifest["candidate_command"]
     if manifest["measurement"] == "rss":
-        metrics, phases = _sample_rss(command, timeout)
+        metrics, phases = _sample_rss(command, timeout, manifest["domain"])
     else:
         metrics, phases = parse_records(_run_output(command, timeout)), {}
     return Capture(role=role, command=command, metrics=metrics, phases=phases)
