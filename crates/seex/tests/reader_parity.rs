@@ -40,6 +40,44 @@ fn native_reader_honors_explicit_storage_overrides_without_creating_a_store()
     Ok(())
 }
 
+#[test]
+fn native_reader_scopes_run_lookup_and_optional_metric_summaries()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let project_id = ProjectId::from_string("project-1");
+    let run = fixture
+        .native
+        .run(&project_id, &fixture.run_id)?
+        .expect("fixture Run should exist");
+
+    assert!(
+        fixture
+            .native
+            .run(&ProjectId::from_string("other"), &fixture.run_id)?
+            .is_none()
+    );
+    assert!(
+        fixture
+            .native
+            .run(&project_id, &RunId::from_string("missing"))?
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .native
+            .metric_summary(&run, &MetricKey::from_string("loss"))?
+            .map(|summary| summary.effective_count),
+        Some(8)
+    );
+    assert!(
+        fixture
+            .native
+            .metric_summary(&run, &MetricKey::from_string("missing"))?
+            .is_none()
+    );
+    Ok(())
+}
+
 impl Fixture {
     fn open() -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;

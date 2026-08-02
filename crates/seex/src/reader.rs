@@ -24,7 +24,7 @@ use crate::storage::bootstrap::{NativeStorageConfig, open_existing_native_connec
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
 use crate::storage::{
     ParquetSource, ProjectConnection, ProjectMetricReader, SeriesDiagnostics,
-    StandaloneMetricReader,
+    StandaloneMetricReader, StorageError,
 };
 
 /// Builder for opening one existing native or standalone store read-only.
@@ -241,6 +241,20 @@ impl Reader {
         Ok(runs)
     }
 
+    /// Gets one Run only when it belongs to the requested Project.
+    pub fn run(&self, project_id: &ProjectId, run_id: &RunId) -> SdkResult<Option<Run>> {
+        let run = match self.native()?.get_run(run_id) {
+            Ok(run) => run,
+            Err(StorageError::RunNotFound { .. }) => return Ok(None),
+            Err(_) => return Err(Error::Storage),
+        };
+        if &run.project_id != project_id {
+            return Ok(None);
+        }
+        self.remember_runs(std::slice::from_ref(&run));
+        Ok(Some(run))
+    }
+
     /// Loads Desktop-selected Runs in request order.
     #[doc(hidden)]
     pub fn runs_for_desktop(&self, run_ids: &[RunId]) -> SdkResult<Vec<Run>> {
@@ -257,6 +271,19 @@ impl Reader {
         self.remember_runs(std::slice::from_ref(run));
         ProjectMetricReader::new(self.native()?)
             .list_metrics(&run.run_id, run.status)
+            .map_err(|_| Error::Storage)
+    }
+
+    /// Gets one persisted Metric summary when the Run contains that Metric.
+    pub fn metric_summary(
+        &self,
+        run: &Run,
+        metric_key: &MetricKey,
+    ) -> SdkResult<Option<MetricAggregate>> {
+        self.remember_runs(std::slice::from_ref(run));
+        ProjectMetricReader::new(self.native()?)
+            .query_metric_summaries(std::slice::from_ref(&run.run_id), metric_key)
+            .map(|summaries| summaries.into_iter().next())
             .map_err(|_| Error::Storage)
     }
 
