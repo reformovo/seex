@@ -3,6 +3,7 @@
 use std::error::Error as StdError;
 use std::fs;
 use std::hint::black_box;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -63,11 +64,12 @@ fn measure_mode(
     points_per_call: usize,
     operation: impl Fn(&RunHandle, usize) -> Result<(), seex::Error>,
 ) -> Result<(), Box<dyn StdError>> {
+    let isolated_process = std::env::var_os("SEEX_REPORTING_ADMISSION_ISOLATED").is_some();
     let mut samples = Vec::with_capacity(SAMPLES);
     let mut batch_iterations = 1_024;
     for run_index in 0..LOGICAL_RUNS {
         let fixture_label = format!("{label}-{run_index}");
-        let (_root, client, run) = run_for_mode(&fixture_label)?;
+        let (root, client, run) = run_for_mode(&fixture_label)?;
         for index in 0..20 {
             operation(&run, index)?;
         }
@@ -95,15 +97,22 @@ fn measure_mode(
             }
             samples.push((batch_iterations * points_per_call) as f64 / elapsed.as_secs_f64());
         }
-        // Admission is isolated from persistence. Each ignored benchmark runs
-        // in a fresh process, which releases the intentionally leaked writer.
-        std::mem::forget(client);
+        if isolated_process {
+            std::mem::forget(client);
+        } else {
+            client.shutdown()?;
+            fs::remove_dir_all(root)?;
+        }
     }
     println!();
     println!(
         "{}",
         metric_record(label, batch_iterations * points_per_call, &samples)
     );
+    if isolated_process {
+        io::stdout().flush()?;
+        std::process::exit(0);
+    }
     Ok(())
 }
 
