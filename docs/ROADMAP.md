@@ -240,7 +240,7 @@ fallback investigation, this closes U2 and allows U3 to begin. See
 Mechanical engine movement and reporting behavior changes are separate
 candidates.
 
-- [ ] Move lifecycle, queue, writer, diagnostics, comparison, and ranking into
+- [x] Move lifecycle, queue, writer, diagnostics, comparison, and ranking into
   private `seex::engine`; keep `seex-core` as an unpublished re-export until
   consumers migrate. Record a scoped migration comparison using the 3%
   preservation threshold.
@@ -267,6 +267,12 @@ candidates.
 - [ ] Exit U3 when engine and reporting Acceptance checks pass. Record scoped
   p50/p95, drain latency, persistence, and peak RSS comparisons without making
   their classifications blocking.
+
+The mechanical migration passed workspace Acceptance. Its original combined
+admission/durability workload produced no capture before the 120-second budget;
+the narrowed durability A-B-B-A completed but was Inconclusive because the
+strict parser could not see the test-harness-prefixed drain record. It was not
+rerun, and no reporting baseline advanced.
 
 ### U4: Python Run, Api, CLI, and Arrow Surface
 

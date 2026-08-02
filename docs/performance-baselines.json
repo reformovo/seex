@@ -30,6 +30,22 @@
       },
       "artifact_sha256": "14c9bfc8b13448b78b171b08e426a58215371efbf71a27e24f46b182fc08da6a"
     },
+    "reporting.rust.engine_migration": {
+      "fixture": {
+        "identity": "reporting-rust-engine-migration-v3",
+        "scale": {"reports_per_durability_run": 1000, "samples": 10}
+      },
+      "baseline_revision": "3e5bb35be73989aaf4c7cb8ce778a696b12c53c9",
+      "candidate_revision": "d51e6ffe1a8add300539bb7b4a9202faf6a914b1",
+      "stable_summary": {
+        "verdict": "inconclusive",
+        "reason": "the test harness prefixed the drain record, leaving a deciding metric missing",
+        "baseline_median_finalization_ns": [12657312.5, 12483520.5],
+        "candidate_median_finalization_ns": [12036583.5, 11900479.0]
+      },
+      "artifact_sha256": "1884bc77826848d0385c57911b1530ffb7f3f5381b0b6b0ef7152b0c3b3adbb3",
+      "failed_attempt_sha256": "dba0c14f9eee10adcbfe858dfa291cce20b74b00ce1a56ca1cee05aced1c899a"
+    },
     "query.duckdb.reader.step": {
       "fixture": {
         "identity": "reader-1x1x1m-v3",
