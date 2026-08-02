@@ -8,9 +8,9 @@ use seex::{Client, LogOptions, ResumePolicy, RunHandle, RunOptions, RunStatus};
 
 use crate::sdk::client::PyDiagnostics;
 use crate::sdk::client::{
-    ClientClosedError, InvalidConfigurationError, InvalidRunStateError, MetricDrainTimeoutError,
-    MetricFlushError, MetricFlushTimeoutError, MetricQueueFullError, MetricWriterFailedError,
-    RunAlreadyActiveError, RunAlreadyExistsError, RunClosedError, SeexError, StorageError,
+    InvalidConfigurationError, InvalidRunStateError, MetricDrainTimeoutError, MetricFlushError,
+    MetricFlushTimeoutError, MetricQueueFullError, MetricWriterFailedError, RunAlreadyActiveError,
+    RunAlreadyExistsError, RunClosedError, SeexError, StorageError,
 };
 use crate::sdk::settings::PySettings;
 
@@ -275,7 +275,6 @@ pub(crate) fn sdk_error(error: seex::Error) -> PyErr {
         seex::Error::MetricDrainTimeout => MetricDrainTimeoutError::new_err(message),
         seex::Error::MetricFlushFailed => MetricFlushError::new_err(message),
         seex::Error::MetricFlushTimeout => MetricFlushTimeoutError::new_err(message),
-        seex::Error::ClientClosed => ClientClosedError::new_err(message),
         seex::Error::InvalidRunOptions { .. }
         | seex::Error::InvalidMetricMapping
         | seex::Error::MetricMappingTooLarge { .. }

@@ -35,7 +35,6 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_exception!(MetricFlushError);
     add_exception!(MetricFlushTimeoutError);
     add_exception!(RunClosedError);
-    add_exception!(ClientClosedError);
     add_exception!(InvalidRunStateError);
     add_exception!(RunAlreadyExistsError);
     add_exception!(RunAlreadyActiveError);

@@ -22,7 +22,6 @@ sdk_exception!(MetricDrainTimeoutError, "Metric drain timed out.");
 sdk_exception!(MetricFlushError, "Metric flush failed.");
 sdk_exception!(MetricFlushTimeoutError, "Metric flush timed out.");
 sdk_exception!(RunClosedError, "The run is closed for metric reporting.");
-sdk_exception!(ClientClosedError, "The client is closed.");
 sdk_exception!(
     InvalidRunStateError,
     "The run state does not allow this operation."
