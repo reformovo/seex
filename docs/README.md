@@ -24,7 +24,10 @@ PulseOn was the project name through version 0.1.1. Seex restarts the package
 and storage identity at 0.1.0b0 without a compatibility or migration layer; see
 [ADR 0014](adr/0014-rename-pulseon-to-seex.md).
 
-- `docs/v1-native-architecture.md` records the completed v1 native architecture.
+- `docs/reference/native-architecture.md` records the completed first native
+  architecture.
+- `docs/reference/gpui-single-panel-plan.md` records the original GPUI
+  single-panel implementation plan.
 - `docs/reference/benchmark-report.md` preserves the last pre-rename benchmark record.
 - `docs/reference/ducklake-archive.md` preserves DuckLake validation notes that
   support the storage boundary.
