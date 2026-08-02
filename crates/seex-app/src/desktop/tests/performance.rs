@@ -27,24 +27,24 @@ fn active_details_are_settled(viewer: &ViewerApp, cx: &App) -> bool {
 }
 
 #[test]
-fn compact_fixture_refuses_unrelated_data() {
+fn compact_benchmark_dataset_refuses_unrelated_data() {
     let root = tempfile::tempdir().expect("test directory should be created");
     std::fs::write(root.path().join("keep"), "user data").expect("sentinel should be written");
 
-    let error =
-        prepare_viewer_performance_fixture(root.path()).expect_err("fixture must not replace data");
+    let error = ensure_viewer_benchmark_dataset(root.path())
+        .expect_err("benchmark dataset must not replace data");
 
     assert!(error.to_string().contains("non-empty"));
 }
 
 #[test]
-#[ignore = "creates the retained 4 Run x 2 Metric x 100k Viewer fixture"]
-fn prepare_compact_viewer_fixture() -> Result<(), Box<dyn std::error::Error>> {
+#[ignore = "creates the retained 4 Run x 2 Metric x 100k Viewer benchmark dataset"]
+fn prepare_compact_viewer_benchmark_dataset() -> Result<(), Box<dyn std::error::Error>> {
     assert!(
         std::hint::black_box(!cfg!(debug_assertions)),
-        "fixture preparation requires --release"
+        "benchmark dataset preparation requires --release"
     );
-    prepare_viewer_performance_fixture(&benchmark_root())
+    ensure_viewer_benchmark_dataset(&benchmark_root())
 }
 
 #[gpui::test]
@@ -57,14 +57,18 @@ fn compact_dual_view_peak_rss(cx: &mut TestAppContext) {
     let root = benchmark_root();
     let reader = seex::Reader::builder(&root)
         .open()
-        .expect("compact Viewer fixture should open");
-    let project_id = reader.projects().expect("fixture projects should load")[0]
+        .expect("compact Viewer benchmark dataset should open");
+    let project_id = reader
+        .projects()
+        .expect("benchmark dataset projects should load")[0]
         .project_id
         .clone();
-    let runs = reader.runs(&project_id).expect("fixture Runs should load");
+    let runs = reader
+        .runs(&project_id)
+        .expect("benchmark dataset Runs should load");
     let metrics = reader
         .metrics(&runs[0])
-        .expect("fixture Metrics should load");
+        .expect("benchmark dataset Metrics should load");
     assert_eq!((runs.len(), metrics.len()), (4, 2));
 
     cx.executor().allow_parking();

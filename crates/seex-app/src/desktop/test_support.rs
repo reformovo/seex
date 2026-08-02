@@ -62,17 +62,17 @@ pub(super) fn fixture_with_complete_runs(
     fixture_with_run_coverage(metric_count, run_count, true)
 }
 
-pub(super) fn prepare_viewer_performance_fixture(root: &Path) -> Result<(), Box<dyn Error>> {
+pub(super) fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
     const MANIFEST: &str = "schema=v3\nruns=4\nmetrics=2\npoints_per_series=100000\n";
     if root.join(".seex/config.toml").is_file() {
         return if std::fs::read_to_string(root.join(".seex/viewer-benchmark.txt"))? == MANIFEST {
             Ok(())
         } else {
-            Err("Viewer performance fixture manifest does not match".into())
+            Err("Viewer benchmark dataset manifest does not match".into())
         };
     }
     if root.exists() && std::fs::read_dir(root)?.next().is_some() {
-        return Err("refusing to replace a non-empty Viewer performance fixture".into());
+        return Err("refusing to replace a non-empty Viewer benchmark dataset".into());
     }
     std::fs::create_dir_all(root)?;
     let client = NativeClient::open(root)?;
