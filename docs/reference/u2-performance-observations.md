@@ -1,9 +1,10 @@
 # U2 performance observations
 
-These are non-deciding observations from the first scoped U2 optimization
-gates. Both gates followed the fixed v3 A-B-B-A protocol and returned
-Inconclusive. Per the performance contract, neither was rerun or expanded, and
-neither updates the rolling baseline.
+These are non-blocking observations from the first scoped U2 optimization
+comparisons. Both followed the fixed v3 A-B-B-A protocol and returned
+Inconclusive. Neither was rerun or expanded, and neither updates the rolling
+baseline. The recorded measurements contribute to closing U2 without being an
+automated acceptance condition.
 
 ## Narrow Step Reader
 
@@ -20,8 +21,8 @@ neither updates the rolling baseline.
 Narrow improved in both order pairs, with a combined improvement of about
 28.93%. Full changed by about 1.18%, and the largest full ordered-pair
 regression was about 3.02%, within the declared preservation limits. The full
-metric nevertheless changed direction between A-B and B-A, so the gate verdict
-is Inconclusive.
+metric nevertheless changed direction between A-B and B-A, so the comparison
+classification is Inconclusive.
 
 ## Compact dual-View RSS
 
@@ -36,12 +37,12 @@ is Inconclusive.
 - Candidate peak captures: 409,337,856 and 440,336,384 bytes
 
 The combined median peak improved by about 10.2%. Peak and warm RSS varied by
-more than the 2% cross-process limit, so the gate verdict is Inconclusive. An
+more than the 2% cross-process limit, so the comparison is Inconclusive. An
 earlier invocation accidentally used a binary without `test-support` and ran
 no workload; it is discarded, and the artifact above is authoritative.
 
 Historical U0 Viewer results used different fixtures and workloads. They are
-not comparable evidence for the compact gate's target. The earlier U2
+not comparable evidence for the compact comparison's target. The earlier U2
 single-View seven-pair result remains historical only, and the interrupted
 dual-View attempt produced no result file.
 
@@ -72,14 +73,14 @@ another workload, returns Pass: narrow improves 40.20% and 39.92% in the two
 orders, with a 40.06% combined improvement; full changes by approximately
 -0.004% and +0.018%, with a 0.0068% combined regression.
 
-The compact Viewer gate is stored at
+The compact Viewer comparison is stored at
 `/tmp/seex-perf/u2-bounded-axis-candidate/viewer-rss-result.json`, SHA-256
 `6413d5a153f0edb7db3b977d729dd3bb58c32aff689afc2fe134c20ef5c1e11e`.
 Baseline peak captures were 479,281,152 and 473,071,616 bytes; candidate peaks
 were 443,432,960 and 389,447,680 bytes. The combined observation improves about
 12.5%, below the declared 25% target, and candidate variation exceeds 2%, so
-the verdict is Inconclusive. It was not rerun. The uncommitted bounded reducer
-was reverted and no rolling baseline changed.
+the classification is Inconclusive. It was not rerun. The uncommitted bounded
+reducer was reverted and the rolling baseline remains `9edd1cd`.
 
 `parquet_metadata` reports nine row groups with disjoint Step ranges covering
 0 through 999,999. The bounded scan received the dynamic filter

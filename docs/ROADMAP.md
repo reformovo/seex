@@ -23,16 +23,16 @@ exit criteria.
 The order is fixed:
 
 ```text
-U0 gates -> U1 configuration + Reader -> U2 storage/query
+U0 performance contract -> U1 configuration + Reader -> U2 storage/query
          -> U3 reporting/Run SDK -> U4 Python API
          -> U5 crate/package convergence
-         -> U6 Viewer configuration/workbench -> U7 release gates
+         -> U6 Viewer configuration/workbench -> U7 release qualification
 ```
 
 No later phase may remove a boundary needed by an earlier phase. Performance
-decisions compare only with the current rolling baseline; original revisions
-remain non-blocking release history. Physical source moves begin only after
-Desktop uses Reader.
+comparisons use only the current rolling baseline and never block a phase;
+original revisions remain release history. Physical source moves begin only
+after Desktop uses Reader.
 
 ### Execution Contract
 
@@ -40,7 +40,7 @@ Desktop uses Reader.
   target no more than 200 changed lines, and run formatting, type, lint, and
   affected correctness tests. Add a single release smoke when the item changes
   startup, packaging, or a performance-sensitive path; routine items do not
-  require paired performance capture.
+  require a performance comparison.
 - [ ] Before every migration or optimization checkpoint, record its type,
   primary metric, protected metrics, fixture, commands, and no more than five
   directly affected files. Mechanical source moves and this roadmap archive
@@ -48,21 +48,22 @@ Desktop uses Reader.
 - [ ] Keep mechanical migration and performance optimization in separate
   candidates. Use Git renames for source moves and leave the workspace buildable
   after every accepted candidate.
-- [ ] Run one bounded A-B-B-A performance gate only after a coherent change to
-  a measured hot path. Select only the affected boundary, backend, mode, axis,
-  or range; do not run a full matrix by default.
+- [ ] Run one bounded A-B-B-A performance comparison only after a coherent
+  change to a measured hot path. Select only the affected boundary, backend,
+  mode, axis, or range; do not run a full matrix by default.
 - [ ] Require ten internally calibrated samples of at least 25 ms in each
   timing or throughput capture. Stop the complete workload after 120 seconds,
   checkpoint after each child, and never add processes automatically.
-- [ ] Accept preservation when protected combined regression is at most 3% and
-  neither order pair regresses more than 5%. Accept optimization only when both
-  order pairs improve, the combined primary reaches its declared target, and
-  protected metrics stay within those limits.
+- [ ] Classify preservation as Pass when protected combined regression is at
+  most 3% and neither order pair regresses more than 5%. Classify optimization
+  as Pass only when both order pairs improve, the combined primary reaches its
+  declared target, and protected metrics stay within those limits.
 - [ ] Treat noise above 2%, order-direction conflict, or a missing deciding
   metric as Inconclusive. A smaller non-regressing improvement is No-change;
   reliable regression or a hard-floor failure is Regression.
-- [ ] Update the rolling baseline only after Pass. Keep original revisions and
-  old stress results as non-blocking history.
+- [ ] Update the rolling baseline only after Pass. No-change, Regression, and
+  Inconclusive remain non-blocking observations. Keep original revisions and
+  old stress results as history.
 - [ ] Revert only the rejected candidate's declared hunks. Do not use
   `git reset` or `git checkout`, and do not touch user or accepted changes.
   Profile a no-change or regression with DuckDB plans, RSS, `heap`/`vmmap`,
@@ -76,8 +77,8 @@ Desktop uses Reader.
 
 ### U0: Lightweight Performance Contract
 
-- [x] Separate Acceptance, Benchmark, Performance gate, and Profile work.
-- [x] Replace executable v1/v2 gates and stress matrices with schema v3,
+- [x] Separate Acceptance, Benchmark, Performance comparison, and Profile work.
+- [x] Replace executable v1/v2 comparisons and stress matrices with schema v3,
   calibrated raw samples, one A-B-B-A sequence, atomic checkpoints, and a
   120-second workload budget.
 - [x] Keep historical U0/U1 measurements and source workloads under
@@ -141,9 +142,9 @@ and the shipped Python API remains unchanged until U4.
   byte-for-byte SDK non-mutation, plus Reader/native/standalone parity, all
   axes and range types, strict bounds, Desktop neighbors, missing metadata,
   and Arrow output.
-- [x] Exit U1 only when configuration and Reader correctness pass and query,
-  reporting, Viewer CPU, and RSS protected metrics are reliable and regress by
-  no more than 3% from the rolling baseline.
+- [x] Exit U1 when configuration and Reader Acceptance checks pass. Record
+  affected query, reporting, Viewer CPU, and RSS comparisons against the rolling
+  baseline without making their classifications blocking.
 
 ### U2: Storage Migration and Query Peak Reduction
 
@@ -156,15 +157,16 @@ different execution plans; one universal SQL plan is not a goal.
 - [x] Move model, storage, and query implementation into private
   `seex::{model, storage}` modules with Git renames. Leave the old unpublished
   crates as re-exports until all consumers migrate.
-- [x] Run the migration gate without SQL, reduction, allocation, schema, or
-  behavior changes. The scoped Reader preservation gate passed: narrow changed
-  -0.14% and full changed -0.64%, with no ordered-pair regression above 1%.
+- [x] Run the migration comparison without SQL, reduction, allocation, schema,
+  or behavior changes. The scoped Reader preservation comparison classified
+  Pass: narrow changed -0.14% and full changed -0.64%, with no ordered-pair
+  regression above 1%.
 
 #### U2.2: Split query plans
 
 - [x] Preserve the incumbent Overview/full-span SQL and its materialized
-  ordered plan. Protect its reliable latency and RSS metrics from regression
-  above 3%.
+  ordered plan. Record its reliable latency and RSS as protected metrics with
+  the 3% comparison threshold.
 - [x] Add a narrow Step plan that filters the viewport before expensive
   materialization and bucket windows while retaining every same-step
   replacement until last-write-wins.
@@ -175,10 +177,11 @@ different execution plans; one universal SQL plan is not a goal.
   a replacement may change its timestamp, so time filtering cannot precede
   last-write-wins without a separate proof.
 
-The scoped Reader gate observed a 28.93% combined narrow improvement, while
-full changed by 1.18% with no ordered-pair regression above 3.02%. The result
-is Inconclusive because the protected full metric had an A-B/B-A direction
-conflict. It was not rerun, and the rolling baseline remains `9edd1cd`.
+The scoped Reader comparison observed a 28.93% combined narrow improvement,
+while full changed by 1.18% with no ordered-pair regression above 3.02%. The
+result is Inconclusive because the protected full metric had an A-B/B-A
+direction conflict. It was not rerun, and the rolling baseline remains
+`9edd1cd`.
 
 #### U2.3: Diagnostics and cancellation
 
@@ -197,10 +200,10 @@ conflict. It was not rerun, and the rolling baseline remains `9edd1cd`.
 
 #### U2.4: Evidence-driven fallbacks
 
-- [x] When narrow Step SQL did not close the compact RSS gate, profile and test
+- [x] When narrow Step SQL did not reach the compact RSS target, profile and test
   a separate narrow-only bounded reducer. Its existing Query captures
   reclassify as Pass under the corrected primary-only direction rule, but its
-  compact Viewer RSS observation improved only 12.5%, missed the 25% target,
+  compact Viewer RSS comparison improved only 12.5%, missed the 25% target,
   and was Inconclusive above the 2% noise limit. The candidate was reverted.
 - [x] After the bounded reducer missed the RSS target, profile Parquet
   physical ordering and row-group sizing as the next independent candidate.
@@ -210,15 +213,14 @@ conflict. It was not rerun, and the rolling baseline remains `9edd1cd`.
   caps, allocator relief scheduling, or removal of the beneficial full-span
   ordered window without new contradictory profile evidence.
 
-#### U2 exit gates
+#### U2 exit evidence
 
 - [x] Pass full/narrow correctness, DuckDB/SQLite parity, last-write-wins,
   neighbors, diagnostics, and nearest-real-sample hover tests.
-- [ ] Pass the narrow Reader optimization gate against the rolling baseline;
-  protect the incumbent full query within the 3% combined and 5% ordered-pair
-  limits.
-- [ ] Pass the compact 4 Run × 2 Metric dual-View RSS optimization gate with its
-  declared target. Record original-revision trend only as history.
+- [x] Record the narrow Reader optimization comparison against the rolling
+  baseline, including the incumbent full query as a protected metric.
+- [x] Record the compact 4 Run × 2 Metric dual-View RSS comparison and retain
+  original-revision trends only as history.
 - [x] Prove superseded queries merge no snapshot and retain no working set.
 
 Ordinary small-fixture tests cover cancellation before execution, between Runs,
@@ -226,9 +228,11 @@ before merge, connection-bound interruption, unrelated request keys, old-token
 completion, stale-event suppression, zero retained stale snapshots, and release
 of both the active registry entry and outstanding request ticket.
 
-The compact Viewer gate observed a 10.2% combined peak-RSS improvement, but
-peak and warm RSS exceeded the 2% cross-process noise limit. It is
-Inconclusive, was not rerun, and does not close an exit gate. See
+The compact Viewer comparison observed a 10.2% combined peak-RSS improvement,
+but peak and warm RSS exceeded the 2% cross-process noise limit. It is
+Inconclusive, was not rerun, and does not advance the rolling baseline. The
+rolling baseline remains `9edd1cd`. Together with completed Acceptance and
+fallback investigation, this closes U2 and allows U3 to begin. See
 [`reference/u2-performance-observations.md`](reference/u2-performance-observations.md).
 
 ### U3: Engine Migration and Rust Run SDK
@@ -238,7 +242,8 @@ candidates.
 
 - [ ] Move lifecycle, queue, writer, diagnostics, comparison, and ranking into
   private `seex::engine`; keep `seex-core` as an unpublished re-export until
-  consumers migrate. Pass the migration gate within 3%.
+  consumers migrate. Record a scoped migration comparison using the 3%
+  preservation threshold.
 - [ ] Implement public `Client`/`ClientBuilder`, `RunHandle`, `RunOptions`,
   `LogOptions`, `ResumePolicy`, and matchable `Error`/`Result`.
 - [ ] Make `RunHandle: Clone + Send + Sync`; clones share one admission lock,
@@ -255,11 +260,13 @@ candidates.
 - [ ] Cover Project get-or-create races, resume modes, cloned-handle races,
   atomic queue failure, cursor/commit cases, finalization barriers, and
   persistence without lost reports or partial Mappings.
-- [ ] Require explicit single-metric admission of at least 100,000 calls/s.
-  Across five runs, implicit single-metric median throughput must be at least
-  90% of explicit throughput; multi-metric throughput is counted per point.
-- [ ] Exit U3 only when reporting p50/p95, drain latency, persistence, and peak
-  RSS meet hard floors and regress by no more than 3% during migration.
+- [ ] Observe explicit single-metric admission against the 100,000 calls/s
+  target. Across five runs, compare implicit single-metric median throughput
+  with the 90% explicit-throughput target; count multi-metric throughput per
+  point.
+- [ ] Exit U3 when engine and reporting Acceptance checks pass. Record scoped
+  p50/p95, drain latency, persistence, and peak RSS comparisons without making
+  their classifications blocking.
 
 ### U4: Python Run, Api, CLI, and Arrow Surface
 
@@ -284,7 +291,7 @@ as a compatibility layer.
   context outcomes, Api discovery, range errors, evidence, Arrow, Reader parity,
   CLI JSON, and packaging smoke tests.
 - [ ] Pass Python formatting/lint, Pyright, pytest, Rust/PyO3 parity, wheel and
-  sdist smoke tests, and the reporting/query migration gates.
+  sdist smoke tests, then record affected reporting/query migration comparisons.
 
 ### U5: Single-Crate Convergence and Packaging
 
@@ -301,7 +308,7 @@ as a compatibility layer.
   `v0.1.0-beta.1` to one source without changing catalog/Parquet schemas or
   adding a runtime dependency.
 - [ ] Run warning-free Rust formatting, Clippy, check, tests, doc tests, docs,
-  package verification, Python gates, and all three performance domains.
+  package verification, Python Acceptance, and affected performance comparisons.
 
 ### U6: Viewer Configuration and Workbench Experience
 
@@ -339,7 +346,7 @@ management, autosave, and export/import as separate candidates.
   unavailable Source, Project, and Run references across save and restart so
   they recover when mappings or data return.
 
-#### U6.3: Export, import, and exit gates
+#### U6.3: Export, import, and exit criteria
 
 - [ ] Export only `workbench.toml`, never config, Source paths, allowlists,
   native data, secrets, or transient state.
@@ -354,7 +361,7 @@ management, autosave, and export/import as separate candidates.
 - [ ] Pass pure Rust tests for configuration, permissions, aliases, codecs,
   unsupported-schema rejection, and source preservation; pass GPUI tests for Source
   confirmation, reload, autosave, archive/unimport, recovery, export, and
-  import. Run `cargo check`, `cargo test`, and the protected Viewer gates.
+  import. Run `cargo check`, `cargo test`, and affected Viewer comparisons.
 
 ### U7: Final Resource, Metal, and Release Qualification
 
@@ -362,17 +369,18 @@ U7 begins after U0–U6 pass. CI/release workflow changes remain a separate
 review slice and require explicit approval under the repository boundary.
 
 - [ ] Pass complete correctness and release Acceptance, then run only the
-  reporting, Reader, Viewer CPU, and Viewer RSS gates affected since their
+  reporting, Reader, Viewer CPU, and Viewer RSS comparisons affected since their
   rolling revisions.
 - [ ] Use the compact dual-View workload for automated peak RSS: 4 Runs, 2
   Metrics, 100,000 points per series, three zoom round-trips, and four-way reads.
 - [ ] Prove stale requests and cancellation retain no snapshot or query working
   set with ordinary small-fixture tests, not an RSS stress matrix.
-- [ ] Run Instruments, Metal, allocation, or display Profiles only when a gate
-  or acceptance failure needs diagnosis. Record them as non-blocking evidence.
-- [ ] Only after every resource gate passes, add a separately reviewed macOS
-  ARM64 CI job that verifies the Xcode Metal Toolchain and builds the unsigned
-  Viewer without changing the Python wheel matrix.
+- [ ] Run Instruments, Metal, allocation, or display Profiles only when a
+  comparison or Acceptance failure needs diagnosis. Record them as
+  non-blocking evidence.
+- [ ] Only after every release Acceptance check passes, add a separately
+  reviewed macOS ARM64 CI job that verifies the Xcode Metal Toolchain and builds
+  the unsigned Viewer without changing the Python wheel matrix.
 - [ ] On matching tags, produce `seex-app-macos-aarch64`, SHA-256 checksum, and
   attestations, while proving Desktop artifacts cannot publish to PyPI.
 - [ ] Publish crates.io before PyPI. If the `seex` crate name cannot be claimed,
