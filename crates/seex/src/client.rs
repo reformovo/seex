@@ -1,6 +1,6 @@
 //! Public writer client facade.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -103,6 +103,7 @@ impl ClientBuilder {
         Ok(Client {
             inner: Arc::new(inner),
             root_path: self.root_path,
+            run_states: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -111,6 +112,7 @@ impl ClientBuilder {
 pub struct Client {
     pub(crate) inner: Arc<NativeClient>,
     root_path: PathBuf,
+    run_states: Mutex<HashMap<RunId, Arc<Mutex<FacadeRunState>>>>,
 }
 
 impl Client {
@@ -164,10 +166,17 @@ impl Client {
         };
         let native = Arc::new(self.inner.run_handle(run));
         native.initialize_cursor(next_step).map_err(Error::from)?;
+        let lifecycle = Arc::clone(
+            self.run_states
+                .lock()
+                .map_err(|_| Error::Storage)?
+                .entry(native.run_id.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(FacadeRunState::Open))),
+        );
         Ok(RunHandle {
             native,
             client: Arc::clone(&self.inner),
-            lifecycle: Arc::new(Mutex::new(FacadeRunState::Open)),
+            lifecycle,
         })
     }
 

@@ -408,6 +408,32 @@ fn matching_terminal_calls_are_idempotent_and_conflicts_are_typed()
 }
 
 #[test]
+fn separately_started_handles_share_terminal_intent() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let client = Client::builder(root.path()).open()?;
+    let first = client.start_run(RunOptions::new("demo").id("run-1"))?;
+    let second = client.start_run(
+        RunOptions::new("demo")
+            .id("run-1")
+            .resume(ResumePolicy::Allow),
+    )?;
+
+    first.finish()?;
+
+    assert_eq!(second.status(), seex::RunStatus::Finished);
+    assert!(matches!(
+        second.fail(),
+        Err(Error::TerminalOutcomeConflict {
+            selected: seex::RunStatus::Finished,
+            requested: seex::RunStatus::Failed
+        })
+    ));
+    second.finish()?;
+    client.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn matching_terminal_call_retries_an_incomplete_flush() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let client = Client::builder(root.path()).open()?;
