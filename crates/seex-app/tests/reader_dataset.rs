@@ -1,4 +1,4 @@
-//! One-time preparation for the retained schema-v3 Reader benchmark fixture.
+//! One-time preparation for the retained schema-v3 Reader benchmark dataset.
 
 use std::env;
 use std::error::Error;
@@ -18,7 +18,7 @@ const POINTS: i64 = 1_000_000;
 const EPOCH_MILLIS: i64 = 1_700_000_000_000;
 const MANIFEST_PATH: &str = ".seex/reader-benchmark.txt";
 
-fn fixture_manifest(backend: CatalogBackend) -> &'static str {
+fn dataset_manifest(backend: CatalogBackend) -> &'static str {
     match backend {
         CatalogBackend::DuckDb => {
             "schema=v3\nbackend=duckdb\nruns=1\nmetrics=1\npoints_per_series=1000000\n"
@@ -29,18 +29,18 @@ fn fixture_manifest(backend: CatalogBackend) -> &'static str {
     }
 }
 
-fn reuse_complete_fixture(root: &Path, backend: CatalogBackend) -> Result<bool, Box<dyn Error>> {
+fn reuse_complete_dataset(root: &Path, backend: CatalogBackend) -> Result<bool, Box<dyn Error>> {
     if !root.join(".seex/config.toml").is_file() {
         return Ok(false);
     }
     let manifest_path = root.join(MANIFEST_PATH);
     if !manifest_path.is_file() {
         return Err(
-            "Reader benchmark fixture is incomplete: completion manifest is missing".into(),
+            "Reader benchmark dataset is incomplete: completion manifest is missing".into(),
         );
     }
-    if fs::read_to_string(manifest_path)? != fixture_manifest(backend) {
-        return Err("Reader benchmark fixture manifest does not match backend or scale".into());
+    if fs::read_to_string(manifest_path)? != dataset_manifest(backend) {
+        return Err("Reader benchmark dataset manifest does not match backend or scale".into());
     }
     Ok(true)
 }
@@ -56,12 +56,15 @@ fn backend() -> Result<CatalogBackend, Box<dyn Error>> {
     }
 }
 
-fn prepare(root: &Path, backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
-    if reuse_complete_fixture(root, backend)? {
+fn ensure_reader_benchmark_dataset(
+    root: &Path,
+    backend: CatalogBackend,
+) -> Result<(), Box<dyn Error>> {
+    if reuse_complete_dataset(root, backend)? {
         return Ok(());
     }
     if root.exists() && fs::read_dir(root)?.next().is_some() {
-        return Err("refusing to replace a non-empty query fixture".into());
+        return Err("refusing to replace a non-empty Reader benchmark dataset".into());
     }
     fs::create_dir_all(root.join(".seex"))?;
     let (backend_name, catalog) = match backend {
@@ -116,12 +119,12 @@ fn prepare(root: &Path, backend: CatalogBackend) -> Result<(), Box<dyn Error>> {
     )?;
     connection.flush_metric_points()?;
     drop(connection);
-    fs::write(root.join(MANIFEST_PATH), fixture_manifest(backend))?;
+    fs::write(root.join(MANIFEST_PATH), dataset_manifest(backend))?;
     Ok(())
 }
 
 #[test]
-fn retained_fixture_requires_a_completion_manifest() -> Result<(), Box<dyn Error>> {
+fn retained_dataset_requires_a_completion_manifest() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     fs::create_dir(root.path().join(".seex"))?;
     fs::write(
@@ -129,15 +132,15 @@ fn retained_fixture_requires_a_completion_manifest() -> Result<(), Box<dyn Error
         "schema_version = 1\n",
     )?;
 
-    let error = prepare(root.path(), CatalogBackend::DuckDb)
-        .expect_err("an interrupted fixture must not be reused");
+    let error = ensure_reader_benchmark_dataset(root.path(), CatalogBackend::DuckDb)
+        .expect_err("an interrupted dataset must not be reused");
 
     assert!(error.to_string().contains("completion manifest"));
     Ok(())
 }
 
 #[test]
-fn retained_fixture_manifest_binds_the_backend() -> Result<(), Box<dyn Error>> {
+fn retained_dataset_manifest_binds_the_backend() -> Result<(), Box<dyn Error>> {
     let root = tempfile::tempdir()?;
     fs::create_dir(root.path().join(".seex"))?;
     fs::write(
@@ -146,25 +149,25 @@ fn retained_fixture_manifest_binds_the_backend() -> Result<(), Box<dyn Error>> {
     )?;
     fs::write(
         root.path().join(MANIFEST_PATH),
-        fixture_manifest(CatalogBackend::DuckDb),
+        dataset_manifest(CatalogBackend::DuckDb),
     )?;
 
-    let error = prepare(root.path(), CatalogBackend::Sqlite)
-        .expect_err("a DuckDB fixture must not be labeled as SQLite");
+    let error = ensure_reader_benchmark_dataset(root.path(), CatalogBackend::Sqlite)
+        .expect_err("a DuckDB dataset must not be labeled as SQLite");
 
     assert!(error.to_string().contains("backend or scale"));
     Ok(())
 }
 
 #[test]
-#[ignore = "creates the retained 1 Run x 1 Metric x 1M query fixture"]
-fn prepare_reader_benchmark_fixture() -> Result<(), Box<dyn Error>> {
+#[ignore = "creates the retained 1 Run x 1 Metric x 1M Reader benchmark dataset"]
+fn prepare_reader_benchmark_dataset() -> Result<(), Box<dyn Error>> {
     assert!(
         black_box(!cfg!(debug_assertions)),
-        "fixture preparation requires --release"
+        "benchmark dataset preparation requires --release"
     );
     let root = env::var_os("SEEX_QUERY_BENCH_ROOT")
         .map(PathBuf::from)
-        .ok_or("SEEX_QUERY_BENCH_ROOT must name the prepared fixture")?;
-    prepare(&root, backend()?)
+        .ok_or("SEEX_QUERY_BENCH_ROOT must name the prepared dataset")?;
+    ensure_reader_benchmark_dataset(&root, backend()?)
 }

@@ -76,10 +76,10 @@ fn backend_label(backend: CatalogBackend) -> &'static str {
     }
 }
 
-fn fixture_root() -> Result<PathBuf, Box<dyn Error>> {
+fn dataset_root() -> Result<PathBuf, Box<dyn Error>> {
     env::var_os("SEEX_QUERY_BENCH_ROOT")
         .map(PathBuf::from)
-        .ok_or_else(|| "SEEX_QUERY_BENCH_ROOT must name the prepared fixture".into())
+        .ok_or_else(|| "SEEX_QUERY_BENCH_ROOT must name the prepared dataset".into())
 }
 
 fn selected_ranges() -> Result<Vec<bool>, Box<dyn Error>> {
@@ -204,7 +204,7 @@ fn reader_benchmark() -> Result<(), Box<dyn Error>> {
     );
     let backend = backend()?;
     let axis = Axis::selected()?;
-    let reader = Reader::builder(fixture_root()?).open()?;
+    let reader = Reader::builder(dataset_root()?).open()?;
     for narrow in selected_ranges()? {
         let (iterations, samples) = capture(&reader, axis, narrow)?;
         println!("{}", record(backend, axis, narrow, iterations, &samples));
