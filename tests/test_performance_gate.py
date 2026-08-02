@@ -90,7 +90,7 @@ def _manifest(
         name="reader",
         kind=kind,
         measurement="records",
-        fixture=performance_gate.Fixture(identity="reader-v3", scale={"runs": 1, "points": 1_000_000}),
+        fixture=performance_gate.Fixture(identity="reader-benchmark", scale={"runs": 1, "points": 1_000_000}),
         baseline_command=["baseline"],
         candidate_command=["candidate"],
         primary="query.reader.narrow" if kind == "optimization" else None,
@@ -175,7 +175,7 @@ def test_read_manifest_validates_fixture_and_defaults_target(tmp_path: pathlib.P
                 "name": "query preservation",
                 "kind": "preservation",
                 "measurement": "records",
-                "fixture": {"identity": "query-v3", "scale": {"runs": 1, "points": 1_000_000}},
+                "fixture": {"identity": "query-benchmark", "scale": {"runs": 1, "points": 1_000_000}},
                 "baseline_command": ["baseline", "--fixture", "prepared"],
                 "candidate_command": ["candidate", "--fixture", "prepared"],
                 "protected": ["query.reader.full"],
@@ -195,7 +195,7 @@ def test_read_manifest_validates_fixture_and_defaults_target(tmp_path: pathlib.P
     "updates, message",
     [
         ({"schema_version": 2}, "schema_version 3"),
-        ({"fixture": "query-v2"}, "fixture must be an object"),
+        ({"fixture": "query-benchmark"}, "fixture must be an object"),
         ({"fixture": {"identity": "query", "scale": {}}}, "positive integer dimensions"),
         ({"primary": "query.reader.full"}, "do not have a primary"),
         ({"protected": []}, "require protected metrics"),
@@ -210,7 +210,7 @@ def test_read_manifest_rejects_invalid_contract(
         "name": "preservation",
         "kind": "preservation",
         "measurement": "records",
-        "fixture": {"identity": "query-v3", "scale": {"points": 1}},
+        "fixture": {"identity": "query-benchmark", "scale": {"points": 1}},
         "baseline_command": ["baseline"],
         "candidate_command": ["candidate"],
         "protected": ["query.reader.full"],
@@ -223,7 +223,7 @@ def test_read_manifest_rejects_invalid_contract(
         performance_gate.read_manifest(path)
 
 
-def test_baseline_registry_contains_only_scoped_v3_fields() -> None:
+def test_baseline_registry_contains_only_scoped_fields() -> None:
     path = pathlib.Path(__file__).parents[1] / "docs/performance-baselines.json"
     registry = json.loads(path.read_text(encoding="utf-8"))
 

@@ -28,7 +28,7 @@ def test_admission_modes_count_points(mode: str) -> None:
         assert {step for _, step, _ in run.calls} == {0, 1}
 
 
-def test_throughput_result_emits_raw_v3_samples(capsys: pytest.CaptureFixture[str]) -> None:
+def test_throughput_result_emits_raw_samples(capsys: pytest.CaptureFixture[str]) -> None:
     result: dict[str, Any] = {
         "mode": "explicit_single",
         "reports": 100_000,
@@ -88,7 +88,7 @@ def test_mapping_mode_requires_complete_groups() -> None:
         bench_log_throughput.log_reports(FakeRun(), "mapping_8", 9)
 
 
-def test_persistence_emits_only_durability_v3_samples(capsys: pytest.CaptureFixture[str]) -> None:
+def test_persistence_emits_only_durability_samples(capsys: pytest.CaptureFixture[str]) -> None:
     diagnostics = {
         "pending_reports": 0,
         "persisted_reports": 1_000,

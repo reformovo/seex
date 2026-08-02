@@ -121,7 +121,7 @@ fn emit_durations(label: &str, samples: &[Duration]) {
 }
 
 #[test]
-fn metric_record_contains_only_v3_raw_samples() {
+fn metric_record_contains_only_raw_samples() {
     let record = metric_record("explicit_single", 10, &[1.0; SAMPLES]);
     let duration = duration_record("finalization", &[Duration::from_millis(25); SAMPLES]);
 

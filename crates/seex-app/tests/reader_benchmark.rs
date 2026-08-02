@@ -182,7 +182,7 @@ fn record(
 }
 
 #[test]
-fn reader_record_contains_only_ten_raw_v3_samples() {
+fn reader_record_contains_only_ten_raw_samples() {
     let record = record(CatalogBackend::DuckDb, Axis::Step, true, 2, &[1.0; SAMPLES]);
     assert!(record.starts_with("SEEX_BENCH {\"schema_version\":3"));
     assert!(record.contains("duckdb.reader.step.narrow"));

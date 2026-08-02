@@ -427,7 +427,7 @@ fn cpu_record(metric: &str, batch_iterations: u32, samples: &[f64]) -> String {
 }
 
 #[test]
-fn cpu_record_contains_only_ten_raw_v3_samples() {
+fn cpu_record_contains_only_ten_raw_samples() {
     let record = cpu_record("brush.zoom", 2, &[1.0; CPU_SAMPLES]);
     assert!(record.starts_with("SEEX_BENCH {\"schema_version\":3"));
     assert!(!record.contains("p95"));
