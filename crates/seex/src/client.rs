@@ -5,8 +5,12 @@ use std::sync::Arc;
 
 use crate::config::{CatalogBackend, S3Options};
 use crate::engine::client::NativeClient;
+use crate::engine::client::NativeRun;
 use crate::engine::reporting::MetricReporterDiagnostics;
 use crate::error::{Error, Result};
+use crate::model::run::{RunId, RunStatus};
+use crate::model::types::{Project, ProjectId};
+use crate::storage::ProjectCreateGuard;
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
 
 const DEFAULT_METRIC_QUEUE_CAPACITY: usize = 65_536;
@@ -95,6 +99,7 @@ impl ClientBuilder {
         .map_err(Error::from)?;
         Ok(Client {
             inner: Arc::new(inner),
+            root_path: self.root_path,
         })
     }
 }
@@ -102,6 +107,7 @@ impl ClientBuilder {
 /// Native metric writer and Run factory.
 pub struct Client {
     pub(crate) inner: Arc<NativeClient>,
+    root_path: PathBuf,
 }
 
 impl Client {
@@ -113,6 +119,75 @@ impl Client {
         self.inner.diagnostics().into()
     }
 
+    /// Creates or resumes a Run according to the requested policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed option, identity, lifecycle, lock, or storage error.
+    pub fn start_run(&self, options: RunOptions) -> Result<RunHandle> {
+        let project = self.get_or_create_project(&options.project)?;
+        let run_id = options
+            .run_id
+            .map(RunId::from_string)
+            .unwrap_or_else(|| RunId::from_string(uuid::Uuid::new_v4().to_string()));
+        if run_id.as_str().is_empty() {
+            return Err(Error::InvalidRunOptions { field: "id" });
+        }
+        let name = options.name.unwrap_or_else(|| run_id.as_str().to_owned());
+        let run = match options.resume {
+            ResumePolicy::Never => self
+                .inner
+                .create_run(&project.project_id, &name, Some(run_id))
+                .map_err(Error::from)?,
+            ResumePolicy::Allow => match self.inner.get_run(&run_id) {
+                Ok(existing) => self.resume_existing(existing, &project.project_id)?,
+                Err(crate::engine::EngineError::RunNotFound { .. }) => self
+                    .inner
+                    .create_run(&project.project_id, &name, Some(run_id))
+                    .map_err(Error::from)?,
+                Err(error) => return Err(error.into()),
+            },
+            ResumePolicy::Must => {
+                if options.id_was_missing {
+                    return Err(Error::InvalidRunOptions { field: "id" });
+                }
+                let existing = self.inner.get_run(&run_id).map_err(Error::from)?;
+                self.resume_existing(existing, &project.project_id)?
+            }
+        };
+        let native = self.inner.run_handle(run);
+        Ok(RunHandle {
+            native,
+            client: Arc::clone(&self.inner),
+        })
+    }
+
+    fn get_or_create_project(&self, raw_project: &str) -> Result<Project> {
+        if raw_project.is_empty() {
+            return Err(Error::InvalidRunOptions { field: "project" });
+        }
+        let project_id = ProjectId::from_string(raw_project);
+        let _guard = ProjectCreateGuard::acquire(&self.root_path, &project_id)
+            .map_err(|_| Error::Storage)?;
+        match self.inner.get_project(&project_id) {
+            Ok(project) => Ok(project),
+            Err(crate::engine::EngineError::ProjectNotFound { .. }) => self
+                .inner
+                .create_project(raw_project, Some(project_id))
+                .map_err(Error::from),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn resume_existing(&self, run: crate::Run, project_id: &ProjectId) -> Result<crate::Run> {
+        if &run.project_id != project_id {
+            return Err(Error::RunProjectMismatch {
+                run_id: run.run_id.as_str().to_owned(),
+            });
+        }
+        self.inner.resume_run(&run.run_id).map_err(Error::from)
+    }
+
     /// Drains queued reports and closes this client without finalizing Runs.
     ///
     /// # Errors
@@ -120,6 +195,78 @@ impl Client {
     /// Returns a writer, drain, or storage error when shutdown cannot finish.
     pub fn shutdown(&self) -> Result<()> {
         self.inner.shutdown(None).map_err(Error::from)
+    }
+}
+
+/// Policy for resolving an optional Run id.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ResumePolicy {
+    #[default]
+    Never,
+    Allow,
+    Must,
+}
+
+/// Options for creating or resuming one Run.
+#[derive(Clone, Debug)]
+pub struct RunOptions {
+    project: String,
+    run_id: Option<String>,
+    name: Option<String>,
+    resume: ResumePolicy,
+    id_was_missing: bool,
+}
+
+impl RunOptions {
+    pub fn new(project: impl Into<String>) -> Self {
+        Self {
+            project: project.into(),
+            run_id: None,
+            name: None,
+            resume: ResumePolicy::Never,
+            id_was_missing: true,
+        }
+    }
+
+    pub fn id(mut self, value: impl Into<String>) -> Self {
+        self.run_id = Some(value.into());
+        self.id_was_missing = false;
+        self
+    }
+
+    pub fn name(mut self, value: impl Into<String>) -> Self {
+        self.name = Some(value.into());
+        self
+    }
+
+    pub const fn resume(mut self, value: ResumePolicy) -> Self {
+        self.resume = value;
+        self
+    }
+}
+
+/// Writable handle for one running Run.
+pub struct RunHandle {
+    native: NativeRun,
+    #[expect(dead_code, reason = "retained for Run-scoped lifecycle operations")]
+    client: Arc<NativeClient>,
+}
+
+impl RunHandle {
+    pub fn run_id(&self) -> &RunId {
+        &self.native.run_id
+    }
+
+    pub fn project_id(&self) -> &ProjectId {
+        &self.native.project_id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.native.name
+    }
+
+    pub const fn status(&self) -> RunStatus {
+        self.native.status
     }
 }
 
