@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::config::{CatalogBackend, S3Options};
 use crate::engine::client::NativeClient;
@@ -167,6 +167,7 @@ impl Client {
         Ok(RunHandle {
             native,
             client: Arc::clone(&self.inner),
+            lifecycle: Arc::new(Mutex::new(FacadeRunState::Open)),
         })
     }
 
@@ -300,8 +301,26 @@ impl RunOptions {
 #[derive(Clone)]
 pub struct RunHandle {
     native: Arc<NativeRun>,
-    #[expect(dead_code, reason = "retained for Run-scoped lifecycle operations")]
     client: Arc<NativeClient>,
+    lifecycle: Arc<Mutex<FacadeRunState>>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FinalizationStage {
+    Lifecycle,
+    Flush,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FacadeRunState {
+    Open,
+    Finalizing {
+        outcome: RunStatus,
+        stage: FinalizationStage,
+    },
+    Complete {
+        outcome: RunStatus,
+    },
 }
 
 impl RunHandle {
@@ -342,9 +361,73 @@ impl RunHandle {
         if metrics.is_empty() {
             return Err(Error::InvalidMetricMapping);
         }
+        let lifecycle = self.lifecycle.lock().map_err(|_| Error::Storage)?;
+        if !matches!(*lifecycle, FacadeRunState::Open) {
+            return Err(Error::RunClosed {
+                run_id: self.run_id().as_str().to_owned(),
+            });
+        }
         self.native
             .log_metrics_with_cursor(metrics, options.step.map(Step::new), options.commit)
             .map_err(Error::from)
+    }
+
+    pub fn finish(&self) -> Result<()> {
+        self.finalize(RunStatus::Finished)
+    }
+
+    pub fn fail(&self) -> Result<()> {
+        self.finalize(RunStatus::Failed)
+    }
+
+    pub fn diagnostics(&self) -> ClientDiagnostics {
+        self.client.diagnostics().into()
+    }
+
+    fn finalize(&self, requested: RunStatus) -> Result<()> {
+        let mut lifecycle = self.lifecycle.lock().map_err(|_| Error::Storage)?;
+        let stage = match *lifecycle {
+            FacadeRunState::Open => {
+                *lifecycle = FacadeRunState::Finalizing {
+                    outcome: requested,
+                    stage: FinalizationStage::Lifecycle,
+                };
+                FinalizationStage::Lifecycle
+            }
+            FacadeRunState::Finalizing { outcome, .. } | FacadeRunState::Complete { outcome }
+                if outcome != requested =>
+            {
+                return Err(Error::TerminalOutcomeConflict {
+                    selected: outcome,
+                    requested,
+                });
+            }
+            FacadeRunState::Finalizing { stage, .. } => stage,
+            FacadeRunState::Complete { .. } => return Ok(()),
+        };
+        let result = match stage {
+            FinalizationStage::Lifecycle => match requested {
+                RunStatus::Finished => self.client.finish_run(&self.native.run_id).map(|_| ()),
+                RunStatus::Failed => self.client.fail_run(&self.native.run_id).map(|_| ()),
+                RunStatus::Running => unreachable!("finalization outcome must be terminal"),
+            },
+            FinalizationStage::Flush => self.client.flush_run_data(&self.native.run_id, None),
+        };
+        match result {
+            Ok(()) => {
+                *lifecycle = FacadeRunState::Complete { outcome: requested };
+                Ok(())
+            }
+            Err(error @ crate::engine::EngineError::MetricFlush { .. })
+            | Err(error @ crate::engine::EngineError::MetricFlushTimeout) => {
+                *lifecycle = FacadeRunState::Finalizing {
+                    outcome: requested,
+                    stage: FinalizationStage::Flush,
+                };
+                Err(error.into())
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn run_id(&self) -> &RunId {
@@ -360,7 +443,18 @@ impl RunHandle {
     }
 
     pub fn status(&self) -> RunStatus {
-        self.native.status
+        self.lifecycle
+            .lock()
+            .ok()
+            .and_then(|state| match *state {
+                FacadeRunState::Finalizing {
+                    outcome,
+                    stage: FinalizationStage::Flush,
+                }
+                | FacadeRunState::Complete { outcome } => Some(outcome),
+                _ => None,
+            })
+            .unwrap_or(self.native.status)
     }
 }
 

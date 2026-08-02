@@ -254,7 +254,7 @@ candidates.
 - [x] Default explicit-step `commit` to false and implicit-step `commit` to
   true. Start a new Run at step zero, resume from the greatest persisted step,
   and reject committed-step regression.
-- [ ] Make matching terminal operations retry incomplete drain/flush work.
+- [x] Make matching terminal operations retry incomplete drain/flush work.
   Return a typed error for a conflicting terminal outcome and never hide a
   finalization error in `Drop`.
 - [ ] Cover Project get-or-create races, resume modes, cloned-handle races,

@@ -283,6 +283,91 @@ fn run_handle_is_clone_send_and_sync() {
 }
 
 #[test]
+fn matching_terminal_calls_are_idempotent_and_conflicts_are_typed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let client = Client::builder(root.path()).open()?;
+    let run = client.start_run(RunOptions::new("demo").id("run-1"))?;
+    run.log([("loss", 1.0)])?;
+    let left = run.clone();
+    let right = run.clone();
+
+    let left_finish = std::thread::spawn(move || left.finish());
+    let right_finish = std::thread::spawn(move || right.finish());
+    left_finish
+        .join()
+        .expect("finish thread should not panic")?;
+    right_finish
+        .join()
+        .expect("finish thread should not panic")?;
+
+    assert_eq!(run.status(), seex::RunStatus::Finished);
+    assert!(matches!(
+        run.fail(),
+        Err(Error::TerminalOutcomeConflict {
+            selected: seex::RunStatus::Finished,
+            requested: seex::RunStatus::Failed
+        })
+    ));
+    assert!(matches!(
+        run.log([("loss", 2.0)]),
+        Err(Error::RunClosed { .. })
+    ));
+    client.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn matching_terminal_call_retries_an_incomplete_flush() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let client = Client::builder(root.path()).open()?;
+    let run = client.start_run(RunOptions::new("demo").id("run-1"))?;
+    run.log([("loss", 1.0)])?;
+    wait_for_drain(&client);
+    let metric_points_path = root.path().join(".seex/data/main/metric_points");
+    fs::create_dir_all(
+        metric_points_path
+            .parent()
+            .expect("data parent should exist"),
+    )?;
+    if metric_points_path.is_dir() {
+        fs::remove_dir_all(&metric_points_path)?;
+    }
+    fs::write(&metric_points_path, b"not a directory")?;
+
+    assert!(matches!(run.finish(), Err(Error::MetricFlushFailed)));
+    assert_eq!(run.status(), seex::RunStatus::Finished);
+    assert!(matches!(
+        run.fail(),
+        Err(Error::TerminalOutcomeConflict { .. })
+    ));
+    fs::remove_file(&metric_points_path)?;
+    run.finish()?;
+    run.finish()?;
+    client.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn dropping_run_handle_does_not_finalize_the_run() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let client = Client::builder(root.path()).open()?;
+    let run = client.start_run(RunOptions::new("demo").id("run-1"))?;
+    let run_id = run.run_id().clone();
+    drop(run);
+    client.shutdown()?;
+
+    let reader = Reader::builder(root.path()).open()?;
+    let stored = reader
+        .runs(&seex::ProjectId::from_string("demo"))?
+        .into_iter()
+        .find(|run| run.run_id == run_id)
+        .expect("running Run should remain stored");
+    assert_eq!(stored.status, seex::RunStatus::Running);
+    Ok(())
+}
+
+#[test]
 fn cloned_handles_share_one_implicit_cursor() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let client = Client::builder(root.path()).open()?;
