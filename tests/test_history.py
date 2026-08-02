@@ -53,8 +53,11 @@ def test_history_rejects_invalid_range_and_point_limit(tmp_path: pathlib.Path) -
     record = _record(tmp_path)
     with pytest.raises(ValueError, match="non-empty"):
         record.history("loss", start=2, end=2)
-    with pytest.raises(ValueError, match="at least 2"):
-        record.history("loss", max_points=1)
+    for max_points in (-1, 0, 1):
+        with pytest.raises(ValueError, match="at least 2"):
+            record.history("loss", max_points=max_points)
+    with pytest.raises(ValueError, match="out of range"):
+        record.history("loss", max_points=2**128)
     with pytest.raises(TypeError, match="max_points"):
         record.history("loss", max_points=True)
 

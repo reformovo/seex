@@ -1,7 +1,7 @@
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyCapsule;
-use pyo3::types::{PyAny, PyBool, PyDateTime, PyDelta};
+use pyo3::types::{PyAny, PyBool, PyDateTime, PyDelta, PyInt};
 use seex::{
     EvidenceCompleteness, EvidenceReason, MetricAxis, MetricQuery, MetricRange, MetricSeries,
     RelativeTime, Step, Timestamp,
@@ -210,10 +210,22 @@ fn point_limit(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<usize>> {
             "max_points must be an integer, not bool",
         ));
     }
-    value
-        .extract::<usize>()
+    if !value.is_instance_of::<PyInt>() {
+        return Err(PyTypeError::new_err(
+            "max_points must be an integer or None",
+        ));
+    }
+    let value = value
+        .extract::<i128>()
+        .map_err(|_| PyValueError::new_err("max_points is out of range"))?;
+    if value < 2 {
+        return Err(PyValueError::new_err(format!(
+            "max_points must be at least 2, got {value}"
+        )));
+    }
+    usize::try_from(value)
         .map(Some)
-        .map_err(|_| PyTypeError::new_err("max_points must be an integer or None"))
+        .map_err(|_| PyValueError::new_err("max_points is out of range"))
 }
 
 fn reason_name(reason: &EvidenceReason) -> &'static str {
