@@ -59,7 +59,6 @@ def test_api_compares_and_ranks_run_evidence(tmp_path: pathlib.Path) -> None:
         run = _seex._start_run(project="project-1", dir=tmp_path, id=run_id)
         run.log({"loss": loss})
         run.finish()
-        del run
     api = _seex.Api(tmp_path)
 
     comparison = api.compare_runs(

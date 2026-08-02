@@ -114,6 +114,20 @@ def test_target_run_rejects_oversized_mapping_atomically(tmp_path: pathlib.Path)
     assert reader.list_metrics("run-1")[0].metric_key == "accepted"
 
 
+def test_finished_run_releases_native_resources_before_python_drop(tmp_path: pathlib.Path) -> None:
+    from seex import _seex
+
+    first = _seex._start_run(project="project-1", dir=tmp_path, id="first")
+    first.finish()
+    second = _seex._start_run(project="project-1", dir=tmp_path, id="second")
+    second.finish()
+
+    api = _seex.Api(tmp_path)
+    assert [run.run_id for run in api.runs("project-1")] == ["first", "second"]
+    assert first.status == "finished"
+    assert first.diagnostics().writer_state == "closed"
+
+
 @pytest.mark.parametrize(
     ("data", "error_type"),
     [

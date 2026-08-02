@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -16,31 +16,41 @@ use crate::sdk::settings::PySettings;
 
 #[pyclass(name = "_Run", module = "seex._seex", unsendable)]
 pub struct PyTargetRun {
-    pub(crate) client: Client,
-    pub(crate) handle: RunHandle,
-    client_closed: Cell<bool>,
+    client: RefCell<Option<Client>>,
+    handle: RefCell<Option<RunHandle>>,
+    run_id: String,
+    project_id: String,
+    name: String,
+    terminal: Cell<Option<RunStatus>>,
+    final_diagnostics: RefCell<Option<seex::ClientDiagnostics>>,
 }
 
 #[pymethods]
 impl PyTargetRun {
     #[getter]
     fn run_id(&self) -> &str {
-        self.handle.run_id().as_str()
+        &self.run_id
     }
 
     #[getter]
     fn project_id(&self) -> &str {
-        self.handle.project_id().as_str()
+        &self.project_id
     }
 
     #[getter]
     fn name(&self) -> &str {
-        self.handle.name()
+        &self.name
     }
 
     #[getter]
     fn status(&self) -> &'static str {
-        match self.handle.status() {
+        let status = self.terminal.get().unwrap_or_else(|| {
+            self.handle
+                .borrow()
+                .as_ref()
+                .map_or(RunStatus::Running, RunHandle::status)
+        });
+        match status {
             RunStatus::Running => "running",
             RunStatus::Finished => "finished",
             RunStatus::Failed => "failed",
@@ -62,11 +72,23 @@ impl PyTargetRun {
         if let Some(commit) = commit {
             options = options.commit(commit);
         }
-        self.handle.log_with(metrics, options).map_err(sdk_error)
+        self.handle
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| RunClosedError::new_err("Run is closed"))?
+            .log_with(metrics, options)
+            .map_err(sdk_error)
     }
 
-    fn diagnostics(&self) -> PyDiagnostics {
-        self.handle.diagnostics().into()
+    fn diagnostics(&self) -> PyResult<PyDiagnostics> {
+        if let Some(handle) = self.handle.borrow().as_ref() {
+            return Ok(handle.diagnostics().into());
+        }
+        self.final_diagnostics
+            .borrow()
+            .clone()
+            .map(PyDiagnostics::from)
+            .ok_or_else(|| SeexError::new_err("Run diagnostics are unavailable"))
     }
 
     #[pyo3(signature = (exit_code=None))]
@@ -95,15 +117,47 @@ impl PyTargetRun {
 
 impl PyTargetRun {
     fn finalize(&self, exit_code: Option<i64>) -> seex::Result<()> {
-        if exit_code.is_none_or(|value| value == 0) {
-            self.handle.finish()?;
+        let requested = if exit_code.is_none_or(|value| value == 0) {
+            RunStatus::Finished
         } else {
-            self.handle.fail()?;
+            RunStatus::Failed
+        };
+        if let Some(selected) = self.terminal.get() {
+            return if selected == requested {
+                Ok(())
+            } else {
+                Err(seex::Error::TerminalOutcomeConflict {
+                    selected,
+                    requested,
+                })
+            };
         }
-        if !self.client_closed.get() {
-            self.client.shutdown()?;
-            self.client_closed.set(true);
+        {
+            let handle = self.handle.borrow();
+            let handle = handle.as_ref().ok_or(seex::Error::Storage)?;
+            match requested {
+                RunStatus::Finished => handle.finish()?,
+                RunStatus::Failed => handle.fail()?,
+                RunStatus::Running => unreachable!("requested outcome is terminal"),
+            }
         }
+        self.client
+            .borrow()
+            .as_ref()
+            .ok_or(seex::Error::Storage)?
+            .shutdown()?;
+        let diagnostics = self
+            .handle
+            .borrow()
+            .as_ref()
+            .ok_or(seex::Error::Storage)?
+            .diagnostics();
+        self.final_diagnostics.replace(Some(diagnostics));
+        self.terminal.set(Some(requested));
+        let handle = self.handle.borrow_mut().take();
+        let client = self.client.borrow_mut().take();
+        drop(handle);
+        drop(client);
         Ok(())
     }
 }
@@ -133,10 +187,17 @@ pub fn start_run(
         options = options.name(name);
     }
     let handle = client.start_run(options).map_err(sdk_error)?;
+    let run_id = handle.run_id().as_str().to_owned();
+    let project_id = handle.project_id().as_str().to_owned();
+    let name = handle.name().to_owned();
     Ok(PyTargetRun {
-        client,
-        handle,
-        client_closed: Cell::new(false),
+        client: RefCell::new(Some(client)),
+        handle: RefCell::new(Some(handle)),
+        run_id,
+        project_id,
+        name,
+        terminal: Cell::new(None),
+        final_diagnostics: RefCell::new(None),
     })
 }
 
