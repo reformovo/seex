@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -39,10 +39,17 @@ impl MetricReporter {
     pub fn open_with_capacity(connection: Arc<Mutex<ProjectConnection>>, capacity: usize) -> Self {
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let diagnostics = Arc::new(MetricReporterDiagnosticsInner::default());
+        let queued_points = Arc::new(AtomicUsize::new(0));
         let worker_diagnostics = Arc::clone(&diagnostics);
         let failure_diagnostics = Arc::clone(&diagnostics);
+        let worker_queued_points = Arc::clone(&queued_points);
         let worker = std::thread::spawn(move || {
-            let result = metric_worker(connection, receiver, worker_diagnostics);
+            let result = metric_worker(
+                connection,
+                receiver,
+                worker_diagnostics,
+                worker_queued_points,
+            );
             if result.is_err() {
                 failure_diagnostics.set_writer_failed();
             }
@@ -54,6 +61,8 @@ impl MetricReporter {
                 diagnostics,
                 worker: Mutex::new(Some(worker)),
                 next_enqueue_sequence: AtomicU64::new(1),
+                queue_capacity: capacity,
+                queued_points,
             }),
         }
     }
@@ -65,6 +74,25 @@ impl MetricReporter {
         step: Step,
         value_f64: f64,
     ) -> Result<(), EngineError> {
+        self.report_metrics(
+            run_id,
+            vec![MetricValue {
+                metric_key,
+                step,
+                value_f64,
+            }],
+        )
+    }
+
+    pub fn report_metrics(
+        &self,
+        run_id: RunId,
+        metrics: Vec<MetricValue>,
+    ) -> Result<(), EngineError> {
+        let point_count = metrics.len();
+        if point_count == 0 || point_count > METRIC_BATCH_MAX_REPORTS {
+            return Err(EngineError::InvalidMetricBatch { count: point_count });
+        }
         let sender = self
             .inner
             .sender
@@ -84,16 +112,24 @@ impl MetricReporter {
         }
         let enqueue_sequence = self.inner.next_enqueue_sequence.load(Ordering::Relaxed);
         let timestamp_millis = chrono::Utc::now().timestamp_millis();
-        let report = MetricReport {
-            run_id,
-            metric_key,
-            step,
-            value_f64,
-            timestamp_millis,
-            enqueue_sequence,
-        };
-        self.inner.diagnostics.increment_pending();
-        match sender.try_send(report) {
+        if !self.inner.reserve_queue_points(point_count) {
+            self.inner.diagnostics.increment_queue_full();
+            return Err(EngineError::MetricQueueFull);
+        }
+        let reports = metrics
+            .into_iter()
+            .map(|metric| MetricReport {
+                run_id: run_id.clone(),
+                metric_key: metric.metric_key,
+                step: metric.step,
+                value_f64: metric.value_f64,
+                timestamp_millis,
+                enqueue_sequence,
+            })
+            .collect();
+        let batch = MetricBatch { reports };
+        self.inner.diagnostics.increment_pending_by(point_count);
+        match sender.try_send(batch) {
             Ok(()) => {
                 self.inner
                     .next_enqueue_sequence
@@ -102,12 +138,18 @@ impl MetricReporter {
                 Ok(())
             }
             Err(TrySendError::Full(_)) => {
-                self.inner.diagnostics.decrement_pending();
+                self.inner.release_queue_points(point_count);
+                self.inner
+                    .diagnostics
+                    .decrement_pending_by_usize(point_count);
                 self.inner.diagnostics.increment_queue_full();
                 Err(EngineError::MetricQueueFull)
             }
             Err(TrySendError::Disconnected(_)) => {
-                self.inner.diagnostics.decrement_pending();
+                self.inner.release_queue_points(point_count);
+                self.inner
+                    .diagnostics
+                    .decrement_pending_by_usize(point_count);
                 Err(EngineError::ClientClosed)
             }
         }
@@ -212,6 +254,7 @@ impl MetricReporter {
     #[cfg(test)]
     pub(crate) fn blocked_for_test(capacity: usize) -> Self {
         let (sender, receiver) = mpsc::sync_channel(capacity);
+        let queued_points = Arc::new(AtomicUsize::new(0));
         // Keep the receiver alive without draining it to simulate a blocked writer.
         std::mem::forget(receiver);
         Self {
@@ -220,16 +263,36 @@ impl MetricReporter {
                 diagnostics: Arc::new(MetricReporterDiagnosticsInner::default()),
                 worker: Mutex::new(None),
                 next_enqueue_sequence: AtomicU64::new(1),
+                queue_capacity: capacity,
+                queued_points,
             }),
         }
     }
 }
 
 struct MetricReporterInner {
-    sender: Mutex<Option<SyncSender<MetricReport>>>,
+    sender: Mutex<Option<SyncSender<MetricBatch>>>,
     diagnostics: Arc<MetricReporterDiagnosticsInner>,
     worker: Mutex<Option<JoinHandle<()>>>,
     next_enqueue_sequence: AtomicU64,
+    queue_capacity: usize,
+    queued_points: Arc<AtomicUsize>,
+}
+
+impl MetricReporterInner {
+    fn reserve_queue_points(&self, count: usize) -> bool {
+        self.queued_points
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                current
+                    .checked_add(count)
+                    .filter(|next| *next <= self.queue_capacity)
+            })
+            .is_ok()
+    }
+
+    fn release_queue_points(&self, count: usize) {
+        self.queued_points.fetch_sub(count, Ordering::AcqRel);
+    }
 }
 
 impl Drop for MetricReporterInner {
@@ -357,12 +420,13 @@ impl MetricReporterDiagnosticsInner {
         self.writer_state.load(Ordering::Relaxed) as u8 == WRITER_FAILED
     }
 
-    fn increment_pending(&self) {
-        self.pending_reports.fetch_add(1, Ordering::Relaxed);
+    fn increment_pending_by(&self, count: usize) {
+        self.pending_reports
+            .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
-    fn decrement_pending(&self) {
-        self.pending_reports.fetch_sub(1, Ordering::Relaxed);
+    fn decrement_pending_by_usize(&self, count: usize) {
+        self.decrement_pending_by(u64::try_from(count).unwrap_or(u64::MAX));
     }
 
     fn decrement_pending_by(&self, count: u64) {
@@ -426,6 +490,16 @@ struct MetricReport {
     enqueue_sequence: u64,
 }
 
+pub struct MetricValue {
+    pub metric_key: MetricKey,
+    pub step: Step,
+    pub value_f64: f64,
+}
+
+struct MetricBatch {
+    reports: Vec<MetricReport>,
+}
+
 fn take_mutex_value<T>(mutex: &Mutex<Option<T>>) -> Option<T> {
     let mut guard: MutexGuard<'_, Option<T>> = mutex.lock().ok()?;
     guard.take()
@@ -433,13 +507,15 @@ fn take_mutex_value<T>(mutex: &Mutex<Option<T>>) -> Option<T> {
 
 fn metric_worker(
     connection: Arc<Mutex<ProjectConnection>>,
-    receiver: mpsc::Receiver<MetricReport>,
+    receiver: mpsc::Receiver<MetricBatch>,
     diagnostics: Arc<MetricReporterDiagnosticsInner>,
+    queued_points: Arc<AtomicUsize>,
 ) -> Result<(), EngineError> {
     let mut next_ingested_at_millis = chrono::Utc::now().timestamp_millis();
-    while let Ok(first_report) = receiver.recv() {
-        let mut batch = vec![first_report];
-        collect_metric_batch(&receiver, &mut batch);
+    while let Ok(first_batch) = receiver.recv() {
+        let mut batch = first_batch.reports;
+        queued_points.fetch_sub(batch.len(), Ordering::AcqRel);
+        collect_metric_batch(&receiver, &mut batch, &queued_points);
         let batch_len = u64::try_from(batch.len()).unwrap_or(u64::MAX);
         match write_metric_batch_with_retries(
             &connection,
@@ -467,18 +543,28 @@ fn metric_worker(
     Ok(())
 }
 
-fn collect_metric_batch(receiver: &mpsc::Receiver<MetricReport>, batch: &mut Vec<MetricReport>) {
+fn collect_metric_batch(
+    receiver: &mpsc::Receiver<MetricBatch>,
+    batch: &mut Vec<MetricReport>,
+    queued_points: &AtomicUsize,
+) {
     let deadline = Instant::now() + METRIC_BATCH_MAX_AGE;
     while batch.len() < METRIC_BATCH_MAX_REPORTS {
         match receiver.try_recv() {
-            Ok(report) => batch.push(report),
+            Ok(next) => {
+                queued_points.fetch_sub(next.reports.len(), Ordering::AcqRel);
+                batch.extend(next.reports);
+            }
             Err(mpsc::TryRecvError::Empty) => {
                 let now = Instant::now();
                 if now >= deadline {
                     return;
                 }
                 match receiver.recv_timeout(deadline - now) {
-                    Ok(report) => batch.push(report),
+                    Ok(next) => {
+                        queued_points.fetch_sub(next.reports.len(), Ordering::AcqRel);
+                        batch.extend(next.reports);
+                    }
                     Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
                         return;
                     }
@@ -605,14 +691,105 @@ mod tests {
     }
 
     #[test]
-    fn report_metric_can_succeed_after_queue_full_error() {
-        let (sender, receiver) = mpsc::sync_channel(1);
+    fn report_metrics_reserves_point_capacity_atomically() {
+        let reporter = MetricReporter::blocked_for_test(3);
+        let values = || {
+            vec![
+                MetricValue {
+                    metric_key: MetricKey::from_string("loss"),
+                    step: Step::new(0),
+                    value_f64: 0.25,
+                },
+                MetricValue {
+                    metric_key: MetricKey::from_string("accuracy"),
+                    step: Step::new(0),
+                    value_f64: 0.75,
+                },
+            ]
+        };
+
+        reporter
+            .report_metrics(RunId::from_string("run-1"), values())
+            .expect("two-point batch should fit");
+        let rejected = reporter.report_metrics(RunId::from_string("run-1"), values());
+
+        assert!(matches!(rejected, Err(EngineError::MetricQueueFull)));
+        let diagnostics = reporter.diagnostics();
+        assert_eq!(diagnostics.pending_reports, 2);
+        assert_eq!(diagnostics.queue_full_errors, 1);
+
+        assert!(matches!(
+            reporter.report_metrics(RunId::from_string("run-1"), Vec::new()),
+            Err(EngineError::InvalidMetricBatch { count: 0 })
+        ));
+        let oversized = (0..=METRIC_BATCH_MAX_REPORTS)
+            .map(|index| MetricValue {
+                metric_key: MetricKey::from_string(format!("metric-{index}")),
+                step: Step::new(0),
+                value_f64: index as f64,
+            })
+            .collect();
+        assert!(matches!(
+            reporter.report_metrics(RunId::from_string("run-1"), oversized),
+            Err(EngineError::InvalidMetricBatch { count }) if count == METRIC_BATCH_MAX_REPORTS + 1
+        ));
+    }
+
+    #[test]
+    fn report_metrics_enqueues_one_timestamped_batch() {
+        let (sender, receiver) = mpsc::sync_channel(4);
         let reporter = MetricReporter {
             inner: Arc::new(MetricReporterInner {
                 sender: Mutex::new(Some(sender)),
                 diagnostics: Arc::new(MetricReporterDiagnosticsInner::default()),
                 worker: Mutex::new(None),
                 next_enqueue_sequence: AtomicU64::new(1),
+                queue_capacity: 4,
+                queued_points: Arc::new(AtomicUsize::new(0)),
+            }),
+        };
+        reporter
+            .report_metrics(
+                RunId::from_string("run-1"),
+                vec![
+                    MetricValue {
+                        metric_key: MetricKey::from_string("loss"),
+                        step: Step::new(0),
+                        value_f64: 0.25,
+                    },
+                    MetricValue {
+                        metric_key: MetricKey::from_string("accuracy"),
+                        step: Step::new(0),
+                        value_f64: 0.75,
+                    },
+                ],
+            )
+            .expect("batch should enter the queue");
+
+        let batch = receiver.try_recv().expect("one batch should be queued");
+        assert_eq!(batch.reports.len(), 2);
+        assert_eq!(
+            batch.reports[0].timestamp_millis,
+            batch.reports[1].timestamp_millis
+        );
+        assert_eq!(
+            batch.reports[0].enqueue_sequence,
+            batch.reports[1].enqueue_sequence
+        );
+    }
+
+    #[test]
+    fn report_metric_can_succeed_after_queue_full_error() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let queued_points = Arc::new(AtomicUsize::new(0));
+        let reporter = MetricReporter {
+            inner: Arc::new(MetricReporterInner {
+                sender: Mutex::new(Some(sender)),
+                diagnostics: Arc::new(MetricReporterDiagnosticsInner::default()),
+                worker: Mutex::new(None),
+                next_enqueue_sequence: AtomicU64::new(1),
+                queue_capacity: 1,
+                queued_points,
             }),
         };
 
@@ -634,11 +811,12 @@ mod tests {
             Err(EngineError::MetricQueueFull)
         ));
 
-        let first_report = receiver
+        let first_batch = receiver
             .try_recv()
             .expect("queued report should be available");
-        assert_eq!(first_report.enqueue_sequence, 1);
-        reporter.inner.diagnostics.decrement_pending();
+        assert_eq!(first_batch.reports[0].enqueue_sequence, 1);
+        reporter.inner.release_queue_points(1);
+        reporter.inner.diagnostics.decrement_pending_by(1);
         reporter
             .report_metric(
                 RunId::from_string("run-1"),
@@ -647,12 +825,12 @@ mod tests {
                 0.0625,
             )
             .expect("later report should enter the queue after capacity is freed");
-        let later_report = receiver
+        let later_batch = receiver
             .try_recv()
             .expect("later queued report should be available");
 
         let diagnostics = reporter.diagnostics();
-        assert_eq!(later_report.enqueue_sequence, 2);
+        assert_eq!(later_batch.reports[0].enqueue_sequence, 2);
         assert_eq!(diagnostics.queue_full_errors, 1);
         assert_eq!(diagnostics.pending_reports, 1);
     }
@@ -972,12 +1150,16 @@ mod tests {
         let (sender, receiver) = mpsc::sync_channel(METRIC_BATCH_MAX_REPORTS + 1);
         for step in 0..=METRIC_BATCH_MAX_REPORTS {
             sender
-                .try_send(metric_report(step))
+                .try_send(MetricBatch {
+                    reports: vec![metric_report(step)],
+                })
                 .expect("test channel should have capacity for queued reports");
         }
 
-        let mut batch = vec![receiver.recv().expect("first report should be queued")];
-        collect_metric_batch(&receiver, &mut batch);
+        let first = receiver.recv().expect("first report should be queued");
+        let mut batch = first.reports;
+        let queued_points = AtomicUsize::new(METRIC_BATCH_MAX_REPORTS);
+        collect_metric_batch(&receiver, &mut batch, &queued_points);
 
         assert_eq!(batch.len(), METRIC_BATCH_MAX_REPORTS);
         assert!(

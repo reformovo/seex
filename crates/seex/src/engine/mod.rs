@@ -50,6 +50,8 @@ pub enum EngineError {
     MetricQueryMaxPointsTooLarge { max_points: usize },
     #[error("metric queue is full")]
     MetricQueueFull,
+    #[error("metric batch must contain between 1 and 8192 points, got {count}")]
+    InvalidMetricBatch { count: usize },
     #[error("metric writer failed: {message}")]
     MetricWriterFailed { message: String },
     #[error("metric drain timed out")]

@@ -12,7 +12,7 @@ use crate::engine::bootstrap::{
     open_existing_native_connection_with_config, open_native_connection_with_config,
 };
 use crate::engine::query::NativeQueryStore;
-use crate::engine::reporting::{MetricReporter, MetricReporterDiagnostics};
+use crate::engine::reporting::{MetricReporter, MetricReporterDiagnostics, MetricValue};
 use crate::engine::time::current_timestamp;
 use crate::model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
 use crate::model::run::{Run, RunId, RunStatus};
@@ -632,12 +632,28 @@ impl NativeRun {
         step: i64,
         value_f64: f64,
     ) -> Result<(), EngineError> {
+        self.log_metrics_at_step(
+            vec![(MetricKey::from_string(metric_key), value_f64)],
+            Step::new(step),
+        )
+    }
+
+    pub fn log_metrics_at_step(
+        &self,
+        metrics: Vec<(MetricKey, f64)>,
+        step: Step,
+    ) -> Result<(), EngineError> {
         self.active_run.with_open_admission(&self.run_id, || {
-            self.reporter.report_metric(
+            self.reporter.report_metrics(
                 self.run_id.clone(),
-                MetricKey::from_string(metric_key),
-                Step::new(step),
-                value_f64,
+                metrics
+                    .into_iter()
+                    .map(|(metric_key, value_f64)| MetricValue {
+                        metric_key,
+                        step,
+                        value_f64,
+                    })
+                    .collect(),
             )
         })
     }
