@@ -1,13 +1,11 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::model::comparison::{
-    ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
-    EvidenceCompleteness, EvidenceReason, MetricComparisonResult, ObjectiveDirection,
-    ObjectiveEvidence, ObjectiveMetric, RankingEntry, RankingResult,
+use seex::{
+    ComparisonOutcome, ComparisonPreference, ComparisonResult, EvidenceCompleteness,
+    EvidenceReason, MetricKey, ObjectiveDirection, ObjectiveEvidence, ObjectiveMetric,
+    RankingEntry, RankingResult, RunStatus,
 };
-use crate::model::metric::MetricKey;
-use crate::model::run::RunStatus;
 
 #[derive(Clone)]
 #[pyclass(name = "ObjectiveMetric", module = "seex._seex", skip_from_py_object)]
@@ -111,83 +109,6 @@ impl From<ComparisonResult> for PyComparisonResult {
             normalized_improvement: result.normalized_improvement,
             outcome: result.outcome.map(outcome_value).map(str::to_owned),
             preference: preference_value(result.preference).to_owned(),
-        }
-    }
-}
-
-#[derive(Clone)]
-#[pyclass(
-    name = "_MetricComparisonResult",
-    module = "seex._seex",
-    skip_from_py_object
-)]
-pub struct PyMetricComparisonResult {
-    #[pyo3(get)]
-    metric_key: String,
-    candidate: PyObjectiveEvidence,
-    reference: PyObjectiveEvidence,
-    #[pyo3(get)]
-    completeness: String,
-    #[pyo3(get)]
-    raw_delta: Option<f64>,
-    #[pyo3(get)]
-    relative_delta: Option<f64>,
-}
-
-#[pymethods]
-impl PyMetricComparisonResult {
-    #[getter]
-    fn candidate(&self) -> PyObjectiveEvidence {
-        self.candidate.clone()
-    }
-
-    #[getter]
-    fn reference(&self) -> PyObjectiveEvidence {
-        self.reference.clone()
-    }
-}
-
-impl From<MetricComparisonResult> for PyMetricComparisonResult {
-    fn from(result: MetricComparisonResult) -> Self {
-        Self {
-            metric_key: result.metric_key.as_str().to_owned(),
-            candidate: result.candidate.into(),
-            reference: result.reference.into(),
-            completeness: completeness_value(result.completeness).to_owned(),
-            raw_delta: result.raw_delta,
-            relative_delta: result.relative_delta,
-        }
-    }
-}
-
-#[pyclass(name = "_ComparisonReport", module = "seex._seex")]
-pub struct PyComparisonReport {
-    primary: PyComparisonResult,
-    secondary: Vec<PyMetricComparisonResult>,
-}
-
-#[pymethods]
-impl PyComparisonReport {
-    #[getter]
-    fn primary(&self) -> PyComparisonResult {
-        self.primary.clone()
-    }
-
-    #[getter]
-    fn secondary(&self) -> Vec<PyMetricComparisonResult> {
-        self.secondary.clone()
-    }
-}
-
-impl From<ComparisonReport> for PyComparisonReport {
-    fn from(report: ComparisonReport) -> Self {
-        Self {
-            primary: report.primary.into(),
-            secondary: report
-                .secondary
-                .into_iter()
-                .map(PyMetricComparisonResult::from)
-                .collect(),
         }
     }
 }

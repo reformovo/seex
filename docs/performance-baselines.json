@@ -51,17 +51,17 @@
         "identity": "reader-1x1x1m-v3",
         "scale": {"runs": 1, "metrics": 1, "points_per_series": 1000000, "samples": 10}
       },
-      "revision": "9edd1cdb9c34f16b7064d782edfb0ce74ac2fad4",
+      "revision": "19f00aba232557dc71a155c3c137ff3bb3281df6",
       "stable_summary": {
         "verdict": "pass",
-        "elapsed_seconds": 11.26,
-        "combined_median_narrow_ns_per_query": 36483916.75,
-        "combined_median_full_ns_per_query": 211749041.75,
-        "combined_narrow_change": -0.004344,
-        "combined_full_change": -0.004946,
-        "maximum_capture_relative_mad": 0.018282
+        "elapsed_seconds": 9.79,
+        "combined_median_narrow_ns_per_query": 35543395.75,
+        "combined_median_full_ns_per_query": 122990781.25,
+        "combined_narrow_change": 0.001362,
+        "combined_full_change": -0.400675,
+        "maximum_capture_relative_mad": 0.013075
       },
-      "artifact_sha256": "b6f66cdbcea4a296be7094de7d08e98b323b60abf43093aa226d92e3e338d3c5"
+      "artifact_sha256": "e311128c2f436d1c04aad56f6d59b6ae12eed3353cc38b2d75566a6c44f0af9e"
     },
     "viewer.cpu.interactive_chart": {
       "fixture": {

@@ -11,10 +11,10 @@ from scripts import bench_log_persistence, bench_log_throughput, performance_gat
 
 class FakeRun:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, int, float]] = []
+        self.calls: list[tuple[dict[str, int | float], int | None]] = []
 
-    def log(self, key: str, step: int, value: float) -> None:
-        self.calls.append((key, step, value))
+    def log(self, data: dict[str, int | float], *, step: int | None = None) -> None:
+        self.calls.append((data, step))
 
 
 @pytest.mark.parametrize("mode", bench_log_throughput.MODES)
@@ -23,9 +23,12 @@ def test_admission_modes_count_points(mode: str) -> None:
 
     bench_log_throughput.log_reports(run, mode, 16)
 
-    assert len(run.calls) == 16
+    assert sum(len(data) for data, _ in run.calls) == 16
     if mode == "mapping_8":
-        assert {step for _, step, _ in run.calls} == {0, 1}
+        assert len(run.calls) == 2
+        assert {step for _, step in run.calls} == {0, 1}
+    elif mode == "implicit_single":
+        assert all(step is None for _, step in run.calls)
 
 
 def test_throughput_result_emits_raw_samples(capsys: pytest.CaptureFixture[str]) -> None:

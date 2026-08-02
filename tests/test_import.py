@@ -7,5 +7,11 @@ def test_import_seex() -> None:
     import seex
 
     assert hasattr(seex, "__all__")
-    assert seex.ArrowTable.__name__ == "ArrowTable"
-    assert "ArrowTable" in seex.__all__
+    assert seex.Api.__name__ == "Api"
+    assert seex.MetricSeries.__name__ == "MetricSeries"
+    assert seex.Run.__name__ == "Run"
+    assert seex.RunRecord.__name__ == "RunRecord"
+    assert seex.Settings.__name__ == "Settings"
+    assert "Client" not in seex.__all__
+    assert "ArrowTable" not in seex.__all__
+    assert "AlignedMetricResult" not in seex.__all__

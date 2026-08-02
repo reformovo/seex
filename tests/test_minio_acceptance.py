@@ -14,8 +14,7 @@ import uuid
 from typing import Literal
 
 import pytest
-
-from tests import helpers
+import seex
 
 _CatalogBackend = Literal["duckdb", "sqlite"]
 _CATALOG_BACKENDS: tuple[_CatalogBackend, ...] = ("duckdb", "sqlite")
@@ -48,76 +47,57 @@ def test_minio_s3_data_path_round_trips_catalog_backend(
     root_path = tmp_path / catalog_backend / "seex"
     prefix = f"seex-acceptance/{uuid.uuid4().hex}/{catalog_backend}"
     partition_prefix = prefix + "/main/metric_points/run_id=run-1/metric_key_encoded=train%252Floss/"
-    client = _open_minio_client(root_path, config, prefix, catalog_backend)
-    project = client.create_project("minio acceptance", project_id="project-1")
-    run = client.create_run(project.project_id, "baseline", run_id="run-1")
-    run.log("train/loss", 0, 0.25)
-    run.log("train/loss", 1, 0.125)
-    run.log("eval/accuracy", 0, 0.8)
-
-    active_points = helpers.wait_for_metric_points(client, run.run_id, "train/loss", expected_count=2)
-    helpers.wait_for_metric_points(
-        client,
-        run.run_id,
-        "eval/accuracy",
-        expected_count=1,
+    settings = _minio_settings(config, prefix, catalog_backend)
+    run = seex.init(
+        project="project-1",
+        dir=root_path,
+        id="run-1",
+        name="baseline",
+        settings=settings,
     )
-    discovered_projects = client.list_projects()
-    discovered_runs = client.list_runs(project.project_id, status="running", limit=1, offset=0)
-    active_metrics = client.list_metrics(run.run_id)
-    ranged_points = client.query_metric(run.run_id, "train/loss", start_step=0, end_step=1)
-    finished = client.finish_run(run.run_id)
-    terminal_points = client.query_metric(run.run_id, "train/loss")
-    summaries = client.query_metric_summaries([run.run_id], "train/loss")
-    metrics = client.list_metrics(run.run_id)
-    diagnostics = client.diagnostics()
+    run.log({"train/loss": 0.25, "eval/accuracy": 0.8}, step=0)
+    run.log({"train/loss": 0.125}, step=1)
+    run.finish()
+    diagnostics = run.diagnostics()
     terminal_keys = _list_minio_keys(config, partition_prefix)
-    client.flush_run_data(run.run_id)
-    retry_diagnostics = client.diagnostics()
+    run.finish()
+    retry_diagnostics = run.diagnostics()
     retry_keys = _list_minio_keys(config, partition_prefix)
-    client.shutdown()
 
-    reopened = _open_minio_client(root_path, config, prefix, catalog_backend)
-    reopened_run = reopened.get_run(finished.run_id)
-    reopened_points = reopened.query_metric(finished.run_id, "train/loss")
-    reopened.shutdown()
-
-    assert [point.value_f64 for point in active_points] == [0.25, 0.125]
-    assert [item.project_id for item in discovered_projects] == ["project-1"]
-    assert [item.run_id for item in discovered_runs] == ["run-1"]
-    assert [metric.metric_key for metric in active_metrics] == [
-        "eval/accuracy",
-        "train/loss",
-    ]
-    assert [point.step for point in ranged_points] == [0]
-    assert finished.status == "finished"
-    assert [point.step for point in terminal_points] == [0, 1]
-    assert [summary.effective_count for summary in summaries] == [2]
-    assert [summary.last_value_f64 for summary in summaries] == [0.125]
-    assert [metric.metric_key for metric in metrics] == [
-        "eval/accuracy",
-        "train/loss",
-    ]
+    with seex.Api(root_path, settings) as api:
+        assert [item.project_id for item in api.projects()] == ["project-1"]
+        assert [item.run_id for item in api.runs("project-1")] == ["run-1"]
+        record = api.run("project-1/run-1")
+        assert record is not None
+        assert record.status == "finished"
+        assert [point.step for point in record.history("train/loss", start=0, end=1).points] == [0]
+        assert [point.step for point in record.history("train/loss").points] == [0, 1]
+        assert [metric.metric_key for metric in record.metrics()] == [
+            "eval/accuracy",
+            "train/loss",
+        ]
+        summary = record.metric_summary("train/loss")
+        assert summary is not None
+        assert (summary.effective_count, summary.last_value_f64) == (2, 0.125)
     assert diagnostics.last_flush_run_id == "run-1"
     assert diagnostics.last_flush_status == "succeeded"
     assert any(key.endswith(".parquet") for key in terminal_keys)
     assert retry_diagnostics.last_flush_run_id == "run-1"
     assert retry_diagnostics.last_flush_status == "succeeded"
     assert any(key.endswith(".parquet") for key in retry_keys)
-    assert reopened_run.status == "finished"
-    assert [point.step for point in reopened_points] == [0, 1]
+    with seex.Api(root_path, settings) as reopened:
+        reopened_run = reopened.run("project-1/run-1")
+        assert reopened_run is not None
+        assert reopened_run.status == "finished"
+        assert [point.step for point in reopened_run.history("train/loss").points] == [0, 1]
 
 
-def _open_minio_client(
-    root_path: pathlib.Path,
+def _minio_settings(
     config: MinioConfig,
     prefix: str,
     catalog_backend: _CatalogBackend,
-):
-    import seex
-
-    return seex.init(
-        root_path,
+) -> seex.Settings:
+    return seex.Settings(
         data_path=f"s3://{config.bucket}/{prefix.strip('/')}",
         catalog_backend=catalog_backend,
         s3_endpoint=config.endpoint,

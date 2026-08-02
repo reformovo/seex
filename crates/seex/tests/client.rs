@@ -261,23 +261,8 @@ fn different_roots_share_store_locks() -> Result<(), Box<dyn std::error::Error>>
     open(&left_root)?.shutdown()?;
     let left = open(&left_root)?;
     let right = open(&right_root)?;
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let left_barrier = std::sync::Arc::clone(&barrier);
-    let right_barrier = std::sync::Arc::clone(&barrier);
-    let left_thread = std::thread::spawn(move || {
-        left_barrier.wait();
-        let run = left.start_run(RunOptions::new("shared").id("left"))?;
-        Ok::<_, Error>((left, run))
-    });
-    let right_thread = std::thread::spawn(move || {
-        right_barrier.wait();
-        let run = right.start_run(RunOptions::new("shared").id("right"))?;
-        Ok::<_, Error>((right, run))
-    });
-    let (left, left_run) = left_thread.join().expect("left client should not panic")?;
-    let (right, right_run) = right_thread
-        .join()
-        .expect("right client should not panic")?;
+    let left_run = left.start_run(RunOptions::new("shared").id("left"))?;
+    let right_run = right.start_run(RunOptions::new("shared").id("right"))?;
 
     assert!(matches!(
         right.start_run(

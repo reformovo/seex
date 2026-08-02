@@ -12,17 +12,17 @@ backed by Rust, PyO3, DuckDB, and DuckLake.
 Seex 0.1.0b0 beta surface:
 
 - discover projects, runs, metrics, and persisted metric points
-- query running runs from the writer client after reports reach storage
-- return Python objects or Arrow PyCapsule-compatible tables
+- log run-scoped numeric metric mappings with explicit or implicit steps
+- return Python objects or Arrow PyCapsule-compatible metric series
 - inspect existing stores through a dependency-free, read-only CLI
 - use DuckDB or SQLite catalogs with local or S3-compatible Parquet data
 - keep the Parquet schema as the long-term compatibility boundary
 
 Install the beta with `pip install seex==0.1.0b0`.
 
-Known limit: with the default DuckDB catalog, an independent client may not
-attach or refresh while a writer is active. Use the writer client for live
-queries or open independent readers after writer shutdown. See the
+Known limit: with the default DuckDB catalog, an independent reader may not
+attach or refresh while a writer is active. Open `Api` after Run finalization
+for portable behavior across catalog backends. See the
 [0.1.0b0 release notes](docs/release-notes/0.1.0b0.md) for validation details
 and other deferred capabilities.
 
@@ -31,27 +31,24 @@ Quickstart:
 ```python
 import seex
 
-client = seex.init()
-project = client.create_project("local training")
-run = client.create_run(project.project_id, "baseline")
-run.log("train/loss", 0, 0.25)
-client.finish_run(run.run_id)
+with seex.init(project="training", dir="runs", id="baseline") as run:
+    run.log({"train/loss": 0.25, "samples": 64}, step=0)
+    run.log({"train/loss": 0.125})  # Implicitly advances to step 1.
 
-projects = client.list_projects()
-runs = client.list_runs(project.project_id, status="finished", limit=20)
-metrics = client.list_metrics(run.run_id)
-points = client.query_metric(
-    run.run_id,
-    "train/loss",
-    start_step=0,
-    end_step=100,  # Exclusive: the query range is [0, 100).
-)
-table = client.query_metric_table(run.run_id, "train/loss")
-client.shutdown()
+with seex.Api("runs") as api:
+    projects = api.projects()
+    runs = api.runs("training")
+    record = api.run("training/baseline")
+    if record is not None:
+        metrics = record.metrics()
+        series = record.history("train/loss", start=0, end=100)
+        points = series.points
+        arrow_stream = series.__arrow_c_stream__()
 ```
 
-`ArrowTable` does not require PyArrow, pandas, or Polars. Consumers that support
-the Arrow PyCapsule protocol can import it through `__arrow_c_stream__`.
+`MetricSeries` does not require PyArrow, pandas, or Polars. Consumers that
+support the Arrow PyCapsule protocol can import its existing six-column metric
+point schema directly through `__arrow_c_stream__`.
 
 The `seex` command opens an existing store and never creates a missing one:
 
@@ -72,24 +69,28 @@ Machine-readable CLI success and error output uses JSON schema version 2.
 Autoresearch rankings may be limited to a repeated `--run <run-id>` subset;
 leaderboards rank the full selection before applying pagination.
 
-By default, Seex stores local state under `./.seex`. Pass an explicit
-root path when a project should use a different local store:
+By default, Seex stores local state under `./.seex` and uses the
+`"uncategorized"` project. Pass `dir` and `project` explicitly when needed:
 
 ```python
-client = seex.init("runs")
+run = seex.init(project="training", dir="runs")
 ```
+
+Use `resume=True` or `resume="allow"` to resume a matching active Run or create
+it when missing. `resume="must"` requires an explicit `id` and an existing
+resumable Run. The default, `resume=None`, creates a new Run.
 
 Seex does not discover or migrate legacy `.pulseon` state. Existing legacy
 directories remain untouched; initialize a new `.seex` store instead.
 
-The existing storage keywords remain available: `data_path`,
-`catalog_backend`, `catalog_path`, and `metric_queue_capacity`. `catalog_path`
-must be a local filesystem path. `data_path` may be local, or it may use an
-S3-compatible URI such as `s3://bucket/prefix`.
+`Settings` configures `data_path`, `catalog_backend`, `catalog_path`,
+`metric_queue_capacity`, and S3 connection fields. `catalog_path` must be a
+local filesystem path. `data_path` may be local or an S3-compatible URI such
+as `s3://bucket/prefix`. Credential values are redacted from `repr(settings)`.
 
 Project-local storage settings can live in `./.seex/config.toml`. Relative
 `data_path` and `catalog_path` values in this file are resolved from the project
-root passed to `seex.init(...)` or `seex --path`:
+root passed as `dir` to `seex.init(...)`, to `Api(...)`, or to `seex --path`:
 
 ```toml
 data_path = "s3://example-bucket/seex/demo"
@@ -103,23 +104,24 @@ path_style = true
 use_ssl = true
 ```
 
-Do not commit real S3 credentials. Explicit `seex.init(...)` keyword
-arguments override values from `config.toml`:
+Do not commit real S3 credentials. Explicit `Settings` values override values
+from `config.toml`:
 
 ```python
-client = seex.init(
+settings = seex.Settings(
     data_path="s3://example-bucket/seex/demo",
     s3_endpoint="https://s3.example.com",
     s3_access_key_id="<access-key-id>",
     s3_secret_access_key="<secret-access-key>",
     s3_path_style=True,
 )
+run = seex.init(project="training", dir="runs", settings=settings)
 ```
 
-For bounded teardown, stop active logging threads before calling
-`client.shutdown(timeout=...)`; Seex keeps admission open while bounded
-shutdown is draining, so concurrent `run.log(...)` calls can prevent that drain
-from completing before the timeout.
+`run.finish()` marks the Run finished; a non-zero exit code marks it failed.
+A normal context exit finishes the Run, while an exceptional exit marks it
+failed and preserves the original exception. Finalization drains accepted
+metrics and releases native writer resources.
 
 Architecture entry points:
 
@@ -133,11 +135,10 @@ Runtime extensions:
 
 - DuckLake is installed and loaded by the native engine because it is required
   for native storage.
-- DuckDB LTTB is optional and is not bundled into Seex wheels. Downsampling
-  first uses an already installed `lttb` extension. The CLI automatically runs
-  the official `INSTALL lttb FROM community; LOAD lttb;` flow when its default
-  200-point limit first requires downsampling. Python SDK queries remain
-  download-free unless `SEEX_LTTB_AUTO_INSTALL=1` is set explicitly.
+- DuckDB LTTB is optional and is not bundled into Seex wheels. Readers use an
+  available compatible `lttb` extension when applicable, but neither the SDK
+  nor CLI installs extensions implicitly. `max_points` always remains a strict
+  upper bound on returned points.
 - Seex embeds DuckDB 1.5.4 and delegates signed community-extension
   compatibility to DuckDB and the community extension repository rather than
   duplicating their platform matrix in Seex's generated CI. DuckDB extension

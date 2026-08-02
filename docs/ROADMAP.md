@@ -284,28 +284,35 @@ advanced a rolling baseline. See
 
 ### U4: Python Run, Api, CLI, and Arrow Surface
 
-U4 is the planned beta API reset. It does not retain the shipped public Client
+U4 is the beta API reset. It does not retain the shipped public Client
 as a compatibility layer.
 
-- [ ] Implement typed `seex.init(...) -> seex.Run` with the accepted
+- [x] Implement typed `seex.init(...) -> seex.Run` with the accepted
   project/id/name/resume/settings semantics and secret-redacted configuration.
-- [ ] Implement Mapping `Run.log`, context management, `finish(exit_code)`, and
+- [x] Implement Mapping `Run.log`, context management, `finish(exit_code)`, and
   advanced diagnostics over the Rust Run SDK. Preserve an original context
   exception and attach finalization failure as context.
-- [ ] Add read-only `seex.Api`, `RunRecord.history()`, metrics, summary,
+- [x] Add read-only `seex.Api`, `RunRecord.history()`, metrics, summary,
   comparison, and ranking over Reader. Start no writer for read-only use.
-- [ ] Limit `history()` axes to step, relative time, and timestamp. Require
+- [x] Limit `history()` axes to step, relative time, and timestamp. Require
   matching typed bounds and a caller-selected strict `max_points`; reject
   coercion and arbitrary metric x-axis joins.
-- [ ] Make Python `MetricSeries` implement Arrow PyCapsule streaming directly.
+- [x] Make Python `MetricSeries` implement Arrow PyCapsule streaming directly.
   Remove separate public table-query methods after every consumer migrates.
-- [ ] Move the CLI to public Rust/Python facades and remove calls to private
+- [x] Move the CLI to public Rust/Python facades and remove calls to private
   underscore PyO3 APIs. Preserve deterministic versioned JSON contracts.
-- [ ] Update Python type stubs and cover init/resume, Mapping validation,
+- [x] Update Python type stubs and cover init/resume, Mapping validation,
   context outcomes, Api discovery, range errors, evidence, Arrow, Reader parity,
   CLI JSON, and packaging smoke tests.
-- [ ] Pass Python formatting/lint, Pyright, pytest, Rust/PyO3 parity, wheel and
+- [x] Pass Python formatting/lint, Pyright, pytest, Rust/PyO3 parity, wheel and
   sdist smoke tests, then record affected reporting/query migration comparisons.
+
+U4 passed correctness and isolated wheel/sdist Acceptance at revision
+`19f00aba232557dc71a155c3c137ff3bb3281df6`. Reporting admission was a
+non-blocking Regression and durability was Inconclusive, so neither reporting
+baseline advanced. DuckDB Reader Step preservation passed; its rolling
+baseline advanced to the candidate revision. See
+[`python-api-performance-observations.md`](reference/python-api-performance-observations.md).
 
 ### U5: Single-Crate Convergence and Packaging
 

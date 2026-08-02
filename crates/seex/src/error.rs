@@ -22,6 +22,9 @@ pub enum Error {
     RunNotFound {
         run_id: String,
     },
+    DuplicateRunIdentity {
+        run_id: String,
+    },
     InvalidRunState {
         run_id: String,
     },
@@ -54,6 +57,12 @@ pub enum Error {
     MetricFlushTimeout,
     ClientClosed,
     UnsupportedQuery,
+    CatalogNotFound {
+        name: String,
+    },
+    LttbExtensionUnavailable {
+        message: String,
+    },
     Storage,
 }
 
@@ -69,6 +78,9 @@ impl fmt::Display for Error {
                 write!(formatter, "Run already has an active writer: {run_id}")
             }
             Self::RunNotFound { run_id } => write!(formatter, "Run not found: {run_id}"),
+            Self::DuplicateRunIdentity { run_id } => {
+                write!(formatter, "duplicate Run identity in request: {run_id}")
+            }
             Self::InvalidRunState { run_id } => {
                 write!(
                     formatter,
@@ -107,6 +119,10 @@ impl fmt::Display for Error {
             Self::MetricFlushTimeout => formatter.write_str("Seex metric flush timed out"),
             Self::ClientClosed => formatter.write_str("Seex client is closed"),
             Self::UnsupportedQuery => formatter.write_str("Reader query is not yet supported"),
+            Self::CatalogNotFound { name } => write!(formatter, "catalog not found: {name}"),
+            Self::LttbExtensionUnavailable { message } => {
+                write!(formatter, "DuckDB LTTB extension is unavailable: {message}")
+            }
             Self::Storage => formatter.write_str("Seex storage operation failed"),
         }
     }
@@ -122,6 +138,7 @@ impl From<crate::engine::EngineError> for Error {
             EngineError::RunAlreadyExists { run_id } => Self::RunAlreadyExists { run_id },
             EngineError::RunAlreadyActive { run_id } => Self::RunAlreadyActive { run_id },
             EngineError::RunNotFound { run_id } => Self::RunNotFound { run_id },
+            EngineError::DuplicateRunIdentity { run_id } => Self::DuplicateRunIdentity { run_id },
             EngineError::InvalidRunTransition { run_id, .. } => Self::InvalidRunState { run_id },
             EngineError::MetricQueueFull => Self::MetricQueueFull,
             EngineError::InvalidMetricBatch { count } => Self::MetricMappingTooLarge {
@@ -138,6 +155,12 @@ impl From<crate::engine::EngineError> for Error {
             EngineError::MetricFlush { .. } => Self::MetricFlushFailed,
             EngineError::MetricFlushTimeout => Self::MetricFlushTimeout,
             EngineError::ClientClosed => Self::ClientClosed,
+            EngineError::StorageFailure(crate::storage::StorageError::CatalogNotFound { name }) => {
+                Self::CatalogNotFound { name }
+            }
+            EngineError::StorageFailure(
+                crate::storage::StorageError::LttbExtensionUnavailable { message },
+            ) => Self::LttbExtensionUnavailable { message },
             _ => Self::Storage,
         }
     }

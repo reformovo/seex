@@ -7,13 +7,44 @@ import math
 import os
 import pathlib
 import shutil
+import time
 import typing
 from unittest import mock
 
 import pytest
+import seex
 from seex import cli
 
-from tests import helpers
+
+def _seed_run(
+    root: pathlib.Path,
+    project_id: str,
+    run_id: str,
+    *,
+    name: str | None = None,
+    metrics: typing.Iterable[tuple[str, int, float]] = (),
+    status: str = "finished",
+    settings: seex.Settings | None = None,
+) -> None:
+    run = seex.init(
+        project=project_id,
+        dir=root,
+        id=run_id,
+        name=name,
+        settings=settings,
+    )
+    for metric_key, step, value in metrics:
+        run.log({metric_key: value}, step=step)
+    if status == "finished":
+        run.finish()
+    elif status == "failed":
+        run.finish(1)
+    else:
+        deadline = time.monotonic() + 5.0
+        while run.diagnostics().pending_reports != 0:
+            if time.monotonic() >= deadline:
+                raise AssertionError("timed out waiting for CLI fixture metrics")
+            time.sleep(0.01)
 
 
 def test_cli_app_replaces_process_with_seex_app(
@@ -52,16 +83,15 @@ def test_cli_discovers_running_metric_points_through_all_read_commands(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("training", project_id="project-1")
-    run = client.create_run(project.project_id, "baseline", run_id="run-1")
-    run.log("train/loss", 0, 0.5)
-    run.log("train/loss", 1, 0.25)
-    helpers.wait_for_metric_points(client, run.run_id, "train/loss", expected_count=2)
-    client.shutdown()
+    _seed_run(
+        root_path,
+        "project-1",
+        "run-1",
+        name="baseline",
+        metrics=(("train/loss", 0, 0.5), ("train/loss", 1, 0.25)),
+        status="running",
+    )
     monkeypatch.chdir(root_path)
 
     commands = (
@@ -122,21 +152,18 @@ def test_cli_comparison_reports_require_baseline_and_preserve_candidate_order(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    first_project = client.create_project("first", project_id="project-1")
-    second_project = client.create_project("second", project_id="project-2")
-    baseline = client.create_run(first_project.project_id, "baseline", "baseline")
-    second_id = second_project.project_id
-    candidate_b = client.create_run(second_id, "candidate-b", "candidate-b")
-    candidate_a = client.create_run(second_id, "candidate-a", "candidate-a")
-    for run, value in ((baseline, 3.0), (candidate_b, 1.0), (candidate_a, 2.0)):
-        run.log("loss", 0, value)
-        run.log("throughput", 0, value * 10)
-        client.finish_run(run.run_id)
-    client.shutdown()
+    for project_id, run_id, value in (
+        ("project-1", "baseline", 3.0),
+        ("project-2", "candidate-b", 1.0),
+        ("project-2", "candidate-a", 2.0),
+    ):
+        _seed_run(
+            root_path,
+            project_id,
+            run_id,
+            metrics=(("loss", 0, value), ("throughput", 0, value * 10)),
+        )
 
     command = [
         "--path",
@@ -212,16 +239,9 @@ def test_cli_autoresearch_compare_uses_explicit_or_best_incumbent(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("research", project_id="project-1")
-    runs = [client.create_run(project.project_id, name, run_id=name) for name in ("candidate", "best", "worse")]
-    for run, value in zip(runs, (2.0, 1.0, 3.0), strict=True):
-        run.log("loss", 0, value)
-        client.finish_run(run.run_id)
-    client.shutdown()
+    for run_id, value in (("candidate", 2.0), ("best", 1.0), ("worse", 3.0)):
+        _seed_run(root_path, "project-1", run_id, metrics=(("loss", 0, value),))
     base = ["--path", str(root_path), "--format", "json", "autoresearch", "compare"]
 
     explicit = [
@@ -265,19 +285,21 @@ def test_cli_autoresearch_compare_reports_no_eligible_incumbent(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("research", project_id="project-1")
-    candidate = client.create_run(project.project_id, "candidate", "candidate")
-    candidate.log("loss", 0, 1.0)
-    candidate.log("memory", 0, 2.0)
-    helpers.wait_for_metric_points(client, candidate.run_id, "memory", expected_count=1)
-    running = client.create_run(project.project_id, "running", "running")
-    running.log("loss", 0, 0.5)
-    helpers.wait_for_metric_points(client, running.run_id, "loss", expected_count=1)
-    client.shutdown()
+    _seed_run(
+        root_path,
+        "project-1",
+        "candidate",
+        metrics=(("loss", 0, 1.0), ("memory", 0, 2.0)),
+        status="running",
+    )
+    _seed_run(
+        root_path,
+        "project-1",
+        "running",
+        metrics=(("loss", 0, 0.5),),
+        status="running",
+    )
 
     command = [
         "--path",
@@ -343,11 +365,7 @@ def test_cli_autoresearch_leaderboard_keeps_structured_ineligible_evidence(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("research", project_id="project-1")
     specifications = (
         ("tied-a", 1.0, "finished"),
         ("tied-b", 1.0, "finished"),
@@ -358,15 +376,8 @@ def test_cli_autoresearch_leaderboard_keeps_structured_ineligible_evidence(
         ("invalid", math.inf, "finished"),
     )
     for run_id, value, status in specifications:
-        run = client.create_run(project.project_id, run_id, run_id=run_id)
-        if value is not None:
-            run.log("loss", 0, value)
-        if status == "finished":
-            client.finish_run(run_id)
-        elif status == "failed":
-            client.fail_run(run_id)
-    helpers.wait_for_metric_points(client, "running", "loss", expected_count=1)
-    client.shutdown()
+        metrics = () if value is None else (("loss", 0, value),)
+        _seed_run(root_path, "project-1", run_id, metrics=metrics, status=status)
 
     command = [
         "--path",
@@ -429,16 +440,14 @@ def test_cli_autoresearch_leaderboard_paginates_after_ranking(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("research", project_id="project-1")
     for index in range(51):
-        run = client.create_run(project.project_id, str(index), run_id=f"run-{index}")
-        run.log("score", 0, float(51 - index))
-        client.finish_run(run.run_id)
-    client.shutdown()
+        _seed_run(
+            root_path,
+            "project-1",
+            f"run-{index}",
+            metrics=(("score", 0, float(51 - index)),),
+        )
     base = [
         "--path",
         str(root_path),
@@ -475,20 +484,11 @@ def test_cli_autoresearch_best_uses_stable_tie_break_and_returns_null(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("research", project_id="project-1")
     for run_id, value in (("zeta", 1.0), ("alpha", 1.0), ("worse", 2.0)):
-        run = client.create_run(project.project_id, run_id, run_id=run_id)
-        run.log("loss", 0, value)
-        client.finish_run(run_id)
-    failed = client.create_run(project.project_id, "failed", run_id="failed")
-    failed.log("loss", 0, 0.5)
-    client.fail_run(failed.run_id)
-    client.create_project("empty", project_id="project-2")
-    client.shutdown()
+        _seed_run(root_path, "project-1", run_id, metrics=(("loss", 0, value),))
+    _seed_run(root_path, "project-1", "failed", metrics=(("loss", 0, 0.5),), status="failed")
+    _seed_run(root_path, "project-2", "ineligible", status="failed")
     base = [
         "--path",
         str(root_path),
@@ -528,14 +528,9 @@ def test_cli_autoresearch_ranking_rejects_invalid_run_scopes(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    client.create_project("first", project_id="project-1")
-    second = client.create_project("second", project_id="project-2")
-    client.create_run(second.project_id, "foreign", run_id="foreign")
-    client.shutdown()
+    _seed_run(root_path, "project-1", "placeholder")
+    _seed_run(root_path, "project-2", "foreign", status="running")
     base = [
         "--path",
         str(root_path),
@@ -571,27 +566,28 @@ def test_cli_comparison_reports_partial_and_per_metric_evidence(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("evidence", project_id="project-1")
-    run_ids = ("baseline", "running", "failed", "missing", "invalid-secondary")
-    runs = {run_id: client.create_run(project.project_id, run_id, run_id) for run_id in run_ids}
-    runs["baseline"].log("loss", 0, 2.0)
-    runs["baseline"].log("memory", 0, 10.0)
-    client.finish_run("baseline")
-    runs["running"].log("loss", 0, 1.0)
-    runs["running"].log("memory", 0, 5.0)
-    helpers.wait_for_metric_points(client, "running", "memory", expected_count=1)
-    runs["failed"].log("loss", 0, 3.0)
-    client.fail_run("failed")
-    runs["missing"].log("memory", 0, 20.0)
-    client.finish_run("missing")
-    runs["invalid-secondary"].log("loss", 0, 4.0)
-    runs["invalid-secondary"].log("memory", 0, math.inf)
-    client.finish_run("invalid-secondary")
-    client.shutdown()
+    _seed_run(
+        root_path,
+        "project-1",
+        "baseline",
+        metrics=(("loss", 0, 2.0), ("memory", 0, 10.0)),
+    )
+    _seed_run(
+        root_path,
+        "project-1",
+        "running",
+        metrics=(("loss", 0, 1.0), ("memory", 0, 5.0)),
+        status="running",
+    )
+    _seed_run(root_path, "project-1", "failed", metrics=(("loss", 0, 3.0),), status="failed")
+    _seed_run(root_path, "project-1", "missing", metrics=(("memory", 0, 20.0),))
+    _seed_run(
+        root_path,
+        "project-1",
+        "invalid-secondary",
+        metrics=(("loss", 0, 4.0), ("memory", 0, math.inf)),
+    )
 
     command = [
         "--path",
@@ -644,15 +640,8 @@ def test_cli_comparison_reports_reject_unknown_run(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("evidence", project_id="project-1")
-    baseline = client.create_run(project.project_id, "baseline", "baseline")
-    baseline.log("loss", 0, 1.0)
-    client.finish_run("baseline")
-    client.shutdown()
+    _seed_run(root_path, "project-1", "baseline", metrics=(("loss", 0, 1.0),))
 
     status = cli.main(
         [
@@ -720,17 +709,15 @@ def test_cli_resolves_global_path_overrides_against_project(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "workspace" / "project"
-    client = seex.init(
-        root_path,
+    settings = seex.Settings(
         catalog_backend="sqlite",
         catalog_path=root_path / "storage" / "catalog.sqlite",
         data_path=root_path / "storage" / "data",
     )
-    project = client.create_project("training", project_id="project-1")
-    client.shutdown()
+    _seed_run(root_path, "project-1", "run-1", settings=settings)
+    project = seex.Api(root_path, settings).project("project-1")
+    assert project is not None
     monkeypatch.chdir(tmp_path)
 
     status = cli.main(
@@ -757,7 +744,7 @@ def test_cli_resolves_global_path_overrides_against_project(
         "data": [
             {
                 "created_at": project.created_at,
-                "name": "training",
+                "name": "project-1",
                 "project_id": "project-1",
             }
         ],
@@ -770,18 +757,9 @@ def test_cli_json_includes_pagination_and_metric_query_metadata(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("training", project_id="project-1")
-    first_run = client.create_run(project.project_id, "first", run_id="run-1")
-    first_run.log("loss", 0, 0.5)
-    client.finish_run(first_run.run_id)
-    second_run = client.create_run(project.project_id, "second", run_id="run-2")
-    second_run.log("loss", 0, 0.25)
-    client.finish_run(second_run.run_id)
-    client.shutdown()
+    _seed_run(root_path, "project-1", "run-1", name="first", metrics=(("loss", 0, 0.5),))
+    _seed_run(root_path, "project-1", "run-2", name="second", metrics=(("loss", 0, 0.25),))
 
     global_args = ["--path", str(root_path), "--format", "json"]
     assert cli.main([*global_args, "runs", "list", "project-1", "--limit", "1"]) == 0
@@ -814,16 +792,14 @@ def test_cli_json_normalizes_non_finite_metric_values(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("training", project_id="project-1")
-    run = client.create_run(project.project_id, "non-finite", run_id="run-1")
-    for step, value in enumerate((math.nan, math.inf, -math.inf)):
-        run.log("loss", step, value)
-    client.finish_run(run.run_id)
-    client.shutdown()
+    _seed_run(
+        root_path,
+        "project-1",
+        "run-1",
+        name="non-finite",
+        metrics=(("loss", step, value) for step, value in enumerate((math.nan, math.inf, -math.inf))),
+    )
 
     global_args = ["--path", str(root_path), "--format", "json"]
     assert cli.main([*global_args, "metrics", "query", "run-1", "loss", "--all"]) == 0
@@ -843,8 +819,6 @@ def test_cli_preserves_symlinked_project_path(
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     real_path = tmp_path / "real-project"
     real_path.mkdir()
     linked_path = tmp_path / "linked-project"
@@ -852,9 +826,7 @@ def test_cli_preserves_symlinked_project_path(
         linked_path.symlink_to(real_path, target_is_directory=True)
     except OSError as error:
         pytest.skip(f"directory symlinks are unavailable: {error}")
-    client = seex.init(linked_path)
-    client.create_project("linked", project_id="project-1")
-    client.shutdown()
+    _seed_run(linked_path, "project-1", "run-1")
 
     status = cli.main(["--path", str(linked_path), "projects", "list"])
 
@@ -888,33 +860,18 @@ def test_cli_metric_query_point_limits_are_mutually_exclusive() -> None:
     assert error_info.value.code == 2
 
 
-def test_cli_enables_lttb_auto_install_only_during_metric_query(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SEEX_LTTB_AUTO_INSTALL", "disabled")
-    client = mock.Mock()
+def test_cli_metric_query_uses_public_history() -> None:
+    api = mock.Mock()
+    api.projects.return_value = [mock.Mock(project_id="project-1")]
     point = mock.Mock(step=0, value_f64=0.5, timestamp="2026-07-15T00:00:00Z")
-    client.query_metric.side_effect = lambda *args, **kwargs: (
-        [point]
-        if os.environ.get("SEEX_LTTB_AUTO_INSTALL") == "1"
-        else pytest.fail("CLI query did not enable LTTB auto-install")
-    )
+    record = mock.Mock()
+    record.history.return_value = mock.Mock(points=[point], source_count=1, downsampled=False)
+    api.run.return_value = record
     args = cli._build_parser().parse_args(["metrics", "query", "run-1", "loss"])
 
-    cli._run(
-        typing.cast(
-            cli._seex.Client,  # type: ignore[reportPrivateImportUsage]
-            client,
-        ),
-        args,
-    )
+    cli._run_read(typing.cast(seex.Api, api), args)
 
-    assert os.environ["SEEX_LTTB_AUTO_INSTALL"] == "disabled"
-
-    monkeypatch.delenv("SEEX_LTTB_AUTO_INSTALL")
-    with cli._enable_lttb_auto_install():
-        assert os.environ["SEEX_LTTB_AUTO_INSTALL"] == "1"
-    assert "SEEX_LTTB_AUTO_INSTALL" not in os.environ
+    record.history.assert_called_once_with("loss", start=None, end=None, max_points=200)
 
 
 @pytest.mark.parametrize(
@@ -1037,21 +994,19 @@ def test_cli_sanitizes_config_credentials_and_catalog_paths(
     assert str(private_catalog.parent) not in error
 
 
-def test_cli_json_sanitizes_lttb_extension_path(
+def test_cli_metric_query_does_not_load_private_lttb_extension(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import seex
-
     root_path = tmp_path / "project"
-    client = seex.init(root_path)
-    project = client.create_project("training", project_id="project-1")
-    run = client.create_run(project.project_id, "long", run_id="run-1")
-    for step in range(201):
-        run.log("loss", step, float(step))
-    client.finish_run(run.run_id)
-    client.shutdown()
+    _seed_run(
+        root_path,
+        "project-1",
+        "run-1",
+        name="long",
+        metrics=(("loss", step, float(step)) for step in range(201)),
+    )
     private_extension = tmp_path / "private" / "tenant" / "missing-lttb.duckdb_extension"
     monkeypatch.setenv("SEEX_LTTB_EXTENSION_PATH", str(private_extension))
 
@@ -1068,20 +1023,14 @@ def test_cli_json_sanitizes_lttb_extension_path(
         ]
     )
 
-    assert status == 1
+    assert status == 0
     captured = capsys.readouterr()
-    assert captured.out == ""
-    error = json.loads(captured.err)["error"]
-    assert error["code"] == "lttb_extension_unavailable"
-    assert error["guidance"] == [
-        {"action": "query_all", "argument": "--all"},
-        {
-            "action": "load_local_extension",
-            "environment_variable": "SEEX_LTTB_EXTENSION_PATH",
-        },
-    ]
-    assert private_extension.name in error["message"]
-    assert str(private_extension.parent) not in captured.err
+    document = json.loads(captured.out)
+    assert document["kind"] == "metric_points"
+    assert document["meta"]["downsampled"] is True
+    assert document["meta"]["returned_row_count"] <= 200
+    assert str(private_extension) not in captured.out
+    assert captured.err == ""
 
     assert (
         cli.main(

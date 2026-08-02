@@ -3,16 +3,23 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::config::{CatalogBackend, S3Options};
+use crate::engine::comparison::compare_evidence;
+use crate::engine::query::NativeQueryStore;
+use crate::engine::ranking::rank_run_evidence;
 use crate::error::{Error, Result as SdkResult};
 use crate::model::alignment::{
     AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
     AlignmentViewport,
 };
-use crate::model::comparison::{EvidenceCompleteness, EvidenceReason};
+use crate::model::comparison::{
+    ComparisonResult, EvidenceCompleteness, EvidenceReason, ObjectiveEvidence, ObjectiveMetric,
+    RankingResult,
+};
 use crate::model::metric::{
     MetricAggregate, MetricKey, MetricPoint, MetricQuery as StorageMetricQuery, ReductionPolicy,
     Step,
@@ -23,12 +30,16 @@ use crate::storage::bootstrap::{NativeStorageConfig, open_existing_native_connec
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
 use crate::storage::{
     ParquetSource, ProjectConnection, ProjectMetricReader, SeriesDiagnostics,
-    StandaloneMetricReader,
+    StandaloneMetricReader, StorageError,
 };
 
 /// Builder for opening one existing native or standalone store read-only.
 pub struct ReaderBuilder {
     source: ReaderSource,
+    catalog_backend: Option<CatalogBackend>,
+    catalog_path: Option<PathBuf>,
+    data_path: Option<PathBuf>,
+    s3: S3Options,
 }
 
 enum ReaderSource {
@@ -40,6 +51,10 @@ impl ReaderBuilder {
     pub fn new(root_path: impl Into<PathBuf>) -> Self {
         Self {
             source: ReaderSource::Native(root_path.into()),
+            catalog_backend: None,
+            catalog_path: None,
+            data_path: None,
+            s3: S3Options::default(),
         }
     }
 
@@ -47,7 +62,35 @@ impl ReaderBuilder {
     pub fn parquet(source: impl Into<String>) -> Self {
         Self {
             source: ReaderSource::Parquet(source.into()),
+            catalog_backend: None,
+            catalog_path: None,
+            data_path: None,
+            s3: S3Options::default(),
         }
+    }
+
+    /// Selects the native catalog backend explicitly.
+    pub fn catalog_backend(mut self, value: CatalogBackend) -> Self {
+        self.catalog_backend = Some(value);
+        self
+    }
+
+    /// Selects the local native catalog path explicitly.
+    pub fn catalog_path(mut self, value: impl Into<PathBuf>) -> Self {
+        self.catalog_path = Some(value.into());
+        self
+    }
+
+    /// Selects the native Parquet data path explicitly.
+    pub fn data_path(mut self, value: impl Into<PathBuf>) -> Self {
+        self.data_path = Some(value.into());
+        self
+    }
+
+    /// Supplies connection-local S3 overrides for an S3 data path.
+    pub fn s3_options(mut self, value: S3Options) -> Self {
+        self.s3 = value;
+        self
     }
 
     /// Opens the configured store without starting a writer.
@@ -76,11 +119,19 @@ impl ReaderBuilder {
         };
         let resolved = resolve_init_config(
             &root_path,
-            None,
-            None,
-            None,
+            self.data_path,
+            self.catalog_backend.map(CatalogBackend::as_name),
+            self.catalog_path,
             1,
-            S3ConnectionOverrides::default(),
+            S3ConnectionOverrides {
+                endpoint: self.s3.endpoint,
+                access_key_id: self.s3.access_key_id,
+                secret_access_key: self.s3.secret_access_key,
+                session_token: self.s3.session_token,
+                region: self.s3.region,
+                path_style: self.s3.path_style,
+                use_ssl: self.s3.use_ssl,
+            },
         )
         .map_err(|_| Error::Configuration)?;
         let config = NativeStorageConfig::with_backend_and_s3_config(
@@ -91,7 +142,7 @@ impl ReaderBuilder {
             resolved.s3_connection,
         );
         let connection =
-            open_existing_native_connection_with_config(config).map_err(|_| Error::Storage)?;
+            open_existing_native_connection_with_config(config).map_err(public_storage_error)?;
         Ok(Reader {
             connection: Some(ProjectConnection::new(connection)),
             standalone: None,
@@ -125,6 +176,32 @@ struct DiagnosticsKey {
     project_id: Option<ProjectId>,
     run_id: RunId,
     metric_key: MetricKey,
+}
+
+#[derive(Clone, Copy)]
+struct AxisBounds {
+    start: Option<i64>,
+    end: Option<i64>,
+}
+
+impl AxisBounds {
+    const fn new(start: Option<i64>, end: Option<i64>) -> Self {
+        Self { start, end }
+    }
+
+    fn viewport(self) -> SdkResult<AlignmentViewport> {
+        let start = self.start.unwrap_or(i64::MIN);
+        let end = self
+            .end
+            .map(|value| value.checked_sub(1).ok_or(Error::UnsupportedQuery))
+            .transpose()?
+            .unwrap_or(i64::MAX);
+        AlignmentViewport::new(start, end).map_err(|_| Error::UnsupportedQuery)
+    }
+
+    fn contains(self, value: i64) -> bool {
+        self.start.is_none_or(|start| start <= value) && self.end.is_none_or(|end| value < end)
+    }
 }
 
 #[derive(Default)]
@@ -170,6 +247,20 @@ impl Reader {
         Ok(runs)
     }
 
+    /// Gets one Run only when it belongs to the requested Project.
+    pub fn run(&self, project_id: &ProjectId, run_id: &RunId) -> SdkResult<Option<Run>> {
+        let run = match self.native()?.get_run(run_id) {
+            Ok(run) => run,
+            Err(StorageError::RunNotFound { .. }) => return Ok(None),
+            Err(_) => return Err(Error::Storage),
+        };
+        if &run.project_id != project_id {
+            return Ok(None);
+        }
+        self.remember_runs(std::slice::from_ref(&run));
+        Ok(Some(run))
+    }
+
     /// Loads Desktop-selected Runs in request order.
     #[doc(hidden)]
     pub fn runs_for_desktop(&self, run_ids: &[RunId]) -> SdkResult<Vec<Run>> {
@@ -187,6 +278,79 @@ impl Reader {
         ProjectMetricReader::new(self.native()?)
             .list_metrics(&run.run_id, run.status)
             .map_err(|_| Error::Storage)
+    }
+
+    /// Gets one persisted Metric summary when the Run contains that Metric.
+    pub fn metric_summary(
+        &self,
+        run: &Run,
+        metric_key: &MetricKey,
+    ) -> SdkResult<Option<MetricAggregate>> {
+        self.remember_runs(std::slice::from_ref(run));
+        ProjectMetricReader::new(self.native()?)
+            .query_metric_summaries(std::slice::from_ref(&run.run_id), metric_key)
+            .map(|summaries| summaries.into_iter().next())
+            .map_err(|_| Error::Storage)
+    }
+
+    /// Compares two Runs using their last effective objective values.
+    pub fn compare_runs(
+        &self,
+        candidate_run_id: &RunId,
+        reference_run_id: &RunId,
+        objective: &ObjectiveMetric,
+    ) -> SdkResult<ComparisonResult> {
+        if candidate_run_id == reference_run_id {
+            return Err(Error::DuplicateRunIdentity {
+                run_id: candidate_run_id.as_str().to_owned(),
+            });
+        }
+        let mut evidence = self
+            .ranking_evidence(
+                &[candidate_run_id.clone(), reference_run_id.clone()],
+                objective,
+            )?
+            .into_iter();
+        let candidate = evidence.next().ok_or(Error::Storage)?.1;
+        let reference = evidence.next().ok_or(Error::Storage)?.1;
+        Ok(compare_evidence(objective, candidate, reference))
+    }
+
+    /// Ranks Runs by one objective while retaining incomplete evidence.
+    pub fn rank_runs(
+        &self,
+        run_ids: &[RunId],
+        objective: &ObjectiveMetric,
+    ) -> SdkResult<RankingResult> {
+        let mut seen = HashSet::with_capacity(run_ids.len());
+        for run_id in run_ids {
+            if !seen.insert(run_id) {
+                return Err(Error::DuplicateRunIdentity {
+                    run_id: run_id.as_str().to_owned(),
+                });
+            }
+        }
+        Ok(rank_run_evidence(
+            objective,
+            self.ranking_evidence(run_ids, objective)?,
+        ))
+    }
+
+    fn ranking_evidence(
+        &self,
+        run_ids: &[RunId],
+        objective: &ObjectiveMetric,
+    ) -> SdkResult<Vec<(Run, ObjectiveEvidence)>> {
+        let connection = self.native()?;
+        let runs = connection.get_runs(run_ids).map_err(|error| match error {
+            StorageError::RunNotFound { run_id } => Error::RunNotFound { run_id },
+            _ => Error::Storage,
+        })?;
+        self.remember_runs(&runs);
+        let evidence = NativeQueryStore::new(connection)
+            .objective_evidence_for_runs(&runs, objective)
+            .map_err(Error::from)?;
+        Ok(runs.into_iter().zip(evidence).collect())
     }
 
     /// Queries one axis with a strict caller-selected point bound.
@@ -272,39 +436,91 @@ impl Reader {
             MetricRange::Steps { start, end } => (
                 MetricAxis::Step,
                 AlignmentAxis::Step,
-                Some((start.value(), end.value())),
+                Some(AxisBounds::new(Some(start.value()), Some(end.value()))),
+            ),
+            MetricRange::StepsFrom { start } => (
+                MetricAxis::Step,
+                AlignmentAxis::Step,
+                Some(AxisBounds::new(Some(start.value()), None)),
+            ),
+            MetricRange::StepsUntil { end } => (
+                MetricAxis::Step,
+                AlignmentAxis::Step,
+                Some(AxisBounds::new(None, Some(end.value()))),
             ),
             MetricRange::RelativeTime { start, end } => (
                 MetricAxis::RelativeTime,
                 AlignmentAxis::ElapsedTime,
-                Some((start.as_millis(), end.as_millis())),
+                Some(AxisBounds::new(
+                    Some(start.as_millis()),
+                    Some(end.as_millis()),
+                )),
+            ),
+            MetricRange::RelativeTimeFrom { start } => (
+                MetricAxis::RelativeTime,
+                AlignmentAxis::ElapsedTime,
+                Some(AxisBounds::new(Some(start.as_millis()), None)),
+            ),
+            MetricRange::RelativeTimeUntil { end } => (
+                MetricAxis::RelativeTime,
+                AlignmentAxis::ElapsedTime,
+                Some(AxisBounds::new(None, Some(end.as_millis()))),
             ),
             MetricRange::Timestamps { start, end } => (
                 MetricAxis::Timestamp,
                 AlignmentAxis::ElapsedTime,
                 Some(if standalone {
-                    (start.as_millis(), end.as_millis())
+                    AxisBounds::new(Some(start.as_millis()), Some(end.as_millis()))
                 } else {
-                    (
+                    AxisBounds::new(
+                        Some(
+                            start
+                                .as_millis()
+                                .checked_sub(run_start)
+                                .ok_or(Error::UnsupportedQuery)?,
+                        ),
+                        Some(
+                            end.as_millis()
+                                .checked_sub(run_start)
+                                .ok_or(Error::UnsupportedQuery)?,
+                        ),
+                    )
+                }),
+            ),
+            MetricRange::TimestampsFrom { start } => (
+                MetricAxis::Timestamp,
+                AlignmentAxis::ElapsedTime,
+                Some(AxisBounds::new(
+                    Some(if standalone {
+                        start.as_millis()
+                    } else {
                         start
                             .as_millis()
                             .checked_sub(run_start)
-                            .ok_or(Error::UnsupportedQuery)?,
+                            .ok_or(Error::UnsupportedQuery)?
+                    }),
+                    None,
+                )),
+            ),
+            MetricRange::TimestampsUntil { end } => (
+                MetricAxis::Timestamp,
+                AlignmentAxis::ElapsedTime,
+                Some(AxisBounds::new(
+                    None,
+                    Some(if standalone {
+                        end.as_millis()
+                    } else {
                         end.as_millis()
                             .checked_sub(run_start)
-                            .ok_or(Error::UnsupportedQuery)?,
-                    )
-                }),
+                            .ok_or(Error::UnsupportedQuery)?
+                    }),
+                )),
             ),
         };
         if axis == MetricAxis::Step && !retain_neighbors {
             return self.query_step_metric(run_id, metric_key, query, &metadata, diagnostics);
         }
-        let viewport = match bounds {
-            Some((start, end)) => AlignmentViewport::new(start, end - 1),
-            None => AlignmentViewport::new(i64::MIN, i64::MAX),
-        }
-        .map_err(|_| Error::UnsupportedQuery)?;
+        let viewport = bounds.unwrap_or(AxisBounds::new(None, None)).viewport()?;
         let reduction = query
             .max_points()
             .map_or(Ok(AlignmentReduction::Full), |limit| {
@@ -333,7 +549,7 @@ impl Reader {
             (None, Some(reader), false) => reader.query_aligned_metric(&storage_query),
             _ => return Err(Error::Storage),
         }
-        .map_err(|_| Error::Storage)?;
+        .map_err(public_storage_error)?;
         let neighbor_count = result
             .points
             .iter()
@@ -390,6 +606,8 @@ impl Reader {
         let (start, end) = match query.range() {
             MetricRange::All(MetricAxis::Step) => (None, None),
             MetricRange::Steps { start, end } => (Some(*start), Some(*end)),
+            MetricRange::StepsFrom { start } => (Some(*start), None),
+            MetricRange::StepsUntil { end } => (None, Some(*end)),
             _ => return Err(Error::UnsupportedQuery),
         };
         let reduction = query
@@ -408,7 +626,7 @@ impl Reader {
             (None, Some(reader)) => reader.query_metric(&storage_query),
             _ => return Err(Error::Storage),
         }
-        .map_err(|_| Error::Storage)?;
+        .map_err(public_storage_error)?;
         let mut samples = result
             .points
             .into_iter()
@@ -512,32 +730,46 @@ impl From<&Run> for RunMetadata {
 
 fn use_narrow_step_plan(
     axis: MetricAxis,
-    bounds: Option<(i64, i64)>,
+    bounds: Option<AxisBounds>,
     diagnostics: Option<SeriesDiagnostics>,
     force_full: bool,
 ) -> bool {
-    let (Some((start, end)), Some(diagnostics)) = (bounds, diagnostics) else {
+    let (Some(bounds), Some(diagnostics)) = (bounds, diagnostics) else {
         return false;
     };
     if force_full || axis != MetricAxis::Step || diagnostics.effective_count == 0 {
         return false;
     }
     match (diagnostics.min_step, diagnostics.max_step) {
-        (Some(min_step), Some(max_step)) => !(start <= min_step && max_step < end),
+        (Some(min_step), Some(max_step)) => {
+            !(bounds.start.is_none_or(|start| start <= min_step)
+                && bounds.end.is_none_or(|end| max_step < end))
+        }
         _ => false,
     }
 }
 
-fn in_half_open_range(value: i64, bounds: Option<(i64, i64)>) -> bool {
-    bounds.is_none_or(|(start, end)| start <= value && value < end)
+fn public_storage_error(error: StorageError) -> Error {
+    match error {
+        StorageError::CatalogNotFound { name } => Error::CatalogNotFound { name },
+        StorageError::LttbExtensionUnavailable { message } => {
+            Error::LttbExtensionUnavailable { message }
+        }
+        StorageError::RunNotFound { run_id } => Error::RunNotFound { run_id },
+        _ => Error::Storage,
+    }
+}
+
+fn in_half_open_range(value: i64, bounds: Option<AxisBounds>) -> bool {
+    bounds.is_none_or(|bounds| bounds.contains(value))
 }
 
 fn bounded_desktop_points(
     points: Vec<AlignedMetricPoint>,
-    bounds: Option<(i64, i64)>,
+    bounds: Option<AxisBounds>,
     max_points: Option<usize>,
 ) -> Vec<AlignedMetricPoint> {
-    let Some((start, end)) = bounds else {
+    let Some(bounds) = bounds else {
         return match max_points {
             Some(limit) => enforce_point_bound(points, limit),
             None => points,
@@ -547,9 +779,9 @@ fn bounded_desktop_points(
     let mut right = None;
     let mut inside = Vec::new();
     for point in points {
-        if point.axis_value < start {
+        if bounds.start.is_some_and(|start| point.axis_value < start) {
             left = Some(point);
-        } else if point.axis_value >= end {
+        } else if bounds.end.is_some_and(|end| point.axis_value >= end) {
             right.get_or_insert(point);
         } else {
             inside.push(point);
@@ -677,12 +909,30 @@ pub enum MetricRange {
         start: Step,
         end: Step,
     },
+    StepsFrom {
+        start: Step,
+    },
+    StepsUntil {
+        end: Step,
+    },
     RelativeTime {
         start: RelativeTime,
         end: RelativeTime,
     },
+    RelativeTimeFrom {
+        start: RelativeTime,
+    },
+    RelativeTimeUntil {
+        end: RelativeTime,
+    },
     Timestamps {
         start: Timestamp,
+        end: Timestamp,
+    },
+    TimestampsFrom {
+        start: Timestamp,
+    },
+    TimestampsUntil {
         end: Timestamp,
     },
 }
@@ -691,9 +941,15 @@ impl MetricRange {
     pub const fn axis(&self) -> MetricAxis {
         match self {
             Self::All(axis) => *axis,
-            Self::Steps { .. } => MetricAxis::Step,
-            Self::RelativeTime { .. } => MetricAxis::RelativeTime,
-            Self::Timestamps { .. } => MetricAxis::Timestamp,
+            Self::Steps { .. } | Self::StepsFrom { .. } | Self::StepsUntil { .. } => {
+                MetricAxis::Step
+            }
+            Self::RelativeTime { .. }
+            | Self::RelativeTimeFrom { .. }
+            | Self::RelativeTimeUntil { .. } => MetricAxis::RelativeTime,
+            Self::Timestamps { .. }
+            | Self::TimestampsFrom { .. }
+            | Self::TimestampsUntil { .. } => MetricAxis::Timestamp,
         }
     }
 
@@ -701,8 +957,14 @@ impl MetricRange {
         match self {
             Self::All(_) => false,
             Self::Steps { start, end } => start.value() >= end.value(),
+            Self::StepsUntil { end } => end.value() == i64::MIN,
             Self::RelativeTime { start, end } => start.as_millis() >= end.as_millis(),
+            Self::RelativeTimeUntil { end } => end.as_millis() == i64::MIN,
             Self::Timestamps { start, end } => start.as_millis() >= end.as_millis(),
+            Self::TimestampsUntil { end } => end.as_millis() == i64::MIN,
+            Self::StepsFrom { .. }
+            | Self::RelativeTimeFrom { .. }
+            | Self::TimestampsFrom { .. } => false,
         }
     }
 }
@@ -949,19 +1211,19 @@ mod tests {
 
         assert!(use_narrow_step_plan(
             MetricAxis::Step,
-            Some((2, 8)),
+            Some(AxisBounds::new(Some(2), Some(8))),
             Some(diagnostics),
             false
         ));
         assert!(!use_narrow_step_plan(
             MetricAxis::Step,
-            Some((0, 10)),
+            Some(AxisBounds::new(Some(0), Some(10))),
             Some(diagnostics),
             false
         ));
         assert!(!use_narrow_step_plan(
             MetricAxis::Step,
-            Some((2, 8)),
+            Some(AxisBounds::new(Some(2), Some(8))),
             Some(diagnostics),
             true
         ));

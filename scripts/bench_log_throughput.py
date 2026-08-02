@@ -109,7 +109,7 @@ def parent_main(args: argparse.Namespace) -> int:
 def child_main(args: argparse.Namespace) -> int:
     if args.path is None:
         raise argparse.ArgumentTypeError("--path is required in child mode")
-    result, _client = run_benchmark(
+    result, _run = run_benchmark(
         project_path=args.path,
         reports=args.reports,
         queue_capacity=args.queue_capacity,
@@ -118,7 +118,7 @@ def child_main(args: argparse.Namespace) -> int:
         fixed_batch=args.fixed_batch,
     )
     print_result(result)
-    # The parent owns cleanup; skip implicit client drain in this timed benchmark.
+    # The parent owns cleanup; skip implicit Run finalization in this timed benchmark.
     os._exit(0)
 
 
@@ -133,9 +133,14 @@ def run_benchmark(
 ) -> tuple[dict[str, Any], Any]:
     import seex
 
-    client = seex.init(project_path, metric_queue_capacity=queue_capacity)
-    project = client.create_project("benchmark", project_id="bench-project")
-    run = client.create_run(project.project_id, "throughput", run_id="bench-run")
+    settings = seex.Settings(metric_queue_capacity=queue_capacity)
+    run = seex.init(
+        project="bench-project",
+        dir=project_path,
+        id="bench-run",
+        name="throughput",
+        settings=settings,
+    )
 
     measure = lambda batch_reports: log_reports(run, mode, batch_reports)
     if fixed_batch:
@@ -156,7 +161,7 @@ def run_benchmark(
             "calls_per_second": statistics.median(samples),
             "queue_capacity": queue_capacity,
         },
-        client,
+        run,
     )
 
 
@@ -246,14 +251,13 @@ def log_reports(run: Any, mode: str, reports: int) -> float:
     started = time.perf_counter()
     if mode == "mapping_8":
         for step in range(reports // 8):
-            for metric in range(8):
-                run.log(f"metric-{metric}", step, float(step))
+            run.log({f"metric-{metric}": float(step) for metric in range(8)}, step=step)
     elif mode == "implicit_single":
-        for selected_step, value in enumerate(float(index) for index in range(reports)):
-            run.log("train/loss", selected_step, value)
+        for value in (float(index) for index in range(reports)):
+            run.log({"train/loss": value})
     else:
         for step in range(reports):
-            run.log("train/loss", step, float(step))
+            run.log({"train/loss": float(step)}, step=step)
     return time.perf_counter() - started
 
 

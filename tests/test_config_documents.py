@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+import seex
 
 
 def _fixture(path: str) -> bytes:
@@ -20,8 +21,6 @@ def test_sdk_lifecycle_leaves_config_and_workbench_bytes_unchanged(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import seex
-
     home = tmp_path / "home"
     root = tmp_path / "project"
     global_config = home / ".seex" / "config.toml"
@@ -37,11 +36,7 @@ def test_sdk_lifecycle_leaves_config_and_workbench_bytes_unchanged(
     before = {path: path.read_bytes() for path in documents}
     monkeypatch.setenv("HOME", str(home))
 
-    client = seex.init(root)
-    project = client.create_project("configuration test", project_id="project-1")
-    run = client.create_run(project.project_id, "run", run_id="run-1")
-    run.log("loss", 0, 1.0)
-    client.finish_run(run.run_id)
-    client.shutdown()
+    with seex.init(project="project-1", dir=root, id="run-1", name="run") as run:
+        run.log({"loss": 1.0}, step=0)
 
     assert {path: path.read_bytes() for path in documents} == before

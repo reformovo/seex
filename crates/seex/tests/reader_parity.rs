@@ -1,9 +1,9 @@
 use seex::storage::bootstrap::open_native_connection;
 use seex::storage::{MetricWrite, ProjectConnection};
 use seex::{
-    Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate, MetricKey,
-    MetricQuery, MetricRange, Project, ProjectId, Reader, RelativeTime, RunId, RunStatus, Step,
-    Timestamp,
+    CatalogBackend, Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate,
+    MetricKey, MetricQuery, MetricRange, ObjectiveDirection, ObjectiveMetric, Project, ProjectId,
+    Reader, RelativeTime, RunId, RunStatus, Step, Timestamp,
 };
 
 struct Fixture {
@@ -11,7 +11,108 @@ struct Fixture {
     native: Reader,
     standalone: Reader,
     run_id: RunId,
+    reference_run_id: RunId,
     started_at: i64,
+}
+
+#[test]
+fn native_reader_honors_explicit_storage_overrides_without_creating_a_store()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let root = fixture._root.path();
+    std::fs::write(
+        root.join(".seex/config.toml"),
+        "schema_version = 1\ncatalog_backend = 'sqlite'\n",
+    )?;
+
+    let reader = Reader::builder(root)
+        .catalog_backend(CatalogBackend::DuckDb)
+        .catalog_path(root.join(".seex/catalog.ducklake"))
+        .data_path(root.join(".seex/data"))
+        .open()?;
+
+    assert_eq!(reader.projects()?.len(), 1);
+    let empty = tempfile::tempdir()?;
+    assert_eq!(
+        Reader::builder(empty.path()).open().err(),
+        Some(Error::CatalogNotFound {
+            name: String::from("catalog.ducklake")
+        })
+    );
+    assert!(!empty.path().join(".seex/catalog.ducklake").exists());
+    Ok(())
+}
+
+#[test]
+fn native_reader_scopes_run_lookup_and_optional_metric_summaries()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let project_id = ProjectId::from_string("project-1");
+    let run = fixture
+        .native
+        .run(&project_id, &fixture.run_id)?
+        .expect("fixture Run should exist");
+
+    assert!(
+        fixture
+            .native
+            .run(&ProjectId::from_string("other"), &fixture.run_id)?
+            .is_none()
+    );
+    assert!(
+        fixture
+            .native
+            .run(&project_id, &RunId::from_string("missing"))?
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .native
+            .metric_summary(&run, &MetricKey::from_string("loss"))?
+            .map(|summary| summary.effective_count),
+        Some(8)
+    );
+    assert!(
+        fixture
+            .native
+            .metric_summary(&run, &MetricKey::from_string("missing"))?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[test]
+fn native_reader_comparison_and_ranking_share_canonical_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let objective = ObjectiveMetric {
+        metric_key: MetricKey::from_string("loss"),
+        direction: ObjectiveDirection::Minimize,
+    };
+
+    let comparison =
+        fixture
+            .native
+            .compare_runs(&fixture.run_id, &fixture.reference_run_id, &objective)?;
+    let ranking = fixture.native.rank_runs(
+        &[fixture.reference_run_id.clone(), fixture.run_id.clone()],
+        &objective,
+    )?;
+
+    assert_eq!(comparison.candidate.last_value_f64, Some(7.0));
+    assert_eq!(comparison.reference.last_value_f64, Some(10.0));
+    assert_eq!(ranking.entries[0].evidence.run_id, fixture.run_id);
+    assert_eq!(ranking.entries[0].rank, Some(1));
+    assert_eq!(
+        fixture.native.rank_runs(
+            &[fixture.run_id.clone(), fixture.run_id.clone()],
+            &objective
+        ),
+        Err(Error::DuplicateRunIdentity {
+            run_id: String::from("run-1")
+        })
+    );
+    Ok(())
 }
 
 impl Fixture {
@@ -26,6 +127,11 @@ impl Fixture {
         };
         connection.create_project(&project)?;
         let run = connection.create_run(&project.project_id, "run", RunId::from_string("run-1"))?;
+        let reference = connection.create_run(
+            &project.project_id,
+            "reference",
+            RunId::from_string("run-2"),
+        )?;
         let started_at = run.started_at.timestamp_millis();
         let mut rows = (0..8)
             .map(|step| MetricWrite {
@@ -47,9 +153,19 @@ impl Fixture {
                 ingested_at_millis: started_at + 10 + step,
             }),
         );
+        rows.push(MetricWrite {
+            run_id: reference.run_id.as_str().to_owned(),
+            metric_key: String::from("loss"),
+            step: 0,
+            timestamp_millis: started_at,
+            value_f64: 10.0,
+            ingested_at_millis: started_at,
+        });
         connection.append_metric_batch(&rows)?;
         connection.rebuild_metric_aggregates_for_run(&run.run_id)?;
+        connection.rebuild_metric_aggregates_for_run(&reference.run_id)?;
         connection.mark_run_terminal(&run.run_id, RunStatus::Finished, created_at)?;
+        connection.mark_run_terminal(&reference.run_id, RunStatus::Finished, created_at)?;
         connection.flush_metric_points()?;
         drop(connection);
         std::fs::write(
@@ -72,6 +188,7 @@ impl Fixture {
             native,
             standalone,
             run_id: run.run_id,
+            reference_run_id: reference.run_id,
             started_at,
         })
     }
@@ -94,6 +211,13 @@ fn native_and_standalone_ranges_have_strict_bounded_parity()
             },
             Some(2),
         )?,
+        MetricQuery::new(
+            MetricRange::StepsFrom {
+                start: Step::new(5),
+            },
+            Some(2),
+        )?,
+        MetricQuery::new(MetricRange::StepsUntil { end: Step::new(3) }, Some(2))?,
         MetricQuery::new(MetricRange::All(MetricAxis::Timestamp), Some(3))?,
         MetricQuery::new(
             MetricRange::Timestamps {
@@ -101,6 +225,18 @@ fn native_and_standalone_ranges_have_strict_bounded_parity()
                 end: Timestamp::from_millis(fixture.started_at + 60_000),
             },
             Some(3),
+        )?,
+        MetricQuery::new(
+            MetricRange::TimestampsFrom {
+                start: Timestamp::from_millis(fixture.started_at + 5),
+            },
+            Some(2),
+        )?,
+        MetricQuery::new(
+            MetricRange::TimestampsUntil {
+                end: Timestamp::from_millis(fixture.started_at + 3),
+            },
+            Some(2),
         )?,
     ];
 
@@ -121,6 +257,18 @@ fn native_and_standalone_ranges_have_strict_bounded_parity()
                         if start <= &timestamp && &timestamp < end)
                 }));
             }
+            MetricRange::StepsFrom { start } => assert!(native.samples().iter().all(|sample| {
+                matches!(sample.coordinate, MetricCoordinate::Step(step) if start <= &step)
+            })),
+            MetricRange::StepsUntil { end } => assert!(native.samples().iter().all(|sample| {
+                matches!(sample.coordinate, MetricCoordinate::Step(step) if &step < end)
+            })),
+            MetricRange::TimestampsFrom { start } => {
+                assert!(native.samples().iter().all(|sample| {
+                    matches!(sample.coordinate, MetricCoordinate::Timestamp(timestamp)
+                        if start <= &timestamp)
+                }));
+            }
             _ => {}
         }
     }
@@ -135,6 +283,9 @@ fn standalone_relative_ranges_report_missing_run_start() -> Result<(), Box<dyn s
         MetricRange::All(MetricAxis::RelativeTime),
         MetricRange::RelativeTime {
             start: RelativeTime::from_millis(0),
+            end: RelativeTime::from_millis(60_000),
+        },
+        MetricRange::RelativeTimeUntil {
             end: RelativeTime::from_millis(60_000),
         },
     ] {

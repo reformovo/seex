@@ -156,7 +156,7 @@ fn reject_duplicate_run_ids(run_ids: &[RunId]) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn compare_evidence(
+pub(crate) fn compare_evidence(
     objective: &ObjectiveMetric,
     candidate: ObjectiveEvidence,
     reference: ObjectiveEvidence,

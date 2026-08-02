@@ -234,45 +234,37 @@ def run_once(
     staged_config = stage_config(project_path, config_path)
     setup_started = time.perf_counter()
     try:
-        client = seex_module.init(
-            project_path,
-            metric_queue_capacity=queue_capacity,
+        settings = seex_module.Settings(metric_queue_capacity=queue_capacity)
+        run = seex_module.init(
+            project=f"bench-project-{repeat_index + 1}",
+            dir=project_path,
+            id=f"bench-run-{repeat_index + 1}",
+            name="persistence",
+            settings=settings,
         )
     finally:
         if staged_config is not None:
             staged_config.unlink(missing_ok=True)
-    project = client.create_project(
-        "persistence benchmark",
-        project_id=f"bench-project-{repeat_index + 1}",
-    )
-    run = client.create_run(
-        project.project_id,
-        "persistence",
-        run_id=f"bench-run-{repeat_index + 1}",
-    )
     setup_seconds = time.perf_counter() - setup_started
 
     admission_started = time.perf_counter()
     for step in range(reports):
-        run.log(metric_key, step, float(step))
+        run.log({metric_key: float(step)}, step=step)
     admission_seconds = time.perf_counter() - admission_started
-    diagnostics_after_admission = diagnostics_to_dict(client.diagnostics())
+    diagnostics_after_admission = diagnostics_to_dict(run.diagnostics())
 
     drain_seconds, diagnostics_after_drain = wait_for_drain(
-        client,
+        run,
         timeout_seconds=drain_timeout,
         poll_seconds=drain_poll_seconds,
     )
 
     finalization_started = time.perf_counter()
-    client.finish_run(run.run_id)
+    run.finish()
     finalization_seconds = time.perf_counter() - finalization_started
-    diagnostics_after_finalization = diagnostics_to_dict(client.diagnostics())
-
-    shutdown_started = time.perf_counter()
-    client.shutdown()
-    shutdown_seconds = time.perf_counter() - shutdown_started
-    diagnostics_after_shutdown = diagnostics_to_dict(client.diagnostics())
+    diagnostics_after_finalization = diagnostics_to_dict(run.diagnostics())
+    shutdown_seconds = 0.0
+    diagnostics_after_shutdown = diagnostics_after_finalization
 
     return {
         "repeat": repeat_index + 1,
