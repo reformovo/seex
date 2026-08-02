@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use crate::engine::EngineError;
 use crate::engine::bootstrap::{
-    attach_ducklake as attach_ducklake_dataset, create_v1_tables, setup_duckdb_catalog_adapter,
+    attach_ducklake as attach_ducklake_dataset, initialize_storage_tables,
+    setup_duckdb_catalog_adapter,
 };
 
 pub struct TestDataset {
@@ -40,11 +41,11 @@ pub fn attach_ducklake(
     )?)
 }
 
-pub fn create_minimal_v1_tables(connection: &duckdb::Connection) -> Result<(), EngineError> {
-    Ok(create_v1_tables(connection)?)
+pub fn initialize_test_storage_tables(connection: &duckdb::Connection) -> Result<(), EngineError> {
+    Ok(initialize_storage_tables(connection)?)
 }
 
-pub fn seed_minimal_v1_data(connection: &duckdb::Connection) -> duckdb::Result<()> {
+pub fn seed_test_storage_data(connection: &duckdb::Connection) -> duckdb::Result<()> {
     connection.execute_batch(
         "INSERT INTO seex_projects VALUES
              ('project-1', 'local training', now());

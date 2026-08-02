@@ -3,7 +3,7 @@ mod tests {
     use std::error::Error;
 
     use crate::ducklake_test_support::{
-        TestDataset, attach_ducklake, create_minimal_v1_tables, seed_minimal_v1_data,
+        TestDataset, attach_ducklake, initialize_test_storage_tables, seed_test_storage_data,
     };
     use crate::engine::query::NativeQueryStore;
     use crate::engine::write::NativeWriteStore;
@@ -29,7 +29,7 @@ mod tests {
         let dataset = TestDataset::new()?;
         let connection = duckdb::Connection::open_in_memory()?;
         attach_ducklake(&connection, &dataset)?;
-        create_minimal_v1_tables(&connection)?;
+        initialize_test_storage_tables(&connection)?;
         Ok(BehaviorDataset {
             _dataset: dataset,
             connection,
@@ -51,7 +51,7 @@ mod tests {
     }
 
     #[test]
-    fn ducklake_round_trips_minimal_v1_data() -> Result<(), Box<dyn Error>> {
+    fn ducklake_round_trips_seeded_storage_data() -> Result<(), Box<dyn Error>> {
         // Given
         let dataset = open_behavior_dataset()?;
         let connection = dataset.connection();
@@ -73,7 +73,7 @@ mod tests {
             (project_count, run_count, aggregate_count, point_count),
             (0, 0, 0, 0),
         );
-        seed_minimal_v1_data(connection)?;
+        seed_test_storage_data(connection)?;
 
         let metric_total: f64 = connection.query_row(
             "SELECT sum(value_f64)

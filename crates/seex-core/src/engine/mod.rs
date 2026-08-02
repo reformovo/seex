@@ -1,5 +1,4 @@
-// Native v1 engine over DuckLake.
-// Architecture ref: docs/v1-native-architecture.md
+//! Native engine over DuckLake.
 
 pub mod bootstrap {
     pub use seex_storage::bootstrap::*;

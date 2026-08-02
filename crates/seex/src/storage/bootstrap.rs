@@ -221,7 +221,7 @@ fn open_native_connection_with_mode(
     )?;
     setup_catalog_adapter(&connection, config.catalog_backend, &config.catalog_path)?;
     if !must_exist {
-        create_v1_tables(&connection)?;
+        initialize_storage_tables(&connection)?;
     }
     Ok(connection)
 }
@@ -355,7 +355,7 @@ fn create_s3_secret_statement(config: &S3ConnectionConfig) -> String {
     )
 }
 
-pub fn create_v1_tables(connection: &duckdb::Connection) -> Result<(), StorageError> {
+pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), StorageError> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS seex_projects (
              project_id VARCHAR NOT NULL,
@@ -624,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn create_v1_tables_partitions_metric_points_by_run_and_encoded_key()
+    fn initialize_storage_tables_partitions_metric_points_by_run_and_encoded_key()
     -> Result<(), Box<dyn std::error::Error>> {
         let root_path =
             std::env::temp_dir().join(format!("seex-bootstrap-{}", uuid::Uuid::new_v4()));
@@ -650,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn create_v1_tables_sets_metric_points_inlining_row_limit()
+    fn initialize_storage_tables_sets_metric_points_inlining_row_limit()
     -> Result<(), Box<dyn std::error::Error>> {
         let root_path =
             std::env::temp_dir().join(format!("seex-bootstrap-{}", uuid::Uuid::new_v4()));
