@@ -14,6 +14,7 @@ import uuid
 from typing import Literal
 
 import pytest
+from seex import _seex
 
 from tests import helpers
 
@@ -114,9 +115,8 @@ def _open_minio_client(
     prefix: str,
     catalog_backend: _CatalogBackend,
 ):
-    import seex
 
-    return seex.init(
+    return _seex.init(
         root_path,
         data_path=f"s3://{config.bucket}/{prefix.strip('/')}",
         catalog_backend=catalog_backend,

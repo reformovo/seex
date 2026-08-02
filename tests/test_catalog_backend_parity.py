@@ -7,6 +7,7 @@ import sqlite3
 from typing import Literal
 
 import pytest
+from seex import _seex
 
 from tests import helpers
 
@@ -19,12 +20,11 @@ def test_catalog_backend_round_trips_native_storage_workflow(
     tmp_path: pathlib.Path,
     catalog_backend: _CatalogBackend,
 ) -> None:
-    import seex
 
     root_path = tmp_path / catalog_backend / "seex"
     data_path = tmp_path / catalog_backend / "custom-data"
     catalog_path = tmp_path / catalog_backend / "catalog" / "custom-catalog.db"
-    client = seex.init(
+    client = _seex.init(
         root_path,
         data_path=data_path,
         catalog_backend=catalog_backend,
@@ -62,7 +62,7 @@ def test_catalog_backend_round_trips_native_storage_workflow(
     del run
     del client
 
-    reopened = seex.init(
+    reopened = _seex.init(
         root_path,
         data_path=data_path,
         catalog_backend=catalog_backend,
@@ -110,11 +110,10 @@ def test_short_run_metrics_flush_from_inline_to_parquet(
     catalog_backend: _CatalogBackend,
     terminal_method: str,
 ) -> None:
-    import seex
 
     root_path = tmp_path / catalog_backend / terminal_method / "seex"
     data_path = tmp_path / catalog_backend / terminal_method / "data"
-    client = seex.init(
+    client = _seex.init(
         root_path,
         data_path=data_path,
         catalog_backend=catalog_backend,
@@ -150,7 +149,7 @@ def test_catalog_backend_rejects_invalid_local_storage_configuration(
     import seex
 
     with pytest.raises(seex.InvalidConfigurationError):
-        seex.init(
+        _seex.init(
             tmp_path / catalog_backend / "seex",
             catalog_backend=catalog_backend,
             data_path="http://bucket/seex",
@@ -168,7 +167,7 @@ def test_catalog_backend_rejects_s3_catalog_path(
         seex.InvalidConfigurationError,
         match="catalog_path must be a local filesystem path",
     ):
-        seex.init(
+        _seex.init(
             tmp_path / catalog_backend / "seex-s3-catalog",
             catalog_backend=catalog_backend,
             catalog_path="s3://bucket/catalog.ducklake",
@@ -178,11 +177,10 @@ def test_catalog_backend_rejects_s3_catalog_path(
 def test_sqlite_catalog_file_contains_ducklake_and_seex_state(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
     catalog_path = root_path / ".seex" / "catalog.sqlite"
-    client = seex.init(root_path, catalog_backend="sqlite")
+    client = _seex.init(root_path, catalog_backend="sqlite")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.25)
@@ -215,7 +213,7 @@ def test_unknown_catalog_backend_is_rejected(tmp_path: pathlib.Path) -> None:
     import seex
 
     with pytest.raises(seex.InvalidConfigurationError, match="postgres"):
-        seex.init(
+        _seex.init(
             tmp_path / "seex",
             catalog_backend="postgres",  # type: ignore[reportArgumentType]
         )

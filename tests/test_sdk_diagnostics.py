@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from seex import _seex
 
 from tests import helpers
 
@@ -12,10 +13,9 @@ from tests import helpers
 def test_shutdown_closes_logging_and_preserves_diagnostics(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
 
@@ -25,11 +25,11 @@ def test_shutdown_closes_logging_and_preserves_diagnostics(
     assert diagnostics.writer_state == "closed"
     assert diagnostics.last_write_error is None
 
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         run.log("train/loss", 0, 0.25)
     assert client.diagnostics().writer_state == "closed"
 
-    with seex.init(root_path) as context_client:
+    with _seex.init(root_path) as context_client:
         selected_project = context_client.get_project(project.project_id)
 
         assert selected_project.project_id == project.project_id
@@ -38,11 +38,10 @@ def test_shutdown_closes_logging_and_preserves_diagnostics(
 def test_context_manager_preserves_user_exception(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     with (
         pytest.raises(ValueError, match="user failure"),
-        seex.init(tmp_path / "seex"),
+        _seex.init(tmp_path / "seex"),
     ):
         raise ValueError("user failure")
 
@@ -53,7 +52,7 @@ def test_explicit_shutdown_drain_timeout_keeps_client_usable(
     import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     for step in range(1000):
@@ -63,7 +62,7 @@ def test_explicit_shutdown_drain_timeout_keeps_client_usable(
         client.shutdown(timeout=0.0)
 
     assert client.diagnostics().writer_state != "closed"
-    second_client = seex.init(root_path)
+    second_client = _seex.init(root_path)
     with pytest.raises(seex.RunAlreadyActiveError):
         second_client.resume_run(run.run_id)
     run.log("train/loss", 1000, 0.125)
@@ -77,7 +76,7 @@ def test_explicit_shutdown_drain_timeout_can_be_retried_unbounded(
 ) -> None:
     import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     for step in range(1000):
@@ -87,16 +86,15 @@ def test_explicit_shutdown_drain_timeout_can_be_retried_unbounded(
         client.shutdown(timeout=0.0)
 
     assert client.shutdown() is None
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         run.log("train/loss", 1000, 0.125)
 
 
 def test_diagnostics_fields_are_read_only(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     diagnostics = client.diagnostics()
 
     assert diagnostics.pending_reports == 0

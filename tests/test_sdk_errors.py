@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from seex import _seex
 
 from tests import helpers
 
@@ -15,7 +16,7 @@ def test_client_raises_actionable_sdk_errors(
 ) -> None:
     import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
 
@@ -26,7 +27,7 @@ def test_client_raises_actionable_sdk_errors(
         seex.MetricFlushError,
         seex.MetricFlushTimeoutError,
         seex.RunClosedError,
-        seex.ClientClosedError,
+        _seex.ClientClosedError,
         seex.InvalidRunStateError,
         seex.RunAlreadyExistsError,
         seex.RunAlreadyActiveError,
@@ -45,7 +46,7 @@ def test_client_raises_actionable_sdk_errors(
         "SEEX_LTTB_EXTENSION_PATH",
         str(tmp_path / "missing-lttb.duckdb_extension"),
     )
-    query_client = seex.init(tmp_path / "query-seex")
+    query_client = _seex.init(tmp_path / "query-seex")
     query_project = query_client.create_project("query", project_id="query-project")
     query_run = query_client.create_run(
         query_project.project_id,
@@ -75,7 +76,7 @@ def test_ducklake_attach_storage_error_is_sanitized(tmp_path: pathlib.Path) -> N
     catalog_path.mkdir(parents=True)
 
     with pytest.raises(seex.StorageError) as error_info:
-        seex.init(root_path, catalog_path=catalog_path, data_path=data_path)
+        _seex.init(root_path, catalog_path=catalog_path, data_path=data_path)
 
     message = str(error_info.value)
     assert "attaching DuckLake catalog" in message

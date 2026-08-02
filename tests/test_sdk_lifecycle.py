@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 
 import pytest
+from seex import _seex
 
 from tests import helpers
 
@@ -35,34 +36,31 @@ def _write_project_config(root_path: pathlib.Path, content: str) -> None:
 
 
 def test_init_returns_client(tmp_path: pathlib.Path) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
 
-    assert isinstance(client, seex.Client)
+    assert isinstance(client, _seex.Client)
 
 
 def test_init_without_path_uses_current_working_directory(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import seex
 
     monkeypatch.chdir(tmp_path)
-    client = seex.init()
+    client = _seex.init()
     project = client.create_project("local training", project_id="project-1")
 
-    assert isinstance(client, seex.Client)
+    assert isinstance(client, _seex.Client)
     assert project.project_id == "project-1"
     assert (tmp_path / ".seex" / "catalog.ducklake").is_file()
     assert (tmp_path / ".seex" / "data").is_dir()
 
 
 def test_init_accepts_storage_configuration_keywords(tmp_path: pathlib.Path) -> None:
-    import seex
 
     data_path = tmp_path / "custom-data"
     catalog_path = tmp_path / "catalog" / "catalog.ducklake"
-    client = seex.init(
+    client = _seex.init(
         tmp_path / "seex",
         data_path=data_path,
         catalog_backend="duckdb",
@@ -71,20 +69,19 @@ def test_init_accepts_storage_configuration_keywords(tmp_path: pathlib.Path) -> 
     )
     project = client.create_project("local training", project_id="project-1")
 
-    assert isinstance(client, seex.Client)
+    assert isinstance(client, _seex.Client)
     assert project.project_id == "project-1"
     assert data_path.is_dir()
     assert catalog_path.is_file()
 
 
 def test_init_uses_configured_data_path(tmp_path: pathlib.Path) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
     configured_data_path = tmp_path / "configured-data"
     _write_project_config(root_path, f'data_path = "{configured_data_path.as_posix()}"\n')
 
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
 
     assert project.project_id == "project-1"
@@ -95,14 +92,13 @@ def test_init_uses_configured_data_path(tmp_path: pathlib.Path) -> None:
 def test_init_data_path_keyword_overrides_config(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
     explicit_data_path = tmp_path / "explicit-data"
     configured_data_path = tmp_path / "configured-data"
     _write_project_config(root_path, f'data_path = "{configured_data_path.as_posix()}"\n')
 
-    client = seex.init(root_path, data_path=explicit_data_path)
+    client = _seex.init(root_path, data_path=explicit_data_path)
     project = client.create_project("local training", project_id="project-1")
 
     assert project.project_id == "project-1"
@@ -113,7 +109,6 @@ def test_init_data_path_keyword_overrides_config(
 def test_init_uses_configured_catalog_backend_and_path(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
     catalog_path = tmp_path / "configured" / "catalog.sqlite"
@@ -122,7 +117,7 @@ def test_init_uses_configured_catalog_backend_and_path(
         f'catalog_backend = "sqlite"\ncatalog_path = "{catalog_path.as_posix()}"\n',
     )
 
-    client = seex.init(root_path, catalog_backend=None)
+    client = _seex.init(root_path, catalog_backend=None)
     project = client.create_project("local training", project_id="project-1")
 
     assert project.project_id == "project-1"
@@ -131,7 +126,6 @@ def test_init_uses_configured_catalog_backend_and_path(
 
 
 def test_init_catalog_keywords_override_config(tmp_path: pathlib.Path) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
     configured_path = tmp_path / "configured" / "catalog.sqlite"
@@ -141,7 +135,7 @@ def test_init_catalog_keywords_override_config(tmp_path: pathlib.Path) -> None:
         f'catalog_backend = "sqlite"\ncatalog_path = "{configured_path.as_posix()}"\n',
     )
 
-    client = seex.init(
+    client = _seex.init(
         root_path,
         catalog_backend="duckdb",
         catalog_path=explicit_path,
@@ -156,7 +150,6 @@ def test_init_catalog_keywords_override_config(tmp_path: pathlib.Path) -> None:
 def test_init_resolves_configured_relative_storage_paths_from_project_root(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import seex
 
     root_path = tmp_path / "project"
     _write_project_config(
@@ -167,7 +160,7 @@ def test_init_resolves_configured_relative_storage_paths_from_project_root(
     unrelated_path.mkdir()
     monkeypatch.chdir(unrelated_path)
 
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
 
     assert project.project_id == "project-1"
@@ -179,13 +172,12 @@ def test_init_resolves_configured_relative_storage_paths_from_project_root(
 def test_init_data_path_keyword_ignores_configured_s3(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
     explicit_data_path = tmp_path / "explicit-data"
     _write_project_config(root_path, _S3_OVERRIDE_CONFIG)
 
-    client = seex.init(root_path, data_path=explicit_data_path)
+    client = _seex.init(root_path, data_path=explicit_data_path)
     project = client.create_project("local training", project_id="project-1")
 
     assert project.project_id == "project-1"
@@ -201,7 +193,7 @@ def test_init_rejects_missing_required_s3_config(tmp_path: pathlib.Path) -> None
         seex.InvalidConfigurationError,
         match="s3_endpoint is required when data_path is s3://",
     ):
-        seex.init(root_path, data_path="s3://bucket/seex")
+        _seex.init(root_path, data_path="s3://bucket/seex")
 
     assert not root_path.exists()
 
@@ -218,7 +210,7 @@ def test_init_rejects_invalid_config_toml_s3_setting(
         seex.InvalidConfigurationError,
         match="config.toml s3.path_style must be a boolean",
     ):
-        seex.init(root_path)
+        _seex.init(root_path)
 
 
 def test_init_s3_keyword_override_skips_invalid_config_value(
@@ -230,7 +222,7 @@ def test_init_s3_keyword_override_skips_invalid_config_value(
     _write_project_config(root_path, _INVALID_S3_BOOL_CONFIG)
 
     try:
-        client = seex.init(
+        client = _seex.init(
             root_path,
             data_path="s3://bucket/seex",
             s3_endpoint="127.0.0.1:9000",
@@ -256,16 +248,15 @@ def test_init_rejects_invalid_config_toml_data_path(
         seex.InvalidConfigurationError,
         match="config.toml data_path must be a string",
     ):
-        seex.init(root_path)
+        _seex.init(root_path)
 
 
 def test_init_accepts_explicit_duckdb_catalog_path_without_ducklake_suffix(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     catalog_path = tmp_path / "catalog" / "seex-catalog.db"
-    client = seex.init(
+    client = _seex.init(
         tmp_path / "seex",
         catalog_backend="duckdb",
         catalog_path=catalog_path,
@@ -277,10 +268,9 @@ def test_init_accepts_explicit_duckdb_catalog_path_without_ducklake_suffix(
 
 
 def test_init_uses_duckdb_catalog_and_data_defaults(tmp_path: pathlib.Path) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
 
     assert project.project_id == "project-1"
@@ -289,10 +279,9 @@ def test_init_uses_duckdb_catalog_and_data_defaults(tmp_path: pathlib.Path) -> N
 
 
 def test_init_uses_sqlite_catalog_and_data_defaults(tmp_path: pathlib.Path) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path, catalog_backend="sqlite")
+    client = _seex.init(root_path, catalog_backend="sqlite")
     project = client.create_project("local training", project_id="project-1")
 
     assert project.project_id == "project-1"
@@ -313,7 +302,7 @@ def test_init_rejects_invalid_storage_configuration(tmp_path: pathlib.Path) -> N
     for index, kwargs in enumerate(invalid_kwargs):
         root_path = tmp_path / f"seex-{index}"
         with pytest.raises(seex.InvalidConfigurationError):
-            seex.init(root_path, **kwargs)
+            _seex.init(root_path, **kwargs)
         assert not root_path.exists()
 
 
@@ -326,7 +315,7 @@ def test_init_rejects_s3_catalog_path(tmp_path: pathlib.Path) -> None:
         seex.InvalidConfigurationError,
         match="catalog_path must be a local filesystem path",
     ):
-        seex.init(root_path, catalog_path="s3://bucket/catalog.ducklake")
+        _seex.init(root_path, catalog_path="s3://bucket/catalog.ducklake")
 
     assert not root_path.exists()
 
@@ -334,14 +323,14 @@ def test_init_rejects_s3_catalog_path(tmp_path: pathlib.Path) -> None:
 def test_client_creates_project_and_run(tmp_path: pathlib.Path) -> None:
     import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
 
     assert isinstance(project, seex.Project)
     assert project.project_id == "project-1"
     assert project.name == "local training"
-    assert isinstance(run, seex.Run)
+    assert isinstance(run, _seex.Run)
     assert run.run_id == "run-1"
     assert run.project_id == project.project_id
     assert run.name == "baseline"
@@ -352,19 +341,19 @@ def test_client_selects_existing_project_and_run(tmp_path: pathlib.Path) -> None
     import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     del client
 
-    reopened_client = seex.init(root_path)
+    reopened_client = _seex.init(root_path)
     selected_project = reopened_client.get_project(project.project_id)
     selected_run = reopened_client.get_run(run.run_id)
 
     assert isinstance(selected_project, seex.Project)
     assert selected_project.project_id == project.project_id
     assert selected_project.name == "local training"
-    assert isinstance(selected_run, seex.Run)
+    assert isinstance(selected_run, _seex.Run)
     assert selected_run.run_id == run.run_id
     assert selected_run.project_id == selected_project.project_id
     assert selected_run.name == "baseline"
@@ -374,10 +363,9 @@ def test_client_selects_existing_project_and_run(tmp_path: pathlib.Path) -> None
 def test_client_lists_projects_in_stable_catalog_order(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
 
     assert client.list_projects() == []
 
@@ -385,7 +373,7 @@ def test_client_lists_projects_in_stable_catalog_order(
     second = client.create_project("sweep", project_id="project-2")
     del client
 
-    projects = seex.init(root_path).list_projects()
+    projects = _seex.init(root_path).list_projects()
 
     assert [project.project_id for project in projects] == [
         first.project_id,
@@ -395,17 +383,16 @@ def test_client_lists_projects_in_stable_catalog_order(
 
 
 def test_client_resumes_existing_run_for_logging(tmp_path: pathlib.Path) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run_id = run.run_id
     del run
     del client
 
-    resumed_client = seex.init(root_path)
+    resumed_client = _seex.init(root_path)
     resumed_run = resumed_client.resume_run(run_id)
     resumed_run.log("train/loss", 0, 0.25)
     points = helpers.wait_for_metric_points(
@@ -415,7 +402,7 @@ def test_client_resumes_existing_run_for_logging(tmp_path: pathlib.Path) -> None
         expected_count=1,
     )
 
-    assert isinstance(resumed_run, seex.Run)
+    assert isinstance(resumed_run, _seex.Run)
     assert resumed_run.run_id == run_id
     assert [point.value_f64 for point in points] == [0.25]
 
@@ -426,10 +413,10 @@ def test_active_run_lock_conflict_and_release_after_shutdown(
     import seex
 
     root_path = tmp_path / "seex"
-    first_client = seex.init(root_path)
+    first_client = _seex.init(root_path)
     project = first_client.create_project("local training", project_id="project-1")
     run = first_client.create_run(project.project_id, "baseline", run_id="run-1")
-    second_client = seex.init(root_path)
+    second_client = _seex.init(root_path)
 
     with pytest.raises(seex.RunAlreadyActiveError, match="run-1"):
         second_client.resume_run(run.run_id)
@@ -446,10 +433,10 @@ def test_create_run_existing_id_requires_explicit_resume(
     import seex
 
     root_path = tmp_path / "seex"
-    first_client = seex.init(root_path)
+    first_client = _seex.init(root_path)
     project = first_client.create_project("local training", project_id="project-1")
     first_client.create_run(project.project_id, "baseline", run_id="run-1")
-    second_client = seex.init(root_path)
+    second_client = _seex.init(root_path)
 
     with pytest.raises(seex.RunAlreadyExistsError, match="run-1"):
         second_client.create_run(project.project_id, "duplicate", run_id="run-1")
@@ -459,7 +446,7 @@ def test_resume_run_rejects_terminal_runs(tmp_path: pathlib.Path) -> None:
     import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     client.finish_run(run.run_id)
@@ -471,10 +458,9 @@ def test_resume_run_rejects_terminal_runs(tmp_path: pathlib.Path) -> None:
 def test_leftover_lock_file_does_not_block_resume(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    first_client = seex.init(root_path)
+    first_client = _seex.init(root_path)
     project = first_client.create_project("local training", project_id="project-1")
     run = first_client.create_run(
         project.project_id,
@@ -484,7 +470,7 @@ def test_leftover_lock_file_does_not_block_resume(
     first_client.shutdown()
     lock_file = root_path / ".seex" / "locks" / "runs" / "run%2Fleftover%20lock.lock"
 
-    resumed = seex.init(root_path).resume_run(run.run_id)
+    resumed = _seex.init(root_path).resume_run(run.run_id)
 
     assert lock_file.is_file()
     assert resumed.run_id == run.run_id
@@ -493,10 +479,9 @@ def test_leftover_lock_file_does_not_block_resume(
 def test_client_lists_project_runs_for_terminal_summary_queries(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
     first_run = client.create_run(project.project_id, "baseline", run_id="run-1")
     second_run = client.create_run(project.project_id, "candidate", run_id="run-2")
@@ -520,7 +505,7 @@ def test_client_lists_project_runs_for_terminal_summary_queries(
     del second_run
     del client
 
-    reopened_client = seex.init(root_path)
+    reopened_client = _seex.init(root_path)
     runs = reopened_client.list_runs(project.project_id)
     summaries = reopened_client.query_metric_summaries(
         [run.run_id for run in runs],
@@ -536,9 +521,8 @@ def test_client_lists_project_runs_for_terminal_summary_queries(
 def test_client_filters_and_paginates_runs_in_stable_created_order(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     first = client.create_run(project.project_id, "first", run_id="run-1")
     second = client.create_run(project.project_id, "second", run_id="run-2")
@@ -559,9 +543,8 @@ def test_client_filters_and_paginates_runs_in_stable_created_order(
 
 
 def test_client_list_runs_rejects_unknown_status(tmp_path: pathlib.Path) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
 
     with pytest.raises(ValueError, match="status must be one of"):
@@ -572,10 +555,9 @@ def test_client_list_runs_rejects_unknown_status(tmp_path: pathlib.Path) -> None
 
 
 def test_client_detects_orphan_running_runs(tmp_path: pathlib.Path) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     first_project = client.create_project("local training", project_id="project-1")
     second_project = client.create_project("sweep", project_id="project-2")
     first_run = client.create_run(first_project.project_id, "baseline", run_id="run-1")
@@ -586,7 +568,7 @@ def test_client_detects_orphan_running_runs(tmp_path: pathlib.Path) -> None:
     del second_run
     del client
 
-    reopened_client = seex.init(root_path)
+    reopened_client = _seex.init(root_path)
     all_orphans = reopened_client.list_orphan_runs()
     project_orphans = reopened_client.list_orphan_runs(first_project.project_id)
 
@@ -601,9 +583,8 @@ def test_client_detects_orphan_running_runs(tmp_path: pathlib.Path) -> None:
 def test_client_finalizes_runs_as_finished_or_failed(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     finished_run = client.create_run(project.project_id, "baseline", run_id="run-1")
     failed_run = client.create_run(project.project_id, "candidate", run_id="run-2")
@@ -626,7 +607,7 @@ def test_finalization_closes_run_for_late_logging(
 ) -> None:
     import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.25)
@@ -647,7 +628,7 @@ def test_bounded_finalization_timeout_leaves_run_running(
 ) -> None:
     import seex
 
-    client = seex.init(tmp_path / f"seex-{terminal_method}")
+    client = _seex.init(tmp_path / f"seex-{terminal_method}")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     for step in range(1000):
@@ -668,10 +649,9 @@ def test_bounded_finalization_timeout_leaves_run_running(
 def test_finish_run_flushes_partitioned_parquet_and_updates_diagnostics(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     run.log("train/loss", 0, 0.25)
@@ -691,9 +671,8 @@ def test_finish_run_flushes_partitioned_parquet_and_updates_diagnostics(
 def test_flush_run_data_retries_terminal_run_visibility(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
     client.finish_run(run.run_id)
@@ -708,7 +687,7 @@ def test_flush_run_data_retries_terminal_run_visibility(
 def test_flush_run_data_rejects_running_runs(tmp_path: pathlib.Path) -> None:
     import seex
 
-    client = seex.init(tmp_path / "seex")
+    client = _seex.init(tmp_path / "seex")
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
 
@@ -719,28 +698,27 @@ def test_flush_run_data_rejects_running_runs(tmp_path: pathlib.Path) -> None:
 def test_shutdown_does_not_finalize_running_runs(
     tmp_path: pathlib.Path,
 ) -> None:
-    import seex
 
     root_path = tmp_path / "seex"
-    client = seex.init(root_path)
+    client = _seex.init(root_path)
     project = client.create_project("local training", project_id="project-1")
     run = client.create_run(project.project_id, "baseline", run_id="run-1")
 
     client.shutdown()
 
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         run.log("train/loss", 0, 0.25)
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         client.create_project("late project", project_id="late-project")
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         client.create_run(project.project_id, "late run", run_id="late-run")
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         client.resume_run(run.run_id)
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         client.finish_run(run.run_id)
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         client.fail_run(run.run_id)
-    with pytest.raises(seex.ClientClosedError):
+    with pytest.raises(_seex.ClientClosedError):
         client.flush_run_data(run.run_id)
 
     selected_run = client.get_run(run.run_id)
@@ -748,7 +726,7 @@ def test_shutdown_does_not_finalize_running_runs(
     assert selected_run.run_id == run.run_id
     assert metric_points == []
 
-    reopened_client = seex.init(root_path)
+    reopened_client = _seex.init(root_path)
     running_run = reopened_client.get_run(run.run_id)
     resumed_run = reopened_client.resume_run(run.run_id)
     assert running_run.status == "running"
