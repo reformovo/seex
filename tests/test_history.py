@@ -1,4 +1,4 @@
-"""Verify public U4 typed metric history before public cutover."""
+"""Verify public typed metric history."""
 
 from __future__ import annotations
 

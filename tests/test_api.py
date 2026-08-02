@@ -1,4 +1,4 @@
-"""Verify public U4 read-only Api discovery before public cutover."""
+"""Verify public read-only Api discovery."""
 
 from __future__ import annotations
 

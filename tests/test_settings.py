@@ -1,4 +1,4 @@
-"""Verify the public U4 Settings object."""
+"""Verify the public Settings object."""
 
 from __future__ import annotations
 

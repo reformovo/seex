@@ -1,4 +1,4 @@
-"""Verify public U4 Run initialization and lifecycle behavior."""
+"""Verify public Run initialization and lifecycle behavior."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 import seex
 
 
-def test_target_run_uses_explicit_and_default_identities(tmp_path: pathlib.Path) -> None:
+def test_run_uses_explicit_and_default_identities(tmp_path: pathlib.Path) -> None:
 
     explicit = seex.init(project="project-1", dir=tmp_path, id="run-1", name="baseline")
     generated = seex.init(project="project-2", dir=tmp_path)
@@ -24,7 +24,7 @@ def test_target_run_uses_explicit_and_default_identities(tmp_path: pathlib.Path)
     assert generated.name == generated.run_id
 
 
-def test_target_run_validates_resume_contract(tmp_path: pathlib.Path) -> None:
+def test_run_validates_resume_contract(tmp_path: pathlib.Path) -> None:
 
     with pytest.raises(ValueError, match="resume"):
         seex.init(
@@ -40,7 +40,7 @@ def test_target_run_validates_resume_contract(tmp_path: pathlib.Path) -> None:
         seex.init(dir=tmp_path, resume="must")
 
 
-def test_target_run_context_finishes_or_fails(tmp_path: pathlib.Path) -> None:
+def test_run_context_finishes_or_fails(tmp_path: pathlib.Path) -> None:
     finished_path = tmp_path / "finished"
     with seex.init(dir=finished_path, id="finished") as finished:
         assert finished.status == "running"
@@ -58,7 +58,7 @@ def test_target_run_context_finishes_or_fails(tmp_path: pathlib.Path) -> None:
     assert failed is not None and failed.status == "failed"
 
 
-def test_target_run_retries_matching_outcome_and_rejects_conflict(tmp_path: pathlib.Path) -> None:
+def test_run_retries_matching_outcome_and_rejects_conflict(tmp_path: pathlib.Path) -> None:
     run = seex.init(dir=tmp_path, id="run-1")
     run.finish()
     run.finish(0)
@@ -67,7 +67,7 @@ def test_target_run_retries_matching_outcome_and_rejects_conflict(tmp_path: path
         run.finish(1)
 
 
-def test_target_run_logs_atomic_numeric_mappings(tmp_path: pathlib.Path) -> None:
+def test_run_logs_atomic_numeric_mappings(tmp_path: pathlib.Path) -> None:
     run = seex.init(dir=tmp_path, id="run-1")
     run.log({"loss": 2, "accuracy": 0.5})
     run.log({"loss": 1.0})
@@ -82,7 +82,7 @@ def test_target_run_logs_atomic_numeric_mappings(tmp_path: pathlib.Path) -> None
     assert run.diagnostics().persisted_reports == 3
 
 
-def test_target_run_applies_explicit_step_and_commit_cursor_rules(tmp_path: pathlib.Path) -> None:
+def test_run_applies_explicit_step_and_commit_cursor_rules(tmp_path: pathlib.Path) -> None:
     run = seex.init(dir=tmp_path, id="run-1")
     run.log({"loss": 9.0}, step=5)
     run.log({"loss": 0.0})
@@ -100,7 +100,7 @@ def test_target_run_applies_explicit_step_and_commit_cursor_rules(tmp_path: path
     ]
 
 
-def test_target_run_rejects_oversized_mapping_atomically(tmp_path: pathlib.Path) -> None:
+def test_run_rejects_oversized_mapping_atomically(tmp_path: pathlib.Path) -> None:
     run = seex.init(dir=tmp_path, id="run-1")
     with pytest.raises(ValueError, match="maximum is 8192"):
         run.log({f"metric-{index}": float(index) for index in range(8_193)})
@@ -135,7 +135,7 @@ def test_finished_run_releases_native_resources_before_python_drop(tmp_path: pat
         ({1: 1.0}, TypeError),
     ],
 )
-def test_target_run_rejects_invalid_metric_mappings(
+def test_run_rejects_invalid_metric_mappings(
     tmp_path: pathlib.Path,
     data: object,
     error_type: type[Exception],
