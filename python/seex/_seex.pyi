@@ -46,7 +46,7 @@ class Settings:
     s3_path_style: bool | None
     s3_use_ssl: bool | None
 
-class _Run:
+class Run:
     run_id: str
     project_id: str
     name: str
@@ -225,7 +225,7 @@ class Project:
     name: str
     created_at: str
 
-def _start_run(
+def init(
     *,
     project: str | None = None,
     dir: str | os.PathLike[str] | None = None,
@@ -233,4 +233,4 @@ def _start_run(
     name: str | None = None,
     resume: bool | Literal["allow", "never", "must"] | None = None,
     settings: Settings | None = None,
-) -> _Run: ...
+) -> Run: ...

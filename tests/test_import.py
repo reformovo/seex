@@ -9,7 +9,7 @@ def test_import_seex() -> None:
     assert hasattr(seex, "__all__")
     assert seex.Api.__name__ == "Api"
     assert seex.MetricSeries.__name__ == "MetricSeries"
-    assert seex.Run.__name__ == "_Run"
+    assert seex.Run.__name__ == "Run"
     assert seex.RunRecord.__name__ == "RunRecord"
     assert seex.Settings.__name__ == "Settings"
     assert "Client" not in seex.__all__

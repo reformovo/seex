@@ -14,7 +14,7 @@ use crate::sdk::client::{
 };
 use crate::sdk::settings::PySettings;
 
-#[pyclass(name = "_Run", module = "seex._seex", unsendable)]
+#[pyclass(name = "Run", module = "seex._seex", unsendable)]
 pub struct PyTargetRun {
     client: RefCell<Option<Client>>,
     handle: RefCell<Option<RunHandle>>,
@@ -162,7 +162,7 @@ impl PyTargetRun {
     }
 }
 
-#[pyfunction(name = "_start_run")]
+#[pyfunction(name = "init")]
 #[pyo3(signature = (*, project=None, dir=None, id=None, name=None, resume=None, settings=None))]
 pub fn start_run(
     project: Option<String>,

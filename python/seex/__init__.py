@@ -27,7 +27,7 @@ SeexError = _seex.SeexError
 Project = _seex.Project
 RankingEntry = _seex.RankingEntry
 RankingResult = _seex.RankingResult
-Run = _seex._Run
+Run = _seex.Run
 RunAlreadyActiveError = _seex.RunAlreadyActiveError
 RunAlreadyExistsError = _seex.RunAlreadyExistsError
 RunClosedError = _seex.RunClosedError
@@ -45,7 +45,7 @@ def init(
     resume: bool | Literal["never", "allow", "must"] | None = None,
     settings: Settings | None = None,
 ) -> Run:
-    return _seex._start_run(
+    return _seex.init(
         project=project,
         dir=dir,
         id=id,
