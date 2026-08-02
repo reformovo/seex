@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use seex_storage::{MetricWrite, ProjectConnection};
+use crate::storage::{MetricWrite, ProjectConnection};
 
 use crate::engine::EngineError;
 use crate::model::metric::{MetricKey, Step};
@@ -555,7 +555,7 @@ fn write_metric_batch(
 
 fn sanitize_metric_write_error(error: &EngineError) -> String {
     match error {
-        EngineError::StorageFailure(seex_storage::StorageError::DuckDb(_)) => {
+        EngineError::StorageFailure(crate::storage::StorageError::DuckDb(_)) => {
             "append metric batch failed".to_owned()
         }
         EngineError::Storage { operation, .. } => {
@@ -948,7 +948,7 @@ mod tests {
         let result = retry_metric_batch_write(
             || {
                 Err(EngineError::StorageFailure(
-                    seex_storage::StorageError::DuckDb(duckdb::Error::InvalidQuery),
+                    crate::storage::StorageError::DuckDb(duckdb::Error::InvalidQuery),
                 ))
             },
             &diagnostics,
@@ -958,7 +958,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(EngineError::StorageFailure(
-                seex_storage::StorageError::DuckDb(_)
+                crate::storage::StorageError::DuckDb(_)
             ))
         ));
         assert_eq!(

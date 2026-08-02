@@ -21,12 +21,19 @@
 
 #![forbid(unsafe_code)]
 
+#[doc(hidden)]
+pub mod engine;
 mod error;
 #[doc(hidden)]
 pub mod model;
 mod reader;
 #[doc(hidden)]
 pub mod storage;
+
+#[cfg(test)]
+mod ducklake_test_support;
+#[cfg(test)]
+mod native_engine_behavior;
 
 pub use crate::model::comparison::{
     ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,

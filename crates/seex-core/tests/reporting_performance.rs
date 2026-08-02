@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use seex_core::engine::client::{NativeClient, NativeRun};
-use seex_model::types::ProjectId;
+use seex_core::model::types::ProjectId;
 
 const SAMPLES: usize = 10;
 const CALIBRATION_TARGET: Duration = Duration::from_millis(25);

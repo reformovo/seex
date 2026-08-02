@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
-use seex_storage::{ProjectConnection, RunWriterGuard};
+use crate::storage::{ProjectConnection, RunWriterGuard};
 
 use crate::engine::EngineError;
 use crate::engine::bootstrap::{
@@ -1671,7 +1671,7 @@ mod tests {
     #[test]
     fn percent_encode_path_segment_uses_rfc3986_unreserved_bytes() {
         assert_eq!(
-            seex_storage::percent_encode_metric_key("run/space ü._~-"),
+            crate::storage::percent_encode_metric_key("run/space ü._~-"),
             "run%2Fspace%20%C3%BC._~-",
         );
     }

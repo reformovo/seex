@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use seex_storage::{ProjectConnection, ProjectMetricReader};
+use crate::storage::{ProjectConnection, ProjectMetricReader};
 
 use crate::engine::EngineError;
 use crate::model::alignment::{
@@ -24,7 +24,7 @@ enum QuerySource<'connection> {
     DuckDb(&'connection duckdb::Connection),
 }
 
-pub type MetricQueryResult = seex_model::metric::MetricQueryResult;
+pub type MetricQueryResult = crate::model::metric::MetricQueryResult;
 
 impl<'connection> NativeQueryStore<'connection> {
     pub const fn new(connection: &'connection ProjectConnection) -> Self {

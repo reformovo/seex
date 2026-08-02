@@ -5473,12 +5473,8 @@ version = "0.1.0-beta.0"
 name = "seex-core"
 version = "0.1.0-beta.0"
 dependencies = [
- "chrono",
  "duckdb",
- "seex-model",
- "seex-storage",
- "thiserror 2.0.18",
- "uuid",
+ "seex",
 ]
 
 [[package]]
