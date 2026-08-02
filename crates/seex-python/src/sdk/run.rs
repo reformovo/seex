@@ -15,7 +15,7 @@ use crate::sdk::client::{
 use crate::sdk::settings::PySettings;
 
 #[pyclass(name = "Run", module = "seex._seex", unsendable)]
-pub struct PyTargetRun {
+pub struct PyRun {
     client: RefCell<Option<Client>>,
     handle: RefCell<Option<RunHandle>>,
     run_id: String,
@@ -26,7 +26,7 @@ pub struct PyTargetRun {
 }
 
 #[pymethods]
-impl PyTargetRun {
+impl PyRun {
     #[getter]
     fn run_id(&self) -> &str {
         &self.run_id
@@ -115,7 +115,7 @@ impl PyTargetRun {
     }
 }
 
-impl PyTargetRun {
+impl PyRun {
     fn finalize(&self, exit_code: Option<i64>) -> seex::Result<()> {
         let requested = if exit_code.is_none_or(|value| value == 0) {
             RunStatus::Finished
@@ -171,7 +171,7 @@ pub fn start_run(
     name: Option<String>,
     resume: Option<&Bound<'_, PyAny>>,
     settings: Option<PyRef<'_, PySettings>>,
-) -> PyResult<PyTargetRun> {
+) -> PyResult<PyRun> {
     let root = dir.unwrap_or_else(|| PathBuf::from("."));
     let builder = match settings {
         Some(value) => value.client_builder(root),
@@ -190,7 +190,7 @@ pub fn start_run(
     let run_id = handle.run_id().as_str().to_owned();
     let project_id = handle.project_id().as_str().to_owned();
     let name = handle.name().to_owned();
-    Ok(PyTargetRun {
+    Ok(PyRun {
         client: RefCell::new(Some(client)),
         handle: RefCell::new(Some(handle)),
         run_id,

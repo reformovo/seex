@@ -22,7 +22,7 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sdk::comparison::PyRankingResult>()?;
     m.add_class::<sdk::history::PyMetricSeries>()?;
     m.add_class::<sdk::settings::PySettings>()?;
-    m.add_class::<sdk::run::PyTargetRun>()?;
+    m.add_class::<sdk::run::PyRun>()?;
     m.add("SeexError", py.get_type::<sdk::client::SeexError>())?;
     macro_rules! add_exception {
         ($name:ident) => {
