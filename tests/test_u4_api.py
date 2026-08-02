@@ -1,25 +1,22 @@
-"""Verify target U4 read-only Api discovery before public cutover."""
+"""Verify public U4 read-only Api discovery before public cutover."""
 
 from __future__ import annotations
 
 import pathlib
 
 import pytest
+import seex
 
 
 def _finished_run(root: pathlib.Path) -> None:
-    from seex import _seex
-
-    run = _seex._start_run(project="project-1", dir=root, id="run-1", name="baseline")
+    run = seex.init(project="project-1", dir=root, id="run-1", name="baseline")
     run.log({"loss": 0.25})
     run.finish()
 
 
 def test_api_discovers_projects_and_project_scoped_runs(tmp_path: pathlib.Path) -> None:
-    from seex import _seex
-
     _finished_run(tmp_path)
-    api = _seex.Api(tmp_path)
+    api = seex.Api(tmp_path)
 
     assert [project.project_id for project in api.projects()] == ["project-1"]
     project = api.project("project-1")
@@ -45,31 +42,27 @@ def test_api_discovers_projects_and_project_scoped_runs(tmp_path: pathlib.Path) 
 
 
 def test_api_close_is_idempotent_and_invalidates_records(tmp_path: pathlib.Path) -> None:
-    from seex import _seex
-
     _finished_run(tmp_path)
-    record: _seex.RunRecord | None = None
-    with _seex.Api(tmp_path) as api:
+    record: seex.RunRecord | None = None
+    with seex.Api(tmp_path) as api:
         record = api.run("project-1/run-1")
         assert record is not None
         assert record.run_id == "run-1"
 
     api.close()
     assert record is not None
-    with pytest.raises(_seex.ApiClosedError):
+    with pytest.raises(seex.ApiClosedError):
         api.projects()
-    with pytest.raises(_seex.ApiClosedError):
+    with pytest.raises(seex.ApiClosedError):
         _ = record.run_id
 
 
 def test_api_compares_and_ranks_run_evidence(tmp_path: pathlib.Path) -> None:
-    from seex import _seex
-
     for run_id, loss in [("candidate", 0.25), ("reference", 0.5)]:
-        run = _seex._start_run(project="project-1", dir=tmp_path, id=run_id)
+        run = seex.init(project="project-1", dir=tmp_path, id=run_id)
         run.log({"loss": loss})
         run.finish()
-    api = _seex.Api(tmp_path)
+    api = seex.Api(tmp_path)
 
     comparison = api.compare_runs(
         "candidate",

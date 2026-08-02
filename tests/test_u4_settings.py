@@ -1,16 +1,15 @@
-"""Verify the target U4 Settings object before the public API cutover."""
+"""Verify the public U4 Settings object."""
 
 from __future__ import annotations
 
 import pathlib
 
 import pytest
+import seex
 
 
 def test_settings_are_typed_and_redact_credentials(tmp_path: pathlib.Path) -> None:
-    from seex import _seex
-
-    settings = _seex.Settings(
+    settings = seex.Settings(
         catalog_backend="sqlite",
         data_path=tmp_path / "data",
         s3_access_key_id="credential-a",
@@ -29,7 +28,5 @@ def test_settings_are_typed_and_redact_credentials(tmp_path: pathlib.Path) -> No
 
 @pytest.mark.parametrize("capacity", [0, 1_048_577])
 def test_settings_reject_invalid_queue_capacity(capacity: int) -> None:
-    from seex import _seex
-
     with pytest.raises(ValueError, match="metric_queue_capacity"):
-        _seex.Settings(metric_queue_capacity=capacity)
+        seex.Settings(metric_queue_capacity=capacity)
