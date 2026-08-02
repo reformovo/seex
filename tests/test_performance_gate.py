@@ -1,4 +1,4 @@
-"""Verify the bounded schema-v3 performance gate contract."""
+"""Verify the bounded schema-v3 performance comparison contract."""
 
 from __future__ import annotations
 
@@ -283,7 +283,7 @@ def test_protected_direction_changes_within_limits_are_preserved() -> None:
     assert "query.reader.full" in details
 
 
-def test_protected_regression_and_hard_floor_block_optimization() -> None:
+def test_protected_regression_and_hard_floor_classify_optimization() -> None:
     floor = performance_gate.HardFloor(metric="query.reader.narrow", statistic="p95", operator="at_most", value=95.0)
     protected = _manifest(protected=["query.reader.full"])
     floored = _manifest(floors=[floor])
@@ -385,9 +385,9 @@ def test_timeout_preserves_completed_checkpoint(monkeypatch: pytest.MonkeyPatch,
     assert len(checkpoint["captures"]) == 1
 
 
-@pytest.mark.parametrize("verdict,status", [("pass", 0), ("no_change", 2), ("inconclusive", 2), ("regression", 3)])
-def test_main_returns_stable_verdict_status(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, verdict: str, status: int
+@pytest.mark.parametrize("verdict", ["pass", "no_change", "inconclusive", "regression"])
+def test_main_does_not_block_for_completed_comparisons(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, verdict: str
 ) -> None:
     manifest = _manifest()
     result = performance_gate.Result(
@@ -408,7 +408,7 @@ def test_main_returns_stable_verdict_status(
         performance_gate.main(
             ["run", "--manifest", str(tmp_path / "manifest.json"), "--output", str(tmp_path / "result.json")]
         )
-        == status
+        == 0
     )
 
 

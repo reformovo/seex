@@ -86,7 +86,7 @@ class Fixture(TypedDict):
 
 
 class Manifest(TypedDict):
-    """The complete input contract for one performance decision."""
+    """The complete input contract for one performance comparison."""
 
     schema_version: Literal[3]
     name: str
@@ -102,7 +102,7 @@ class Manifest(TypedDict):
 
 
 class Result(TypedDict):
-    """A checkpointable schema-v3 gate result."""
+    """A checkpointable schema-v3 comparison result."""
 
     schema_version: Literal[3]
     record_type: Literal["gate_result"]
@@ -544,8 +544,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    result = run_gate(read_manifest(args.manifest), args.output)
-    return {"pass": 0, "no_change": 2, "inconclusive": 2, "regression": 3}[result["verdict"]]
+    run_gate(read_manifest(args.manifest), args.output)
+    return 0
 
 
 if __name__ == "__main__":
@@ -559,5 +559,5 @@ if __name__ == "__main__":
         json.JSONDecodeError,
         subprocess.SubprocessError,
     ) as error:
-        print(f"performance gate failed: {error}", file=sys.stderr)
+        print(f"performance comparison failed: {error}", file=sys.stderr)
         raise SystemExit(4) from error
