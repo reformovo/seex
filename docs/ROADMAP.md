@@ -311,8 +311,8 @@ U4 passed correctness and isolated wheel/sdist Acceptance at revision
 `19f00aba232557dc71a155c3c137ff3bb3281df6`. Reporting admission was a
 non-blocking Regression and durability was Inconclusive, so neither reporting
 baseline advanced. DuckDB Reader Step preservation passed; its rolling
-baseline advanced to the U4 revision. See
-[`u4-performance-observations.md`](reference/u4-performance-observations.md).
+baseline advanced to the candidate revision. See
+[`python-api-performance-observations.md`](reference/python-api-performance-observations.md).
 
 ### U5: Single-Crate Convergence and Packaging
 
