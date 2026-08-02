@@ -1,9 +1,9 @@
 use seex::storage::bootstrap::open_native_connection;
 use seex::storage::{MetricWrite, ProjectConnection};
 use seex::{
-    Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate, MetricKey,
-    MetricQuery, MetricRange, Project, ProjectId, Reader, RelativeTime, RunId, RunStatus, Step,
-    Timestamp,
+    CatalogBackend, Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate,
+    MetricKey, MetricQuery, MetricRange, Project, ProjectId, Reader, RelativeTime, RunId,
+    RunStatus, Step, Timestamp,
 };
 
 struct Fixture {
@@ -12,6 +12,32 @@ struct Fixture {
     standalone: Reader,
     run_id: RunId,
     started_at: i64,
+}
+
+#[test]
+fn native_reader_honors_explicit_storage_overrides_without_creating_a_store()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let root = fixture._root.path();
+    std::fs::write(
+        root.join(".seex/config.toml"),
+        "schema_version = 1\ncatalog_backend = 'sqlite'\n",
+    )?;
+
+    let reader = Reader::builder(root)
+        .catalog_backend(CatalogBackend::DuckDb)
+        .catalog_path(root.join(".seex/catalog.ducklake"))
+        .data_path(root.join(".seex/data"))
+        .open()?;
+
+    assert_eq!(reader.projects()?.len(), 1);
+    let empty = tempfile::tempdir()?;
+    assert_eq!(
+        Reader::builder(empty.path()).open().err(),
+        Some(Error::Storage)
+    );
+    assert!(!empty.path().join(".seex/catalog.ducklake").exists());
+    Ok(())
 }
 
 impl Fixture {

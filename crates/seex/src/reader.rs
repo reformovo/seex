@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::config::{CatalogBackend, S3Options};
 use crate::error::{Error, Result as SdkResult};
 use crate::model::alignment::{
     AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
@@ -29,6 +30,10 @@ use crate::storage::{
 /// Builder for opening one existing native or standalone store read-only.
 pub struct ReaderBuilder {
     source: ReaderSource,
+    catalog_backend: Option<CatalogBackend>,
+    catalog_path: Option<PathBuf>,
+    data_path: Option<PathBuf>,
+    s3: S3Options,
 }
 
 enum ReaderSource {
@@ -40,6 +45,10 @@ impl ReaderBuilder {
     pub fn new(root_path: impl Into<PathBuf>) -> Self {
         Self {
             source: ReaderSource::Native(root_path.into()),
+            catalog_backend: None,
+            catalog_path: None,
+            data_path: None,
+            s3: S3Options::default(),
         }
     }
 
@@ -47,7 +56,35 @@ impl ReaderBuilder {
     pub fn parquet(source: impl Into<String>) -> Self {
         Self {
             source: ReaderSource::Parquet(source.into()),
+            catalog_backend: None,
+            catalog_path: None,
+            data_path: None,
+            s3: S3Options::default(),
         }
+    }
+
+    /// Selects the native catalog backend explicitly.
+    pub fn catalog_backend(mut self, value: CatalogBackend) -> Self {
+        self.catalog_backend = Some(value);
+        self
+    }
+
+    /// Selects the local native catalog path explicitly.
+    pub fn catalog_path(mut self, value: impl Into<PathBuf>) -> Self {
+        self.catalog_path = Some(value.into());
+        self
+    }
+
+    /// Selects the native Parquet data path explicitly.
+    pub fn data_path(mut self, value: impl Into<PathBuf>) -> Self {
+        self.data_path = Some(value.into());
+        self
+    }
+
+    /// Supplies connection-local S3 overrides for an S3 data path.
+    pub fn s3_options(mut self, value: S3Options) -> Self {
+        self.s3 = value;
+        self
     }
 
     /// Opens the configured store without starting a writer.
@@ -76,11 +113,19 @@ impl ReaderBuilder {
         };
         let resolved = resolve_init_config(
             &root_path,
-            None,
-            None,
-            None,
+            self.data_path,
+            self.catalog_backend.map(CatalogBackend::as_name),
+            self.catalog_path,
             1,
-            S3ConnectionOverrides::default(),
+            S3ConnectionOverrides {
+                endpoint: self.s3.endpoint,
+                access_key_id: self.s3.access_key_id,
+                secret_access_key: self.s3.secret_access_key,
+                session_token: self.s3.session_token,
+                region: self.s3.region,
+                path_style: self.s3.path_style,
+                use_ssl: self.s3.use_ssl,
+            },
         )
         .map_err(|_| Error::Configuration)?;
         let config = NativeStorageConfig::with_backend_and_s3_config(
