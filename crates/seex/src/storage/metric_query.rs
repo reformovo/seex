@@ -1,17 +1,19 @@
 use std::path::Path;
 
-use chrono::{TimeZone, Utc};
-use duckdb::Connection;
-use seex_model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult};
-use seex_model::metric::{
+use crate::model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult};
+use crate::model::metric::{
     MetricAggregate, MetricKey, MetricPoint, MetricQuery, MetricQueryResult, ReductionPolicy, Step,
 };
-use seex_model::run::{RunId, RunStatus};
+use crate::model::run::{RunId, RunStatus};
+use chrono::{TimeZone, Utc};
+use duckdb::Connection;
 
-use crate::alignment_query::{AlignmentSource, query_aligned_metric, validate_alignment_identity};
-use crate::rows::StoredMetricAggregate;
-use crate::sql::string_literal as sql_string_literal;
-use crate::{MetricReader, StorageError};
+use crate::storage::alignment_query::{
+    AlignmentSource, query_aligned_metric, query_narrow_step_metric, validate_alignment_identity,
+};
+use crate::storage::rows::StoredMetricAggregate;
+use crate::storage::sql::string_literal as sql_string_literal;
+use crate::storage::{MetricReader, StorageError};
 
 const EXTREMA_PER_BUCKET: usize = 4;
 const LTTB_AUTO_INSTALL_ENV: &str = "SEEX_LTTB_AUTO_INSTALL";
@@ -21,6 +23,16 @@ const LTTB_EXTENSION_PATH_ENV: &str = "SEEX_LTTB_EXTENSION_PATH";
 pub(crate) enum MetricSource<'a> {
     Project,
     Parquet(&'a str),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SeriesDiagnostics {
+    pub effective_count: u64,
+    pub min_step: Option<i64>,
+    pub max_step: Option<i64>,
+    pub has_negative_step: bool,
+    pub has_decreasing_timestamp: bool,
+    pub has_non_finite_value: bool,
 }
 
 /// Metric reader for the authoritative DuckLake project relation.
@@ -40,6 +52,15 @@ impl<'connection> ProjectMetricReader<'connection> {
     /// Returns [`StorageError`] for query, extension, or conversion failures.
     pub fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError> {
         query_metric(self.connection, MetricSource::Project, query)
+    }
+
+    #[doc(hidden)]
+    pub fn series_diagnostics(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+    ) -> Result<SeriesDiagnostics, StorageError> {
+        query_series_diagnostics(self.connection, MetricSource::Project, run_id, metric_key)
     }
 
     /// Queries project metric points on a derived comparison axis.
@@ -62,6 +83,14 @@ impl<'connection> ProjectMetricReader<'connection> {
             query,
             run_start_millis,
         )
+    }
+
+    #[doc(hidden)]
+    pub fn query_narrow_step_metric(
+        &self,
+        query: &AlignmentQuery,
+    ) -> Result<AlignmentQueryResult, StorageError> {
+        query_narrow_step_metric(self.connection, AlignmentSource::Project, query)
     }
 
     fn run_start_millis(&self, run_id: &RunId) -> Result<i64, StorageError> {
@@ -198,6 +227,65 @@ impl MetricReader for ProjectMetricReader<'_> {
     }
 }
 
+pub(crate) fn query_series_diagnostics(
+    connection: &Connection,
+    source: MetricSource<'_>,
+    run_id: &RunId,
+    metric_key: &MetricKey,
+) -> Result<SeriesDiagnostics, StorageError> {
+    if run_id.as_str().trim().is_empty() || metric_key.as_str().trim().is_empty() {
+        return Err(StorageError::InvalidIdentity);
+    }
+    let (relation, tie_breaker) = source_relation(source);
+    let sql = format!(
+        "WITH ranked AS (
+             SELECT step, timestamp, value_f64,
+                    row_number() OVER (
+                        PARTITION BY step ORDER BY ingested_at DESC, {tie_breaker}
+                    ) AS write_rank
+             FROM {relation}
+             WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
+         ),
+         effective AS (
+             SELECT step, timestamp, value_f64 FROM ranked WHERE write_rank = 1
+         ),
+         ordered AS (
+             SELECT *, lag(timestamp) OVER (ORDER BY step) AS previous_timestamp
+             FROM effective
+         )
+         SELECT count(*)::UBIGINT, min(step), max(step),
+                coalesce(bool_or(step < 0), false),
+                coalesce(bool_or(previous_timestamp > timestamp), false),
+                coalesce(bool_or(NOT isfinite(value_f64)), false)
+         FROM ordered"
+    );
+    let mut values: Vec<Box<dyn duckdb::ToSql>> = Vec::with_capacity(4);
+    if let MetricSource::Parquet(location) = source {
+        values.push(Box::new(location.to_owned()));
+    }
+    values.extend([
+        Box::new(run_id.as_str().to_owned()) as Box<dyn duckdb::ToSql>,
+        Box::new(metric_key.as_str().to_owned()),
+        Box::new(percent_encode_metric_key(metric_key.as_str())),
+    ]);
+    connection
+        .query_row(
+            &sql,
+            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
+            |row| {
+                Ok(SeriesDiagnostics {
+                    effective_count: row.get(0)?,
+                    min_step: row.get(1)?,
+                    max_step: row.get(2)?,
+                    has_negative_step: row.get(3)?,
+                    has_decreasing_timestamp: row.get(4)?,
+                    has_non_finite_value: row.get(5)?,
+                })
+            },
+        )
+        .map_err(StorageError::from)
+}
+
 pub(crate) fn query_metric(
     connection: &Connection,
     source: MetricSource<'_>,
@@ -320,14 +408,7 @@ fn query_params(source: MetricSource<'_>, query: &MetricQuery) -> Vec<Box<dyn du
 }
 
 fn effective_cte(source: MetricSource<'_>) -> String {
-    let (relation, tie_breaker) = match source {
-        MetricSource::Project => ("dl.metric_points", "rowid DESC"),
-        MetricSource::Parquet(_) => (
-            "read_parquet(?, hive_partitioning = true, union_by_name = true, \
-             filename = true, file_row_number = true)",
-            "filename DESC, file_row_number DESC",
-        ),
-    };
+    let (relation, tie_breaker) = source_relation(source);
     format!(
         "WITH ranked AS (
              SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at,
@@ -345,6 +426,17 @@ fn effective_cte(source: MetricSource<'_>) -> String {
              FROM ranked WHERE write_rank = 1
          )"
     )
+}
+
+fn source_relation(source: MetricSource<'_>) -> (&'static str, &'static str) {
+    match source {
+        MetricSource::Project => ("dl.metric_points", "rowid DESC"),
+        MetricSource::Parquet(_) => (
+            "read_parquet(?, hive_partitioning = true, union_by_name = true, \
+             filename = true, file_row_number = true)",
+            "filename DESC, file_row_number DESC",
+        ),
+    }
 }
 
 fn full_query_sql(source: MetricSource<'_>) -> String {
@@ -566,6 +658,39 @@ mod tests {
         assert!(!lttb_auto_install_allowed(None));
         assert!(!lttb_auto_install_allowed(Some(OsStr::new("0"))));
         assert!(lttb_auto_install_allowed(Some(OsStr::new("true"))));
+    }
+
+    #[test]
+    fn diagnostics_cover_the_whole_effective_series_after_lww()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute_batch(
+            "CREATE SCHEMA dl;
+             CREATE TABLE dl.metric_points (
+                 run_id VARCHAR, metric_key VARCHAR, metric_key_encoded VARCHAR,
+                 step BIGINT, timestamp TIMESTAMPTZ, value_f64 DOUBLE,
+                 ingested_at TIMESTAMPTZ
+             );
+             INSERT INTO dl.metric_points VALUES
+                 ('run-1', 'loss', 'loss', -1, epoch_ms(30), 1.0, epoch_ms(1)),
+                 ('run-1', 'loss', 'loss', 0, epoch_ms(25), 2.0, epoch_ms(1)),
+                 ('run-1', 'loss', 'loss', 0, epoch_ms(20), 'NaN'::DOUBLE, epoch_ms(2));",
+        )?;
+
+        let diagnostics = query_series_diagnostics(
+            &connection,
+            MetricSource::Project,
+            &RunId::from_string("run-1"),
+            &MetricKey::from_string("loss"),
+        )?;
+
+        assert_eq!(diagnostics.effective_count, 2);
+        assert_eq!(diagnostics.min_step, Some(-1));
+        assert_eq!(diagnostics.max_step, Some(0));
+        assert!(diagnostics.has_negative_step);
+        assert!(diagnostics.has_decreasing_timestamp);
+        assert!(diagnostics.has_non_finite_value);
+        Ok(())
     }
 
     #[test]

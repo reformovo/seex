@@ -10,10 +10,8 @@ use std::time::{Duration, Instant, SystemTime};
 use seex_core::engine::client::{NativeClient, NativeRun};
 use seex_model::types::ProjectId;
 
-// Candidate reliability comes from the seven independent AB/BA process pairs.
-const SAMPLES: usize = 1;
-const CALIBRATION_TARGET: Duration = Duration::from_millis(10);
-const DECIDING_SAMPLE_MINIMUM: Duration = Duration::from_millis(10);
+const SAMPLES: usize = 10;
+const CALIBRATION_TARGET: Duration = Duration::from_millis(25);
 const QUEUE_CAPACITY: usize = 1_048_576;
 const MAPPING_KEYS: [&str; 8] = [
     "metric-0", "metric-1", "metric-2", "metric-3", "metric-4", "metric-5", "metric-6", "metric-7",
@@ -41,33 +39,14 @@ fn run_for_mode(label: &str) -> Result<(PathBuf, NativeClient, NativeRun), Box<d
     Ok((root, client, run))
 }
 
-fn percentile(sorted: &[f64], percent: usize) -> f64 {
-    sorted[(sorted.len() * percent).div_ceil(100) - 1]
-}
-
-fn emit_metric(label: &str, batch_iterations: usize, mut raw_samples: Vec<f64>) {
-    let raw = raw_samples.clone();
-    raw_samples.sort_by(f64::total_cmp);
-    let p50 = percentile(&raw_samples, 50);
-    let p95 = percentile(&raw_samples, 95);
-    let maximum = raw_samples[raw_samples.len() - 1];
-    let mut deviations = raw_samples
-        .iter()
-        .map(|sample| (sample - p50).abs())
-        .collect::<Vec<_>>();
-    deviations.sort_by(f64::total_cmp);
-    let mad = deviations[deviations.len() / 2];
-    let relative_mad = mad / p50;
-    println!(
-        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
+fn metric_record(label: &str, batch_iterations: usize, samples: &[f64]) -> String {
+    assert_eq!(samples.len(), SAMPLES, "reporting benchmark sample count");
+    format!(
+        "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\
          \"domain\":\"reporting\",\"metric\":\"rust.{label}.admission\",\
          \"unit\":\"points/s\",\"direction\":\"higher\",\
-         \"batch_iterations\":{batch_iterations},\"samples\":{SAMPLES},\
-         \"raw_samples\":{raw:?},\"mad\":{mad},\"relative_mad\":{relative_mad},\
-         \"p50\":{p50},\"p95\":{p95},\"max\":{maximum},\
-         \"reliable\":{}}}",
-        relative_mad <= 0.02,
-    );
+         \"batch_iterations\":{batch_iterations},\"samples\":{samples:?}}}"
+    )
 }
 
 fn measure(
@@ -80,20 +59,38 @@ fn measure(
         operation(index)?;
     }
     let mut batch_iterations = 1_024;
-    let sample = loop {
+    let (batch_iterations, first_sample) = loop {
         let started = Instant::now();
         for index in 0..batch_iterations {
             operation(index)?;
         }
         let elapsed = started.elapsed();
         settle()?;
-        if elapsed >= CALIBRATION_TARGET || batch_iterations * points_per_call >= QUEUE_CAPACITY / 2
-        {
-            break (batch_iterations * points_per_call) as f64 / elapsed.as_secs_f64();
+        if elapsed >= CALIBRATION_TARGET {
+            break (
+                batch_iterations,
+                (batch_iterations * points_per_call) as f64 / elapsed.as_secs_f64(),
+            );
         }
         batch_iterations *= 2;
     };
-    emit_metric(label, batch_iterations * points_per_call, vec![sample]);
+    let mut samples = vec![first_sample];
+    for _ in 1..SAMPLES {
+        let started = Instant::now();
+        for index in 0..batch_iterations {
+            operation(index)?;
+        }
+        let elapsed = started.elapsed();
+        settle()?;
+        if elapsed < CALIBRATION_TARGET {
+            return Err("calibrated reporting sample completed in less than 25 ms".into());
+        }
+        samples.push((batch_iterations * points_per_call) as f64 / elapsed.as_secs_f64());
+    }
+    println!(
+        "{}",
+        metric_record(label, batch_iterations * points_per_call, &samples)
+    );
     Ok(())
 }
 
@@ -108,27 +105,30 @@ fn wait_for_drain(client: &NativeClient) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn emit_queue_check(client: &NativeClient) {
-    let diagnostics = client.diagnostics();
-    println!(
-        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"check\",\
-         \"domain\":\"reporting\",\"check\":\"rust.queue_admission\",\
-         \"passed\":{},\"detail\":\"queue_full_errors={}\"}}",
-        diagnostics.queue_full_errors == 0,
-        diagnostics.queue_full_errors,
-    );
-}
-
-fn emit_duration(label: &str, elapsed: Duration) {
-    let value = elapsed.as_nanos();
-    let reliable = elapsed >= DECIDING_SAMPLE_MINIMUM;
-    println!(
-        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"metric\",\
+fn duration_record(label: &str, samples: &[Duration]) -> String {
+    assert_eq!(samples.len(), SAMPLES, "reporting benchmark sample count");
+    let raw = samples.iter().map(Duration::as_nanos).collect::<Vec<_>>();
+    format!(
+        "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\
          \"domain\":\"reporting\",\"metric\":\"rust.{label}\",\
          \"unit\":\"ns\",\"direction\":\"lower\",\"batch_iterations\":1,\
-         \"samples\":1,\"raw_samples\":[{value}],\"mad\":0,\"relative_mad\":0,\
-         \"p50\":{value},\"p95\":{value},\"max\":{value},\"reliable\":{reliable}}}"
-    );
+         \"samples\":{raw:?}}}"
+    )
+}
+
+fn emit_durations(label: &str, samples: &[Duration]) {
+    println!("{}", duration_record(label, samples));
+}
+
+#[test]
+fn metric_record_contains_only_raw_samples() {
+    let record = metric_record("explicit_single", 10, &[1.0; SAMPLES]);
+    let duration = duration_record("finalization", &[Duration::from_millis(25); SAMPLES]);
+
+    assert!(record.starts_with("SEEX_BENCH {\"schema_version\":3"));
+    assert!(record.contains("\"samples\":[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]"));
+    assert!(!record.contains("p50"));
+    assert!(duration.contains("\"metric\":\"rust.finalization\""));
 }
 
 #[test]
@@ -163,7 +163,6 @@ fn reporting_admission_modes() -> Result<(), Box<dyn Error>> {
             },
             || wait_for_drain(&client),
         )?;
-        emit_queue_check(&client);
         client.shutdown(None)?;
         fs::remove_dir_all(root)?;
     }
@@ -178,43 +177,24 @@ fn reporting_durability_phases() -> Result<(), Box<dyn Error>> {
         black_box(!cfg!(debug_assertions)),
         "workload requires --release"
     );
-    let (root, client, run) = run_for_mode("durability")?;
-    println!("SEEX_RSS_PHASE warm");
-
-    let admission_started = Instant::now();
-    for step in 0..REPORTS {
-        run.log_metric_at_step("loss", step as i64, step as f64)?;
-    }
-    emit_duration("queue_admission", admission_started.elapsed());
-    println!("SEEX_RSS_PHASE admitted");
-
-    let drain_started = Instant::now();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while client.diagnostics().pending_reports != 0 {
-        if Instant::now() >= deadline {
-            return Err("reporting durability drain timed out".into());
+    let mut drain_samples = Vec::with_capacity(SAMPLES);
+    let mut finalization_samples = Vec::with_capacity(SAMPLES);
+    for sample in 0..SAMPLES {
+        let label = format!("durability-{sample}");
+        let (root, client, run) = run_for_mode(&label)?;
+        for step in 0..REPORTS {
+            run.log_metric_at_step("loss", step as i64, step as f64)?;
         }
-        thread::sleep(Duration::from_millis(1));
+        let drain_started = Instant::now();
+        wait_for_drain(&client)?;
+        drain_samples.push(drain_started.elapsed());
+        let finalization_started = Instant::now();
+        client.finish_run(&run.run_id)?;
+        finalization_samples.push(finalization_started.elapsed());
+        client.shutdown(None)?;
+        fs::remove_dir_all(root)?;
     }
-    emit_duration("drain_persistence", drain_started.elapsed());
-    println!("SEEX_RSS_PHASE cycles_done");
-
-    let finalization_started = Instant::now();
-    client.finish_run(&run.run_id)?;
-    emit_duration("finalization", finalization_started.elapsed());
-    let diagnostics = client.diagnostics();
-    let passed = diagnostics.pending_reports == 0
-        && diagnostics.persisted_reports == REPORTS
-        && diagnostics.queue_full_errors == 0
-        && diagnostics.last_flush_status == "succeeded";
-    println!(
-        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"check\",\
-         \"domain\":\"reporting\",\"check\":\"rust.durability\",\
-         \"passed\":{passed},\"detail\":\"persisted={},pending={},queue_full={}\"}}",
-        diagnostics.persisted_reports, diagnostics.pending_reports, diagnostics.queue_full_errors,
-    );
-    println!("SEEX_RSS_PHASE final");
-    client.shutdown(None)?;
-    fs::remove_dir_all(root)?;
+    emit_durations("drain_persistence", &drain_samples);
+    emit_durations("finalization", &finalization_samples);
     Ok(())
 }

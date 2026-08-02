@@ -1,6 +1,6 @@
-use crate::comparison::{EvidenceCompleteness, EvidenceReason};
-use crate::metric::{MetricKey, MetricPoint};
-use crate::run::RunId;
+use crate::model::comparison::{EvidenceCompleteness, EvidenceReason};
+use crate::model::metric::{MetricKey, MetricPoint};
+use crate::model::run::RunId;
 
 const EXTREMA_PER_BUCKET: usize = 4;
 const MAX_SCREEN_QUERY_POINTS: usize = 1_000_000;

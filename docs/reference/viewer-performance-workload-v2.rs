@@ -1,0 +1,249 @@
+use gpui::{TestAppContext, px, size};
+
+use super::super::test_support::*;
+use super::*;
+
+fn active_panel_details_are_settled(viewer: &ViewerApp, cx: &App) -> bool {
+    let Some(viewport) = viewer.active_navigation(cx).selected_viewport() else {
+        return false;
+    };
+    let snapshot = viewer.session_snapshot(cx);
+    let active = snapshot.views.active();
+    !active.panels.is_empty()
+        && active.panels.iter().all(|panel| {
+            panel.detail.is_some()
+                && !panel.is_pending(ReadKind::Detail)
+                && panel.requested_detail_viewport == Some(viewport)
+        })
+}
+
+#[gpui::test]
+#[ignore = "hardware-sensitive representative release workbench validation"]
+fn representative_workbench_stays_responsive_while_a_source_is_pending(cx: &mut TestAppContext) {
+    assert!(
+        std::hint::black_box(!cfg!(debug_assertions)),
+        "workbench validation requires --release"
+    );
+    let view_count = std::env::var("SEEX_VIEWER_PERF_VIEWS")
+        .ok()
+        .map_or(2, |value| {
+            value.parse::<usize>().expect("view count must be 1 or 2")
+        });
+    assert!(matches!(view_count, 1 | 2), "view count must be 1 or 2");
+    let (root, project_id, first_run_id) = fixture_with_complete_runs(6, 10);
+    let (pending_root, _, _) = fixture_with_extent(10);
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
+    cx.simulate_resize(size(px(2_560.), px(1_800.)));
+    wait_for_viewer(window, &cx, source_catalog_loaded);
+    select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 6);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            let source_id = first_source_id(viewer, cx);
+            for run_index in 1..10 {
+                viewer.toggle_run(
+                    RunRef::new(
+                        source_id.clone(),
+                        project_id.clone(),
+                        RunId::from_string(format!(
+                            "run-{run_index}-with-a-very-long-identifier-that-requires-horizontal-scrolling"
+                        )),
+                    ),
+                    cx,
+                );
+            }
+            for metric_index in 0..6 {
+                viewer.select_metric(
+                    MetricKey::from_string(format!("metric-{metric_index}")),
+                    cx,
+                );
+            }
+            viewer.show_metric_inspector(
+                &MetricPanelId::from_string("metric-0"),
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.session_snapshot(cx).views.active().runs.len() == 10
+            && viewer.session_snapshot(cx).views.active().panels.len() == 6
+            && viewer
+                .session_snapshot(cx)
+                .views
+                .active()
+                .panels
+                .iter()
+                .all(|panel| {
+                    panel.detail.as_ref().is_some_and(|detail| {
+                        detail.series.len() == 10
+                            && detail.point_budget
+                                == panel.logical_width.saturating_mul(2).clamp(512, 5_000)
+                            && detail.series.iter().all(|series| {
+                                series.returned_point_count <= u64::from(detail.point_budget) + 2
+                            })
+                    })
+                })
+    });
+
+    assert!(cx.debug_bounds("bottom-inspector").is_some());
+    assert!(cx.debug_bounds("metric-track:metric-0").is_some());
+    assert!(cx.debug_bounds("metric-track:metric-5").is_some());
+
+    for scale in [1_u32, 2, 3] {
+        window
+            .update(&mut cx, |viewer, _, cx| {
+                viewer.workspace.update(cx, |workspace, cx| {
+                    workspace.update_overview_widths(400., 400 * scale, cx);
+                    assert_eq!(
+                        workspace.track_viewport.borrow().physical_width,
+                        400 * scale
+                    );
+                });
+            })
+            .expect("viewer should remain open");
+    }
+
+    if view_count == 2 {
+        window
+            .update(&mut cx, |viewer, _, cx| {
+                viewer.dispatch_workbench_command(WorkbenchCommand::DuplicateActiveView, cx);
+            })
+            .expect("viewer should remain open");
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .views
+                .views()
+                .len())
+            .expect("viewer should remain open"),
+        view_count
+    );
+
+    let before = window
+        .read_with(&cx, |viewer, cx| {
+            viewer
+                .active_navigation(cx)
+                .brush()
+                .map(|brush| brush.selected())
+        })
+        .expect("viewer should remain open")
+        .expect("representative View should have a shared viewport");
+    let pending_source_id = source_id("pending-source");
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.open_configured_sources(
+                vec![configured_source("pending-source", pending_root.path())],
+                cx,
+            );
+            assert!(matches!(
+                viewer
+                    .session_snapshot(cx)
+                    .sources
+                    .iter()
+                    .find(|source| source.source_id == pending_source_id)
+                    .map(|source| &source.status),
+                Some(SourceStatus::Loading)
+            ));
+            viewer.zoom_from_keyboard(1.25, cx);
+        })
+        .expect("viewer should remain open");
+    let (after, run_count, panel_count) = window
+        .read_with(&cx, |viewer, cx| {
+            (
+                viewer
+                    .active_navigation(cx)
+                    .brush()
+                    .map(|brush| brush.selected()),
+                viewer.session_snapshot(cx).views.active().runs.len(),
+                viewer.session_snapshot(cx).views.active().panels.len(),
+            )
+        })
+        .expect("viewer should remain open");
+    let after = after.expect("shared viewport should remain available");
+    assert_ne!(after, before);
+    assert_eq!((run_count, panel_count), (10, 6));
+    let (source_resources, panel_resources) = window
+        .read_with(&cx, |viewer, cx| {
+            let session = viewer.session.read(cx);
+            (
+                session.sources.resource_snapshot(),
+                session.panel_reads.resource_snapshot(),
+            )
+        })
+        .expect("viewer should remain open");
+    let resources_pass = source_resources.peak_concurrent_reads <= 4
+        && panel_resources.stale_retained_snapshots == 0;
+    println!(
+        "SEEX_PERF {{\"schema_version\":2,\"record_type\":\"check\",\
+         \"domain\":\"viewer\",\"check\":\"workload_matrix\",\
+         \"passed\":{resources_pass},\"detail\":\"runs=10,metrics=6,views={view_count},\
+         peak_concurrency={},superseded={},stale={},retained={}\"}}",
+        source_resources.peak_concurrent_reads,
+        source_resources.superseded_reads,
+        panel_resources.stale_reads,
+        panel_resources.stale_retained_snapshots,
+    );
+    assert!(resources_pass);
+    assert!(cx.debug_bounds("metric-track:metric-0").is_some());
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .sources
+            .iter()
+            .find(|source| source.source_id == pending_source_id)
+            .is_some_and(|source| source.status == SourceStatus::Ready)
+    });
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(101));
+    cx.run_until_parked();
+    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.zoom_from_keyboard(1.25, cx);
+            viewer.zoom_from_keyboard(1. / 1.25, cx);
+        })
+        .expect("viewer should remain open");
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(101));
+    cx.run_until_parked();
+    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    println!("SEEX_RSS_PHASE warm");
+    println!(
+        "SEEX_RSS_PHASE {}",
+        if view_count == 1 {
+            "single_view"
+        } else {
+            "dual_view"
+        }
+    );
+    for _ in 0..30 {
+        for factor in [1.25, 1. / 1.25] {
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.zoom_from_keyboard(factor, cx);
+                })
+                .expect("viewer should remain open");
+            cx.executor()
+                .advance_clock(std::time::Duration::from_millis(101));
+            cx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            wait_for_viewer(window, &cx, active_panel_details_are_settled);
+        }
+    }
+    println!("SEEX_RSS_PHASE cycles_done");
+    let (runs, panels) = window
+        .read_with(&cx, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let active = snapshot.views.active();
+            (active.runs.len(), active.panels.len())
+        })
+        .expect("viewer should remain open");
+    assert_eq!((runs, panels), (10, 6));
+    println!("SEEX_RSS_PHASE final");
+    std::thread::sleep(std::time::Duration::from_millis(200));
+}

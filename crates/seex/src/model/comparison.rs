@@ -1,5 +1,5 @@
-use crate::metric::{MetricKey, Step};
-use crate::run::{RunId, RunStatus};
+use crate::model::metric::{MetricKey, Step};
+use crate::model::run::{RunId, RunStatus};
 
 /// Request-scoped direction for an objective metric.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +41,7 @@ pub enum EvidenceReason {
     NegativeAxis,
     DecreasingAxis,
     NonFiniteValue,
+    DiagnosticsUnavailable,
     RunRunning,
     RunFailed,
 }

@@ -833,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn create_project_and_run_persist_v1_records() -> Result<(), Box<dyn std::error::Error>> {
+    fn create_project_and_run_persist_records() -> Result<(), Box<dyn std::error::Error>> {
         let root_path = std::env::temp_dir().join(format!("seex-client-{}", uuid::Uuid::new_v4()));
         let client = NativeClient::open(&root_path)?;
 

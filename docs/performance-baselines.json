@@ -1,324 +1,97 @@
 {
-  "schema_version": 2,
-  "status": "u1-complete",
-  "original": {
-    "source_revision": "e1f248fbb66eed7c49d36ef393e263f6c72df721",
-    "rolling_revision": "12752de267dfa7e46e27e16d4db03ccd343444a0",
-    "environment": {
-      "captured_at": "2026-07-31",
-      "dirty": false,
-      "machine": "arm64",
-      "os": "macOS 26.3",
-      "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
-      "python": "3.14.6 gate driver; 3.13.2 project virtual environment",
-      "uv": "0.8.12",
-      "instruments": "16.0 (17F113)",
-      "displays": "system_profiler: XG27AQWMG 2560x1440 at 280 Hz main; built-in 3024x1964 at 120 Hz"
+  "schema_version": 3,
+  "benchmarks": {
+    "reporting.python.explicit_single.admission": {
+      "fixture": {
+        "identity": "reporting-local-v3",
+        "scale": {"initial_reports": 10000, "batch_iterations": 917504, "samples": 10}
+      },
+      "revision": "1886c7c72d034d86511a71eef517c544633ffc7e",
+      "stable_summary": {
+        "verdict": "pass",
+        "elapsed_seconds": 33.06,
+        "combined_median_points_per_second": 1474922.404,
+        "maximum_capture_relative_mad": 0.006446
+      },
+      "artifact_sha256": "e87557b111fe8a6aa06c2520321ea5325232b891a7b33e2a260c04a2e1328002"
     },
-    "domains": {
-      "reporting": {
-        "fixture": {
-          "rust_admission": "one calibrated process sample per AB/BA pair",
-          "python_admission_reports": 100000,
-          "durability_reports": 1000,
-          "durability_repeats": 7
-        },
-        "deciding_metrics": {
-          "rust.explicit_single.admission_points_per_second": 15131366.821,
-          "rust.implicit_single.admission_points_per_second": 15204098.304,
-          "rust.mapping_8.admission_points_per_second": 15726163.758,
-          "rust.drain_persistence_ns": 65170250,
-          "rust.finalization_ns": 13500792,
-          "python.explicit_single.admission_points_per_second": 1426285.136,
-          "python.implicit_single.admission_points_per_second": 1415984.340,
-          "python.drain_persistence_ns": 50098459.003
-        },
-        "non_deciding_metrics": {
-          "python.mapping_8.capture_relative_mad": 0.020219,
-          "python.finalization_reason": "relative MAD above 2%",
-          "queue_admission_reason": "timed batch below 10 ms",
-          "shutdown_reason": "timed batch below 10 ms"
-        },
-        "rss": {
-          "rust_warm_bytes": 130170880,
-          "rust_peak_bytes": 177733632,
-          "rust_final_bytes": 177733632,
-          "python_warm_bytes": 22528000,
-          "python_peak_bytes": 138428416,
-          "python_final_bytes": 138117120,
-          "stability_verdict": "informational baseline; warm precedes lazy native initialization"
-        },
-        "correctness": "pass: no queue-full failures, no pending reports after drain, exact persistence, successful flush"
+    "reporting.python.durability": {
+      "fixture": {
+        "identity": "reporting-local-durability-v3",
+        "scale": {"reports_per_repeat": 1000, "repeats_per_sample": 3, "samples": 10}
       },
-      "query": {
-        "fixture": {
-          "backends": ["duckdb", "sqlite"],
-          "runs": 10,
-          "metrics": ["loss"],
-          "effective_points_per_series": 1000000,
-          "semantics": "lww-spikes-v1",
-          "physical_rows_per_backend": 10000010,
-          "data_files_per_backend": 20,
-          "duckdb_manifest_sha256": "3bb681c78258b17bc9a96d64d37c06dd2cd433eee349f3158520f72a272c680b",
-          "sqlite_manifest_sha256": "49c4625ac9d18ab0c1c72d4777592477770c924e578b16e5ab6acd08e3ce11cd"
-        },
-        "reliable_protected_p50_ns": {
-          "duckdb.reader.step.narrow": 385271500,
-          "sqlite.reader.step.narrow": 406074083
-        },
-        "viewer_equivalent_p50_ns": {
-          "duckdb.overview": 1318411583,
-          "duckdb.full.detail": 1327328208,
-          "duckdb.narrow.detail": 544287167,
-          "sqlite.overview": 1331797084,
-          "sqlite.full.detail": 1313827500,
-          "sqlite.narrow.detail": 552188250
-        },
-        "non_deciding_metrics": {
-          "reader_axes": "10 of 12 protected metrics had cross-process relative MAD above 2%",
-          "rss": "warm marker precedes lazy native initialization"
-        },
-        "rss": {
-          "warm_bytes": 294912,
-          "peak_bytes": 804290560,
-          "final_bytes": 804290560,
-          "monotonic_growth": false,
-          "stability_verdict": "informational startup baseline; regression against pre-initialization warm RSS"
-        },
-        "correctness": "pass: backend and standalone parity, LWW, duplicate replacement, spike, neighbors, strict budgets, completeness and reasons",
-        "self_comparison": "pass: 7 AB/BA pairs from independent release targets; original and rolling both pass"
+      "revision": "e34e351d85f1ce324b31fb890fd0cf79be7aba3b",
+      "stable_summary": {
+        "verdict": "inconclusive",
+        "elapsed_seconds": 15.27,
+        "combined_median_drain_ns": 145359562.535,
+        "combined_median_finalization_ns": 35781250.452,
+        "unreliable_metrics": ["reporting.python.drain_persistence", "reporting.python.finalization"]
       },
-      "viewer": {
-        "fixture": {
-          "backend": "duckdb",
-          "runs": 10,
-          "metrics": ["loss", "accuracy", "latency", "memory", "throughput", "error"],
-          "effective_points_per_series": 1000000,
-          "physical_rows": 60000060,
-          "data_files": 120,
-          "manifest_sha256": "59e48cc44180520f4723cb957a9de95e98a8ed594839045a5a26fe8bd2e4188d"
-        },
-        "reliable_cpu_p95_ns": {
-          "brush.zoom": 27.932,
-          "uncached.path.preparation": 2158830.75,
-          "ruler.hover.evidence": 2114.942
-        },
-        "hard_floors": {
-          "p95_at_most_ns": 8330000,
-          "single_operation_at_most_ns": 16700000,
-          "maximum_observed_single_ns": 5741583,
-          "verdict": "pass"
-        },
-        "matrix": {
-          "single_view": "pass: concurrency=4, superseded=56, stale=0, retained=0",
-          "dual_view": "pass: concurrency=4, superseded=45, stale=0, retained=0",
-          "physical_scales": [1, 2, 3],
-          "zoom_cycles": 30
-        },
-        "rss": {
-          "single_warm_peak_final_bytes": [171540480, 175849472, 171524096],
-          "dual_warm_peak_final_bytes": [170164224, 174145536, 170147840],
-          "single_verdict": "pass",
-          "dual_verdict": "pass"
-        },
-        "metal": {
-          "source_revision": "961024801569e28507041e079e4d47c413f728a5",
-          "capture": "XG27AQWMG 2560x1440 at 280 Hz; 90.781 s launch-mode Metal System Trace with user-performed zoom",
-          "warmup_seconds": 5,
-          "presented_handlers": 10613,
-          "post_warm_presented_handlers": 4976,
-          "post_warm_max_presented_ns": 3578749,
-          "post_warm_one_period_presentations": 4976,
-          "post_warm_two_period_presentations": 0,
-          "post_warm_max_drawable_wait_ns": 4069208,
-          "post_warm_drawable_waits_over_7_15_ms": 0,
-          "post_warm_drawable_waits_over_16_7_ms": 0,
-          "hang_risks": 0,
-          "potential_hangs": ["3.398 s: 1.041 s startup/loading before warmup"],
-          "display_metadata_note": "system_profiler reported XG27AQWMG as main; xctrace device-display-info marked the built-in display as main but recorded the external display at 280 Hz",
-          "manual_conclusion": "after a 5 s warmup, all 4976 timed presentations in the trace containing user-performed zoom used one approximately 3.572 ms period",
-          "retention_reason": "subsequent corrections changed only test workloads and gate validation; the ordinary product binary is behavior-equivalent"
-        },
-        "correctness": "pass: six-metric resources, four-way concurrency, supersession, stale retention, budgets, CPU floors and RSS"
-      }
+      "artifact_sha256": "14c9bfc8b13448b78b171b08e426a58215371efbf71a27e24f46b182fc08da6a"
     },
-    "gate_close": {
-      "self_comparison": {
-        "reporting": "pass: original and rolling, 7 AB/BA pairs; 0/6 protected metrics reliable",
-        "query": "pass: original and rolling, 7 AB/BA pairs; 2/12 protected metrics reliable",
-        "viewer": "pass: original and rolling, 7 AB/BA pairs; 3/7 protected metrics reliable"
+    "query.duckdb.reader.step": {
+      "fixture": {
+        "identity": "reader-1x1x1m-v3",
+        "scale": {"runs": 1, "metrics": 1, "points_per_series": 1000000, "samples": 10}
       },
-      "instrumentation_isolation": {
-        "query_max_reliable_overhead": 0.00609,
-        "viewer_cpu_max_reliable_overhead": 0.01593,
-        "verdict": "pass: both below 3%"
+      "revision": "9edd1cdb9c34f16b7064d782edfb0ce74ac2fad4",
+      "stable_summary": {
+        "verdict": "pass",
+        "elapsed_seconds": 11.26,
+        "combined_median_narrow_ns_per_query": 36483916.75,
+        "combined_median_full_ns_per_query": 211749041.75,
+        "combined_narrow_change": -0.004344,
+        "combined_full_change": -0.004946,
+        "maximum_capture_relative_mad": 0.018282
       },
-      "ordinary_release": {
-        "features": ["default", "desktop"],
-        "test_support_present": false,
-        "marker_scan": "pass: no SEEX_PERF, RSS phase, or resource-counter strings",
-        "stripped_binary_sha256": "31299227049f951ed764e8bfc943d6b798ba074a39c3c461f8cabc22eddac707",
-        "dependencies": "unchanged macOS system frameworks and libraries"
-      },
-      "verification": "pass: fmt, Clippy, check, Rust/Python tests, Ruff, Pyright, release develop install and wheel build"
+      "artifact_sha256": "b6f66cdbcea4a296be7094de7d08e98b323b60abf43093aa226d92e3e338d3c5"
     },
-    "raw_artifacts": {
-      "reporting_rust": {
-        "path": "/tmp/seex-perf/u0/reporting-rust-clean.json",
-        "sha256": "393ddaf6d0c595d28c8d9a9fa2608878b2905c1eb9329d7a2f7406eb115823db"
+    "viewer.cpu.interactive_chart": {
+      "fixture": {
+        "identity": "viewer-chart-cpu-v3",
+        "scale": {"operations": 7, "samples": 10}
       },
-      "reporting_python_explicit": {
-        "path": "/tmp/seex-perf/u0/reporting-python-explicit-clean.json",
-        "sha256": "7ca598ee32ec348096fcabca186124131f80dbbff7a15e5babb5a3e0160dabbe"
+      "revision": "fcbbeb6337e46a27ab07d7466a9f5a24deb46ec7",
+      "stable_summary": {
+        "verdict": "inconclusive",
+        "elapsed_seconds": 23.84,
+        "combined_median_ns_per_operation": {
+          "brush_zoom": 27.173,
+          "hit_testing": 206457.56,
+          "ruler_hover_evidence": 2140.474,
+          "uncached_path_preparation": 2191531.258
+        },
+        "unreliable_metrics": [
+          "viewer.cpu.brush.pan",
+          "viewer.cpu.brush.resize",
+          "viewer.cpu.cached.path.preparation",
+          "viewer.cpu.uncached.path.preparation"
+        ]
       },
-      "reporting_python_implicit": {
-        "path": "/tmp/seex-perf/u0/reporting-python-implicit-clean.json",
-        "sha256": "c7b46a0eea3d8199373d98142e0abc14a0bb7b0559bcc9fbb953b1d79b0d87fe"
-      },
-      "reporting_python_mapping": {
-        "path": "/tmp/seex-perf/u0/reporting-python-mapping-clean.json",
-        "sha256": "b40a697f483a19a2a8d62cb55204bc83699d85782b3d25885bdd67e33d4cbfda"
-      },
-      "reporting_python_durability": {
-        "path": "/tmp/seex-perf/u0/reporting-python-durability-clean.json",
-        "sha256": "0758d14ba31369c51d9007ab45d71ddcab36427b53a74b31eb069a05aa041e9f"
-      },
-      "reporting_rust_rss": {
-        "path": "/tmp/seex-perf/u0/reporting-rust-rss-clean.json",
-        "sha256": "7d6f8b702962b8581b251ede238d497d8f556f15cb3dd53fd3b4bbd2b55c59b2"
-      },
-      "reporting_python_rss": {
-        "path": "/tmp/seex-perf/u0/reporting-python-rss-clean.json",
-        "sha256": "7eba849d8cbd803b58587fb3d79d3f68294de7804eda75e49f314dc911a75a61"
-      },
-      "query_semantics": {
-        "path": "/tmp/seex-perf/u0/query-semantics-e1f248f.json",
-        "sha256": "85b175e87e510df679cbd470f1cf37e5bcb94b7ed80c5c28f6cf11636af3e6f9"
-      },
-      "query_axes": {
-        "path": "/tmp/seex-perf/u0/query-axes-e1f248f.json",
-        "sha256": "a088fe9d9a45af7cd5c30dc0d02554e4fbc8ec7073157e61be75148fe32c5e8e"
-      },
-      "query_viewer_equivalent": {
-        "path": "/tmp/seex-perf/u0/query-viewer-9610248.json",
-        "sha256": "51ad0d64fe53bd2821cdd876e36b8284356c7132d563eea57cf2d5b1469f59a9"
-      },
-      "query_rss": {
-        "path": "/tmp/seex-perf/u0/query-rss-9610248.json",
-        "sha256": "8cfea4545769eca17dba5fef31a5c8f37458771913725d419ca8a5ff4dd9cebb"
-      },
-      "query_pair": {
-        "path": "/tmp/seex-perf/u0/query-pair-e1f248f.json",
-        "sha256": "e1e5c3310905c7fe728ed398d44dce9dbe1dc10febe9c6701d4ec5b9360b2475"
-      },
-      "viewer_cpu": {
-        "path": "/tmp/seex-perf/u0/viewer-cpu-9610248.json",
-        "sha256": "e015ab1eb09ca58405056f4f21605c3c8b769c6b47cfe3d19271457e84996515"
-      },
-      "viewer_fixture_resources": {
-        "path": "/tmp/seex-perf/u0/viewer-fixture-resources-9610248.json",
-        "sha256": "84765077f89f493bc1b2ad329a98c465ae8cb91e61bea8b679096e35881a73dc"
-      },
-      "viewer_single_matrix": {
-        "path": "/tmp/seex-perf/u0/viewer-single-matrix-9610248.json",
-        "sha256": "37bbd6fd922a1ae5d5062797cbe254469530378ed101796881499f35fcc0d7ab"
-      },
-      "viewer_dual_matrix": {
-        "path": "/tmp/seex-perf/u0/viewer-dual-matrix-9610248.json",
-        "sha256": "d156e3f4b53843da5ebb3fcca4619cb6533f5bd00b259324ac80be165037f908"
-      },
-      "viewer_single_rss": {
-        "path": "/tmp/seex-perf/u0/viewer-single-rss-e1f248f.json",
-        "sha256": "777897f0bedac292244c146668a37736e408323c328105a5887160affcad5c23"
-      },
-      "viewer_dual_rss": {
-        "path": "/tmp/seex-perf/u0/viewer-dual-rss-e1f248f.json",
-        "sha256": "d9985acec663ac7cb5ed01eb10563d44f20ba8bcfb52f2ba9d6e2ba68f7ec561"
-      },
-      "viewer_metal_toc": {
-        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-10x6-manual-9610248-toc.xml",
-        "sha256": "88c942432c5d63ac19423888175061e828a5980dc8f7089a393ec7bd6cb70455"
-      },
-      "viewer_metal_file_manifest": {
-        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-10x6-manual-9610248-files.sha256",
-        "sha256": "1863c7a2ebaa3628288dc4b1c0575368ca7712548a28ae0b67778f4607c304fa"
-      },
-      "viewer_metal_scenario": {
-        "path": "/tmp/seex-perf/u0/viewer-metal-280hz-10x6-scenario.png",
-        "sha256": "c9797a732d7cdbb2b534beb3977193fd4ebf73767614eafb4bf3b592450ab93b"
-      },
-      "reporting_pair": {
-        "path": "/tmp/seex-perf/u0/reporting-pair-e1f248f.json",
-        "sha256": "301153829599db32cc7005ecbd9311383b8d370a33ad6db1b34da524b5b9ccc3"
-      },
-      "viewer_pair": {
-        "path": "/tmp/seex-perf/u0/viewer-pair-e1f248f.json",
-        "sha256": "321a1f278f21f2d4f808c40251ccbe7cc2c7eb472a3d1c2d8f8ed3c3567ac989"
-      },
-      "instrumentation_query_pair": {
-        "path": "/tmp/seex-perf/u0/instrumentation-query-pair-9610248.json",
-        "sha256": "bbcdc07b14536e985f562683b5318c3ba73f46e578bf1f4eb6e954ded062aab1"
-      },
-      "instrumentation_cpu_pair": {
-        "path": "/tmp/seex-perf/u0/instrumentation-cpu-pair-9610248.json",
-        "sha256": "62a2606509f8d06e3a7b888b43339846680b926ff299e560586748161deebe36"
-      }
-    }
-  },
-  "u1": {
-    "source_revision": "12752de267dfa7e46e27e16d4db03ccd343444a0",
-    "status": "pass",
-    "correctness": {
-      "rust": "pass: workspace format, check, tests, Clippy, doc tests, and seex docs",
-      "python": "pass: Ruff, Pyright, 144 tests, 2 opt-in MinIO skips, editable extension and ABI3 wheel",
-      "reader": "pass: native/standalone parity, all axes/ranges, strict bounds, Desktop neighbors, missing metadata and Arrow",
-      "viewer": "pass: four-way concurrency and zero retained stale snapshots"
+      "artifact_sha256": "b649da421895e862dfac0a8fd2a5dff9a87848372e380d91db9bfaf160b5f065"
     },
-    "performance": {
-      "reader_checkpoint": "pass: 3 AB/BA pairs after strict Step plan and Run metadata cache corrections",
-      "query_exit": "pass: 7 AB/BA pairs; no reliable protected regression above 3%",
-      "reporting_exit": "pass: 7 AB/BA pairs; no reliable protected regression above 3%",
-      "viewer_cpu_exit": "pass: 7 AB/BA pairs; no reliable protected regression above 3%",
-      "viewer_single_rss": {
-        "warm_bytes": 171016192,
-        "peak_bytes": 175013888,
-        "final_bytes": 170999808,
-        "monotonic_growth": false,
-        "verdict": "pass"
+    "viewer.rss.peak": {
+      "fixture": {
+        "identity": "viewer-4x2x100k-dual-v3",
+        "scale": {
+          "runs": 4,
+          "metrics": 2,
+          "points_per_series": 100000,
+          "views": 2,
+          "zoom_round_trips": 3,
+          "read_concurrency": 4
+        }
       },
-      "viewer_dual_rss": {
-        "warm_bytes": 170803200,
-        "peak_bytes": 174440448,
-        "final_bytes": 170786816,
-        "monotonic_growth": false,
-        "verdict": "pass"
-      }
-    },
-    "raw_artifacts": {
-      "reader_checkpoint": {
-        "path": "/tmp/seex-perf/u1/reader-migration-pair-12752de.json",
-        "sha256": "af7c982e400156f9e68da3e075d7127ded6bfb18094c2fc611a511dd19a4b2e7"
+      "revision": "20a51dc3342a2e54a039d0c587e1253a466d0d76",
+      "stable_summary": {
+        "verdict": "inconclusive",
+        "elapsed_seconds": 8.76,
+        "combined_median_peak_bytes": 465494016,
+        "combined_median_warm_bytes": 431603712,
+        "capture_peak_bytes": [462438400, 479019008, 453951488, 468549632]
       },
-      "query_exit": {
-        "path": "/tmp/seex-perf/u1/query-exit-pair-12752de.json",
-        "sha256": "632f5224a778f6d0d076c9f104a005bc9ffc7c7d2f237c78ea9f83d71bbb608a"
-      },
-      "reporting_exit": {
-        "path": "/tmp/seex-perf/u1/reporting-exit-pair-12752de.json",
-        "sha256": "31742a3a1aababa0e61402918caae9625972035428b1ee23642730a2c65b5a18"
-      },
-      "viewer_cpu_exit": {
-        "path": "/tmp/seex-perf/u1/viewer-cpu-exit-pair-12752de.json",
-        "sha256": "d5b2014c785a9cd053fef21b5eacbe23e60a3fa9a3d0381d57f02db8188e590c"
-      },
-      "viewer_single_rss": {
-        "path": "/tmp/seex-perf/u1/viewer-single-rss-12752de.json",
-        "sha256": "9582f20c39ee9f3ad97544a446a3018cf880a705d429ed4b1429fd4a1876c7e6"
-      },
-      "viewer_dual_rss": {
-        "path": "/tmp/seex-perf/u1/viewer-dual-rss-12752de.json",
-        "sha256": "a8412b5fb81c771c4bdb032a1cd9806af0980d8cfca2ea778fcfe704d60b6980"
-      }
+      "artifact_sha256": "6c115f1ae20350985f4ba3831de341436cfd0f55c8bf5e86a091e377d2d67012"
     }
   }
 }

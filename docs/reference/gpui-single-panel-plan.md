@@ -4,7 +4,7 @@
 > desktop-first renderer boundary; this plan may change during validation.
 
 > Roadmap note: this document preserves the original single-panel baseline.
-> [`ROADMAP.md`](ROADMAP.md) is authoritative for later sequencing: the
+> [`ROADMAP.md`](../ROADMAP.md) is authoritative for later sequencing: the
 > completed multi-project workbench history is archived, and final resource,
 > Metal, and macOS ARM64 release qualification is ROADMAP U7.
 

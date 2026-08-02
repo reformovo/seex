@@ -1,17 +1,28 @@
 use std::ops::Deref;
+use std::sync::Arc;
 
+use crate::model::run::{Run, RunId, RunStatus};
+use crate::model::types::{Project, ProjectId};
 use chrono::{DateTime, Utc};
-use seex_model::run::{Run, RunId, RunStatus};
-use seex_model::types::{Project, ProjectId};
 
-use crate::rows::{StoredRun, status_as_str};
-use crate::time::{timestamp_as_rfc3339, timestamp_from_millis};
-use crate::write::NativeWriteStore;
-use crate::{StorageError, percent_encode_metric_key};
+use crate::storage::rows::{StoredRun, status_as_str};
+use crate::storage::time::{timestamp_as_rfc3339, timestamp_from_millis};
+use crate::storage::write::NativeWriteStore;
+use crate::storage::{StorageError, percent_encode_metric_key};
 
 /// Owning connection for one native Seex project store.
 pub struct ProjectConnection {
     connection: duckdb::Connection,
+}
+
+/// Cloneable cancellation capability bound to one native connection.
+#[derive(Clone)]
+pub struct ReadInterrupt(Arc<duckdb::InterruptHandle>);
+
+impl ReadInterrupt {
+    pub fn interrupt(&self) {
+        self.0.interrupt();
+    }
 }
 
 impl ProjectConnection {
@@ -23,6 +34,11 @@ impl ProjectConnection {
         let connection = self.connection.try_clone()?;
         connection.execute_batch("USE seex_catalog;")?;
         Ok(Self::new(connection))
+    }
+
+    #[doc(hidden)]
+    pub fn interrupt_handle(&self) -> ReadInterrupt {
+        ReadInterrupt(self.connection.interrupt_handle())
     }
 
     pub fn create_project(&self, project: &Project) -> Result<(), StorageError> {
@@ -299,4 +315,36 @@ pub struct MetricWrite {
     pub timestamp_millis: i64,
     pub value_f64: f64,
     pub ingested_at_millis: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn read_interrupt_stops_the_bound_connection_query() -> Result<(), Box<dyn std::error::Error>> {
+        let connection = ProjectConnection::new(duckdb::Connection::open_in_memory()?);
+        let interrupt = connection.interrupt_handle();
+        let query = thread::spawn(move || {
+            connection.query_row(
+                "SELECT sum(sin(i::DOUBLE)) FROM range(1000000000) AS values(i)",
+                [],
+                |row| row.get::<_, f64>(0),
+            )
+        });
+
+        thread::sleep(Duration::from_millis(25));
+        interrupt.interrupt();
+
+        assert!(
+            query
+                .join()
+                .expect("query thread should not panic")
+                .is_err()
+        );
+        Ok(())
+    }
 }

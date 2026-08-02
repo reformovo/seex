@@ -1,10 +1,18 @@
+use crate::model::alignment::{
+    AlignmentAxis, AlignmentQuery, AlignmentQueryResult, AlignmentReason,
+};
+use crate::model::metric::{MetricQuery, MetricQueryResult};
 use duckdb::Connection;
-use seex_model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult, AlignmentReason};
-use seex_model::metric::{MetricQuery, MetricQueryResult};
 
-use crate::alignment_query::{AlignmentSource, query_aligned_metric, validate_alignment_identity};
-use crate::metric_query::{MetricSource, query_metric};
-use crate::{ColumnSchema, MetricReader, SchemaReport, StorageError, validate_metric_point_schema};
+use crate::storage::alignment_query::{
+    AlignmentSource, query_aligned_metric, query_narrow_step_metric, validate_alignment_identity,
+};
+use crate::storage::metric_query::{
+    MetricSource, SeriesDiagnostics, query_metric, query_series_diagnostics,
+};
+use crate::storage::{
+    ColumnSchema, MetricReader, SchemaReport, StorageError, validate_metric_point_schema,
+};
 
 /// A DuckDB-readable Parquet file, glob, or object-store URI.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +76,20 @@ impl<'connection> ParquetMetricReader<'connection> {
             self.connection,
             MetricSource::Parquet(self.source.location()),
             query,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn series_diagnostics(
+        &self,
+        run_id: &crate::model::run::RunId,
+        metric_key: &crate::model::metric::MetricKey,
+    ) -> Result<SeriesDiagnostics, StorageError> {
+        query_series_diagnostics(
+            self.connection,
+            MetricSource::Parquet(self.source.location()),
+            run_id,
+            metric_key,
         )
     }
 
@@ -153,6 +175,20 @@ impl StandaloneMetricReader {
         )
     }
 
+    #[doc(hidden)]
+    pub fn series_diagnostics(
+        &self,
+        run_id: &crate::model::run::RunId,
+        metric_key: &crate::model::metric::MetricKey,
+    ) -> Result<SeriesDiagnostics, StorageError> {
+        query_series_diagnostics(
+            &self.connection,
+            MetricSource::Parquet(self.source.location()),
+            run_id,
+            metric_key,
+        )
+    }
+
     /// Queries Step facts or reports a missing Run start for elapsed time.
     ///
     /// # Errors
@@ -175,6 +211,18 @@ impl StandaloneMetricReader {
             AlignmentSource::Parquet(self.source.location()),
             query,
             None,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn query_narrow_step_metric(
+        &self,
+        query: &AlignmentQuery,
+    ) -> Result<AlignmentQueryResult, StorageError> {
+        query_narrow_step_metric(
+            &self.connection,
+            AlignmentSource::Parquet(self.source.location()),
+            query,
         )
     }
 
@@ -270,9 +318,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use seex_model::alignment::{AlignmentReduction, AlignmentViewport};
-    use seex_model::metric::{MetricKey, ReductionPolicy, Step};
-    use seex_model::run::RunId;
+    use crate::model::alignment::{AlignmentReduction, AlignmentViewport};
+    use crate::model::metric::{MetricKey, ReductionPolicy, Step};
+    use crate::model::run::RunId;
 
     use super::*;
 
@@ -398,6 +446,10 @@ mod tests {
         let full = reader.query_metric(&query(ReductionPolicy::Full)?)?;
         let screen = reader.query_metric(&query(ReductionPolicy::screen_budget(1, 1)?)?)?;
         let lttb = reader.query_metric(&query(ReductionPolicy::lttb(10)?)?)?;
+        let diagnostics = reader.series_diagnostics(
+            &RunId::from_string("run-1"),
+            &MetricKey::from_string("train/loss"),
+        )?;
 
         assert_eq!(full.source_row_count, 3);
         assert_eq!(full.points.len(), 3);
@@ -406,6 +458,11 @@ mod tests {
         assert!(screen.points.len() <= 4);
         assert_eq!(screen.source_row_count, 3);
         assert_eq!(lttb.points, full.points);
+        assert_eq!(diagnostics.effective_count, 25);
+        assert_eq!(
+            (diagnostics.min_step, diagnostics.max_step),
+            (Some(1), Some(25))
+        );
         Ok(())
     }
 
@@ -420,6 +477,15 @@ mod tests {
             AlignmentViewport::new(2, 4)?,
             AlignmentReduction::Full,
         ))?;
+        let narrow = query_narrow_step_metric(
+            &connection,
+            AlignmentSource::Parquet(&parquet.location),
+            &aligned_query(
+                AlignmentAxis::Step,
+                AlignmentViewport::new(2, 4)?,
+                AlignmentReduction::Full,
+            ),
+        )?;
 
         assert_eq!(
             result
@@ -431,6 +497,7 @@ mod tests {
         );
         assert_eq!(result.source_row_count, 5);
         assert!(result.reasons.is_empty());
+        assert_eq!(narrow, result);
 
         let screen = reader.query_aligned_metric(&aligned_query(
             AlignmentAxis::Step,
@@ -484,6 +551,10 @@ mod tests {
             AlignmentViewport::new(0, 10_000)?,
             AlignmentReduction::Full,
         ))?;
+        let diagnostics = reader.series_diagnostics(
+            &RunId::from_string("run-1"),
+            &MetricKey::from_string("train/loss"),
+        )?;
 
         assert_eq!(steps.source_row_count, 3);
         assert!(
@@ -493,6 +564,7 @@ mod tests {
                 .all(|point| { (EPOCH_MILLIS..=EPOCH_MILLIS + 4_000).contains(&point.axis_value) })
         );
         assert_eq!(relative.reasons, [AlignmentReason::MissingRunStart]);
+        assert_eq!(diagnostics.effective_count, 25);
         Ok(())
     }
 

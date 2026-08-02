@@ -16,7 +16,7 @@ use crate::sdk::arrow::PyArrowTable;
 use crate::sdk::comparison::{
     PyComparisonReport, PyComparisonResult, PyObjectiveEvidence, PyRankingResult, objective,
 };
-use crate::sdk::compat::query_step_metric;
+use crate::sdk::metric_query::query_step_metric;
 use seex_core::config::{InitConfigError, S3ConnectionOverrides, resolve_init_config};
 
 create_exception!(

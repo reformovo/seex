@@ -1,10 +1,10 @@
+use seex::storage::bootstrap::open_native_connection;
+use seex::storage::{MetricWrite, ProjectConnection};
 use seex::{
-    Error, EvidenceReason, MetricAxis, MetricCoordinate, MetricKey, MetricQuery, MetricRange,
-    Reader, RelativeTime, Step, Timestamp,
+    Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate, MetricKey,
+    MetricQuery, MetricRange, Project, ProjectId, Reader, RelativeTime, RunId, RunStatus, Step,
+    Timestamp,
 };
-use seex_core::engine::client::NativeClient;
-use seex_model::run::RunId;
-use seex_model::types::ProjectId;
 
 struct Fixture {
     _root: tempfile::TempDir,
@@ -17,20 +17,41 @@ struct Fixture {
 impl Fixture {
     fn open() -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let client = NativeClient::open_with_storage_config(root.path(), None, None, 1_024)?;
-        let project =
-            client.create_project("reader parity", Some(ProjectId::from_string("project-1")))?;
-        let run = client.create_run(
-            &project.project_id,
-            "run",
-            Some(RunId::from_string("run-1")),
-        )?;
-        let handle = client.run_handle(run.clone());
-        for step in 0..8 {
-            handle.log_metric_at_step("loss", step, step as f64)?;
-        }
-        client.finish_run(&run.run_id)?;
-        client.shutdown(None)?;
+        let connection = ProjectConnection::new(open_native_connection(root.path())?);
+        let created_at = seex::storage::time::current_timestamp("created_at")?;
+        let project = Project {
+            project_id: ProjectId::from_string("project-1"),
+            name: String::from("reader parity"),
+            created_at,
+        };
+        connection.create_project(&project)?;
+        let run = connection.create_run(&project.project_id, "run", RunId::from_string("run-1"))?;
+        let started_at = run.started_at.timestamp_millis();
+        let mut rows = (0..8)
+            .map(|step| MetricWrite {
+                run_id: run.run_id.as_str().to_owned(),
+                metric_key: String::from("loss"),
+                step,
+                timestamp_millis: started_at + step,
+                value_f64: step as f64,
+                ingested_at_millis: started_at + step,
+            })
+            .collect::<Vec<_>>();
+        rows.extend(
+            [(2, 42.0), (4, 1_000.0)].map(|(step, value_f64)| MetricWrite {
+                run_id: run.run_id.as_str().to_owned(),
+                metric_key: String::from("loss"),
+                step,
+                timestamp_millis: started_at + step,
+                value_f64,
+                ingested_at_millis: started_at + 10 + step,
+            }),
+        );
+        connection.append_metric_batch(&rows)?;
+        connection.rebuild_metric_aggregates_for_run(&run.run_id)?;
+        connection.mark_run_terminal(&run.run_id, RunStatus::Finished, created_at)?;
+        connection.flush_metric_points()?;
+        drop(connection);
         std::fs::write(
             root.path().join(".seex/config.toml"),
             "schema_version = 1\ncatalog_path = '.seex/catalog.ducklake'\n\
@@ -124,7 +145,54 @@ fn standalone_relative_ranges_report_missing_run_start() -> Result<(), Box<dyn s
         assert!(!native.samples().is_empty());
         assert!(native.samples().len() <= 2);
         assert!(standalone.samples().is_empty());
+        assert_eq!(standalone.completeness(), EvidenceCompleteness::Unavailable);
         assert_eq!(standalone.reasons(), [EvidenceReason::MissingRunStart]);
     }
+    Ok(())
+}
+
+#[test]
+fn small_fixture_preserves_lww_spikes_and_true_step_neighbors()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let metric = MetricKey::from_string("loss");
+    let narrow = MetricQuery::new(
+        MetricRange::Steps {
+            start: Step::new(2),
+            end: Step::new(3),
+        },
+        None,
+    )?;
+
+    let native = fixture
+        .native
+        .query_metric_for_desktop(&fixture.run_id, &metric, &narrow)?;
+    let standalone =
+        fixture
+            .standalone
+            .query_metric_for_desktop(&fixture.run_id, &metric, &narrow)?;
+    let points = native
+        .samples()
+        .iter()
+        .map(|sample| match sample.coordinate {
+            MetricCoordinate::Step(step) => (step.value(), sample.point.value_f64),
+            _ => panic!("Step query returned another coordinate axis"),
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(standalone, native);
+    assert_eq!(points, [(1, 1.0), (2, 42.0), (3, 3.0)]);
+    let spike = fixture.query(
+        &fixture.native,
+        MetricQuery::new(
+            MetricRange::Steps {
+                start: Step::new(4),
+                end: Step::new(5),
+            },
+            None,
+        )?,
+    )?;
+    assert_eq!(spike.samples().len(), 1);
+    assert_eq!(spike.samples()[0].point.value_f64, 1_000.0);
     Ok(())
 }

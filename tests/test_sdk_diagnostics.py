@@ -9,7 +9,7 @@ import pytest
 from tests import helpers
 
 
-def test_v2_shutdown_contract_closes_logging_and_preserves_diagnostics(
+def test_shutdown_closes_logging_and_preserves_diagnostics(
     tmp_path: pathlib.Path,
 ) -> None:
     import seex
@@ -91,7 +91,7 @@ def test_explicit_shutdown_drain_timeout_can_be_retried_unbounded(
         run.log("train/loss", 1000, 0.125)
 
 
-def test_v2_diagnostics_contract_fields_are_read_only(
+def test_diagnostics_fields_are_read_only(
     tmp_path: pathlib.Path,
 ) -> None:
     import seex
@@ -107,9 +107,9 @@ def test_v2_diagnostics_contract_fields_are_read_only(
     assert diagnostics.last_flush_run_id is None
     assert diagnostics.last_flush_status == "none"
     assert diagnostics.last_flush_error is None
-    for field in helpers.V2_DIAGNOSTIC_FIELDS:
+    for field in helpers.DIAGNOSTIC_FIELDS:
         assert hasattr(diagnostics, field)
-    for removed_field in helpers.V2_REMOVED_DIAGNOSTIC_FIELDS:
+    for removed_field in helpers.UNSUPPORTED_DIAGNOSTIC_FIELDS:
         assert not hasattr(diagnostics, removed_field)
     with pytest.raises(AttributeError):
         diagnostics.pending_reports = 1  # pyright: ignore[reportAttributeAccessIssue]

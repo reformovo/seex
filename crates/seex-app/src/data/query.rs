@@ -163,6 +163,7 @@ impl ReadSession {
             &request.selection,
             viewport,
             overview_budget(request.logical_width),
+            true,
             is_superseded,
         )
     }
@@ -187,6 +188,7 @@ impl ReadSession {
             &request.selection,
             request.viewport,
             detail_budget(request.logical_width),
+            false,
             is_superseded,
         )
     }
@@ -200,23 +202,44 @@ impl ReadSession {
         &self,
         request: &InspectorRequest,
     ) -> Result<InspectorSnapshot, QueryError> {
+        self.query_inspector_until(request, &mut || false)
+            .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
+    }
+
+    pub(crate) fn query_inspector_until(
+        &self,
+        request: &InspectorRequest,
+        is_superseded: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<InspectorSnapshot>, QueryError> {
+        if is_superseded() {
+            return Ok(None);
+        }
         let run_ids = request
             .runs
             .iter()
             .map(|run| run.run_id.clone())
             .collect::<Vec<_>>();
         let runs = self.connection().get_runs(&run_ids)?;
+        if is_superseded() {
+            return Ok(None);
+        }
         let store = NativeQueryStore::new(self.connection());
         let mut summaries = store
             .query_metric_summaries(&run_ids, &request.metric_key)?
             .into_iter()
             .map(|summary| (summary.run_id.clone(), summary))
             .collect::<HashMap<_, _>>();
+        if is_superseded() {
+            return Ok(None);
+        }
         let objective = ObjectiveMetric {
             metric_key: request.metric_key.clone(),
             direction: ObjectiveDirection::Minimize,
         };
         let evidence = store.objective_evidence_for_runs(&runs, &objective)?;
+        if is_superseded() {
+            return Ok(None);
+        }
         let snapshots = runs
             .into_iter()
             .zip(evidence)
@@ -235,7 +258,7 @@ impl ReadSession {
                 })
             })
             .collect::<Vec<_>>();
-        Ok(InspectorSnapshot { runs: snapshots })
+        Ok(Some(InspectorSnapshot { runs: snapshots }))
     }
 }
 
@@ -252,6 +275,7 @@ fn query_curves(
     selection: &CurveSelection,
     viewport: AlignmentViewport,
     point_budget: u32,
+    force_full_step: bool,
     is_superseded: &mut dyn FnMut() -> bool,
 ) -> Result<Option<CurveSnapshot>, QueryError> {
     let run_ids = selection
@@ -278,11 +302,17 @@ fn query_curves(
             desktop_metric_range(selection.axis, viewport),
             Some(point_budget as usize),
         )?;
-        let evidence = session.reader().query_metric_for_desktop(
-            &run.run_id,
-            &selection.metric_key,
-            &query,
-        )?;
+        let evidence = if force_full_step {
+            session.reader().query_metric_overview_for_desktop(
+                &run.run_id,
+                &selection.metric_key,
+                &query,
+            )?
+        } else {
+            session
+                .reader()
+                .query_metric_for_desktop(&run.run_id, &selection.metric_key, &query)?
+        };
         let drawable = matches!(
             evidence.completeness(),
             EvidenceCompleteness::Complete | EvidenceCompleteness::Partial
@@ -382,8 +412,9 @@ fn brushable_range(
 #[cfg(test)]
 mod tests {
     use super::{
-        AlignmentViewport, CurveAxis, CurveSelection, DataSourceId, DetailRequest, MetricKey,
-        OverviewRequest, ReadSession, RunRef, brushable_range, detail_budget, overview_budget,
+        AlignmentViewport, CurveAxis, CurveSelection, DataSourceId, DetailRequest,
+        InspectorRequest, MetricKey, OverviewRequest, ReadSession, RunRef, brushable_range,
+        detail_budget, overview_budget,
     };
     use seex_chart_core::{AxisRange, BrushState};
     use seex_core::engine::client::NativeClient;
@@ -462,7 +493,7 @@ mod tests {
         let first = points.first().expect("fixture should have points").x as i64;
         let last = points.last().expect("fixture should have points").x as i64;
         let detail = session.query_detail(&DetailRequest {
-            selection,
+            selection: selection.clone(),
             viewport: AlignmentViewport::new(first, last)?,
             logical_width: 500,
         })?;
@@ -475,6 +506,67 @@ mod tests {
                 .iter()
                 .all(|point| point.x >= first as f64 && point.x <= last as f64)
         );
+
+        let mut duplicate_selection = selection.clone();
+        duplicate_selection.runs.push(selection.runs[0].clone());
+        let mut between_checks = 0;
+        let between_runs = session.query_detail_until(
+            &DetailRequest {
+                selection: duplicate_selection,
+                viewport: AlignmentViewport::new(first, last)?,
+                logical_width: 500,
+            },
+            &mut || {
+                between_checks += 1;
+                between_checks == 2
+            },
+        )?;
+        let mut merge_checks = 0;
+        let before_merge = session.query_detail_until(
+            &DetailRequest {
+                selection,
+                viewport: AlignmentViewport::new(first, last)?,
+                logical_width: 500,
+            },
+            &mut || {
+                merge_checks += 1;
+                merge_checks == 2
+            },
+        )?;
+
+        assert!(between_runs.is_none());
+        assert!(before_merge.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn inspector_stops_when_superseded_between_storage_queries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = NativeClient::open(root.path())?;
+        let project = client.create_project("viewer", Some(ProjectId::from_string("project")))?;
+        let run = client.create_run(
+            &project.project_id,
+            "candidate",
+            Some(RunId::from_string("run")),
+        )?;
+        client.shutdown(None)?;
+        let session = ReadSession::open_existing(root.path())?;
+        let source_id = DataSourceId::new("source").expect("test alias should be valid");
+        let request = InspectorRequest {
+            source_id: source_id.clone(),
+            runs: vec![RunRef::new(source_id, project.project_id, run.run_id)],
+            metric_key: MetricKey::from_string("loss"),
+        };
+        let mut checks = 0;
+
+        let snapshot = session.query_inspector_until(&request, &mut || {
+            checks += 1;
+            checks == 2
+        })?;
+
+        assert!(snapshot.is_none());
+        assert_eq!(checks, 2);
         Ok(())
     }
 }

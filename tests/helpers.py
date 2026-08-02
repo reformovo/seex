@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import seex
 
-V2_DIAGNOSTIC_FIELDS = (
+DIAGNOSTIC_FIELDS = (
     "pending_reports",
     "queue_full_errors",
     "persisted_reports",
@@ -19,7 +19,7 @@ V2_DIAGNOSTIC_FIELDS = (
     "last_flush_error",
 )
 
-V2_REMOVED_DIAGNOSTIC_FIELDS = (
+UNSUPPORTED_DIAGNOSTIC_FIELDS = (
     "accepted_reports",
     "queued_reports",
     "dropped_reports",

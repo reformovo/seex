@@ -1,8 +1,7 @@
-// PyO3 bindings for the native v1 Python API.
-// Architecture ref: docs/v1-native-architecture.md
+//! PyO3 bindings for the native Python API.
 
 pub mod alignment;
 pub mod arrow;
 pub mod client;
 pub mod comparison;
-pub mod compat;
+pub mod metric_query;

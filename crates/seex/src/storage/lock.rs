@@ -1,9 +1,9 @@
 use std::fs::File;
 use std::path::Path;
 
-use seex_model::run::RunId;
+use crate::model::run::RunId;
 
-use crate::{StorageError, percent_encode_metric_key};
+use crate::storage::{StorageError, percent_encode_metric_key};
 
 /// Exclusive local writer guard for one run.
 pub struct RunWriterGuard {

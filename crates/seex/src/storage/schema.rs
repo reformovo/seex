@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::StorageError;
+use crate::storage::StorageError;
 
 const REQUIRED_COLUMNS: [(&str, LogicalType); 7] = [
     ("run_id", LogicalType::String),

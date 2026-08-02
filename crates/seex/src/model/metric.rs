@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::run::RunId;
+use crate::model::run::RunId;
 
 const MAX_SCREEN_QUERY_POINTS: usize = 1_000_000;
 const EXTREMA_PER_BUCKET: usize = 4;

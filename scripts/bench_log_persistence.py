@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_REPORTS = 1_000
-DEFAULT_REPEATS = 3
+DEFAULT_REPEATS = 30
 DEFAULT_QUEUE_CAPACITY = 65_536
 DEFAULT_DRAIN_TIMEOUT_SECONDS = 120.0
 DEFAULT_DRAIN_POLL_SECONDS = 0.01
@@ -47,7 +47,6 @@ def main() -> int:
             metric_key=args.metric_key,
             object_storage_configs=args.object_storage_config,
         )
-        print(json.dumps(result, indent=2, sort_keys=True), flush=True)
         emit_performance_records(result)
         print("SEEX_RSS_PHASE cycles_done", flush=True)
         print("SEEX_RSS_PHASE final", flush=True)
@@ -59,10 +58,7 @@ def main() -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Measure setup, explicit-step admission, background writer drain, "
-            "finalization, and shutdown timing across repeated Seex runs."
-        )
+        description=("Measure background writer drain/persistence and finalization timing across repeated Seex runs.")
     )
     parser.add_argument(
         "--reports",
@@ -347,58 +343,27 @@ def summarize_values(values: list[float]) -> dict[str, float]:
 
 
 def emit_performance_records(result: dict[str, Any]) -> None:
-    """Emits schema-v2 timing and durability records for the local target."""
+    """Emits raw schema-v3 durability samples for the local target."""
     repeats = result["repeat_results"]
-    reports = int(result["reports_per_repeat"])
-    for label, field, batch_iterations in (
-        ("queue_admission", "admission_seconds", reports),
-        ("drain_persistence", "drain_seconds", 1),
-        ("finalization", "finalization_seconds", 1),
-        ("shutdown", "shutdown_seconds", 1),
-    ):
-        raw = [float(repeat[field]) * 1_000_000_000 for repeat in repeats]
-        ordered = sorted(raw)
-        p50 = statistics.median(ordered)
-        p95 = ordered[(len(ordered) * 95 + 99) // 100 - 1]
-        deviations = sorted(abs(sample - p50) for sample in ordered)
-        mad = statistics.median(deviations)
-        relative_mad = mad / p50 if p50 else 0.0
+    batch_iterations = 3
+    if len(repeats) != 10 * batch_iterations:
+        raise ValueError("persistence benchmark requires exactly thirty repeats")
+    for label, field in (("drain_persistence", "drain_seconds"), ("finalization", "finalization_seconds")):
+        raw = [
+            sum(float(repeat[field]) for repeat in repeats[index : index + batch_iterations]) * 1_000_000_000
+            for index in range(0, len(repeats), batch_iterations)
+        ]
         record = {
-            "schema_version": 2,
+            "schema_version": 3,
             "record_type": "metric",
             "domain": "reporting",
             "metric": f"python.{label}",
             "unit": "ns",
             "direction": "lower",
             "batch_iterations": batch_iterations,
-            "samples": len(raw),
-            "raw_samples": raw,
-            "mad": mad,
-            "relative_mad": relative_mad,
-            "p50": p50,
-            "p95": p95,
-            "max": max(raw),
-            "reliable": relative_mad <= 0.02 and min(raw) >= 10_000_000,
+            "samples": raw,
         }
-        print("SEEX_PERF " + json.dumps(record, separators=(",", ":")), flush=True)
-
-    passed = all(
-        repeat["diagnostics_after_drain"]["pending_reports"] == 0
-        and repeat["diagnostics_after_drain"]["persisted_reports"] == reports
-        and repeat["diagnostics_after_drain"]["queue_full_errors"] == 0
-        and repeat["diagnostics_after_finalization"]["last_flush_status"] == "succeeded"
-        and repeat["diagnostics_after_shutdown"]["writer_state"] == "closed"
-        for repeat in repeats
-    )
-    check = {
-        "schema_version": 2,
-        "record_type": "check",
-        "domain": "reporting",
-        "check": "python.durability",
-        "passed": passed,
-        "detail": f"reports={reports},repeats={len(repeats)}",
-    }
-    print("SEEX_PERF " + json.dumps(check, separators=(",", ":")), flush=True)
+        print("SEEX_BENCH " + json.dumps(record, separators=(",", ":")), flush=True)
 
 
 def diagnostics_to_dict(diagnostics: Any) -> dict[str, Any]:

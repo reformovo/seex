@@ -417,6 +417,17 @@ impl ProjectSidebar {
                             .items_center()
                             .child(
                                 components::top_bar_icon_button(
+                                    "import-source",
+                                    theme,
+                                    false,
+                                    true,
+                                )
+                                .debug_selector(|| "import-source".to_owned())
+                                .tooltip(components::label_tooltip("Import Source", theme))
+                                .child(components::icon(IconName::Plus, theme)),
+                            )
+                            .child(
+                                components::top_bar_icon_button(
                                     "hide-project-sidebar",
                                     theme,
                                     false,
