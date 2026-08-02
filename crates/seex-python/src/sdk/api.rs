@@ -7,6 +7,7 @@ use pyo3::prelude::*;
 use seex::{MetricKey, ProjectId, Reader, Run, RunId, RunStatus};
 
 use crate::sdk::client::{ApiClosedError, PyMetricSummary, PyProject};
+use crate::sdk::history::{PyMetricSeries, metric_query};
 use crate::sdk::run::sdk_error;
 use crate::sdk::settings::PySettings;
 
@@ -197,6 +198,28 @@ impl PyRunRecord {
             reader
                 .metric_summary(&self.run, &MetricKey::from_string(metric_key))
                 .map(|summary| summary.map(PyMetricSummary::from))
+                .map_err(sdk_error)
+        })
+    }
+
+    #[pyo3(signature = (metric_key, *, x_axis="step", start=None, end=None, max_points=None))]
+    fn history(
+        &self,
+        metric_key: &str,
+        x_axis: &str,
+        start: Option<&Bound<'_, PyAny>>,
+        end: Option<&Bound<'_, PyAny>>,
+        max_points: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyMetricSeries> {
+        let query = metric_query(x_axis, start, end, max_points)?;
+        self.with_reader(|reader| {
+            reader
+                .query_metric(
+                    &self.run.run_id,
+                    &MetricKey::from_string(metric_key),
+                    &query,
+                )
+                .map(|series| PyMetricSeries { series })
                 .map_err(sdk_error)
         })
     }
