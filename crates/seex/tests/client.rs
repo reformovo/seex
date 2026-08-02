@@ -1,4 +1,7 @@
 use std::fs;
+use std::path::Path;
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 
 use seex::{
     CatalogBackend, Client, Error, LogOptions, Reader, ResumePolicy, RunOptions, S3Options,
@@ -53,6 +56,27 @@ fn s3_debug_output_redacts_credentials() {
     assert!(!rendered.contains("visible-key"));
     assert!(!rendered.contains("secret-value"));
     assert!(!rendered.contains("session-value"));
+}
+
+#[test]
+fn configuration_errors_redact_credentials() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    fs::create_dir(root.path().join(".seex"))?;
+    let secret = "must-not-escape";
+    fs::write(
+        root.path().join(".seex/config.toml"),
+        format!(
+            "schema_version = 1\ncatalog_backend = \"invalid\"\n[s3]\nsecret_access_key = \"{secret}\"\n"
+        ),
+    )?;
+
+    let error = match Client::builder(root.path()).open() {
+        Ok(_) => return Err("invalid catalog backend unexpectedly opened".into()),
+        Err(error) => error,
+    };
+    assert_eq!(error, Error::Configuration);
+    assert!(!format!("{error:?} {error}").contains(secret));
+    Ok(())
 }
 
 #[test]
@@ -116,33 +140,75 @@ fn resume_requires_matching_project_and_explicit_must_id() -> Result<(), Box<dyn
 }
 
 #[test]
-fn concurrent_clients_get_or_create_one_project() -> Result<(), Box<dyn std::error::Error>> {
-    let root = tempfile::tempdir()?;
-    let left = Client::builder(root.path()).open()?;
-    let right = Client::builder(root.path()).open()?;
-    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let left_barrier = std::sync::Arc::clone(&barrier);
-    let right_barrier = std::sync::Arc::clone(&barrier);
+fn project_race_child_process() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(root) = std::env::var_os("SEEX_PROJECT_RACE_ROOT") else {
+        return Ok(());
+    };
+    let run_id = std::env::var("SEEX_PROJECT_RACE_RUN_ID")?;
+    let ready = std::env::var_os("SEEX_PROJECT_RACE_READY").ok_or("child ready path is missing")?;
+    let go = std::env::var_os("SEEX_PROJECT_RACE_GO").ok_or("child go path is missing")?;
+    let client = Client::builder(&root).open()?;
+    fs::write(ready, b"ready")?;
+    wait_for_path(Path::new(&go), Duration::from_secs(15))?;
+    client.start_run(RunOptions::new("shared").id(run_id))?;
+    client.shutdown()?;
+    Ok(())
+}
 
-    let left_thread = std::thread::spawn(move || {
-        left_barrier.wait();
-        let result = left.start_run(RunOptions::new("shared").id("left"));
-        let shutdown = left.shutdown();
-        result.and(shutdown)
-    });
-    let right_thread = std::thread::spawn(move || {
-        right_barrier.wait();
-        let result = right.start_run(RunOptions::new("shared").id("right"));
-        let shutdown = right.shutdown();
-        result.and(shutdown)
-    });
-    left_thread.join().expect("left client should not panic")?;
-    right_thread
-        .join()
-        .expect("right client should not panic")?;
+fn wait_for_path(path: &Path, timeout: Duration) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + timeout;
+    while !path.exists() {
+        if Instant::now() >= deadline {
+            return Err(format!("timed out waiting for {}", path.display()).into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+fn spawn_project_race_child(
+    root: &Path,
+    run_id: &str,
+    ready: &Path,
+    go: &Path,
+) -> Result<Child, Box<dyn std::error::Error>> {
+    Ok(Command::new(std::env::current_exe()?)
+        .args(["--exact", "project_race_child_process", "--nocapture"])
+        .env("SEEX_PROJECT_RACE_ROOT", root)
+        .env("SEEX_PROJECT_RACE_RUN_ID", run_id)
+        .env("SEEX_PROJECT_RACE_READY", ready)
+        .env("SEEX_PROJECT_RACE_GO", go)
+        .spawn()?)
+}
+
+#[test]
+fn subprocess_clients_get_or_create_one_project() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let seex_dir = root.path().join(".seex");
+    fs::create_dir_all(seex_dir.join("locks/projects"))?;
+    fs::write(
+        seex_dir.join("config.toml"),
+        "schema_version = 1\ncatalog_backend = \"sqlite\"\n",
+    )?;
+    Client::builder(root.path()).open()?.shutdown()?;
+    fs::write(seex_dir.join("locks/projects/shared.lock"), b"legacy")?;
+    let left_ready = root.path().join("left.ready");
+    let right_ready = root.path().join("right.ready");
+    let go = root.path().join("go");
+    let mut left = spawn_project_race_child(root.path(), "left", &left_ready, &go)?;
+    wait_for_path(&left_ready, Duration::from_secs(15))?;
+    let mut right = spawn_project_race_child(root.path(), "right", &right_ready, &go)?;
+    wait_for_path(&right_ready, Duration::from_secs(15))?;
+    fs::write(&go, b"go")?;
+    assert!(left.wait()?.success(), "left child failed");
+    assert!(right.wait()?.success(), "right child failed");
 
     let reader = Reader::builder(root.path()).open()?;
     assert_eq!(reader.projects()?.len(), 1);
+    assert_eq!(
+        reader.runs(&seex::ProjectId::from_string("shared"))?.len(),
+        2
+    );
     Ok(())
 }
 
@@ -238,6 +304,19 @@ fn failed_mapping_does_not_advance_the_cursor() -> Result<(), Box<dyn std::error
     run.log([("loss", 3.0)])?;
     wait_for_drain(&client);
     assert_eq!(client.diagnostics().persisted_reports, 1);
+    let reader = Reader::builder(root.path()).open()?;
+    let query = seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), None)?;
+    let loss = reader.query_metric(run.run_id(), &seex::MetricKey::from_string("loss"), &query)?;
+    let accuracy = reader.query_metric(
+        run.run_id(),
+        &seex::MetricKey::from_string("accuracy"),
+        &query,
+    )?;
+    assert_eq!(loss.samples().len(), 1);
+    assert!(
+        accuracy.samples().is_empty(),
+        "failed Mapping persisted a subset"
+    );
     client.shutdown()?;
     Ok(())
 }
@@ -313,6 +392,17 @@ fn matching_terminal_calls_are_idempotent_and_conflicts_are_typed()
         run.log([("loss", 2.0)]),
         Err(Error::RunClosed { .. })
     ));
+    let reader = Reader::builder(root.path()).open()?;
+    let series = reader.query_metric(
+        run.run_id(),
+        &seex::MetricKey::from_string("loss"),
+        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), None)?,
+    )?;
+    assert_eq!(
+        series.samples().len(),
+        1,
+        "terminal barrier lost admitted data"
+    );
     client.shutdown()?;
     Ok(())
 }
@@ -389,7 +479,14 @@ fn cloned_handles_share_one_implicit_cursor() -> Result<(), Box<dyn std::error::
         &seex::MetricKey::from_string("loss"),
         &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), None)?,
     )?;
-    assert_eq!(series.samples().len(), 20);
+    assert_eq!(
+        series
+            .samples()
+            .iter()
+            .map(|sample| sample.point.step.value())
+            .collect::<Vec<_>>(),
+        (0..20).collect::<Vec<_>>()
+    );
     client.shutdown()?;
     Ok(())
 }

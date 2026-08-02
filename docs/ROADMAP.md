@@ -257,7 +257,7 @@ candidates.
 - [x] Make matching terminal operations retry incomplete drain/flush work.
   Return a typed error for a conflicting terminal outcome and never hide a
   finalization error in `Drop`.
-- [ ] Cover Project get-or-create races, resume modes, cloned-handle races,
+- [x] Cover Project get-or-create races, resume modes, cloned-handle races,
   atomic queue failure, cursor/commit cases, finalization barriers, and
   persistence without lost reports or partial Mappings.
 - [ ] Observe explicit single-metric admission against the 100,000 calls/s
