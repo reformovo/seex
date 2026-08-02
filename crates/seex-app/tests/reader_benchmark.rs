@@ -22,6 +22,20 @@ enum Axis {
     Timestamp,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReaderBoundary {
+    Detail,
+    Overview,
+}
+
+const fn reader_boundary(narrow: bool) -> ReaderBoundary {
+    if narrow {
+        ReaderBoundary::Detail
+    } else {
+        ReaderBoundary::Overview
+    }
+}
+
 impl Axis {
     fn selected() -> Result<Self, Box<dyn Error>> {
         match env::var("SEEX_QUERY_BENCH_AXIS")
@@ -101,18 +115,17 @@ fn query(reader: &Reader, axis: Axis, narrow: bool) -> Result<usize, Box<dyn Err
         },
     };
     let query = MetricQuery::new(range, Some(5_000))?;
-    let series = if narrow {
-        reader.query_metric_for_desktop(
+    let series = match reader_boundary(narrow) {
+        ReaderBoundary::Detail => reader.query_metric_for_desktop(
             &RunId::from_string("run-1"),
             &MetricKey::from_string("loss"),
             &query,
-        )?
-    } else {
-        reader.query_metric(
+        )?,
+        ReaderBoundary::Overview => reader.query_metric_overview_for_desktop(
             &RunId::from_string("run-1"),
             &MetricKey::from_string("loss"),
             &query,
-        )?
+        )?,
     };
     Ok(series.samples().len())
 }
@@ -174,6 +187,12 @@ fn reader_record_contains_only_ten_raw_v3_samples() {
     assert!(record.starts_with("SEEX_BENCH {\"schema_version\":3"));
     assert!(record.contains("duckdb.reader.step.narrow"));
     assert!(!record.contains("p50"));
+}
+
+#[test]
+fn full_range_measures_the_overview_boundary() {
+    assert_eq!(reader_boundary(true), ReaderBoundary::Detail);
+    assert_eq!(reader_boundary(false), ReaderBoundary::Overview);
 }
 
 #[test]
