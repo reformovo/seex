@@ -172,20 +172,32 @@ pub fn start_run(
     resume: Option<&Bound<'_, PyAny>>,
     settings: Option<PyRef<'_, PySettings>>,
 ) -> PyResult<PyRun> {
-    let root = dir.unwrap_or_else(|| PathBuf::from("."));
-    let builder = match settings {
-        Some(value) => value.client_builder(root),
-        None => Client::builder(root),
-    };
-    let client = builder.open().map_err(sdk_error)?;
-    let mut options = RunOptions::new(project.unwrap_or_else(|| String::from("uncategorized")))
-        .resume(parse_resume(resume)?);
+    let resume = parse_resume(resume)?;
+    let project = project.unwrap_or_else(|| String::from("uncategorized"));
+    if project.is_empty() {
+        return Err(sdk_error(seex::Error::InvalidRunOptions {
+            field: "project",
+        }));
+    }
+    if resume == ResumePolicy::Must && id.is_none() {
+        return Err(sdk_error(seex::Error::InvalidRunOptions { field: "id" }));
+    }
+    if id.as_deref().is_some_and(str::is_empty) {
+        return Err(sdk_error(seex::Error::InvalidRunOptions { field: "id" }));
+    }
+    let mut options = RunOptions::new(project).resume(resume);
     if let Some(id) = id {
         options = options.id(id);
     }
     if let Some(name) = name {
         options = options.name(name);
     }
+    let root = dir.unwrap_or_else(|| PathBuf::from("."));
+    let builder = match settings {
+        Some(value) => value.client_builder(root),
+        None => Client::builder(root),
+    };
+    let client = builder.open().map_err(sdk_error)?;
     let handle = client.start_run(options).map_err(sdk_error)?;
     let run_id = handle.run_id().as_str().to_owned();
     let project_id = handle.project_id().as_str().to_owned();

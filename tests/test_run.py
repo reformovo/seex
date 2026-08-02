@@ -40,6 +40,31 @@ def test_run_validates_resume_contract(tmp_path: pathlib.Path) -> None:
         seex.init(dir=tmp_path, resume="must")
 
 
+def test_run_rejects_invalid_options_before_creating_storage(tmp_path: pathlib.Path) -> None:
+    invalid_resume = tmp_path / "invalid-resume"
+    with pytest.raises(ValueError, match="resume"):
+        seex.init(
+            dir=invalid_resume,
+            resume="auto",  # type: ignore[reportArgumentType]
+        )
+    assert not invalid_resume.exists()
+
+    missing_id = tmp_path / "missing-id"
+    with pytest.raises(ValueError, match="`id`"):
+        seex.init(dir=missing_id, resume="must")
+    assert not missing_id.exists()
+
+    empty_project = tmp_path / "empty-project"
+    with pytest.raises(ValueError, match="`project`"):
+        seex.init(dir=empty_project, project="")
+    assert not empty_project.exists()
+
+    empty_id = tmp_path / "empty-id"
+    with pytest.raises(ValueError, match="`id`"):
+        seex.init(dir=empty_id, id="")
+    assert not empty_id.exists()
+
+
 def test_run_context_finishes_or_fails(tmp_path: pathlib.Path) -> None:
     finished_path = tmp_path / "finished"
     with seex.init(dir=finished_path, id="finished") as finished:
