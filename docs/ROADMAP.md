@@ -260,11 +260,11 @@ candidates.
 - [x] Cover Project get-or-create races, resume modes, cloned-handle races,
   atomic queue failure, cursor/commit cases, finalization barriers, and
   persistence without lost reports or partial Mappings.
-- [ ] Observe explicit single-metric admission against the 100,000 calls/s
+- [x] Observe explicit single-metric admission against the 100,000 calls/s
   target. Across five runs, compare implicit single-metric median throughput
   with the 90% explicit-throughput target; count multi-metric throughput per
   point.
-- [ ] Exit U3 when engine and reporting Acceptance checks pass. Record scoped
+- [x] Exit U3 when engine and reporting Acceptance checks pass. Record scoped
   p50/p95, drain latency, persistence, and peak RSS comparisons without making
   their classifications blocking.
 
@@ -273,6 +273,14 @@ admission/durability workload produced no capture before the 120-second budget;
 the narrowed durability A-B-B-A completed but was Inconclusive because the
 strict parser could not see the test-harness-prefixed drain record. It was not
 rerun, and no reporting baseline advanced.
+
+The final public Run SDK benchmark at `e4955fe` observed 4.00 million explicit
+calls/s p50, a 106.6% implicit/explicit median ratio, 8.67 million Mapping
+points/s p50, 143.640 ms drain p50, 39.189 ms finalization p50, and 264.8 MB
+peak RSS p50. The records and reporting RSS A-B-B-A comparisons were both
+Inconclusive under the 2% noise rule, so neither non-blocking classification
+advanced a rolling baseline. See
+[`u3-performance-observations.md`](reference/u3-performance-observations.md).
 
 ### U4: Python Run, Api, CLI, and Arrow Surface
 
