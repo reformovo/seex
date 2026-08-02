@@ -34,6 +34,12 @@ def test_step_history_supports_full_and_one_sided_ranges(tmp_path: pathlib.Path)
     assert full.downsampled is False
     assert full.completeness == "complete"
     assert full.reasons == []
+    assert '"arrow_array_stream"' in repr(full.__arrow_c_stream__())
+    assert '"arrow_array_stream"' in repr(full.__arrow_c_stream__(requested_schema=None))
+
+    empty = record.history("missing")
+    assert empty.points == []
+    assert '"arrow_array_stream"' in repr(empty.__arrow_c_stream__())
 
 
 @pytest.mark.parametrize("value", [True, 1.5, "1"])

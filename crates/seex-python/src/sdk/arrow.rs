@@ -125,6 +125,26 @@ impl PyArrowTable {
             downsampled: false,
         })
     }
+
+    fn arrow_stream<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyCapsule>> {
+        let schema = self.batch.schema();
+        let batches = vec![Ok::<_, ArrowError>(self.batch.clone())];
+        let reader = RecordBatchIterator::new(batches.into_iter(), schema);
+        PyCapsule::new_with_value(
+            py,
+            FFI_ArrowArrayStream::new(Box::new(reader)),
+            c"arrow_array_stream",
+        )
+    }
+}
+
+pub fn metric_series_stream<'py>(
+    py: Python<'py>,
+    series: &MetricSeries,
+) -> PyResult<Bound<'py, PyCapsule>> {
+    PyArrowTable::from_metric_series(series)
+        .map_err(|error| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string()))?
+        .arrow_stream(py)
 }
 
 #[cfg(test)]
@@ -270,13 +290,6 @@ impl PyArrowTable {
         requested_schema: Option<&Bound<'py, PyCapsule>>,
     ) -> PyResult<Bound<'py, PyCapsule>> {
         let _ = requested_schema;
-        let schema = self.batch.schema();
-        let batches = vec![Ok::<_, ArrowError>(self.batch.clone())];
-        let reader = RecordBatchIterator::new(batches.into_iter(), schema);
-        PyCapsule::new_with_value(
-            py,
-            FFI_ArrowArrayStream::new(Box::new(reader)),
-            c"arrow_array_stream",
-        )
+        self.arrow_stream(py)
     }
 }

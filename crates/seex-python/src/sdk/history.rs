@@ -1,11 +1,13 @@
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyCapsule;
 use pyo3::types::{PyAny, PyBool, PyDateTime, PyDelta};
 use seex::{
     EvidenceCompleteness, EvidenceReason, MetricAxis, MetricQuery, MetricRange, MetricSeries,
     RelativeTime, Step, Timestamp,
 };
 
+use crate::sdk::arrow::metric_series_stream;
 use crate::sdk::client::PyMetricPoint;
 
 #[pyclass(name = "MetricSeries", module = "seex._seex")]
@@ -56,6 +58,16 @@ impl PyMetricSeries {
     #[getter]
     fn reasons(&self) -> Vec<&'static str> {
         self.series.reasons().iter().map(reason_name).collect()
+    }
+
+    #[pyo3(signature = (requested_schema=None))]
+    fn __arrow_c_stream__<'py>(
+        &self,
+        py: Python<'py>,
+        requested_schema: Option<&Bound<'py, PyCapsule>>,
+    ) -> PyResult<Bound<'py, PyCapsule>> {
+        let _ = requested_schema;
+        metric_series_stream(py, &self.series)
     }
 }
 
