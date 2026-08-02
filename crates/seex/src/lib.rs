@@ -21,6 +21,8 @@
 
 #![forbid(unsafe_code)]
 
+mod client;
+mod config;
 #[doc(hidden)]
 pub mod engine;
 mod error;
@@ -43,6 +45,8 @@ pub use crate::model::comparison::{
 pub use crate::model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
 pub use crate::model::run::{Run, RunId, RunStatus};
 pub use crate::model::types::{Project, ProjectId};
+pub use client::{Client, ClientBuilder, ClientDiagnostics, FlushState, WriterState};
+pub use config::{CatalogBackend, S3Options};
 pub use error::{Error, Result};
 pub use reader::{
     MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, MetricSample,
