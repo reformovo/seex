@@ -172,6 +172,32 @@ struct DiagnosticsKey {
     metric_key: MetricKey,
 }
 
+#[derive(Clone, Copy)]
+struct AxisBounds {
+    start: Option<i64>,
+    end: Option<i64>,
+}
+
+impl AxisBounds {
+    const fn new(start: Option<i64>, end: Option<i64>) -> Self {
+        Self { start, end }
+    }
+
+    fn viewport(self) -> SdkResult<AlignmentViewport> {
+        let start = self.start.unwrap_or(i64::MIN);
+        let end = self
+            .end
+            .map(|value| value.checked_sub(1).ok_or(Error::UnsupportedQuery))
+            .transpose()?
+            .unwrap_or(i64::MAX);
+        AlignmentViewport::new(start, end).map_err(|_| Error::UnsupportedQuery)
+    }
+
+    fn contains(self, value: i64) -> bool {
+        self.start.is_none_or(|start| start <= value) && self.end.is_none_or(|end| value < end)
+    }
+}
+
 #[derive(Default)]
 struct DiagnosticsCache {
     generation: Option<u64>,
@@ -317,39 +343,91 @@ impl Reader {
             MetricRange::Steps { start, end } => (
                 MetricAxis::Step,
                 AlignmentAxis::Step,
-                Some((start.value(), end.value())),
+                Some(AxisBounds::new(Some(start.value()), Some(end.value()))),
+            ),
+            MetricRange::StepsFrom { start } => (
+                MetricAxis::Step,
+                AlignmentAxis::Step,
+                Some(AxisBounds::new(Some(start.value()), None)),
+            ),
+            MetricRange::StepsUntil { end } => (
+                MetricAxis::Step,
+                AlignmentAxis::Step,
+                Some(AxisBounds::new(None, Some(end.value()))),
             ),
             MetricRange::RelativeTime { start, end } => (
                 MetricAxis::RelativeTime,
                 AlignmentAxis::ElapsedTime,
-                Some((start.as_millis(), end.as_millis())),
+                Some(AxisBounds::new(
+                    Some(start.as_millis()),
+                    Some(end.as_millis()),
+                )),
+            ),
+            MetricRange::RelativeTimeFrom { start } => (
+                MetricAxis::RelativeTime,
+                AlignmentAxis::ElapsedTime,
+                Some(AxisBounds::new(Some(start.as_millis()), None)),
+            ),
+            MetricRange::RelativeTimeUntil { end } => (
+                MetricAxis::RelativeTime,
+                AlignmentAxis::ElapsedTime,
+                Some(AxisBounds::new(None, Some(end.as_millis()))),
             ),
             MetricRange::Timestamps { start, end } => (
                 MetricAxis::Timestamp,
                 AlignmentAxis::ElapsedTime,
                 Some(if standalone {
-                    (start.as_millis(), end.as_millis())
+                    AxisBounds::new(Some(start.as_millis()), Some(end.as_millis()))
                 } else {
-                    (
+                    AxisBounds::new(
+                        Some(
+                            start
+                                .as_millis()
+                                .checked_sub(run_start)
+                                .ok_or(Error::UnsupportedQuery)?,
+                        ),
+                        Some(
+                            end.as_millis()
+                                .checked_sub(run_start)
+                                .ok_or(Error::UnsupportedQuery)?,
+                        ),
+                    )
+                }),
+            ),
+            MetricRange::TimestampsFrom { start } => (
+                MetricAxis::Timestamp,
+                AlignmentAxis::ElapsedTime,
+                Some(AxisBounds::new(
+                    Some(if standalone {
+                        start.as_millis()
+                    } else {
                         start
                             .as_millis()
                             .checked_sub(run_start)
-                            .ok_or(Error::UnsupportedQuery)?,
+                            .ok_or(Error::UnsupportedQuery)?
+                    }),
+                    None,
+                )),
+            ),
+            MetricRange::TimestampsUntil { end } => (
+                MetricAxis::Timestamp,
+                AlignmentAxis::ElapsedTime,
+                Some(AxisBounds::new(
+                    None,
+                    Some(if standalone {
+                        end.as_millis()
+                    } else {
                         end.as_millis()
                             .checked_sub(run_start)
-                            .ok_or(Error::UnsupportedQuery)?,
-                    )
-                }),
+                            .ok_or(Error::UnsupportedQuery)?
+                    }),
+                )),
             ),
         };
         if axis == MetricAxis::Step && !retain_neighbors {
             return self.query_step_metric(run_id, metric_key, query, &metadata, diagnostics);
         }
-        let viewport = match bounds {
-            Some((start, end)) => AlignmentViewport::new(start, end - 1),
-            None => AlignmentViewport::new(i64::MIN, i64::MAX),
-        }
-        .map_err(|_| Error::UnsupportedQuery)?;
+        let viewport = bounds.unwrap_or(AxisBounds::new(None, None)).viewport()?;
         let reduction = query
             .max_points()
             .map_or(Ok(AlignmentReduction::Full), |limit| {
@@ -435,6 +513,8 @@ impl Reader {
         let (start, end) = match query.range() {
             MetricRange::All(MetricAxis::Step) => (None, None),
             MetricRange::Steps { start, end } => (Some(*start), Some(*end)),
+            MetricRange::StepsFrom { start } => (Some(*start), None),
+            MetricRange::StepsUntil { end } => (None, Some(*end)),
             _ => return Err(Error::UnsupportedQuery),
         };
         let reduction = query
@@ -557,32 +637,35 @@ impl From<&Run> for RunMetadata {
 
 fn use_narrow_step_plan(
     axis: MetricAxis,
-    bounds: Option<(i64, i64)>,
+    bounds: Option<AxisBounds>,
     diagnostics: Option<SeriesDiagnostics>,
     force_full: bool,
 ) -> bool {
-    let (Some((start, end)), Some(diagnostics)) = (bounds, diagnostics) else {
+    let (Some(bounds), Some(diagnostics)) = (bounds, diagnostics) else {
         return false;
     };
     if force_full || axis != MetricAxis::Step || diagnostics.effective_count == 0 {
         return false;
     }
     match (diagnostics.min_step, diagnostics.max_step) {
-        (Some(min_step), Some(max_step)) => !(start <= min_step && max_step < end),
+        (Some(min_step), Some(max_step)) => {
+            !(bounds.start.is_none_or(|start| start <= min_step)
+                && bounds.end.is_none_or(|end| max_step < end))
+        }
         _ => false,
     }
 }
 
-fn in_half_open_range(value: i64, bounds: Option<(i64, i64)>) -> bool {
-    bounds.is_none_or(|(start, end)| start <= value && value < end)
+fn in_half_open_range(value: i64, bounds: Option<AxisBounds>) -> bool {
+    bounds.is_none_or(|bounds| bounds.contains(value))
 }
 
 fn bounded_desktop_points(
     points: Vec<AlignedMetricPoint>,
-    bounds: Option<(i64, i64)>,
+    bounds: Option<AxisBounds>,
     max_points: Option<usize>,
 ) -> Vec<AlignedMetricPoint> {
-    let Some((start, end)) = bounds else {
+    let Some(bounds) = bounds else {
         return match max_points {
             Some(limit) => enforce_point_bound(points, limit),
             None => points,
@@ -592,9 +675,9 @@ fn bounded_desktop_points(
     let mut right = None;
     let mut inside = Vec::new();
     for point in points {
-        if point.axis_value < start {
+        if bounds.start.is_some_and(|start| point.axis_value < start) {
             left = Some(point);
-        } else if point.axis_value >= end {
+        } else if bounds.end.is_some_and(|end| point.axis_value >= end) {
             right.get_or_insert(point);
         } else {
             inside.push(point);
@@ -722,12 +805,30 @@ pub enum MetricRange {
         start: Step,
         end: Step,
     },
+    StepsFrom {
+        start: Step,
+    },
+    StepsUntil {
+        end: Step,
+    },
     RelativeTime {
         start: RelativeTime,
         end: RelativeTime,
     },
+    RelativeTimeFrom {
+        start: RelativeTime,
+    },
+    RelativeTimeUntil {
+        end: RelativeTime,
+    },
     Timestamps {
         start: Timestamp,
+        end: Timestamp,
+    },
+    TimestampsFrom {
+        start: Timestamp,
+    },
+    TimestampsUntil {
         end: Timestamp,
     },
 }
@@ -736,9 +837,15 @@ impl MetricRange {
     pub const fn axis(&self) -> MetricAxis {
         match self {
             Self::All(axis) => *axis,
-            Self::Steps { .. } => MetricAxis::Step,
-            Self::RelativeTime { .. } => MetricAxis::RelativeTime,
-            Self::Timestamps { .. } => MetricAxis::Timestamp,
+            Self::Steps { .. } | Self::StepsFrom { .. } | Self::StepsUntil { .. } => {
+                MetricAxis::Step
+            }
+            Self::RelativeTime { .. }
+            | Self::RelativeTimeFrom { .. }
+            | Self::RelativeTimeUntil { .. } => MetricAxis::RelativeTime,
+            Self::Timestamps { .. }
+            | Self::TimestampsFrom { .. }
+            | Self::TimestampsUntil { .. } => MetricAxis::Timestamp,
         }
     }
 
@@ -746,8 +853,14 @@ impl MetricRange {
         match self {
             Self::All(_) => false,
             Self::Steps { start, end } => start.value() >= end.value(),
+            Self::StepsUntil { end } => end.value() == i64::MIN,
             Self::RelativeTime { start, end } => start.as_millis() >= end.as_millis(),
+            Self::RelativeTimeUntil { end } => end.as_millis() == i64::MIN,
             Self::Timestamps { start, end } => start.as_millis() >= end.as_millis(),
+            Self::TimestampsUntil { end } => end.as_millis() == i64::MIN,
+            Self::StepsFrom { .. }
+            | Self::RelativeTimeFrom { .. }
+            | Self::TimestampsFrom { .. } => false,
         }
     }
 }

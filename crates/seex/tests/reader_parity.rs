@@ -120,6 +120,13 @@ fn native_and_standalone_ranges_have_strict_bounded_parity()
             },
             Some(2),
         )?,
+        MetricQuery::new(
+            MetricRange::StepsFrom {
+                start: Step::new(5),
+            },
+            Some(2),
+        )?,
+        MetricQuery::new(MetricRange::StepsUntil { end: Step::new(3) }, Some(2))?,
         MetricQuery::new(MetricRange::All(MetricAxis::Timestamp), Some(3))?,
         MetricQuery::new(
             MetricRange::Timestamps {
@@ -127,6 +134,18 @@ fn native_and_standalone_ranges_have_strict_bounded_parity()
                 end: Timestamp::from_millis(fixture.started_at + 60_000),
             },
             Some(3),
+        )?,
+        MetricQuery::new(
+            MetricRange::TimestampsFrom {
+                start: Timestamp::from_millis(fixture.started_at + 5),
+            },
+            Some(2),
+        )?,
+        MetricQuery::new(
+            MetricRange::TimestampsUntil {
+                end: Timestamp::from_millis(fixture.started_at + 3),
+            },
+            Some(2),
         )?,
     ];
 
@@ -147,6 +166,18 @@ fn native_and_standalone_ranges_have_strict_bounded_parity()
                         if start <= &timestamp && &timestamp < end)
                 }));
             }
+            MetricRange::StepsFrom { start } => assert!(native.samples().iter().all(|sample| {
+                matches!(sample.coordinate, MetricCoordinate::Step(step) if start <= &step)
+            })),
+            MetricRange::StepsUntil { end } => assert!(native.samples().iter().all(|sample| {
+                matches!(sample.coordinate, MetricCoordinate::Step(step) if &step < end)
+            })),
+            MetricRange::TimestampsFrom { start } => {
+                assert!(native.samples().iter().all(|sample| {
+                    matches!(sample.coordinate, MetricCoordinate::Timestamp(timestamp)
+                        if start <= &timestamp)
+                }));
+            }
             _ => {}
         }
     }
@@ -161,6 +192,9 @@ fn standalone_relative_ranges_report_missing_run_start() -> Result<(), Box<dyn s
         MetricRange::All(MetricAxis::RelativeTime),
         MetricRange::RelativeTime {
             start: RelativeTime::from_millis(0),
+            end: RelativeTime::from_millis(60_000),
+        },
+        MetricRange::RelativeTimeUntil {
             end: RelativeTime::from_millis(60_000),
         },
     ] {
