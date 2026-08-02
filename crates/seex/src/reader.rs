@@ -1211,19 +1211,19 @@ mod tests {
 
         assert!(use_narrow_step_plan(
             MetricAxis::Step,
-            Some((2, 8)),
+            Some(AxisBounds::new(Some(2), Some(8))),
             Some(diagnostics),
             false
         ));
         assert!(!use_narrow_step_plan(
             MetricAxis::Step,
-            Some((0, 10)),
+            Some(AxisBounds::new(Some(0), Some(10))),
             Some(diagnostics),
             false
         ));
         assert!(!use_narrow_step_plan(
             MetricAxis::Step,
-            Some((2, 8)),
+            Some(AxisBounds::new(Some(2), Some(8))),
             Some(diagnostics),
             true
         ));
