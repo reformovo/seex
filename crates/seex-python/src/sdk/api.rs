@@ -75,6 +75,24 @@ impl PyApi {
                 .map_err(sdk_error)
         })
     }
+
+    fn close(&self) {
+        self.reader.borrow_mut().take();
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> bool {
+        self.close();
+        false
+    }
 }
 
 impl PyApi {
@@ -90,58 +108,69 @@ impl PyApi {
 
 #[pyclass(name = "RunRecord", module = "seex._seex", unsendable)]
 pub struct PyRunRecord {
-    pub(crate) _reader: SharedReader,
+    pub(crate) reader: SharedReader,
     pub(crate) run: Run,
 }
 
 impl PyRunRecord {
     fn new(reader: SharedReader, run: Run) -> Self {
-        Self {
-            _reader: reader,
-            run,
+        Self { reader, run }
+    }
+
+    fn ensure_open(&self) -> PyResult<()> {
+        if self.reader.borrow().is_none() {
+            return Err(ApiClosedError::new_err("The read-only API is closed."));
         }
+        Ok(())
     }
 }
 
 #[pymethods]
 impl PyRunRecord {
     #[getter]
-    fn run_id(&self) -> &str {
-        self.run.run_id.as_str()
+    fn run_id(&self) -> PyResult<&str> {
+        self.ensure_open()?;
+        Ok(self.run.run_id.as_str())
     }
 
     #[getter]
-    fn project_id(&self) -> &str {
-        self.run.project_id.as_str()
+    fn project_id(&self) -> PyResult<&str> {
+        self.ensure_open()?;
+        Ok(self.run.project_id.as_str())
     }
 
     #[getter]
-    fn name(&self) -> &str {
-        &self.run.name
+    fn name(&self) -> PyResult<&str> {
+        self.ensure_open()?;
+        Ok(&self.run.name)
     }
 
     #[getter]
-    fn status(&self) -> &'static str {
-        match self.run.status {
+    fn status(&self) -> PyResult<&'static str> {
+        self.ensure_open()?;
+        Ok(match self.run.status {
             RunStatus::Running => "running",
             RunStatus::Finished => "finished",
             RunStatus::Failed => "failed",
-        }
+        })
     }
 
     #[getter]
-    fn created_at(&self) -> String {
-        self.run.created_at.to_rfc3339()
+    fn created_at(&self) -> PyResult<String> {
+        self.ensure_open()?;
+        Ok(self.run.created_at.to_rfc3339())
     }
 
     #[getter]
-    fn started_at(&self) -> String {
-        self.run.started_at.to_rfc3339()
+    fn started_at(&self) -> PyResult<String> {
+        self.ensure_open()?;
+        Ok(self.run.started_at.to_rfc3339())
     }
 
     #[getter]
-    fn finished_at(&self) -> Option<String> {
-        self.run.finished_at.map(|value| value.to_rfc3339())
+    fn finished_at(&self) -> PyResult<Option<String>> {
+        self.ensure_open()?;
+        Ok(self.run.finished_at.map(|value| value.to_rfc3339()))
     }
 }
 

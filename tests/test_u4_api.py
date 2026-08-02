@@ -30,3 +30,18 @@ def test_api_discovers_projects_and_project_scoped_runs(tmp_path: pathlib.Path) 
 
     with pytest.raises(ValueError, match="project_id/run_id"):
         api.run("run-1")
+
+
+def test_api_close_is_idempotent_and_invalidates_records(tmp_path: pathlib.Path) -> None:
+    from seex import _seex
+
+    _finished_run(tmp_path)
+    with _seex.Api(tmp_path) as api:
+        record = api.run("project-1/run-1")
+        assert record.run_id == "run-1"
+
+    api.close()
+    with pytest.raises(_seex.ApiClosedError):
+        api.projects()
+    with pytest.raises(_seex.ApiClosedError):
+        _ = record.run_id
