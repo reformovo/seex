@@ -7,6 +7,7 @@ use pyo3::prelude::*;
 use seex::{MetricKey, ProjectId, Reader, Run, RunId, RunStatus};
 
 use crate::sdk::client::{ApiClosedError, PyMetricSummary, PyProject};
+use crate::sdk::comparison::{PyComparisonResult, PyRankingResult, objective};
 use crate::sdk::history::{PyMetricSeries, metric_query};
 use crate::sdk::run::sdk_error;
 use crate::sdk::settings::PySettings;
@@ -73,6 +74,47 @@ impl PyApi {
                     &RunId::from_string(run_id),
                 )
                 .map(|run| run.map(|run| PyRunRecord::new(Rc::clone(&self.reader), run)))
+                .map_err(sdk_error)
+        })
+    }
+
+    #[pyo3(signature = (candidate_run_id, reference_run_id, *, metric_key, direction))]
+    fn compare_runs(
+        &self,
+        candidate_run_id: &str,
+        reference_run_id: &str,
+        metric_key: &str,
+        direction: &str,
+    ) -> PyResult<PyComparisonResult> {
+        let objective = objective(metric_key, direction)?;
+        self.with_reader(|reader| {
+            reader
+                .compare_runs(
+                    &RunId::from_string(candidate_run_id),
+                    &RunId::from_string(reference_run_id),
+                    &objective,
+                )
+                .map(PyComparisonResult::from)
+                .map_err(sdk_error)
+        })
+    }
+
+    #[pyo3(signature = (run_ids, *, metric_key, direction))]
+    fn rank_runs(
+        &self,
+        run_ids: Vec<String>,
+        metric_key: &str,
+        direction: &str,
+    ) -> PyResult<PyRankingResult> {
+        let objective = objective(metric_key, direction)?;
+        let run_ids = run_ids
+            .into_iter()
+            .map(RunId::from_string)
+            .collect::<Vec<_>>();
+        self.with_reader(|reader| {
+            reader
+                .rank_runs(&run_ids, &objective)
+                .map(PyRankingResult::from)
                 .map_err(sdk_error)
         })
     }

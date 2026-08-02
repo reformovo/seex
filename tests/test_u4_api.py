@@ -50,3 +50,31 @@ def test_api_close_is_idempotent_and_invalidates_records(tmp_path: pathlib.Path)
         api.projects()
     with pytest.raises(_seex.ApiClosedError):
         _ = record.run_id
+
+
+def test_api_compares_and_ranks_run_evidence(tmp_path: pathlib.Path) -> None:
+    from seex import _seex
+
+    for run_id, loss in [("candidate", 0.25), ("reference", 0.5)]:
+        run = _seex._start_run(project="project-1", dir=tmp_path, id=run_id)
+        run.log({"loss": loss})
+        run.finish()
+        del run
+    api = _seex.Api(tmp_path)
+
+    comparison = api.compare_runs(
+        "candidate",
+        "reference",
+        metric_key="loss",
+        direction="minimize",
+    )
+    ranking = api.rank_runs(
+        ["reference", "candidate"],
+        metric_key="loss",
+        direction="minimize",
+    )
+
+    assert comparison.preference == "candidate"
+    assert comparison.candidate.last_value_f64 == 0.25
+    assert [entry.evidence.run_id for entry in ranking.entries] == ["candidate", "reference"]
+    assert [entry.rank for entry in ranking.entries] == [1, 2]
