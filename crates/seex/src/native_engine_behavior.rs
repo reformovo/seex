@@ -129,7 +129,7 @@ mod tests {
         // Then
         assert!(matches!(
             duplicate,
-            Err(seex_storage::StorageError::RunAlreadyExists { .. })
+            Err(crate::storage::StorageError::RunAlreadyExists { .. })
         ));
         assert_eq!(resumed, created);
         let run_count: i64 =

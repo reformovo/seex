@@ -1,7 +1,7 @@
 //! Native engine over DuckLake.
 
 pub mod bootstrap {
-    pub use seex_storage::bootstrap::*;
+    pub use crate::storage::bootstrap::*;
 }
 pub mod client;
 pub mod comparison;
@@ -9,10 +9,10 @@ pub mod query;
 pub mod ranking;
 pub mod reporting;
 mod time {
-    pub use seex_storage::time::*;
+    pub use crate::storage::time::*;
 }
 pub mod write {
-    pub use seex_storage::write::*;
+    pub use crate::storage::write::*;
 }
 
 // Unified error type for engine operations.
@@ -50,6 +50,12 @@ pub enum EngineError {
     MetricQueryMaxPointsTooLarge { max_points: usize },
     #[error("metric queue is full")]
     MetricQueueFull,
+    #[error("metric batch must contain between 1 and 8192 points, got {count}")]
+    InvalidMetricBatch { count: usize },
+    #[error("committed step {attempted} regresses from cursor {cursor}")]
+    StepRegression { cursor: i64, attempted: i64 },
+    #[error("step {step} has no representable successor")]
+    StepOverflow { step: i64 },
     #[error("metric writer failed: {message}")]
     MetricWriterFailed { message: String },
     #[error("metric drain timed out")]
@@ -70,7 +76,7 @@ pub enum EngineError {
         source: std::io::Error,
     },
     #[error(transparent)]
-    StorageFailure(seex_storage::StorageError),
+    StorageFailure(crate::storage::StorageError),
     #[error("storage operation failed: {message}")]
     StorageLayer { message: String },
     #[error("invalid stored run status: {status}")]
@@ -79,9 +85,9 @@ pub enum EngineError {
     InvalidTimestamp { field: &'static str, millis: i64 },
 }
 
-impl From<seex_storage::StorageError> for EngineError {
-    fn from(error: seex_storage::StorageError) -> Self {
-        use seex_storage::StorageError;
+impl From<crate::storage::StorageError> for EngineError {
+    fn from(error: crate::storage::StorageError) -> Self {
+        use crate::storage::StorageError;
 
         match error {
             error @ StorageError::DuckDb(_) => Self::StorageFailure(error),

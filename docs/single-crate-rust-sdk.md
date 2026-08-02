@@ -334,9 +334,9 @@ paired A/B improvement contract in ADR 0015 and ROADMAP U0.
   time evidence; Arrow streaming from `MetricSeries`; and Desktop boundary
   continuity without pixels in the public SDK contract.
 - Benchmark explicit step, implicit single-metric, and multi-metric Mapping.
-  Implicit logging stays above 100,000 calls/s and its five-run median is at
-  least 90% of explicit-step throughput on the same host; persistence loses no
-  report and admits no partial Mapping.
+  Explicit-step logging stays above 100,000 calls/s; implicit logging's
+  five-run median is at least 90% of explicit-step throughput on the same host.
+  Persistence loses no report and admits no partial Mapping.
 
 Cargo `0.1.0-beta.1`, PyPI `0.1.0b1`, and tag `v0.1.0-beta.1` identify the same
 source; release publishes crates.io before PyPI. Initial crates.io publication

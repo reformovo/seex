@@ -16,6 +16,7 @@ pub mod write;
 use crate::model::alignment::{AlignmentQuery, AlignmentQueryResult};
 use crate::model::metric::{MetricQuery, MetricQueryResult};
 
+pub(crate) use lock::ProjectCreateGuard;
 pub use lock::RunWriterGuard;
 #[doc(hidden)]
 pub use metric_query::SeriesDiagnostics;

@@ -1,1 +1,1 @@
-pub use seex_storage::config::*;
+pub use seex::storage::config::*;

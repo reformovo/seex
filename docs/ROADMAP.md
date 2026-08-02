@@ -240,33 +240,47 @@ fallback investigation, this closes U2 and allows U3 to begin. See
 Mechanical engine movement and reporting behavior changes are separate
 candidates.
 
-- [ ] Move lifecycle, queue, writer, diagnostics, comparison, and ranking into
+- [x] Move lifecycle, queue, writer, diagnostics, comparison, and ranking into
   private `seex::engine`; keep `seex-core` as an unpublished re-export until
   consumers migrate. Record a scoped migration comparison using the 3%
   preservation threshold.
-- [ ] Implement public `Client`/`ClientBuilder`, `RunHandle`, `RunOptions`,
+- [x] Implement public `Client`/`ClientBuilder`, `RunHandle`, `RunOptions`,
   `LogOptions`, `ResumePolicy`, and matchable `Error`/`Result`.
-- [ ] Make `RunHandle: Clone + Send + Sync`; clones share one admission lock,
+- [x] Make `RunHandle: Clone + Send + Sync`; clones share one admission lock,
   step cursor, queue, and terminal state.
-- [ ] Admit a non-empty Mapping atomically with at most 8,192 numeric metrics.
+- [x] Admit a non-empty Mapping atomically with at most 8,192 numeric metrics.
   Failure admits no subset and does not advance the cursor; queue capacity and
   diagnostics count points consistently.
-- [ ] Default explicit-step `commit` to false and implicit-step `commit` to
+- [x] Default explicit-step `commit` to false and implicit-step `commit` to
   true. Start a new Run at step zero, resume from the greatest persisted step,
   and reject committed-step regression.
-- [ ] Make matching terminal operations retry incomplete drain/flush work.
+- [x] Make matching terminal operations retry incomplete drain/flush work.
   Return a typed error for a conflicting terminal outcome and never hide a
   finalization error in `Drop`.
-- [ ] Cover Project get-or-create races, resume modes, cloned-handle races,
+- [x] Cover Project get-or-create races, resume modes, cloned-handle races,
   atomic queue failure, cursor/commit cases, finalization barriers, and
   persistence without lost reports or partial Mappings.
-- [ ] Observe explicit single-metric admission against the 100,000 calls/s
+- [x] Observe explicit single-metric admission against the 100,000 calls/s
   target. Across five runs, compare implicit single-metric median throughput
   with the 90% explicit-throughput target; count multi-metric throughput per
   point.
-- [ ] Exit U3 when engine and reporting Acceptance checks pass. Record scoped
+- [x] Exit U3 when engine and reporting Acceptance checks pass. Record scoped
   p50/p95, drain latency, persistence, and peak RSS comparisons without making
   their classifications blocking.
+
+The mechanical migration passed workspace Acceptance. Its original combined
+admission/durability workload produced no capture before the 120-second budget;
+the narrowed durability A-B-B-A completed but was Inconclusive because the
+strict parser could not see the test-harness-prefixed drain record. It was not
+rerun, and no reporting baseline advanced.
+
+The final public Run SDK benchmark at `e4955fe` observed 4.00 million explicit
+calls/s p50, a 106.6% implicit/explicit median ratio, 8.67 million Mapping
+points/s p50, 143.640 ms drain p50, 39.189 ms finalization p50, and 264.8 MB
+peak RSS p50. The records and reporting RSS A-B-B-A comparisons were both
+Inconclusive under the 2% noise rule, so neither non-blocking classification
+advanced a rolling baseline. See
+[`u3-performance-observations.md`](reference/u3-performance-observations.md).
 
 ### U4: Python Run, Api, CLI, and Arrow Surface
 

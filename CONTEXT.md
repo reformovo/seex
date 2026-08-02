@@ -108,6 +108,11 @@ A run whose lifecycle has ended as either finished or failed.
 **Run finalization**:
 The explicit transition of a run from running to a terminal lifecycle state.
 
+**Terminal intent**:
+The finished or failed outcome selected by the first finalization request for a
+Run. Repeating that outcome continues finalization; requesting the other
+outcome conflicts with the existing intent.
+
 **Metric aggregate**:
 Derived index state over an effective metric series.
 

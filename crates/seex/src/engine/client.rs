@@ -4,22 +4,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
-use seex_storage::{ProjectConnection, RunWriterGuard};
+use crate::storage::{ProjectConnection, RunWriterGuard};
 
 use crate::engine::EngineError;
 use crate::engine::bootstrap::{
-    CatalogBackend, NativeStorageConfig, S3ConnectionConfig,
+    CatalogBackend, NativeStorageConfig, S3ConnectionConfig, catalog_lock_namespace,
     open_existing_native_connection_with_config, open_native_connection_with_config,
 };
 use crate::engine::query::NativeQueryStore;
-use crate::engine::reporting::{MetricReporter, MetricReporterDiagnostics};
+use crate::engine::reporting::{MetricReporter, MetricReporterDiagnostics, MetricValue};
 use crate::engine::time::current_timestamp;
 use crate::model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 
 pub struct NativeClient {
-    root_path: PathBuf,
+    lock_namespace: PathBuf,
     reporter: MetricReporter,
     connection: Arc<Mutex<ProjectConnection>>,
     active_runs: Arc<Mutex<HashMap<RunId, Arc<ActiveRun>>>>,
@@ -110,17 +110,19 @@ impl NativeClient {
             data_path,
             s3_connection,
         );
+        let catalog_path = storage_config.catalog_path().to_owned();
         let connection = if must_exist {
             open_existing_native_connection_with_config(storage_config)?
         } else {
             open_native_connection_with_config(storage_config)?
         };
+        let lock_namespace = catalog_lock_namespace(&catalog_path)?;
         let connection = Arc::new(Mutex::new(ProjectConnection::new(connection)));
         let reporter =
             MetricReporter::open_with_capacity(Arc::clone(&connection), metric_queue_capacity);
 
         Ok(Self {
-            root_path,
+            lock_namespace,
             reporter,
             connection,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -370,6 +372,22 @@ impl NativeClient {
         self.reporter.diagnostics()
     }
 
+    pub(crate) fn lock_namespace(&self) -> &Path {
+        self.lock_namespace.as_path()
+    }
+
+    pub fn greatest_persisted_step(&self, run_id: &RunId) -> Result<Option<Step>, EngineError> {
+        let value = self
+            .connection()?
+            .query_row(
+                "SELECT max(step) FROM dl.metric_points WHERE run_id = ?",
+                [run_id.as_str()],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(crate::storage::StorageError::from)?;
+        Ok(value.map(Step::new))
+    }
+
     pub fn query_metric(
         &self,
         run_id: &RunId,
@@ -543,7 +561,7 @@ impl NativeClient {
             return Ok(Arc::clone(active_run));
         }
 
-        let writer_guard = RunWriterGuard::acquire(&self.root_path, run_id)?;
+        let writer_guard = RunWriterGuard::acquire(&self.lock_namespace, run_id)?;
         let active_run = Arc::new(ActiveRun::open(writer_guard));
         active_runs.insert(run_id.clone(), Arc::clone(&active_run));
         Ok(active_run)
@@ -626,33 +644,118 @@ pub struct NativeRun {
 }
 
 impl NativeRun {
+    pub fn initialize_cursor(&self, next_step: Step) -> Result<(), EngineError> {
+        let mut state = self
+            .active_run
+            .admission
+            .lock()
+            .map_err(|_| EngineError::ConnectionLockPoisoned)?;
+        state.cursor.get_or_insert(next_step.value());
+        Ok(())
+    }
+
     pub fn log_metric_at_step(
         &self,
         metric_key: &str,
         step: i64,
         value_f64: f64,
     ) -> Result<(), EngineError> {
+        self.log_metrics_at_step(
+            vec![(MetricKey::from_string(metric_key), value_f64)],
+            Step::new(step),
+        )
+    }
+
+    pub fn log_metrics_at_step(
+        &self,
+        metrics: Vec<(MetricKey, f64)>,
+        step: Step,
+    ) -> Result<(), EngineError> {
         self.active_run.with_open_admission(&self.run_id, || {
-            self.reporter.report_metric(
+            self.reporter.report_metrics(
                 self.run_id.clone(),
-                MetricKey::from_string(metric_key),
-                Step::new(step),
-                value_f64,
+                metrics
+                    .into_iter()
+                    .map(|(metric_key, value_f64)| MetricValue {
+                        metric_key,
+                        step,
+                        value_f64,
+                    })
+                    .collect(),
             )
         })
+    }
+
+    pub fn log_metrics_with_cursor(
+        &self,
+        metrics: Vec<(MetricKey, f64)>,
+        explicit_step: Option<Step>,
+        commit: Option<bool>,
+    ) -> Result<(), EngineError> {
+        let mut state = self
+            .active_run
+            .admission
+            .lock()
+            .map_err(|_| EngineError::ConnectionLockPoisoned)?;
+        if state.phase != RunAdmission::Open {
+            return Err(EngineError::RunClosed {
+                run_id: self.run_id.as_str().to_owned(),
+            });
+        }
+        let cursor = state.cursor.ok_or(EngineError::ConnectionLockPoisoned)?;
+        let step = explicit_step.unwrap_or_else(|| Step::new(cursor));
+        let commit = commit.unwrap_or(explicit_step.is_none());
+        let next_cursor = if commit {
+            if step.value() < cursor {
+                return Err(EngineError::StepRegression {
+                    cursor,
+                    attempted: step.value(),
+                });
+            }
+            Some(
+                step.value()
+                    .checked_add(1)
+                    .ok_or(EngineError::StepOverflow { step: step.value() })?,
+            )
+        } else {
+            None
+        };
+        self.reporter.report_metrics(
+            self.run_id.clone(),
+            metrics
+                .into_iter()
+                .map(|(metric_key, value_f64)| MetricValue {
+                    metric_key,
+                    step,
+                    value_f64,
+                })
+                .collect(),
+        )?;
+        if let Some(next_cursor) = next_cursor {
+            state.cursor = Some(next_cursor);
+        }
+        Ok(())
     }
 }
 
 struct ActiveRun {
     writer_guard: Mutex<Option<RunWriterGuard>>,
-    admission: Mutex<RunAdmission>,
+    admission: Mutex<RunAdmissionState>,
+}
+
+struct RunAdmissionState {
+    phase: RunAdmission,
+    cursor: Option<i64>,
 }
 
 impl ActiveRun {
     fn open(writer_guard: RunWriterGuard) -> Self {
         Self {
             writer_guard: Mutex::new(Some(writer_guard)),
-            admission: Mutex::new(RunAdmission::Open),
+            admission: Mutex::new(RunAdmissionState {
+                phase: RunAdmission::Open,
+                cursor: None,
+            }),
         }
     }
 
@@ -660,14 +763,20 @@ impl ActiveRun {
     fn open_for_test() -> Self {
         Self {
             writer_guard: Mutex::new(None),
-            admission: Mutex::new(RunAdmission::Open),
+            admission: Mutex::new(RunAdmissionState {
+                phase: RunAdmission::Open,
+                cursor: None,
+            }),
         }
     }
 
     fn closed() -> Arc<Self> {
         Arc::new(Self {
             writer_guard: Mutex::new(None),
-            admission: Mutex::new(RunAdmission::Terminal),
+            admission: Mutex::new(RunAdmissionState {
+                phase: RunAdmission::Terminal,
+                cursor: None,
+            }),
         })
     }
 
@@ -680,7 +789,7 @@ impl ActiveRun {
             .admission
             .lock()
             .map_err(|_| EngineError::ConnectionLockPoisoned)?;
-        match *admission {
+        match admission.phase {
             RunAdmission::Open => report(),
             RunAdmission::Closing | RunAdmission::Terminal => Err(EngineError::RunClosed {
                 run_id: run_id.as_str().to_owned(),
@@ -693,7 +802,7 @@ impl ActiveRun {
             .admission
             .lock()
             .map_err(|_| EngineError::ConnectionLockPoisoned)?;
-        *admission = RunAdmission::Closing;
+        admission.phase = RunAdmission::Closing;
         Ok(())
     }
 
@@ -702,7 +811,7 @@ impl ActiveRun {
             .admission
             .lock()
             .map_err(|_| EngineError::ConnectionLockPoisoned)?;
-        *admission = RunAdmission::Open;
+        admission.phase = RunAdmission::Open;
         Ok(())
     }
 
@@ -711,7 +820,7 @@ impl ActiveRun {
             .admission
             .lock()
             .map_err(|_| EngineError::ConnectionLockPoisoned)?;
-        *admission = RunAdmission::Terminal;
+        admission.phase = RunAdmission::Terminal;
         Ok(())
     }
 
@@ -941,7 +1050,7 @@ mod tests {
             &root_path,
         )?)));
         let client = NativeClient {
-            root_path: root_path.clone(),
+            lock_namespace: root_path.join(".seex/locks"),
             reporter: MetricReporter::blocked_for_test(1),
             connection,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -1275,7 +1384,7 @@ mod tests {
             &root_path,
         )?)));
         let client = NativeClient {
-            root_path: root_path.clone(),
+            lock_namespace: root_path.join(".seex/locks"),
             reporter: MetricReporter::blocked_for_test(2),
             connection,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
@@ -1671,7 +1780,7 @@ mod tests {
     #[test]
     fn percent_encode_path_segment_uses_rfc3986_unreserved_bytes() {
         assert_eq!(
-            seex_storage::percent_encode_metric_key("run/space ü._~-"),
+            crate::storage::percent_encode_metric_key("run/space ü._~-"),
             "run%2Fspace%20%C3%BC._~-",
         );
     }
