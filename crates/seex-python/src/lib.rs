@@ -4,8 +4,6 @@
 
 mod sdk;
 
-pub(crate) use seex_core::model;
-
 use pyo3::prelude::*;
 
 #[pymodule]
@@ -18,8 +16,6 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sdk::client::PyMetricSummary>()?;
     m.add_class::<sdk::client::PyProject>()?;
     m.add_class::<sdk::comparison::PyComparisonResult>()?;
-    m.add_class::<sdk::comparison::PyComparisonReport>()?;
-    m.add_class::<sdk::comparison::PyMetricComparisonResult>()?;
     m.add_class::<sdk::comparison::PyObjectiveEvidence>()?;
     m.add_class::<sdk::comparison::PyObjectiveMetric>()?;
     m.add_class::<sdk::comparison::PyRankingEntry>()?;

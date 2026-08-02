@@ -5492,7 +5492,6 @@ dependencies = [
  "chrono",
  "pyo3",
  "seex",
- "seex-core",
 ]
 
 [[package]]
