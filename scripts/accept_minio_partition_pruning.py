@@ -113,12 +113,11 @@ def _populate_and_query(
     target_run_id: str,
     target_metric_key: str,
 ) -> tuple[int, dict[str, Any]]:
-    from seex import _seex
+    import seex
 
-    points: list[_seex.MetricPoint] = []
+    points: list[seex.MetricPoint] = []
     events: list[dict[str, Any]] = []
-    with _seex.init(
-        root,
+    settings = seex.Settings(
         data_path=f"s3://{config.bucket}/{prefix}",
         catalog_backend=catalog_backend,
         s3_endpoint=config.endpoint,
@@ -127,25 +126,34 @@ def _populate_and_query(
         s3_region=config.region,
         s3_path_style=True,
         s3_use_ssl=config.use_ssl,
-    ) as client:
-        project = client.create_project("partition acceptance", project_id="acceptance")
-        for run_index in range(args.run_count):
-            run = client.create_run(project.project_id, "acceptance", run_id=f"run-{run_index}")
+    )
+    for run_index in range(args.run_count):
+        with seex.init(
+            project="acceptance",
+            dir=root,
+            id=f"run-{run_index}",
+            name="acceptance",
+            settings=settings,
+        ) as run:
             for step in range(args.steps):
-                for key_index in range(args.metric_key_count):
-                    run.log(f"metric/{key_index}", step, float(step + key_index))
-            client.finish_run(run.run_id)
-        trace = _start_trace(config, prefix)
-        time.sleep(0.25)
-        try:
-            points = client.query_metric(
-                target_run_id,
+                run.log(
+                    {f"metric/{key_index}": float(step + key_index) for key_index in range(args.metric_key_count)},
+                    step=step,
+                )
+    trace = _start_trace(config, prefix)
+    time.sleep(0.25)
+    try:
+        with seex.Api(root, settings) as api:
+            record = api.run(f"acceptance/{target_run_id}")
+            if record is None:
+                raise RuntimeError("partition-pruning Run was not found")
+            points = record.history(
                 target_metric_key,
-                start_step=args.start_step,
-                end_step=args.end_step,
-            )
-        finally:
-            events = _stop_trace(trace)
+                start=args.start_step,
+                end=args.end_step,
+            ).points
+    finally:
+        events = _stop_trace(trace)
     remote = _trace_metrics(events, target_run_id, target_metric_key)
     return len(points), remote
 

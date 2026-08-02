@@ -10,7 +10,7 @@ import sys
 import tempfile
 import typing
 
-from seex import _seex
+import seex
 
 _POINT_COUNT = 256
 
@@ -39,12 +39,9 @@ def main() -> None:
 
 
 def _seed_store(project_root: pathlib.Path) -> None:
-    with _seex.init(project_root) as client:
-        project = client.create_project("RC LTTB", project_id="project-1")
-        run = client.create_run(project.project_id, "curve", run_id="run-1")
+    with seex.init(project="project-1", dir=project_root, id="run-1", name="curve") as run:
         for step in range(_POINT_COUNT):
-            run.log("train/loss", step, float(step % 17))
-        client.finish_run(run.run_id)
+            run.log({"train/loss": float(step % 17)}, step=step)
 
 
 def _query_cli(project_root: pathlib.Path, environment: dict[str, str]) -> dict[str, object]:
