@@ -27,6 +27,7 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sdk::comparison::PyObjectiveMetric>()?;
     m.add_class::<sdk::comparison::PyRankingEntry>()?;
     m.add_class::<sdk::comparison::PyRankingResult>()?;
+    m.add_class::<sdk::settings::PySettings>()?;
     m.add("SeexError", py.get_type::<sdk::client::SeexError>())?;
     macro_rules! add_exception {
         ($name:ident) => {
@@ -45,6 +46,7 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_exception!(RunAlreadyActiveError);
     add_exception!(InvalidConfigurationError);
     add_exception!(StorageError);
+    add_exception!(ApiClosedError);
     m.add_function(wrap_pyfunction!(sdk::client::init, m)?)?;
     Ok(())
 }

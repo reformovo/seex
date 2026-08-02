@@ -53,6 +53,7 @@ sdk_exception!(
 );
 sdk_exception!(InvalidConfigurationError, "Seex configuration is invalid.");
 sdk_exception!(StorageError, "A storage operation failed.");
+sdk_exception!(ApiClosedError, "The read-only API is closed.");
 
 #[pyclass(name = "Client", module = "seex._seex", unsendable)]
 pub struct PyClient {
