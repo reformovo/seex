@@ -6,10 +6,11 @@ stress workloads, and baseline JSON live under [`reference/`](reference/).
 ## Verification types
 
 - **Acceptance** verifies deterministic behavior, structure, compatibility, or
-  release readiness. Failure blocks the change.
+  release readiness. It is the only blocking verification type.
 - **Benchmark** emits raw measurements and never makes a verdict.
-- **Performance gate** compares the rolling baseline and candidate and returns
-  `pass`, `no_change`, `regression`, or `inconclusive`.
+- **Performance comparison** compares the rolling baseline and candidate and
+  classifies the observation as `pass`, `no_change`, `regression`, or
+  `inconclusive`. The classification never blocks a commit or milestone.
 - **Profile** is manual diagnostic evidence from plans, Samply, Tracy,
   Instruments, `heap`, or `vmmap`; it never blocks a commit or milestone.
 
@@ -20,7 +21,7 @@ specific diagnosis needs them.
 
 ## Schema v3
 
-Run exactly one gate with:
+Run exactly one comparison with:
 
 ```bash
 python scripts/performance_gate.py run \
@@ -66,9 +67,11 @@ limits below. The runner never adds samples or processes automatically.
 - A smaller non-regressing improvement is No-change.
 - A reliable regression or hard-floor failure is Regression.
 
-Exit codes are 0 for Pass, 2 for No-change or Inconclusive, 3 for Regression,
-and 4 for a tool or workload error. Only the rolling baseline is deciding;
-original revisions are historical trend observations.
+Every completed comparison exits 0, regardless of classification. Exit 4 is
+reserved for a runner, tool, or workload error. The rolling baseline is the
+comparison reference and advances only on Pass; other classifications do not
+reject a change or close a milestone. Original revisions remain historical
+trend observations.
 
 ## Scoped workloads
 

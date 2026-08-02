@@ -153,9 +153,10 @@ release readiness. Any failure blocks the associated change.
 A bounded workload that emits raw measurements without deciding whether a
 change is acceptable.
 
-**Performance gate**:
-A comparison of a candidate with the current rolling baseline that returns
-Pass, No-change, Regression, or Inconclusive.
+**Performance comparison**:
+A non-blocking comparison of a candidate with the current rolling baseline,
+classified as Pass, No-change, Regression, or Inconclusive.
+_Avoid_: Performance gate
 
 **Profile**:
 A manual diagnostic observation used to explain performance behavior. A
