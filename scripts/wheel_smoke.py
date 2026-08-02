@@ -6,6 +6,7 @@ import pathlib
 import tempfile
 
 import seex
+from seex import _seex
 
 
 def main() -> None:
@@ -15,7 +16,7 @@ def main() -> None:
 
     with (
         tempfile.TemporaryDirectory(prefix="seex-wheel-smoke-") as root,
-        seex.init(pathlib.Path(root)) as client,
+        _seex.init(pathlib.Path(root)) as client,
     ):
         project = client.create_project("wheel smoke", project_id="project-1")
         run = client.create_run(project.project_id, "smoke", run_id="run-1")

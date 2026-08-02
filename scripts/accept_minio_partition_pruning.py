@@ -113,11 +113,11 @@ def _populate_and_query(
     target_run_id: str,
     target_metric_key: str,
 ) -> tuple[int, dict[str, Any]]:
-    import seex
+    from seex import _seex
 
-    points: list[seex.MetricPoint] = []
+    points: list[_seex.MetricPoint] = []
     events: list[dict[str, Any]] = []
-    with seex.init(
+    with _seex.init(
         root,
         data_path=f"s3://{config.bucket}/{prefix}",
         catalog_backend=catalog_backend,

@@ -131,9 +131,9 @@ def run_benchmark(
     sample_count: int = SAMPLES,
     fixed_batch: bool = False,
 ) -> tuple[dict[str, Any], Any]:
-    import seex
+    from seex import _seex
 
-    client = seex.init(project_path, metric_queue_capacity=queue_capacity)
+    client = _seex.init(project_path, metric_queue_capacity=queue_capacity)
     project = client.create_project("benchmark", project_id="bench-project")
     run = client.create_run(project.project_id, "throughput", run_id="bench-run")
 
