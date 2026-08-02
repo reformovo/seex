@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import decimal
+import fractions
 import pathlib
 
 import pytest
@@ -157,6 +159,8 @@ def test_finished_run_releases_native_resources_before_python_drop(tmp_path: pat
         ({"": 1.0}, ValueError),
         ({"loss": True}, TypeError),
         ({"loss": "bad"}, TypeError),
+        ({"loss": decimal.Decimal("1.0")}, TypeError),
+        ({"loss": fractions.Fraction(1, 2)}, TypeError),
         ({1: 1.0}, TypeError),
     ],
 )

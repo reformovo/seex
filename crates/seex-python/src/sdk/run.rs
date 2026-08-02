@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyMapping, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyFloat, PyInt, PyMapping, PyTuple};
 use seex::{Client, LogOptions, ResumePolicy, RunHandle, RunOptions, RunStatus};
 
 use crate::sdk::client::PyDiagnostics;
@@ -239,6 +239,11 @@ fn numeric_mapping(data: &Bound<'_, PyAny>) -> PyResult<Vec<(String, f64)>> {
         if value.is_instance_of::<PyBool>() {
             return Err(PyTypeError::new_err(
                 "metric Mapping values must be integers or floats, not bool",
+            ));
+        }
+        if !value.is_instance_of::<PyInt>() && !value.is_instance_of::<PyFloat>() {
+            return Err(PyTypeError::new_err(
+                "metric Mapping values must be integers or floats",
             ));
         }
         let value = value.extract::<f64>().map_err(|_| {
