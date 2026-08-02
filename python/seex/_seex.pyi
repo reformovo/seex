@@ -1,4 +1,6 @@
+import datetime
 import os
+from collections.abc import Mapping
 from typing import Literal, Self
 
 class SeexError(RuntimeError): ...
@@ -14,6 +16,116 @@ class RunAlreadyExistsError(SeexError): ...
 class RunAlreadyActiveError(SeexError): ...
 class InvalidConfigurationError(SeexError): ...
 class StorageError(SeexError): ...
+class ApiClosedError(SeexError): ...
+
+class Settings:
+    def __init__(
+        self,
+        *,
+        catalog_backend: Literal["duckdb", "sqlite"] | None = None,
+        catalog_path: str | os.PathLike[str] | None = None,
+        data_path: str | os.PathLike[str] | None = None,
+        metric_queue_capacity: int = 65536,
+        s3_endpoint: str | None = None,
+        s3_access_key_id: str | None = None,
+        s3_secret_access_key: str | None = None,
+        s3_session_token: str | None = None,
+        s3_region: str | None = None,
+        s3_path_style: bool | None = None,
+        s3_use_ssl: bool | None = None,
+    ) -> None: ...
+    catalog_backend: Literal["duckdb", "sqlite"] | None
+    catalog_path: str | os.PathLike[str] | None
+    data_path: str | os.PathLike[str] | None
+    metric_queue_capacity: int
+    s3_endpoint: str | None
+    s3_access_key_id: str | None
+    s3_secret_access_key: str | None
+    s3_session_token: str | None
+    s3_region: str | None
+    s3_path_style: bool | None
+    s3_use_ssl: bool | None
+
+class _Run:
+    run_id: str
+    project_id: str
+    name: str
+    status: Literal["running", "finished", "failed"]
+    def log(
+        self,
+        data: Mapping[str, int | float],
+        *,
+        step: int | None = None,
+        commit: bool | None = None,
+    ) -> None: ...
+    def finish(self, exit_code: int | None = None) -> None: ...
+    def diagnostics(self) -> Diagnostics: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool: ...
+
+class MetricSeries:
+    @property
+    def axis(self) -> Literal["step", "relative_time", "timestamp"]: ...
+    @property
+    def points(self) -> list[MetricPoint]: ...
+    @property
+    def source_count(self) -> int: ...
+    @property
+    def downsampled(self) -> bool: ...
+    @property
+    def completeness(self) -> Literal["complete", "partial", "unavailable", "invalid"]: ...
+    @property
+    def reasons(self) -> list[str]: ...
+    def __arrow_c_stream__(self, requested_schema: object | None = None) -> object: ...
+
+class RunRecord:
+    run_id: str
+    project_id: str
+    name: str
+    status: Literal["running", "finished", "failed"]
+    created_at: str
+    started_at: str
+    finished_at: str | None
+    def metrics(self) -> list[MetricSummary]: ...
+    def metric_summary(self, metric_key: str) -> MetricSummary | None: ...
+    def history(
+        self,
+        metric_key: str,
+        *,
+        x_axis: Literal["step", "relative_time", "timestamp"] = "step",
+        start: int | datetime.timedelta | datetime.datetime | None = None,
+        end: int | datetime.timedelta | datetime.datetime | None = None,
+        max_points: int | None = None,
+    ) -> MetricSeries: ...
+
+class Api:
+    def __init__(
+        self,
+        dir: str | os.PathLike[str] = ".",
+        settings: Settings | None = None,
+    ) -> None: ...
+    def projects(self) -> list[Project]: ...
+    def project(self, project_id: str) -> Project | None: ...
+    def runs(self, project_id: str) -> list[RunRecord]: ...
+    def run(self, path: str) -> RunRecord | None: ...
+    def compare_runs(
+        self,
+        candidate_run_id: str,
+        reference_run_id: str,
+        *,
+        metric_key: str,
+        direction: Literal["minimize", "maximize"],
+    ) -> ComparisonResult: ...
+    def rank_runs(
+        self,
+        run_ids: list[str],
+        *,
+        metric_key: str,
+        direction: Literal["minimize", "maximize"],
+    ) -> RankingResult: ...
+    def close(self) -> None: ...
+    def __enter__(self) -> Self: ...
+    def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> bool: ...
 
 class ArrowTable:
     """An Arrow PyCapsule-compatible, dependency-free query result."""
@@ -312,3 +424,13 @@ def init(
 
     Relative paths read from project config resolve against the project root.
     """
+
+def _start_run(
+    *,
+    project: str | None = None,
+    dir: str | os.PathLike[str] | None = None,
+    id: str | None = None,
+    name: str | None = None,
+    resume: bool | Literal["allow", "never", "must"] | None = None,
+    settings: Settings | None = None,
+) -> _Run: ...

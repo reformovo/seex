@@ -22,15 +22,22 @@ def test_api_discovers_projects_and_project_scoped_runs(tmp_path: pathlib.Path) 
     api = _seex.Api(tmp_path)
 
     assert [project.project_id for project in api.projects()] == ["project-1"]
-    assert api.project("project-1").name == "project-1"
+    project = api.project("project-1")
+    assert project is not None
+    assert project.name == "project-1"
     assert api.project("missing") is None
     assert [run.run_id for run in api.runs("project-1")] == ["run-1"]
-    assert api.run("project-1/run-1").name == "baseline"
+    selected = api.run("project-1/run-1")
+    assert selected is not None
+    assert selected.name == "baseline"
     assert api.run("other/run-1") is None
     assert api.run("project-1/missing") is None
     record = api.run("project-1/run-1")
+    assert record is not None
     assert [metric.metric_key for metric in record.metrics()] == ["loss"]
-    assert record.metric_summary("loss").last_value_f64 == 0.25
+    summary = record.metric_summary("loss")
+    assert summary is not None
+    assert summary.last_value_f64 == 0.25
     assert record.metric_summary("missing") is None
 
     with pytest.raises(ValueError, match="project_id/run_id"):
@@ -41,11 +48,14 @@ def test_api_close_is_idempotent_and_invalidates_records(tmp_path: pathlib.Path)
     from seex import _seex
 
     _finished_run(tmp_path)
+    record: _seex.RunRecord | None = None
     with _seex.Api(tmp_path) as api:
         record = api.run("project-1/run-1")
+        assert record is not None
         assert record.run_id == "run-1"
 
     api.close()
+    assert record is not None
     with pytest.raises(_seex.ApiClosedError):
         api.projects()
     with pytest.raises(_seex.ApiClosedError):

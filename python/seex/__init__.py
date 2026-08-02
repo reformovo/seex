@@ -9,6 +9,8 @@ from seex import _seex
 
 AlignedMetricPoint = _seex.AlignedMetricPoint
 AlignedMetricResult = _seex.AlignedMetricResult
+Api = _seex.Api
+ApiClosedError = _seex.ApiClosedError
 ArrowTable = _seex.ArrowTable
 Client = _seex.Client
 ClientClosedError = _seex.ClientClosedError
@@ -22,6 +24,7 @@ MetricFlushTimeoutError = _seex.MetricFlushTimeoutError
 MetricPoint = _seex.MetricPoint
 MetricQueueFullError = _seex.MetricQueueFullError
 MetricSummary = _seex.MetricSummary
+MetricSeries = _seex.MetricSeries
 MetricWriterFailedError = _seex.MetricWriterFailedError
 ObjectiveEvidence = _seex.ObjectiveEvidence
 ObjectiveMetric = _seex.ObjectiveMetric
@@ -33,6 +36,8 @@ Run = _seex.Run
 RunAlreadyActiveError = _seex.RunAlreadyActiveError
 RunAlreadyExistsError = _seex.RunAlreadyExistsError
 RunClosedError = _seex.RunClosedError
+RunRecord = _seex.RunRecord
+Settings = _seex.Settings
 StorageError = _seex.StorageError
 
 
@@ -70,6 +75,8 @@ def init(
 __all__ = [
     "AlignedMetricPoint",
     "AlignedMetricResult",
+    "Api",
+    "ApiClosedError",
     "ArrowTable",
     "Client",
     "ClientClosedError",
@@ -82,6 +89,7 @@ __all__ = [
     "MetricFlushTimeoutError",
     "MetricPoint",
     "MetricQueueFullError",
+    "MetricSeries",
     "MetricSummary",
     "MetricWriterFailedError",
     "ObjectiveEvidence",
@@ -93,7 +101,9 @@ __all__ = [
     "RunAlreadyActiveError",
     "RunAlreadyExistsError",
     "RunClosedError",
+    "RunRecord",
     "SeexError",
+    "Settings",
     "StorageError",
     "init",
 ]

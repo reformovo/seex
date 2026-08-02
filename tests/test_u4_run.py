@@ -28,9 +28,15 @@ def test_target_run_validates_resume_contract(tmp_path: pathlib.Path) -> None:
     from seex import _seex
 
     with pytest.raises(ValueError, match="resume"):
-        _seex._start_run(dir=tmp_path, resume="auto")
+        _seex._start_run(
+            dir=tmp_path,
+            resume="auto",  # type: ignore[reportArgumentType]
+        )
     with pytest.raises(TypeError, match="resume"):
-        _seex._start_run(dir=tmp_path, resume=1)
+        _seex._start_run(
+            dir=tmp_path,
+            resume=1,  # type: ignore[reportArgumentType]
+        )
     with pytest.raises(ValueError, match="`id`"):
         _seex._start_run(dir=tmp_path, resume="must")
 
@@ -148,4 +154,4 @@ def test_target_run_rejects_invalid_metric_mappings(
 
     run = _seex._start_run(dir=tmp_path)
     with pytest.raises(error_type, match="Mapping"):
-        run.log(data)
+        run.log(data)  # type: ignore[reportArgumentType]
