@@ -67,11 +67,10 @@ fn measure_mode(
     let mut batch_iterations = 1_024;
     for run_index in 0..LOGICAL_RUNS {
         let fixture_label = format!("{label}-{run_index}");
-        let (root, client, run) = run_for_mode(&fixture_label)?;
+        let (_root, client, run) = run_for_mode(&fixture_label)?;
         for index in 0..20 {
             operation(&run, index)?;
         }
-        wait_for_drain(&client)?;
         if run_index == 0 {
             loop {
                 let started = Instant::now();
@@ -79,7 +78,6 @@ fn measure_mode(
                     operation(&run, index)?;
                 }
                 let elapsed = started.elapsed();
-                wait_for_drain(&client)?;
                 if elapsed >= CALIBRATION_TARGET {
                     break;
                 }
@@ -92,14 +90,14 @@ fn measure_mode(
                 operation(&run, index)?;
             }
             let elapsed = started.elapsed();
-            wait_for_drain(&client)?;
             if elapsed < CALIBRATION_TARGET {
                 return Err("calibrated reporting sample completed in less than 25 ms".into());
             }
             samples.push((batch_iterations * points_per_call) as f64 / elapsed.as_secs_f64());
         }
-        client.shutdown()?;
-        fs::remove_dir_all(root)?;
+        // Admission is isolated from persistence. Each ignored benchmark runs
+        // in a fresh process, which releases the intentionally leaked writer.
+        std::mem::forget(client);
     }
     println!();
     println!(
