@@ -140,6 +140,38 @@ fn resume_requires_matching_project_and_explicit_must_id() -> Result<(), Box<dyn
 }
 
 #[test]
+fn invalid_resume_does_not_create_projects() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let client = Client::builder(root.path()).open()?;
+
+    assert!(matches!(
+        client.start_run(RunOptions::new("missing-id").resume(ResumePolicy::Must)),
+        Err(Error::InvalidRunOptions { field: "id" })
+    ));
+    client.start_run(RunOptions::new("actual").id("run-1"))?;
+    assert!(matches!(
+        client.start_run(
+            RunOptions::new("mismatch")
+                .id("run-1")
+                .resume(ResumePolicy::Must)
+        ),
+        Err(Error::RunProjectMismatch { .. })
+    ));
+    client.shutdown()?;
+
+    let reader = Reader::builder(root.path()).open()?;
+    assert_eq!(
+        reader
+            .projects()?
+            .into_iter()
+            .map(|project| project.project_id)
+            .collect::<Vec<_>>(),
+        [seex::ProjectId::from_string("actual")]
+    );
+    Ok(())
+}
+
+#[test]
 fn project_race_child_process() -> Result<(), Box<dyn std::error::Error>> {
     let Some(root) = std::env::var_os("SEEX_PROJECT_RACE_ROOT") else {
         return Ok(());

@@ -128,7 +128,13 @@ impl Client {
     ///
     /// Returns a typed option, identity, lifecycle, lock, or storage error.
     pub fn start_run(&self, options: RunOptions) -> Result<RunHandle> {
-        let project = self.get_or_create_project(&options.project)?;
+        if options.project.is_empty() {
+            return Err(Error::InvalidRunOptions { field: "project" });
+        }
+        if options.resume == ResumePolicy::Must && options.id_was_missing {
+            return Err(Error::InvalidRunOptions { field: "id" });
+        }
+        let project_id = ProjectId::from_string(&options.project);
         let run_id = options
             .run_id
             .map(RunId::from_string)
@@ -138,28 +144,31 @@ impl Client {
         }
         let name = options.name.unwrap_or_else(|| run_id.as_str().to_owned());
         let (run, next_step) = match options.resume {
-            ResumePolicy::Never => (
-                self.inner
-                    .create_run(&project.project_id, &name, Some(run_id))
-                    .map_err(Error::from)?,
-                Step::new(0),
-            ),
-            ResumePolicy::Allow => match self.inner.get_run(&run_id) {
-                Ok(existing) => self.resume_existing(existing, &project.project_id)?,
-                Err(crate::engine::EngineError::RunNotFound { .. }) => (
+            ResumePolicy::Never => {
+                let project = self.get_or_create_project(&options.project)?;
+                (
                     self.inner
                         .create_run(&project.project_id, &name, Some(run_id))
                         .map_err(Error::from)?,
                     Step::new(0),
-                ),
+                )
+            }
+            ResumePolicy::Allow => match self.inner.get_run(&run_id) {
+                Ok(existing) => self.resume_existing(existing, &project_id)?,
+                Err(crate::engine::EngineError::RunNotFound { .. }) => {
+                    let project = self.get_or_create_project(&options.project)?;
+                    (
+                        self.inner
+                            .create_run(&project.project_id, &name, Some(run_id))
+                            .map_err(Error::from)?,
+                        Step::new(0),
+                    )
+                }
                 Err(error) => return Err(error.into()),
             },
             ResumePolicy::Must => {
-                if options.id_was_missing {
-                    return Err(Error::InvalidRunOptions { field: "id" });
-                }
                 let existing = self.inner.get_run(&run_id).map_err(Error::from)?;
-                self.resume_existing(existing, &project.project_id)?
+                self.resume_existing(existing, &project_id)?
             }
         };
         let native = Arc::new(self.inner.run_handle(run));
