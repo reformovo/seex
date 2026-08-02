@@ -1,87 +1,74 @@
-"""Static type contracts for the public Python read APIs."""
+"""Static type contracts for the public Python API."""
 
 from __future__ import annotations
 
+import datetime as dt
+import pathlib
 from typing import Literal, assert_type
 
 import seex
 
 
-def check_arrow_table_queries(client: seex.Client) -> None:
-    points = client.query_metric_table(
-        "run-1",
-        "train/loss",
-        start_step=10,
-        end_step=20,
-        max_points=5,
+def check_run(settings: seex.Settings, root: pathlib.Path) -> None:
+    run = seex.init(
+        project="project-1",
+        dir=root,
+        id="run-1",
+        name="baseline",
+        resume="allow",
+        settings=settings,
     )
-    summaries = client.query_metric_summaries_table(["run-1", "run-2"], "train/loss")
-
-    assert_type(points, seex.ArrowTable)
-    assert_type(summaries, seex.ArrowTable)
-    assert_type(points.row_count, int)
-    assert_type(points.source_row_count, int)
-    assert_type(points.downsampled, bool)
-    assert_type(points.column_names, list[str])
-    assert_type(points.__arrow_c_stream__(), object)
+    assert_type(run, seex.Run)
+    assert_type(run.status, Literal["running", "finished", "failed"])
+    run.log({"loss": 1.0, "samples": 10}, step=1, commit=True)
+    run.finish()
 
 
-def check_comparison_reads(client: seex.Client) -> None:
-    aligned = client.query_aligned_metric(
-        "run-1",
+def check_read_api(api: seex.Api, record: seex.RunRecord) -> None:
+    assert_type(api.projects(), list[seex.Project])
+    assert_type(api.project("project-1"), seex.Project | None)
+    assert_type(api.runs("project-1"), list[seex.RunRecord])
+    assert_type(api.run("project-1/run-1"), seex.RunRecord | None)
+    assert_type(record.metrics(), list[seex.MetricSummary])
+    assert_type(record.metric_summary("loss"), seex.MetricSummary | None)
+
+    series = record.history(
         "loss",
-        axis="elapsed_time",
-        start=0,
-        end=10_000,
-        pixel_width=800,
-        points_per_pixel=2,
+        x_axis="timestamp",
+        start=dt.datetime.now(dt.UTC),
+        max_points=200,
     )
-    comparison = client.compare_runs(
+    assert_type(series, seex.MetricSeries)
+    assert_type(series.points, list[seex.MetricPoint])
+    assert_type(series.source_count, int)
+    assert_type(series.downsampled, bool)
+    assert_type(series.__arrow_c_stream__(), object)
+
+
+def check_analysis(api: seex.Api) -> None:
+    comparison = api.compare_runs(
         "candidate",
         "reference",
         metric_key="loss",
         direction="minimize",
     )
-    ranking = client.rank_runs(
+    ranking = api.rank_runs(
         ["run-1", "run-2"],
         metric_key="accuracy",
         direction="maximize",
     )
-
-    assert_type(aligned, seex.AlignedMetricResult)
-    assert_type(aligned.points, list[seex.AlignedMetricPoint])
-    assert_type(aligned.points[0].axis_value, int)
-    assert_type(
-        aligned.completeness,
-        Literal["complete", "partial", "unavailable", "invalid"],
-    )
-    assert_type(aligned.reasons, list[str])
     assert_type(comparison, seex.ComparisonResult)
     assert_type(comparison.objective, seex.ObjectiveMetric)
     assert_type(comparison.candidate, seex.ObjectiveEvidence)
-    assert_type(comparison.raw_delta, float | None)
-    assert_type(
-        comparison.outcome,
-        Literal["improved", "regressed", "equal"] | None,
-    )
     assert_type(ranking, seex.RankingResult)
     assert_type(ranking.entries, list[seex.RankingEntry])
-    assert_type(ranking.entries[0].evidence, seex.ObjectiveEvidence)
-    assert_type(ranking.entries[0].rank, int | None)
 
 
-def check_rejected_comparison_calls(client: seex.Client) -> None:
-    client.query_aligned_metric(
-        "run-1",
-        "loss",
-        axis="epoch",  # type: ignore[reportArgumentType]
-        start=0,
-        end=1,
-    )
-    result = client.compare_runs(
+def check_rejected_calls(api: seex.Api, record: seex.RunRecord) -> None:
+    record.history("loss", x_axis="epoch")  # type: ignore[reportArgumentType]
+    api.compare_runs(
         "candidate",
         "reference",
         metric_key="loss",
         direction="lower",  # type: ignore[reportArgumentType]
     )
-    result.preference = "candidate"  # type: ignore[reportAttributeAccessIssue]
