@@ -888,33 +888,20 @@ def test_cli_metric_query_point_limits_are_mutually_exclusive() -> None:
     assert error_info.value.code == 2
 
 
-def test_cli_enables_lttb_auto_install_only_during_metric_query(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SEEX_LTTB_AUTO_INSTALL", "disabled")
-    client = mock.Mock()
+def test_cli_metric_query_uses_public_history() -> None:
+    import seex
+
+    api = mock.Mock()
+    api.projects.return_value = [mock.Mock(project_id="project-1")]
     point = mock.Mock(step=0, value_f64=0.5, timestamp="2026-07-15T00:00:00Z")
-    client.query_metric.side_effect = lambda *args, **kwargs: (
-        [point]
-        if os.environ.get("SEEX_LTTB_AUTO_INSTALL") == "1"
-        else pytest.fail("CLI query did not enable LTTB auto-install")
-    )
+    record = mock.Mock()
+    record.history.return_value = mock.Mock(points=[point], source_count=1, downsampled=False)
+    api.run.return_value = record
     args = cli._build_parser().parse_args(["metrics", "query", "run-1", "loss"])
 
-    cli._run(
-        typing.cast(
-            cli._seex.Client,  # type: ignore[reportPrivateImportUsage]
-            client,
-        ),
-        args,
-    )
+    cli._run_read(typing.cast(seex.Api, api), args)
 
-    assert os.environ["SEEX_LTTB_AUTO_INSTALL"] == "disabled"
-
-    monkeypatch.delenv("SEEX_LTTB_AUTO_INSTALL")
-    with cli._enable_lttb_auto_install():
-        assert os.environ["SEEX_LTTB_AUTO_INSTALL"] == "1"
-    assert "SEEX_LTTB_AUTO_INSTALL" not in os.environ
+    record.history.assert_called_once_with("loss", start=None, end=None, max_points=200)
 
 
 @pytest.mark.parametrize(
@@ -1037,7 +1024,7 @@ def test_cli_sanitizes_config_credentials_and_catalog_paths(
     assert str(private_catalog.parent) not in error
 
 
-def test_cli_json_sanitizes_lttb_extension_path(
+def test_cli_metric_query_does_not_load_private_lttb_extension(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1068,20 +1055,14 @@ def test_cli_json_sanitizes_lttb_extension_path(
         ]
     )
 
-    assert status == 1
+    assert status == 0
     captured = capsys.readouterr()
-    assert captured.out == ""
-    error = json.loads(captured.err)["error"]
-    assert error["code"] == "lttb_extension_unavailable"
-    assert error["guidance"] == [
-        {"action": "query_all", "argument": "--all"},
-        {
-            "action": "load_local_extension",
-            "environment_variable": "SEEX_LTTB_EXTENSION_PATH",
-        },
-    ]
-    assert private_extension.name in error["message"]
-    assert str(private_extension.parent) not in captured.err
+    document = json.loads(captured.out)
+    assert document["kind"] == "metric_points"
+    assert document["meta"]["downsampled"] is True
+    assert document["meta"]["returned_row_count"] <= 200
+    assert str(private_extension) not in captured.out
+    assert captured.err == ""
 
     assert (
         cli.main(

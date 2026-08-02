@@ -11,13 +11,13 @@ import os
 import pathlib
 import shutil
 import sys
-from collections.abc import Generator, Sequence
+from collections.abc import Sequence
 
+import seex
 from seex import _seex
 
 _JSON_SCHEMA_VERSION = 2
 _APP_BINARY = "seex-app"
-_LTTB_AUTO_INSTALL_ENV = "SEEX_LTTB_AUTO_INSTALL"
 _LTTB_ERROR_PREFIX = "DuckDB LTTB extension is unavailable:"
 _OPERATION_ERROR_CODES = {
     "ClientClosedError": "client_closed",
@@ -51,20 +51,6 @@ def _non_negative_int(value: str) -> int:
     if parsed < 0:
         raise argparse.ArgumentTypeError("expected a non-negative integer")
     return parsed
-
-
-@contextlib.contextmanager
-def _enable_lttb_auto_install() -> Generator[None, None, None]:
-    """Enables LTTB downloads only for one CLI metric query."""
-    previous = os.environ.get(_LTTB_AUTO_INSTALL_ENV)
-    os.environ[_LTTB_AUTO_INSTALL_ENV] = "1"
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop(_LTTB_AUTO_INSTALL_ENV, None)
-        else:
-            os.environ[_LTTB_AUTO_INSTALL_ENV] = previous
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -213,9 +199,9 @@ def _render_error(
 
 
 def _operation_error_details(
-    error: _seex.SeexError,
+    error: seex.SeexError,
 ) -> tuple[str, list[dict[str, str]] | None]:
-    if isinstance(error, _seex.StorageError) and str(error).startswith(_LTTB_ERROR_PREFIX):
+    if isinstance(error, seex.StorageError) and str(error).startswith(_LTTB_ERROR_PREFIX):
         return (
             "lttb_extension_unavailable",
             [
@@ -292,9 +278,9 @@ def _render(
     return _dump_json(document)
 
 
-def _run(client: _seex.Client, args: argparse.Namespace) -> str:
+def _run_read(api: seex.Api, args: argparse.Namespace) -> str:
     if args.resource == "projects":
-        projects = client.list_projects()
+        projects = api.projects()
         return _render(
             ("PROJECT_ID", "NAME", "CREATED_AT"),
             [(item.project_id, item.name, item.created_at) for item in projects],
@@ -302,15 +288,12 @@ def _run(client: _seex.Client, args: argparse.Namespace) -> str:
             kind="projects",
         )
     if args.resource == "runs":
-        query_limit = None if args.limit is None else args.limit + 1
-        runs = client.list_runs(
-            args.project_id,
-            status=args.status,
-            limit=query_limit,
-            offset=args.offset,
-        )
+        runs = api.runs(args.project_id)
+        if args.status is not None:
+            runs = [run for run in runs if run.status == args.status]
+        runs = runs[args.offset :]
         has_more = args.limit is not None and len(runs) > args.limit
-        if has_more:
+        if args.limit is not None:
             runs = runs[: args.limit]
         return _render(
             ("RUN_ID", "PROJECT_ID", "NAME", "STATUS", "CREATED_AT"),
@@ -324,14 +307,9 @@ def _run(client: _seex.Client, args: argparse.Namespace) -> str:
                 "has_more": has_more,
             },
         )
-    if args.resource == "autoresearch":
-        if args.action == "leaderboard":
-            return _run_autoresearch_leaderboard(client, args)
-        if args.action == "best":
-            return _run_autoresearch_best(client, args)
-        return _run_autoresearch_compare(client, args)
+    record = _run_record(api, args.run_id)
     if args.action == "list":
-        metrics = client.list_metrics(args.run_id)
+        metrics = record.metrics()
         return _render_summaries(
             metrics,
             include_metric_key=True,
@@ -340,29 +318,20 @@ def _run(client: _seex.Client, args: argparse.Namespace) -> str:
         )
     if args.action == "query":
         max_points = None if args.all else args.max_points
+        series = record.history(
+            args.metric_key,
+            start=args.start_step,
+            end=args.end_step,
+            max_points=max_points,
+        )
+        points = series.points
         meta = None
-        with _enable_lttb_auto_install():
-            if args.format == "json":
-                points, source_row_count, downsampled = client._query_metric_with_metadata(
-                    args.run_id,
-                    args.metric_key,
-                    start_step=args.start_step,
-                    end_step=args.end_step,
-                    max_points=max_points,
-                )
-                meta = {
-                    "source_row_count": source_row_count,
-                    "returned_row_count": len(points),
-                    "downsampled": downsampled,
-                }
-            else:
-                points = client.query_metric(
-                    args.run_id,
-                    args.metric_key,
-                    start_step=args.start_step,
-                    end_step=args.end_step,
-                    max_points=max_points,
-                )
+        if args.format == "json":
+            meta = {
+                "source_row_count": series.source_count,
+                "returned_row_count": len(points),
+                "downsampled": series.downsampled,
+            }
         return _render(
             ("STEP", "VALUE", "TIMESTAMP"),
             [(item.step, item.value_f64, item.timestamp) for item in points],
@@ -370,6 +339,24 @@ def _run(client: _seex.Client, args: argparse.Namespace) -> str:
             kind="metric_points",
             meta=meta,
         )
+    raise _CliRequestError("cli_usage_error", "unsupported read command")
+
+
+def _run_record(api: seex.Api, run_id: str) -> seex.RunRecord:
+    for project in api.projects():
+        record = api.run(f"{project.project_id}/{run_id}")
+        if record is not None:
+            return record
+    raise _CliRequestError("run_not_found", f"run not found: {run_id}")
+
+
+def _run_analysis(client: _seex.Client, args: argparse.Namespace) -> str:
+    if args.resource == "autoresearch":
+        if args.action == "leaderboard":
+            return _run_autoresearch_leaderboard(client, args)
+        if args.action == "best":
+            return _run_autoresearch_best(client, args)
+        return _run_autoresearch_compare(client, args)
     candidate_run_ids = [run_id for run_id in args.run_ids if run_id != args.baseline]
     reports = client._comparison_reports(
         candidate_run_ids,
@@ -832,21 +819,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _launch_app(args.project_path)
     project_path = args.path.absolute()
     try:
-        with _seex.init(
-            project_path,
-            data_path=_resolve_cli_path(project_path, args.data_path),
-            catalog_backend=args.catalog_backend,
-            catalog_path=_resolve_cli_path(project_path, args.catalog_path),
-            _must_exist=True,
-        ) as client:
-            print(_run(client, args))
+        data_path = _resolve_cli_path(project_path, args.data_path)
+        catalog_path = _resolve_cli_path(project_path, args.catalog_path)
+        if args.resource == "autoresearch" or (args.resource == "metrics" and args.action == "compare"):
+            with _seex.init(
+                project_path,
+                data_path=data_path,
+                catalog_backend=args.catalog_backend,
+                catalog_path=catalog_path,
+                _must_exist=True,
+            ) as client:
+                print(_run_analysis(client, args))
+        else:
+            settings = seex.Settings(
+                data_path=data_path,
+                catalog_backend=args.catalog_backend,
+                catalog_path=catalog_path,
+            )
+            with seex.Api(project_path, settings) as api:
+                print(_run_read(api, args))
     except _CliRequestError as error:
         message = str(error)
         if args.format == "json":
             message = _render_error(error.code, message)
         print(message, file=sys.stderr)
         return 1
-    except _seex.SeexError as error:
+    except seex.SeexError as error:
         message = _sanitize_operation_message(str(error), project_path, args)
         code, guidance = _operation_error_details(error)
         if args.format == "json":
