@@ -22,6 +22,9 @@ pub enum Error {
     RunNotFound {
         run_id: String,
     },
+    DuplicateRunIdentity {
+        run_id: String,
+    },
     InvalidRunState {
         run_id: String,
     },
@@ -69,6 +72,9 @@ impl fmt::Display for Error {
                 write!(formatter, "Run already has an active writer: {run_id}")
             }
             Self::RunNotFound { run_id } => write!(formatter, "Run not found: {run_id}"),
+            Self::DuplicateRunIdentity { run_id } => {
+                write!(formatter, "duplicate Run identity in request: {run_id}")
+            }
             Self::InvalidRunState { run_id } => {
                 write!(
                     formatter,
@@ -122,6 +128,7 @@ impl From<crate::engine::EngineError> for Error {
             EngineError::RunAlreadyExists { run_id } => Self::RunAlreadyExists { run_id },
             EngineError::RunAlreadyActive { run_id } => Self::RunAlreadyActive { run_id },
             EngineError::RunNotFound { run_id } => Self::RunNotFound { run_id },
+            EngineError::DuplicateRunIdentity { run_id } => Self::DuplicateRunIdentity { run_id },
             EngineError::InvalidRunTransition { run_id, .. } => Self::InvalidRunState { run_id },
             EngineError::MetricQueueFull => Self::MetricQueueFull,
             EngineError::InvalidMetricBatch { count } => Self::MetricMappingTooLarge {

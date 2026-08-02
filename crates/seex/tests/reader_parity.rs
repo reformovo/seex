@@ -2,8 +2,8 @@ use seex::storage::bootstrap::open_native_connection;
 use seex::storage::{MetricWrite, ProjectConnection};
 use seex::{
     CatalogBackend, Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate,
-    MetricKey, MetricQuery, MetricRange, Project, ProjectId, Reader, RelativeTime, RunId,
-    RunStatus, Step, Timestamp,
+    MetricKey, MetricQuery, MetricRange, ObjectiveDirection, ObjectiveMetric, Project, ProjectId,
+    Reader, RelativeTime, RunId, RunStatus, Step, Timestamp,
 };
 
 struct Fixture {
@@ -11,6 +11,7 @@ struct Fixture {
     native: Reader,
     standalone: Reader,
     run_id: RunId,
+    reference_run_id: RunId,
     started_at: i64,
 }
 
@@ -78,6 +79,40 @@ fn native_reader_scopes_run_lookup_and_optional_metric_summaries()
     Ok(())
 }
 
+#[test]
+fn native_reader_comparison_and_ranking_share_canonical_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let objective = ObjectiveMetric {
+        metric_key: MetricKey::from_string("loss"),
+        direction: ObjectiveDirection::Minimize,
+    };
+
+    let comparison =
+        fixture
+            .native
+            .compare_runs(&fixture.run_id, &fixture.reference_run_id, &objective)?;
+    let ranking = fixture.native.rank_runs(
+        &[fixture.reference_run_id.clone(), fixture.run_id.clone()],
+        &objective,
+    )?;
+
+    assert_eq!(comparison.candidate.last_value_f64, Some(7.0));
+    assert_eq!(comparison.reference.last_value_f64, Some(10.0));
+    assert_eq!(ranking.entries[0].evidence.run_id, fixture.run_id);
+    assert_eq!(ranking.entries[0].rank, Some(1));
+    assert_eq!(
+        fixture.native.rank_runs(
+            &[fixture.run_id.clone(), fixture.run_id.clone()],
+            &objective
+        ),
+        Err(Error::DuplicateRunIdentity {
+            run_id: String::from("run-1")
+        })
+    );
+    Ok(())
+}
+
 impl Fixture {
     fn open() -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -90,6 +125,11 @@ impl Fixture {
         };
         connection.create_project(&project)?;
         let run = connection.create_run(&project.project_id, "run", RunId::from_string("run-1"))?;
+        let reference = connection.create_run(
+            &project.project_id,
+            "reference",
+            RunId::from_string("run-2"),
+        )?;
         let started_at = run.started_at.timestamp_millis();
         let mut rows = (0..8)
             .map(|step| MetricWrite {
@@ -111,9 +151,19 @@ impl Fixture {
                 ingested_at_millis: started_at + 10 + step,
             }),
         );
+        rows.push(MetricWrite {
+            run_id: reference.run_id.as_str().to_owned(),
+            metric_key: String::from("loss"),
+            step: 0,
+            timestamp_millis: started_at,
+            value_f64: 10.0,
+            ingested_at_millis: started_at,
+        });
         connection.append_metric_batch(&rows)?;
         connection.rebuild_metric_aggregates_for_run(&run.run_id)?;
+        connection.rebuild_metric_aggregates_for_run(&reference.run_id)?;
         connection.mark_run_terminal(&run.run_id, RunStatus::Finished, created_at)?;
+        connection.mark_run_terminal(&reference.run_id, RunStatus::Finished, created_at)?;
         connection.flush_metric_points()?;
         drop(connection);
         std::fs::write(
@@ -136,6 +186,7 @@ impl Fixture {
             native,
             standalone,
             run_id: run.run_id,
+            reference_run_id: reference.run_id,
             started_at,
         })
     }

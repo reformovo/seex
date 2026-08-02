@@ -3,17 +3,23 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::config::{CatalogBackend, S3Options};
+use crate::engine::comparison::compare_evidence;
+use crate::engine::query::NativeQueryStore;
+use crate::engine::ranking::rank_run_evidence;
 use crate::error::{Error, Result as SdkResult};
 use crate::model::alignment::{
     AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
     AlignmentViewport,
 };
-use crate::model::comparison::{EvidenceCompleteness, EvidenceReason};
+use crate::model::comparison::{
+    ComparisonResult, EvidenceCompleteness, EvidenceReason, ObjectiveEvidence, ObjectiveMetric,
+    RankingResult,
+};
 use crate::model::metric::{
     MetricAggregate, MetricKey, MetricPoint, MetricQuery as StorageMetricQuery, ReductionPolicy,
     Step,
@@ -285,6 +291,66 @@ impl Reader {
             .query_metric_summaries(std::slice::from_ref(&run.run_id), metric_key)
             .map(|summaries| summaries.into_iter().next())
             .map_err(|_| Error::Storage)
+    }
+
+    /// Compares two Runs using their last effective objective values.
+    pub fn compare_runs(
+        &self,
+        candidate_run_id: &RunId,
+        reference_run_id: &RunId,
+        objective: &ObjectiveMetric,
+    ) -> SdkResult<ComparisonResult> {
+        if candidate_run_id == reference_run_id {
+            return Err(Error::DuplicateRunIdentity {
+                run_id: candidate_run_id.as_str().to_owned(),
+            });
+        }
+        let mut evidence = self
+            .ranking_evidence(
+                &[candidate_run_id.clone(), reference_run_id.clone()],
+                objective,
+            )?
+            .into_iter();
+        let candidate = evidence.next().ok_or(Error::Storage)?.1;
+        let reference = evidence.next().ok_or(Error::Storage)?.1;
+        Ok(compare_evidence(objective, candidate, reference))
+    }
+
+    /// Ranks Runs by one objective while retaining incomplete evidence.
+    pub fn rank_runs(
+        &self,
+        run_ids: &[RunId],
+        objective: &ObjectiveMetric,
+    ) -> SdkResult<RankingResult> {
+        let mut seen = HashSet::with_capacity(run_ids.len());
+        for run_id in run_ids {
+            if !seen.insert(run_id) {
+                return Err(Error::DuplicateRunIdentity {
+                    run_id: run_id.as_str().to_owned(),
+                });
+            }
+        }
+        Ok(rank_run_evidence(
+            objective,
+            self.ranking_evidence(run_ids, objective)?,
+        ))
+    }
+
+    fn ranking_evidence(
+        &self,
+        run_ids: &[RunId],
+        objective: &ObjectiveMetric,
+    ) -> SdkResult<Vec<(Run, ObjectiveEvidence)>> {
+        let connection = self.native()?;
+        let runs = connection.get_runs(run_ids).map_err(|error| match error {
+            StorageError::RunNotFound { run_id } => Error::RunNotFound { run_id },
+            _ => Error::Storage,
+        })?;
+        self.remember_runs(&runs);
+        let evidence = NativeQueryStore::new(connection)
+            .objective_evidence_for_runs(&runs, objective)
+            .map_err(Error::from)?;
+        Ok(runs.into_iter().zip(evidence).collect())
     }
 
     /// Queries one axis with a strict caller-selected point bound.
