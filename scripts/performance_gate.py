@@ -10,6 +10,7 @@ import os
 import pathlib
 import platform
 import queue
+import signal
 import statistics
 import subprocess
 import sys
@@ -294,16 +295,28 @@ def _environment() -> dict[str, str | bool]:
 def _stop_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
-    process.terminate()
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
     try:
         process.wait(timeout=2)
     except subprocess.TimeoutExpired:
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait()
 
 
 def _run_output(command: Sequence[str], timeout: float) -> str:
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
     try:
         output, _ = process.communicate(timeout=timeout)
     except BaseException:
@@ -328,7 +341,13 @@ def _rss_bytes(process_id: int) -> int:
 
 
 def _sample_rss(command: Sequence[str], timeout: float) -> tuple[dict[str, Metric], dict[str, int]]:
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
     stdout = process.stdout
     if stdout is None:
         raise RuntimeError("RSS child stdout pipe was not created")

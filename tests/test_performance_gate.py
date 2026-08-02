@@ -436,6 +436,7 @@ def test_cli_returns_four_for_tool_errors(tmp_path: pathlib.Path) -> None:
 
 
 class _InterruptedProcess:
+    pid = 42
     returncode: int | None = None
 
     def __init__(self) -> None:
@@ -458,14 +459,46 @@ class _InterruptedProcess:
         return self.returncode
 
 
-def test_sigint_stops_active_child(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sigint_stops_active_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
     process = _InterruptedProcess()
     monkeypatch.setattr(performance_gate.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        performance_gate.os,
+        "killpg",
+        lambda pid, signal_number: process.terminate(),
+    )
 
     with pytest.raises(KeyboardInterrupt):
         performance_gate._run_output(["benchmark"], 1.0)
 
     assert process.terminated
+
+
+def test_timeout_stops_workload_descendants(tmp_path: pathlib.Path) -> None:
+    grandchild_pid = tmp_path / "grandchild.pid"
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import pathlib, subprocess, sys, time; "
+            "child = subprocess.Popen(['sleep', '30']); "
+            "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+            "time.sleep(30)"
+        ),
+        str(grandchild_pid),
+    ]
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        performance_gate._run_output(command, 0.5)
+
+    process_id = grandchild_pid.read_text(encoding="utf-8")
+    state = subprocess.run(
+        ["ps", "-o", "stat=", "-p", process_id],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert not state or state.startswith("Z")
 
 
 def test_rss_sampler_records_compact_workload_phases() -> None:
