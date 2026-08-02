@@ -9,7 +9,7 @@ import pytest
 from tests import helpers
 
 
-def test_v2_api_contract_requires_explicit_step_and_reports_diagnostics(
+def test_log_requires_explicit_step_and_reports_diagnostics(
     tmp_path: pathlib.Path,
 ) -> None:
     import seex
@@ -32,7 +32,7 @@ def test_v2_api_contract_requires_explicit_step_and_reports_diagnostics(
     assert diagnostics.last_flush_run_id is None
     assert diagnostics.last_flush_status == "none"
     assert diagnostics.last_flush_error is None
-    for field in helpers.V2_DIAGNOSTIC_FIELDS:
+    for field in helpers.DIAGNOSTIC_FIELDS:
         assert hasattr(diagnostics, field)
-    for removed_field in helpers.V2_REMOVED_DIAGNOSTIC_FIELDS:
+    for removed_field in helpers.UNSUPPORTED_DIAGNOSTIC_FIELDS:
         assert not hasattr(diagnostics, removed_field)

@@ -238,7 +238,7 @@ def calibrated_samples(
 
 
 def log_reports(run: Any, mode: str, reports: int) -> float:
-    """Runs one compatibility workload and returns admission wall time."""
+    """Runs one reporting workload and returns admission wall time."""
     if mode not in MODES:
         raise ValueError(f"unsupported reporting mode: {mode}")
     if mode == "mapping_8" and reports % 8 != 0:

@@ -57,7 +57,7 @@ def test_init_without_path_uses_current_working_directory(
     assert (tmp_path / ".seex" / "data").is_dir()
 
 
-def test_init_accepts_v2_configuration_keywords(tmp_path: pathlib.Path) -> None:
+def test_init_accepts_storage_configuration_keywords(tmp_path: pathlib.Path) -> None:
     import seex
 
     data_path = tmp_path / "custom-data"
@@ -300,7 +300,7 @@ def test_init_uses_sqlite_catalog_and_data_defaults(tmp_path: pathlib.Path) -> N
     assert (root_path / ".seex" / "data").is_dir()
 
 
-def test_init_rejects_invalid_v2_configuration(tmp_path: pathlib.Path) -> None:
+def test_init_rejects_invalid_storage_configuration(tmp_path: pathlib.Path) -> None:
     import seex
 
     invalid_kwargs = [
