@@ -20,7 +20,6 @@ _JSON_SCHEMA_VERSION = 2
 _APP_BINARY = "seex-app"
 _LTTB_ERROR_PREFIX = "DuckDB LTTB extension is unavailable:"
 _OPERATION_ERROR_CODES = {
-    "ClientClosedError": "client_closed",
     "InvalidConfigurationError": "invalid_configuration",
     "InvalidRunStateError": "invalid_run_state",
     "MetricDrainTimeoutError": "metric_drain_timeout",
