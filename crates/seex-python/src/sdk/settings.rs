@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use seex::{CatalogBackend, ClientBuilder, ReaderBuilder, S3Options};
 
 #[pyclass(name = "Settings", module = "seex._seex", frozen, skip_from_py_object)]
 #[derive(Clone)]
@@ -100,6 +101,72 @@ impl PySettings {
             self.s3_path_style,
             self.s3_use_ssl,
         )
+    }
+}
+
+impl PySettings {
+    pub fn client_builder(&self, root: PathBuf) -> ClientBuilder {
+        let mut builder = ClientBuilder::new(root)
+            .metric_queue_capacity(self.metric_queue_capacity)
+            .s3_options(self.s3_options());
+        if let Some(backend) = self.native_catalog_backend() {
+            builder = builder.catalog_backend(backend);
+        }
+        if let Some(path) = &self.catalog_path {
+            builder = builder.catalog_path(path);
+        }
+        if let Some(path) = &self.data_path {
+            builder = builder.data_path(path);
+        }
+        builder
+    }
+
+    pub fn reader_builder(&self, root: PathBuf) -> ReaderBuilder {
+        let mut builder = ReaderBuilder::new(root).s3_options(self.s3_options());
+        if let Some(backend) = self.native_catalog_backend() {
+            builder = builder.catalog_backend(backend);
+        }
+        if let Some(path) = &self.catalog_path {
+            builder = builder.catalog_path(path);
+        }
+        if let Some(path) = &self.data_path {
+            builder = builder.data_path(path);
+        }
+        builder
+    }
+
+    fn native_catalog_backend(&self) -> Option<CatalogBackend> {
+        match self.catalog_backend.as_deref() {
+            Some("duckdb") => Some(CatalogBackend::DuckDb),
+            Some("sqlite") => Some(CatalogBackend::Sqlite),
+            _ => None,
+        }
+    }
+
+    fn s3_options(&self) -> S3Options {
+        let mut options = S3Options::new();
+        if let Some(value) = &self.s3_endpoint {
+            options = options.endpoint(value);
+        }
+        if let Some(value) = &self.s3_access_key_id {
+            options = options.access_key_id(value);
+        }
+        if let Some(value) = &self.s3_secret_access_key {
+            options = options.secret_access_key(value);
+        }
+        if let Some(value) = &self.s3_session_token {
+            options = options.session_token(value);
+        }
+        if let Some(value) = &self.s3_region {
+            options = options.region(value);
+        }
+        if let Some(value) = self.s3_path_style {
+            options = options.path_style(value);
+        }
+        if let Some(value) = self.s3_use_ssl {
+            options = options.use_ssl(value);
+        }
+        options
     }
 }
 
