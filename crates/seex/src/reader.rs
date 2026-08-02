@@ -142,7 +142,7 @@ impl ReaderBuilder {
             resolved.s3_connection,
         );
         let connection =
-            open_existing_native_connection_with_config(config).map_err(|_| Error::Storage)?;
+            open_existing_native_connection_with_config(config).map_err(public_storage_error)?;
         Ok(Reader {
             connection: Some(ProjectConnection::new(connection)),
             standalone: None,
@@ -549,7 +549,7 @@ impl Reader {
             (None, Some(reader), false) => reader.query_aligned_metric(&storage_query),
             _ => return Err(Error::Storage),
         }
-        .map_err(|_| Error::Storage)?;
+        .map_err(public_storage_error)?;
         let neighbor_count = result
             .points
             .iter()
@@ -626,7 +626,7 @@ impl Reader {
             (None, Some(reader)) => reader.query_metric(&storage_query),
             _ => return Err(Error::Storage),
         }
-        .map_err(|_| Error::Storage)?;
+        .map_err(public_storage_error)?;
         let mut samples = result
             .points
             .into_iter()
@@ -746,6 +746,17 @@ fn use_narrow_step_plan(
                 && bounds.end.is_none_or(|end| max_step < end))
         }
         _ => false,
+    }
+}
+
+fn public_storage_error(error: StorageError) -> Error {
+    match error {
+        StorageError::CatalogNotFound { name } => Error::CatalogNotFound { name },
+        StorageError::LttbExtensionUnavailable { message } => {
+            Error::LttbExtensionUnavailable { message }
+        }
+        StorageError::RunNotFound { run_id } => Error::RunNotFound { run_id },
+        _ => Error::Storage,
     }
 }
 

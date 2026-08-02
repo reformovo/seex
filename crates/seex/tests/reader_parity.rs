@@ -35,7 +35,9 @@ fn native_reader_honors_explicit_storage_overrides_without_creating_a_store()
     let empty = tempfile::tempdir()?;
     assert_eq!(
         Reader::builder(empty.path()).open().err(),
-        Some(Error::Storage)
+        Some(Error::CatalogNotFound {
+            name: String::from("catalog.ducklake")
+        })
     );
     assert!(!empty.path().join(".seex/catalog.ducklake").exists());
     Ok(())

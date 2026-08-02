@@ -285,9 +285,11 @@ pub(crate) fn sdk_error(error: seex::Error) -> PyErr {
         | seex::Error::StepRegression { .. }
         | seex::Error::StepOverflow { .. }
         | seex::Error::TerminalOutcomeConflict { .. } => InvalidRunStateError::new_err(message),
-        seex::Error::RunNotFound { .. } | seex::Error::UnsupportedQuery | seex::Error::Storage => {
-            StorageError::new_err(message)
-        }
+        seex::Error::RunNotFound { .. }
+        | seex::Error::UnsupportedQuery
+        | seex::Error::CatalogNotFound { .. }
+        | seex::Error::LttbExtensionUnavailable { .. }
+        | seex::Error::Storage => StorageError::new_err(message),
         _ => SeexError::new_err(message),
     }
 }
