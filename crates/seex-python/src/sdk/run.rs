@@ -3,9 +3,10 @@ use std::path::PathBuf;
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool};
-use seex::{Client, ResumePolicy, RunHandle, RunOptions, RunStatus};
+use pyo3::types::{PyAny, PyBool, PyMapping, PyTuple};
+use seex::{Client, LogOptions, ResumePolicy, RunHandle, RunOptions, RunStatus};
 
+use crate::sdk::client::PyDiagnostics;
 use crate::sdk::client::{
     ClientClosedError, InvalidConfigurationError, InvalidRunStateError, MetricDrainTimeoutError,
     MetricFlushError, MetricFlushTimeoutError, MetricQueueFullError, MetricWriterFailedError,
@@ -44,6 +45,28 @@ impl PyTargetRun {
             RunStatus::Finished => "finished",
             RunStatus::Failed => "failed",
         }
+    }
+
+    #[pyo3(signature = (data, *, step=None, commit=None))]
+    fn log(
+        &self,
+        data: &Bound<'_, PyAny>,
+        step: Option<i64>,
+        commit: Option<bool>,
+    ) -> PyResult<()> {
+        let metrics = numeric_mapping(data)?;
+        let mut options = LogOptions::new();
+        if let Some(step) = step {
+            options = options.step(step);
+        }
+        if let Some(commit) = commit {
+            options = options.commit(commit);
+        }
+        self.handle.log_with(metrics, options).map_err(sdk_error)
+    }
+
+    fn diagnostics(&self) -> PyDiagnostics {
+        self.handle.diagnostics().into()
     }
 
     #[pyo3(signature = (exit_code=None))]
@@ -121,6 +144,36 @@ fn attach_exception_context(exc_value: &Bound<'_, PyAny>, finalization_error: Py
     if !exc_value.is_none() {
         let _ = exc_value.setattr("__context__", finalization_error.value(exc_value.py()));
     }
+}
+
+fn numeric_mapping(data: &Bound<'_, PyAny>) -> PyResult<Vec<(String, f64)>> {
+    let mapping = data
+        .cast::<PyMapping>()
+        .map_err(|_| PyTypeError::new_err("data must be a Mapping"))?;
+    let mut metrics = Vec::with_capacity(mapping.len()?);
+    for item in mapping.items()?.try_iter()? {
+        let item = item?.cast_into::<PyTuple>()?;
+        let key = item
+            .get_item(0)?
+            .extract::<String>()
+            .map_err(|_| PyTypeError::new_err("metric Mapping keys must be non-empty strings"))?;
+        if key.is_empty() {
+            return Err(PyValueError::new_err(
+                "metric Mapping keys must be non-empty strings",
+            ));
+        }
+        let value = item.get_item(1)?;
+        if value.is_instance_of::<PyBool>() {
+            return Err(PyTypeError::new_err(
+                "metric Mapping values must be integers or floats, not bool",
+            ));
+        }
+        let value = value.extract::<f64>().map_err(|_| {
+            PyTypeError::new_err("metric Mapping values must be integers or floats")
+        })?;
+        metrics.push((key, value));
+    }
+    Ok(metrics)
 }
 
 fn parse_resume(value: Option<&Bound<'_, PyAny>>) -> PyResult<ResumePolicy> {

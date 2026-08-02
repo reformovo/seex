@@ -587,6 +587,33 @@ impl From<MetricReporterDiagnostics> for PyDiagnostics {
     }
 }
 
+impl From<seex::ClientDiagnostics> for PyDiagnostics {
+    fn from(diagnostics: seex::ClientDiagnostics) -> Self {
+        Self {
+            pending_reports: diagnostics.pending_reports,
+            queue_full_errors: diagnostics.queue_full_errors,
+            persisted_reports: diagnostics.persisted_reports,
+            writer_state: match diagnostics.writer_state {
+                seex::WriterState::Running => "running",
+                seex::WriterState::Retrying => "retrying",
+                seex::WriterState::Failed => "failed",
+                seex::WriterState::Drained => "drained",
+                seex::WriterState::Closed => "closed",
+            },
+            last_write_error: diagnostics.last_write_error,
+            last_flush_run_id: diagnostics.last_flush_run_id,
+            last_flush_status: match diagnostics.last_flush_state {
+                seex::FlushState::None => "none",
+                seex::FlushState::Running => "running",
+                seex::FlushState::Succeeded => "succeeded",
+                seex::FlushState::Failed => "failed",
+                seex::FlushState::TimedOut => "timed_out",
+            },
+            last_flush_error: diagnostics.last_flush_error,
+        }
+    }
+}
+
 #[pyclass(name = "MetricPoint", module = "seex._seex")]
 pub struct PyMetricPoint {
     #[pyo3(get)]
