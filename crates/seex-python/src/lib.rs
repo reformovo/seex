@@ -28,6 +28,7 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sdk::comparison::PyRankingEntry>()?;
     m.add_class::<sdk::comparison::PyRankingResult>()?;
     m.add_class::<sdk::settings::PySettings>()?;
+    m.add_class::<sdk::run::PyTargetRun>()?;
     m.add("SeexError", py.get_type::<sdk::client::SeexError>())?;
     macro_rules! add_exception {
         ($name:ident) => {
@@ -48,5 +49,6 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_exception!(StorageError);
     add_exception!(ApiClosedError);
     m.add_function(wrap_pyfunction!(sdk::client::init, m)?)?;
+    m.add_function(wrap_pyfunction!(sdk::run::start_run, m)?)?;
     Ok(())
 }
