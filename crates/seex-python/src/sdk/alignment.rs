@@ -1,13 +1,7 @@
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use crate::model::alignment::{
-    AlignedMetricPoint, AlignedMetricResult, AlignmentAxis, AlignmentQuery, AlignmentReduction,
-    AlignmentViewport,
-};
+use crate::model::alignment::{AlignedMetricPoint, AlignedMetricResult};
 use crate::model::comparison::{EvidenceCompleteness, EvidenceReason};
-use crate::model::metric::MetricKey;
-use crate::model::run::RunId;
 
 #[derive(Clone)]
 #[pyclass(
@@ -87,45 +81,6 @@ impl From<AlignedMetricResult> for PyAlignedMetricResult {
                 .collect(),
         }
     }
-}
-
-pub fn alignment_query(
-    run_id: &str,
-    metric_key: &str,
-    axis: &str,
-    start: i64,
-    end: i64,
-    pixel_width: Option<u32>,
-    points_per_pixel: Option<u16>,
-) -> PyResult<AlignmentQuery> {
-    let axis = match axis {
-        "step" => AlignmentAxis::Step,
-        "elapsed_time" => AlignmentAxis::ElapsedTime,
-        other => {
-            return Err(PyValueError::new_err(format!(
-                "axis must be 'step' or 'elapsed_time', got {other:?}"
-            )));
-        }
-    };
-    let viewport = AlignmentViewport::new(start, end)
-        .map_err(|error| PyValueError::new_err(error.to_string()))?;
-    let reduction = match (pixel_width, points_per_pixel) {
-        (None, None) => AlignmentReduction::Full,
-        (Some(width), Some(density)) => AlignmentReduction::screen_budget(width, density)
-            .map_err(|error| PyValueError::new_err(error.to_string()))?,
-        _ => {
-            return Err(PyValueError::new_err(
-                "pixel_width and points_per_pixel must be provided together",
-            ));
-        }
-    };
-    Ok(AlignmentQuery {
-        run_id: RunId::from_string(run_id),
-        metric_key: MetricKey::from_string(metric_key),
-        axis,
-        viewport,
-        reduction,
-    })
 }
 
 fn completeness_value(completeness: EvidenceCompleteness) -> &'static str {

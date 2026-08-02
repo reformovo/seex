@@ -4,7 +4,7 @@
 
 mod sdk;
 
-pub(crate) use seex_core::{engine, model};
+pub(crate) use seex_core::model;
 
 use pyo3::prelude::*;
 
@@ -16,12 +16,10 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sdk::api::PyRunRecord>()?;
     m.add_class::<sdk::alignment::PyAlignedMetricResult>()?;
     m.add_class::<sdk::arrow::PyArrowTable>()?;
-    m.add_class::<sdk::client::PyClient>()?;
     m.add_class::<sdk::client::PyDiagnostics>()?;
     m.add_class::<sdk::client::PyMetricPoint>()?;
     m.add_class::<sdk::client::PyMetricSummary>()?;
     m.add_class::<sdk::client::PyProject>()?;
-    m.add_class::<sdk::client::PyRun>()?;
     m.add_class::<sdk::comparison::PyComparisonResult>()?;
     m.add_class::<sdk::comparison::PyComparisonReport>()?;
     m.add_class::<sdk::comparison::PyMetricComparisonResult>()?;
@@ -51,7 +49,6 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_exception!(InvalidConfigurationError);
     add_exception!(StorageError);
     add_exception!(ApiClosedError);
-    m.add_function(wrap_pyfunction!(sdk::client::init, m)?)?;
     m.add_function(wrap_pyfunction!(sdk::run::start_run, m)?)?;
     Ok(())
 }
