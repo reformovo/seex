@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import pathlib
 from typing import Any
 
@@ -50,3 +51,51 @@ def test_history_rejects_invalid_range_and_point_limit(tmp_path: pathlib.Path) -
         record.history("loss", max_points=1)
     with pytest.raises(TypeError, match="max_points"):
         record.history("loss", max_points=True)
+
+
+def test_time_history_accepts_typed_utc_millisecond_ranges(tmp_path: pathlib.Path) -> None:
+    record = _record(tmp_path)
+    started_at = datetime.datetime.fromisoformat(record.started_at)
+    started_at = started_at.replace(microsecond=started_at.microsecond // 1_000 * 1_000)
+
+    relative = record.history(
+        "loss",
+        x_axis="relative_time",
+        end=datetime.timedelta(hours=1),
+    )
+    timestamp = record.history(
+        "loss",
+        x_axis="timestamp",
+        start=started_at,
+    )
+
+    assert relative.axis == "relative_time"
+    assert timestamp.axis == "timestamp"
+    assert [point.step for point in relative.points] == [0, 1, 2, 3, 4]
+    assert [point.step for point in timestamp.points] == [0, 1, 2, 3, 4]
+
+
+def test_time_history_rejects_mismatched_naive_and_submillisecond_bounds(
+    tmp_path: pathlib.Path,
+) -> None:
+    record = _record(tmp_path)
+    with pytest.raises(TypeError, match="timedelta"):
+        record.history("loss", x_axis="relative_time", start=0)
+    with pytest.raises(TypeError, match="datetime"):
+        record.history("loss", x_axis="timestamp", start=datetime.timedelta(0))
+    with pytest.raises(ValueError, match="x_axis"):
+        record.history("loss", x_axis="loss")
+    with pytest.raises(ValueError, match="millisecond precision"):
+        record.history("loss", x_axis="relative_time", start=datetime.timedelta(microseconds=1))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        record.history(
+            "loss",
+            x_axis="timestamp",
+            start=datetime.datetime.now(),  # noqa: DTZ005 - deliberate naive bound
+        )
+    with pytest.raises(ValueError, match="millisecond precision"):
+        record.history(
+            "loss",
+            x_axis="timestamp",
+            start=datetime.datetime.now(datetime.UTC).replace(microsecond=1),
+        )
