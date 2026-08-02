@@ -12,6 +12,8 @@ use pyo3::prelude::*;
 fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
     m.add_class::<sdk::alignment::PyAlignedMetricPoint>()?;
+    m.add_class::<sdk::api::PyApi>()?;
+    m.add_class::<sdk::api::PyRunRecord>()?;
     m.add_class::<sdk::alignment::PyAlignedMetricResult>()?;
     m.add_class::<sdk::arrow::PyArrowTable>()?;
     m.add_class::<sdk::client::PyClient>()?;
