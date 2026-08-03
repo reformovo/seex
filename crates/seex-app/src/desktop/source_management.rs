@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use gpui::{Context, EventEmitter, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px};
 use seex::{Project, ProjectId};
 
+use crate::config::same_source_path;
 use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
 use crate::workbench::import::WorkbenchImportPlan;
@@ -43,7 +44,7 @@ struct SourceDraft {
     selected: HashSet<ProjectId>,
     preflighting: Option<(u64, PathBuf)>,
     source_error: Option<String>,
-    existing_aliases: Vec<SourceAlias>,
+    existing_sources: Vec<(SourceAlias, PathBuf)>,
     validation_error: Option<String>,
 }
 
@@ -71,7 +72,7 @@ impl SourceManagement {
 
     pub(crate) fn begin_import(
         &mut self,
-        existing_aliases: Vec<SourceAlias>,
+        existing_sources: Vec<(SourceAlias, PathBuf)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -87,7 +88,7 @@ impl SourceManagement {
             selected: HashSet::new(),
             preflighting: None,
             source_error: None,
-            existing_aliases,
+            existing_sources,
             validation_error: None,
         });
         self.source_generation = self.source_generation.saturating_add(1);
@@ -132,6 +133,16 @@ impl SourceManagement {
         draft.preflighting = None;
         match result {
             Ok((preflight, alias)) => {
+                if let Some((existing_alias, _)) = draft
+                    .existing_sources
+                    .iter()
+                    .find(|(_, root_path)| same_source_path(root_path, &preflight.root_path))
+                {
+                    draft.source_error =
+                        Some(format!("Source is already imported as {existing_alias}"));
+                    cx.notify();
+                    return;
+                }
                 draft.root_path = Some(preflight.root_path);
                 draft.projects = preflight.projects;
                 draft.selected.clear();
@@ -179,7 +190,7 @@ impl SourceManagement {
             selected: selected_projects.iter().cloned().collect(),
             preflighting: None,
             source_error: None,
-            existing_aliases: Vec::new(),
+            existing_sources: Vec::new(),
             validation_error: None,
         });
         self.alias_focus.focus(window);
@@ -330,7 +341,11 @@ fn validate_alias(draft: &SourceDraft, alias: &str) -> Result<SourceAlias, &'sta
     }
     let alias =
         SourceAlias::new(alias).map_err(|_| "Alias must be a lowercase portable identifier")?;
-    if draft.existing_aliases.contains(&alias) {
+    if draft
+        .existing_sources
+        .iter()
+        .any(|(existing, _)| existing == &alias)
+    {
         return Err("Source alias is already configured");
     }
     Ok(alias)
@@ -517,6 +532,8 @@ impl Render for SourceManagement {
                     )
                     .children(source_error.map(|error| {
                         div()
+                            .id("source-selection-error")
+                            .debug_selector(|| "source-selection-error".to_owned())
                             .text_xs()
                             .text_color(theme.colors.error_text)
                             .child(error)

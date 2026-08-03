@@ -116,7 +116,10 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
         .update(&mut cx, |viewer, window, cx| {
             viewer.source_management.update(cx, |management, cx| {
                 management.begin_import(
-                    vec![SourceAlias::new("research").expect("test alias should be valid")],
+                    vec![(
+                        SourceAlias::new("research").expect("test alias should be valid"),
+                        scope.path().join("configured-source"),
+                    )],
                     window,
                     cx,
                 );
@@ -249,6 +252,55 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     assert_eq!(
         projects.get(0).and_then(toml_edit::Value::as_str),
         Some("one")
+    );
+}
+
+#[gpui::test]
+fn source_confirmation_rejects_an_already_configured_directory(cx: &mut TestAppContext) {
+    let source = tempfile::tempdir().expect("test Source should be created");
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_import(
+                    vec![(alias.clone(), source.path().to_owned())],
+                    window,
+                    cx,
+                );
+                let generation = management
+                    .begin_source_preflight(source.path().to_owned(), cx)
+                    .expect("open confirmation should accept preflight");
+                management.finish_source_preflight(
+                    generation,
+                    Ok((
+                        SourcePreflight {
+                            root_path: source.path().to_owned(),
+                            projects: Vec::new(),
+                        },
+                        SourceAlias::new("research-2").expect("suggested alias should be valid"),
+                    )),
+                    window,
+                    cx,
+                );
+            });
+        })
+        .expect("viewer should remain open");
+    cx.refresh().expect("confirmation should render");
+
+    assert!(cx.debug_bounds("source-selection-error").is_some());
+    let confirm = cx
+        .debug_bounds("confirm-source")
+        .expect("disabled Import control should render");
+    cx.simulate_click(confirm.center(), Modifiers::default());
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .source_management
+                .read(cx)
+                .is_open())
+            .expect("viewer should remain open")
     );
 }
 

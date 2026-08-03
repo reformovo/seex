@@ -358,7 +358,12 @@ impl ViewerApp {
                 configuration
                     .sources
                     .iter()
-                    .map(|source| source.configured.alias.clone())
+                    .map(|source| {
+                        (
+                            source.configured.alias.clone(),
+                            source.configured.root_path.clone(),
+                        )
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
