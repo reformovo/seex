@@ -293,11 +293,7 @@ impl SourceManagement {
         let mut requests = Vec::new();
         let mut first_new = None;
         for path in paths {
-            if let Some(existing) = draft
-                .items
-                .iter_mut()
-                .find(|item| same_source_path(&item.root_path, &path))
-            {
+            if let Some(existing) = draft.items.iter_mut().find(|item| item.root_path == path) {
                 existing.removed = false;
                 draft.active = Some(existing.id);
                 continue;
@@ -414,6 +410,9 @@ impl SourceManagement {
                 let item = &mut draft.items[index];
                 item.root_path = preflight.root_path;
                 item.projects = preflight.projects;
+                if item.is_new() {
+                    item.selected.clear();
+                }
                 item.unavailable_projects = item
                     .original
                     .as_ref()
@@ -833,6 +832,7 @@ impl Render for SourceManagement {
                     .children(draft.error.map(|error| {
                         div()
                             .id("sources-error")
+                            .debug_selector(|| "sources-error".to_owned())
                             .text_color(theme.colors.error_text)
                             .child(error)
                     }))

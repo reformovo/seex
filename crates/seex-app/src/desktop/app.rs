@@ -675,6 +675,10 @@ impl ViewerApp {
             })
             .map(|source| source.configured.alias.clone())
             .collect::<Vec<_>>();
+        let removed_sources = removed_aliases
+            .iter()
+            .map(DataSourceId::from_alias)
+            .collect::<Vec<_>>();
         let mut removed_projects = Vec::<ProjectRef>::new();
         for source in &candidate.sources {
             let replacement = plan
@@ -719,7 +723,7 @@ impl ViewerApp {
             return;
         }
         if removed_projects.is_empty() {
-            self.save_source_batch(candidate, removed_projects, cx);
+            self.save_source_batch(candidate, removed_sources, removed_projects, cx);
             return;
         }
         let message = format!(
@@ -737,7 +741,7 @@ impl ViewerApp {
         cx.spawn_in(window, async move |this, cx| {
             if matches!(answer.await, Ok(0)) {
                 let _ = this.update_in(cx, |viewer, _, cx| {
-                    viewer.save_source_batch(candidate, removed_projects, cx);
+                    viewer.save_source_batch(candidate, removed_sources, removed_projects, cx);
                 });
             } else {
                 let _ = this.update_in(cx, |viewer, _, cx| {
@@ -753,6 +757,7 @@ impl ViewerApp {
     fn save_source_batch(
         &mut self,
         mut candidate: SourceConfiguration,
+        removed_sources: Vec<DataSourceId>,
         removed_projects: Vec<ProjectRef>,
         cx: &mut Context<Self>,
     ) {
@@ -764,14 +769,17 @@ impl ViewerApp {
                     let visible_runs = viewer.active_visible_runs(cx);
                     viewer.source_configuration = Some(configuration);
                     viewer.session.update(cx, |session, session_cx| {
+                        for source_id in &removed_sources {
+                            session.views.remove_source(source_id);
+                        }
                         for project in &removed_projects {
                             session.views.remove_project(project.clone());
                         }
-                        if !removed_projects.is_empty() {
+                        if !removed_sources.is_empty() || !removed_projects.is_empty() {
                             session.persistence_dirty = true;
                         }
                         session.replace_sources(sources, &visible_runs, session_cx);
-                        if !removed_projects.is_empty() {
+                        if !removed_sources.is_empty() || !removed_projects.is_empty() {
                             session.publish_semantic_snapshot();
                         }
                     });

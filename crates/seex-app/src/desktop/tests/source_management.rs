@@ -514,9 +514,11 @@ fn cancelled_confirmation_ignores_late_source_preflight(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn failed_source_config_write_does_not_switch_live_sources(cx: &mut TestAppContext) {
+fn failed_source_batch_write_keeps_dialog_and_live_sources(cx: &mut TestAppContext) {
     let scope = tempfile::tempdir().expect("test scope should be created");
-    let source = tempfile::tempdir().expect("test Source should be created");
+    let roots = tempfile::tempdir().expect("test Source roots should be created");
+    let source = roots.path().join("research");
+    std::fs::create_dir(&source).expect("test Source should be created");
     let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
     let config_path = scope.path().join(".seex/config.toml");
     std::fs::create_dir_all(
@@ -529,19 +531,47 @@ fn failed_source_config_write_does_not_switch_live_sources(cx: &mut TestAppConte
         .expect("external edit should be written");
 
     window
-        .update(&mut cx, |viewer, _, cx| {
-            viewer.save_confirmed_source(
-                ConfirmedSource {
-                    manage: false,
-                    alias: SourceAlias::new("research").expect("test alias should be valid"),
-                    root_path: source.path().to_owned(),
-                    projects: vec![ProjectId::from_string("project")],
-                },
-                cx,
-            );
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_sources(Vec::new(), Vec::new(), window, cx);
+                let request = management
+                    .queue_source_paths(vec![source.clone()], cx)
+                    .pop()
+                    .expect("Source should queue for preflight");
+                management.finish_preflight(
+                    request,
+                    Ok(SourcePreflight {
+                        root_path: source.clone(),
+                        projects: vec![Project {
+                            project_id: ProjectId::from_string("project"),
+                            name: "Project".to_owned(),
+                            created_at: "2026-01-01T00:00:00Z"
+                                .parse()
+                                .expect("timestamp should parse"),
+                        }],
+                    }),
+                    window,
+                    cx,
+                );
+            });
         })
         .expect("viewer should remain open");
-    cx.run_until_parked();
+    cx.refresh().expect("Sources should render");
+    let project = cx
+        .debug_bounds("source-project:project")
+        .expect("Project should render");
+    cx.simulate_click(project.center(), Modifiers::default());
+    let save = cx
+        .debug_bounds("save-sources")
+        .expect("Save Sources should render");
+    cx.simulate_click(save.center(), Modifiers::default());
+    for _ in 0..100 {
+        cx.run_until_parked();
+        cx.refresh().expect("Sources should refresh");
+        if cx.debug_bounds("sources-error").is_some() {
+            break;
+        }
+    }
 
     assert!(
         window
@@ -554,6 +584,8 @@ fn failed_source_config_write_does_not_switch_live_sources(cx: &mut TestAppConte
             })
             .expect("viewer should remain open")
     );
+    assert!(cx.debug_bounds("sources-dialog").is_some());
+    assert!(cx.debug_bounds("sources-error").is_some());
     assert_eq!(
         std::fs::read_to_string(config_path).expect("external config should remain readable"),
         "schema_version = 1\n# external\n"
@@ -733,6 +765,111 @@ fn managing_projects_updates_allowlist_and_clears_unimported_references(cx: &mut
             })
             .expect("viewer should remain open")
     );
+}
+
+#[gpui::test]
+fn removing_source_deletes_duplicate_definitions_and_all_alias_references(cx: &mut TestAppContext) {
+    let (source, project_id, _) = source_with_two_projects();
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let config_path = scope.path().join(".seex/config.toml");
+    std::fs::create_dir_all(config_path.parent().expect("config should have a parent"))
+        .expect("config directory should be created");
+    std::fs::write(
+        &config_path,
+        format!(
+            "schema_version = 1\n[sources.research]\npath = {:?}\nprojects = ['one']\n\
+             [sources.research-copy]\npath = {:?}\nprojects = ['one']\n",
+            source.path().to_string_lossy(),
+            source.path().to_string_lossy(),
+        ),
+    )
+    .expect("duplicate configuration should be written");
+    let research = SourceAlias::new("research").expect("alias should be valid");
+    let copy = SourceAlias::new("research-copy").expect("alias should be valid");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .sources
+            .iter()
+            .any(|source| source.source_id.alias() == &research)
+    });
+
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.views.pin_project(ProjectRef::new(
+                    DataSourceId::from_alias(&research),
+                    project_id.clone(),
+                ));
+                session.views.pin_project(ProjectRef::new(
+                    DataSourceId::from_alias(&copy),
+                    project_id.clone(),
+                ));
+            });
+            let configuration = viewer
+                .source_configuration
+                .as_ref()
+                .expect("configuration should load");
+            let existing = configuration.configured_sources();
+            let aliases = configuration
+                .sources
+                .iter()
+                .map(|source| source.configured.alias.clone())
+                .collect();
+            viewer.source_management.update(cx, |management, cx| {
+                let requests = management.begin_sources(existing, aliases, window, cx);
+                let request = requests
+                    .into_iter()
+                    .find(|request| request.root_path == source.path())
+                    .expect("effective duplicate Source should preflight");
+                management.finish_preflight(
+                    request,
+                    Ok(SourcePreflight::load(source.path()).expect("Source should preflight")),
+                    window,
+                    cx,
+                );
+                management.select_source_alias("research", cx);
+            });
+        })
+        .expect("viewer should remain open");
+    cx.refresh().expect("Sources should render");
+    let remove = cx
+        .debug_bounds("remove-source")
+        .expect("Remove Source should render");
+    cx.simulate_click(remove.center(), Modifiers::default());
+    let save = cx
+        .debug_bounds("save-sources")
+        .expect("Save Sources should render");
+    cx.simulate_click(save.center(), Modifiers::default());
+    cx.simulate_prompt_answer("Remove");
+    for _ in 0..100 {
+        cx.run_until_parked();
+        let saved =
+            std::fs::read_to_string(&config_path).expect("configuration should remain readable");
+        if !saved.contains("sources.research") {
+            break;
+        }
+    }
+
+    let saved = std::fs::read_to_string(config_path)
+        .expect("configuration should be saved")
+        .parse::<toml_edit::DocumentMut>()
+        .expect("configuration should remain valid");
+    let sources = saved
+        .get("sources")
+        .and_then(toml_edit::Item::as_table_like);
+    assert!(sources.is_none_or(|sources| sources.get("research").is_none()));
+    assert!(sources.is_none_or(|sources| sources.get("research-copy").is_none()));
+    window
+        .read_with(&cx, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let pinned = snapshot.views.pinned_projects();
+            assert!(pinned.iter().all(|project| {
+                project.source_id.alias() != &research && project.source_id.alias() != &copy
+            }));
+        })
+        .expect("viewer should remain open");
 }
 
 #[gpui::test]
