@@ -359,7 +359,7 @@ fn view_organization_is_local_while_archived_runs_are_shared() {
 }
 
 #[test]
-fn removed_projects_clear_every_view_without_touching_other_projects() {
+fn unimported_projects_clear_every_view_without_touching_other_projects() {
     let mut views = AnalysisViews::default();
     let project = ProjectRef::new(
         DataSourceId::new("source").expect("test alias should be valid"),
@@ -395,7 +395,6 @@ fn removed_projects_clear_every_view_without_touching_other_projects() {
 
     views.remove_project(project.clone());
 
-    assert_eq!(views.removed_projects(), std::slice::from_ref(&project));
     assert!(views.pinned_projects().is_empty());
     assert!(views.archived_projects().is_empty());
     assert!(views.archived_runs().is_empty());

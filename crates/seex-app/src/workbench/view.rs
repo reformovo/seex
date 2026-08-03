@@ -111,7 +111,6 @@ pub struct AnalysisViews {
     views: Vec<AnalysisView>,
     pinned_projects: Vec<ProjectRef>,
     archived_projects: Vec<ProjectRef>,
-    removed_projects: Vec<ProjectRef>,
     archived_runs: Vec<RunRef>,
     active_view_id: AnalysisViewId,
     next_id: u64,
@@ -135,7 +134,6 @@ impl Default for AnalysisViews {
             views: vec![view],
             pinned_projects: Vec::new(),
             archived_projects: Vec::new(),
-            removed_projects: Vec::new(),
             archived_runs: Vec::new(),
             next_id: 2,
         }
@@ -258,7 +256,6 @@ impl AnalysisViews {
                     )
                 })
                 .collect(),
-            removed_projects: Vec::new(),
             archived_runs: document.archived_runs.iter().map(saved_run_ref).collect(),
             active_view_id,
             next_id,
@@ -276,10 +273,6 @@ impl AnalysisViews {
 
     pub fn archived_projects(&self) -> &[ProjectRef] {
         &self.archived_projects
-    }
-
-    pub fn removed_projects(&self) -> &[ProjectRef] {
-        &self.removed_projects
     }
 
     pub fn archived_runs(&self) -> &[RunRef] {
@@ -490,9 +483,6 @@ impl AnalysisViews {
             if !removed.is_empty() {
                 invalidate_view_panels(view);
             }
-        }
-        if !self.removed_projects.contains(&project) {
-            self.removed_projects.push(project);
         }
     }
 
@@ -798,8 +788,6 @@ impl AnalysisViews {
         self.pinned_projects
             .retain(|project| &project.source_id != source_id);
         self.archived_projects
-            .retain(|project| &project.source_id != source_id);
-        self.removed_projects
             .retain(|project| &project.source_id != source_id);
         self.archived_runs.retain(|run| &run.source_id != source_id);
     }

@@ -139,9 +139,6 @@ impl ProjectSidebar {
             for (project_index, project) in source.catalog.projects.iter().enumerate() {
                 let project_ref =
                     ProjectRef::new(source.source_id.clone(), project.project_id.clone());
-                if session.views.removed_projects().contains(&project_ref) {
-                    continue;
-                }
                 let placement = if session.views.archived_projects().contains(&project_ref) {
                     ProjectPlacement::Archived
                 } else if session.views.pinned_projects().contains(&project_ref) {

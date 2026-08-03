@@ -37,8 +37,6 @@ pub(crate) enum WorkbenchCommand {
         project: ProjectRef,
         placement: ProjectPlacement,
     },
-    #[expect(dead_code, reason = "retired by the upcoming U6 workbench slice")]
-    RemoveProject(ProjectRef),
     SetProjectRuns {
         runs: Vec<RunRef>,
         selected: bool,
@@ -224,13 +222,6 @@ impl WorkbenchSession {
                     ..CommandEffect::default()
                 }
             }
-            WorkbenchCommand::RemoveProject(project) => {
-                self.views.remove_project(project);
-                CommandEffect {
-                    changed: true,
-                    ..CommandEffect::default()
-                }
-            }
             WorkbenchCommand::SetProjectRuns { runs, selected } => {
                 if selected && !selection.has_capacity_for_runs(&runs) {
                     self.transient_error =
@@ -404,21 +395,6 @@ impl ViewerApp {
             | WorkbenchCommand::TogglePinnedRun(_)
             | WorkbenchCommand::SetRunArchived { .. } => {
                 self.request_missing_panel_curves(cx);
-                if self.inspector_visible(cx) {
-                    self.request_inspector(cx);
-                }
-            }
-            WorkbenchCommand::RemoveProject(project) => {
-                self.project_sidebar.update(cx, |sidebar, cx| {
-                    sidebar.project_focuses.remove(project);
-                    sidebar.run_focuses.retain(|run, _| {
-                        run.source_id != project.source_id || run.project_id != project.project_id
-                    });
-                    sidebar.menu = None;
-                    cx.notify();
-                });
-                self.refresh_catalog(cx);
-                self.request_overview(cx);
                 if self.inspector_visible(cx) {
                     self.request_inspector(cx);
                 }
