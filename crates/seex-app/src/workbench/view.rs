@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use seex_model::alignment::AlignmentViewport;
-use seex_model::metric::MetricKey;
-use seex_model::run::RunId;
-use seex_model::types::ProjectId;
+use seex::AlignmentViewport;
+use seex::MetricKey;
+use seex::ProjectId;
+use seex::RunId;
 
 use crate::data::query::{CurveSnapshot, InspectorSnapshot};
 use crate::data::worker::{Generation, ReadKind};

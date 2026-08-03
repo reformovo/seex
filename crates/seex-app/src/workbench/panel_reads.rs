@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use seex_model::alignment::AlignmentViewport;
-use seex_model::metric::MetricKey;
+use seex::AlignmentViewport;
+use seex::MetricKey;
 
 use crate::data::query::{
     CurveAxis, CurveSelection, CurveSeriesSnapshot, CurveSnapshot, DetailRequest, InspectorRequest,
@@ -443,10 +443,10 @@ pub enum PanelCoordinationError {
 
 #[cfg(test)]
 mod tests {
+    use seex::EvidenceCompleteness;
+    use seex::ProjectId;
+    use seex::{Run, RunId, RunStatus};
     use seex_chart_core::{DataPoint, Series, SeriesId};
-    use seex_model::comparison::EvidenceCompleteness;
-    use seex_model::run::{Run, RunId, RunStatus};
-    use seex_model::types::ProjectId;
 
     use crate::SourceError;
     use crate::data::worker::WorkerError;

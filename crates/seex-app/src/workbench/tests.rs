@@ -1,5 +1,5 @@
+use seex::AlignmentAxis;
 use seex_chart_core::AxisRange;
-use seex_model::alignment::AlignmentAxis;
 
 use crate::domain::SourceAlias;
 use crate::workbench::toml_document::{
@@ -122,8 +122,8 @@ fn duplicated_views_copy_selection_without_sharing_mutation() {
     let mut views = AnalysisViews::default();
     let run = RunRef::new(
         DataSourceId::new("source").expect("test alias should be valid"),
-        seex_model::types::ProjectId::from_string("project"),
-        seex_model::run::RunId::from_string("run"),
+        seex::ProjectId::from_string("project"),
+        seex::RunId::from_string("run"),
     );
     views
         .toggle_active_run(run, true)
@@ -150,7 +150,7 @@ fn duplicated_views_copy_selection_without_sharing_mutation() {
     views
         .active_mut()
         .navigation
-        .select_axis(seex_model::alignment::AlignmentAxis::ElapsedTime);
+        .select_axis(seex::AlignmentAxis::ElapsedTime);
 
     let duplicate = views.duplicate_active();
     views.active_mut().runs.clear();
@@ -160,7 +160,7 @@ fn duplicated_views_copy_selection_without_sharing_mutation() {
     views
         .active_mut()
         .navigation
-        .select_axis(seex_model::alignment::AlignmentAxis::Step);
+        .select_axis(seex::AlignmentAxis::Step);
     assert!(views.activate(&AnalysisViewId::from_string("view-1")));
 
     assert_eq!(views.active().runs.len(), 3);
@@ -177,17 +177,14 @@ fn duplicated_views_copy_selection_without_sharing_mutation() {
     );
     assert_eq!(
         views.active().navigation.axis(),
-        seex_model::alignment::AlignmentAxis::ElapsedTime
+        seex::AlignmentAxis::ElapsedTime
     );
     assert!(views.activate(&duplicate));
     assert!(views.active().runs.is_empty());
     assert!(views.active().baseline.is_none());
     assert!(views.active().pinned_runs.is_empty());
     assert!(views.active().panels.is_empty());
-    assert_eq!(
-        views.active().navigation.axis(),
-        seex_model::alignment::AlignmentAxis::Step
-    );
+    assert_eq!(views.active().navigation.axis(), seex::AlignmentAxis::Step);
 }
 
 #[test]

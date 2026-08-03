@@ -6,10 +6,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use seex::AlignmentAxis;
+use seex::ProjectId;
+use seex::RunId;
 use seex_chart_core::AxisRange;
-use seex_model::alignment::AlignmentAxis;
-use seex_model::run::RunId;
-use seex_model::types::ProjectId;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::domain::SourceAlias;
