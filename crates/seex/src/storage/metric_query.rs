@@ -578,6 +578,9 @@ pub fn percent_encode_metric_key(value: &str) -> String {
 }
 
 fn ensure_lttb_extension_loaded(connection: &Connection) -> Result<(), StorageError> {
+    if lttb_function_available(connection) {
+        return Ok(());
+    }
     let (loaded, installed) = lttb_extension_state(connection);
     if loaded {
         return Ok(());
@@ -638,11 +641,13 @@ fn load_lttb_extension_from_path(connection: &Connection, path: &Path) -> Result
 fn lttb_function_available(connection: &Connection) -> bool {
     connection
         .query_row(
-            "SELECT count(*) FROM (SELECT lttb(1::BIGINT, 1::DOUBLE, 1::BIGINT))",
+            "SELECT count(*) > 0
+             FROM duckdb_functions()
+             WHERE function_name = 'lttb'",
             [],
-            |row| row.get::<_, i64>(0),
+            |row| row.get::<_, bool>(0),
         )
-        .is_ok()
+        .unwrap_or(false)
 }
 
 fn lttb_extension_state(connection: &Connection) -> (bool, bool) {
@@ -685,6 +690,7 @@ mod tests {
         let connection = Connection::open_in_memory_with_flags(config)?;
 
         assert_eq!(lttb_extension_state(&connection), (false, false));
+        assert!(!lttb_function_available(&connection));
         assert!(!home.path().join(".duckdb/extensions").exists());
         Ok(())
     }
