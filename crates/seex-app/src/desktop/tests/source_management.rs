@@ -237,3 +237,72 @@ fn managing_projects_updates_allowlist_and_clears_unimported_references(cx: &mut
             .expect("viewer should remain open")
     );
 }
+
+#[gpui::test]
+fn reload_sources_rejects_invalid_candidates_before_switching_live_state(cx: &mut TestAppContext) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let first = tempfile::tempdir().expect("first Source should be created");
+    let second = tempfile::tempdir().expect("second Source should be created");
+    for (root, project) in [(first.path(), "one"), (second.path(), "two")] {
+        let client = Client::builder(root)
+            .open()
+            .expect("test client should open");
+        client
+            .start_run(RunOptions::new(project).id(project).name(project))
+            .expect("test Run should start")
+            .finish()
+            .expect("test Run should finish");
+        client.shutdown().expect("test client should shut down");
+    }
+    let config_path = scope.path().join(".seex/config.toml");
+    std::fs::create_dir_all(config_path.parent().expect("config should have a parent"))
+        .expect("config directory should be created");
+    let source_document = |path: &std::path::Path, project: &str| {
+        format!(
+            "schema_version = 1\n[sources.research]\npath = {:?}\nprojects = [{project:?}]\n",
+            path.to_string_lossy()
+        )
+    };
+    std::fs::write(&config_path, source_document(first.path(), "one"))
+        .expect("initial config should be written");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .sources
+            .first()
+            .is_some_and(|source| source.root_path == first.path())
+    });
+
+    std::fs::write(&config_path, "schema_version = 99\n")
+        .expect("invalid external edit should be written");
+    window
+        .update(&mut cx, |viewer, _, cx| viewer.reload_sources(cx))
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.session.read(cx).transient_error.is_some()
+    });
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer.session_snapshot(cx).sources[0]
+                .root_path
+                == first.path())
+            .expect("viewer should remain open")
+    );
+
+    std::fs::write(&config_path, source_document(second.path(), "two"))
+        .expect("valid external edit should be written");
+    window
+        .update(&mut cx, |viewer, _, cx| viewer.reload_sources(cx))
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .sources
+            .first()
+            .is_some_and(|source| {
+                source.root_path == second.path()
+                    && source.project_allowlist == [ProjectId::from_string("two")]
+            })
+    });
+}

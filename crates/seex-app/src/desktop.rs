@@ -16,6 +16,7 @@ actions!(
     [
         Refresh,
         ImportSource,
+        ReloadSources,
         ResetView,
         ToggleProjectSidebar,
         ToggleMetricSidebar,
@@ -85,6 +86,7 @@ fn menus() -> Vec<Menu> {
             name: "File".into(),
             items: vec![
                 MenuItem::action("Import Source…", ImportSource),
+                MenuItem::action("Reload Sources", ReloadSources),
                 MenuItem::separator(),
                 MenuItem::action("Refresh", Refresh),
             ],

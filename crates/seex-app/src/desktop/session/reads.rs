@@ -28,6 +28,20 @@ struct PanelDetailQuery {
 }
 
 impl WorkbenchSession {
+    pub(crate) fn replace_sources(
+        &mut self,
+        sources: Vec<ConfiguredSource>,
+        visible_runs: &[RunRef],
+        cx: &mut Context<Self>,
+    ) {
+        self.event_tasks.clear();
+        self.sources = crate::data::registry::SourceRegistry::default();
+        self.panel_reads = crate::workbench::panel_reads::PanelReadCoordinator::default();
+        self.configure_sources(sources, visible_runs, cx);
+        self.publish_snapshot();
+        cx.notify();
+    }
+
     pub(crate) fn configure_sources(
         &mut self,
         sources: Vec<ConfiguredSource>,

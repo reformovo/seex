@@ -12,9 +12,9 @@ use gpui::{
     PromptLevel, Render, SharedString, Window, div, prelude::*,
 };
 
-use super::ImportSource;
 #[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
+use super::{ImportSource, ReloadSources};
 
 #[path = "assets.rs"]
 mod assets;
@@ -69,6 +69,7 @@ pub(super) struct ViewerApp {
     workspace: gpui::Entity<AnalysisWorkspace>,
     source_management: gpui::Entity<SourceManagement>,
     source_configuration: Option<SourceConfiguration>,
+    project_root: Option<PathBuf>,
     pending_commands: Vec<command::WorkbenchCommand>,
     command_dispatch_pending: bool,
     run_hover_revision: u64,
@@ -96,6 +97,7 @@ impl ViewerApp {
             workspace: cx.new(AnalysisWorkspace::new),
             source_management: cx.new(SourceManagement::new),
             source_configuration: None,
+            project_root: project_path.clone(),
             pending_commands: Vec::new(),
             command_dispatch_pending: false,
             run_hover_revision: 0,
@@ -371,6 +373,36 @@ impl ViewerApp {
         self.choose_source_directory(window, cx);
     }
 
+    fn on_reload_sources(
+        &mut self,
+        _: &ReloadSources,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reload_sources(cx);
+    }
+
+    fn reload_sources(&mut self, cx: &mut Context<Self>) {
+        let project_root = self.project_root.clone();
+        let load = cx.background_spawn(async move { load_and_preflight_sources(project_root) });
+        cx.spawn(async move |this, cx| match load.await {
+            Ok((configuration, sources)) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.source_configuration = Some(configuration);
+                    let visible_runs = viewer.active_visible_runs(cx);
+                    viewer.session.update(cx, |session, session_cx| {
+                        session.replace_sources(sources, &visible_runs, session_cx);
+                    });
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                let _ = this.update(cx, |viewer, cx| viewer.report_source_error(error, cx));
+            }
+        })
+        .detach();
+    }
+
     fn handle_source_management_event(
         &mut self,
         event: &SourceManagementEvent,
@@ -560,6 +592,31 @@ impl ViewerApp {
     }
 }
 
+fn load_and_preflight_sources(
+    project_root: Option<PathBuf>,
+) -> Result<(SourceConfiguration, Vec<ConfiguredSource>), String> {
+    let configuration = SourceConfiguration::load_for_scope(project_root.as_deref())
+        .map_err(|error| error.to_string())?;
+    let sources = configuration.configured_sources();
+    for source in &sources {
+        let preflight =
+            SourcePreflight::load(&source.root_path).map_err(|error| error.to_string())?;
+        if let Some(project_id) = source.projects.iter().find(|project_id| {
+            !preflight
+                .projects
+                .iter()
+                .any(|project| &project.project_id == *project_id)
+        }) {
+            return Err(format!(
+                "Source {} does not contain Project {}",
+                source.alias,
+                project_id.as_str()
+            ));
+        }
+    }
+    Ok((configuration, sources))
+}
+
 impl Render for ViewerApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.theme = ViewerTheme::for_appearance(window.appearance());
@@ -619,6 +676,7 @@ impl Render for ViewerApp {
             )
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_import_source))
+            .on_action(cx.listener(Self::on_reload_sources))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
             .on_action(cx.listener(Self::on_toggle_metric_sidebar))
