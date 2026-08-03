@@ -7,9 +7,9 @@ use gpui::{
     App, Context, Corner, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ScrollWheelEvent, SharedString, Window, anchored, deferred, div, point, prelude::*, px,
 };
+use seex::AlignmentAxis;
+use seex::EvidenceReason;
 use seex_chart_core::{AxisRange, BrushState, Viewport};
-use seex_model::alignment::AlignmentAxis;
-use seex_model::comparison::EvidenceReason;
 
 use super::super::chart::{self, HoverPoint};
 use super::super::command::WorkbenchCommand;

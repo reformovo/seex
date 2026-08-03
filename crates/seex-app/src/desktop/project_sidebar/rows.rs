@@ -1,8 +1,8 @@
 use crate::domain::DataSourceId;
 use crate::workbench::ProjectRef;
 use gpui::Pixels;
-use seex_model::run::{Run, RunStatus};
-use seex_model::types::Project;
+use seex::Project;
+use seex::{Run, RunStatus};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SidebarResize {
