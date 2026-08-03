@@ -18,14 +18,14 @@ use crate::workbench::toml_document::TomlWorkbenchDocument as WorkbenchDocument;
 #[cfg(feature = "test-support")]
 use gpui::{App, Context, ScrollWheelEvent};
 use gpui::{point, px};
-use seex_chart_core::BrushState;
 #[cfg(feature = "test-support")]
-use seex_model::alignment::AlignmentAxis;
-use seex_model::comparison::EvidenceCompleteness;
+use seex::AlignmentAxis;
+use seex::EvidenceCompleteness;
 #[cfg(feature = "test-support")]
-use seex_model::metric::MetricKey;
-use seex_model::run::{RunId, RunStatus};
-use seex_model::types::ProjectId;
+use seex::MetricKey;
+use seex::ProjectId;
+use seex::{RunId, RunStatus};
+use seex_plot::BrushState;
 
 use super::chart::HoverPoint;
 #[cfg(feature = "test-support")]
@@ -193,7 +193,7 @@ fn hover_values_format_visible_and_contextual_evidence() {
 
 #[test]
 fn brush_handle_drag_stops_before_crossing_the_opposite_handle() {
-    let home = seex_chart_core::AxisRange::new(0., 100.).expect("test brush range should be valid");
+    let home = seex_plot::AxisRange::new(0., 100.).expect("test brush range should be valid");
     let mut brush = BrushState::new(home).expect("test brush should initialize");
     brush.resize_start(20.).expect("start should resize");
     brush.resize_end(80.).expect("end should resize");

@@ -1,5 +1,5 @@
 use seex::{AlignmentAxis, AlignmentViewport};
-use seex_chart_core::{AxisRange, BrushState};
+use seex_plot::{AxisRange, BrushState};
 
 /// Per-View navigation state shared by the brush, ruler, and Metric tracks.
 #[derive(Clone)]

@@ -6,10 +6,10 @@ use gpui::{
     Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point,
     px, size,
 };
+use seex::AlignmentAxis;
+use seex::ProjectId;
+use seex::RunId;
 use seex::{Client, LogOptions, RunOptions};
-use seex_model::alignment::AlignmentAxis;
-use seex_model::run::RunId;
-use seex_model::types::ProjectId;
 
 use crate::config::ConfiguredSource;
 use crate::data::worker::ReadKind;
@@ -165,7 +165,7 @@ pub(super) fn saved_workbench(
             selected_metric: Some(metric.to_owned()),
             axis: AlignmentAxis::Step,
             viewport: Some(
-                seex_chart_core::AxisRange::new(0., 10.).expect("test viewport should be valid"),
+                seex_plot::AxisRange::new(0., 10.).expect("test viewport should be valid"),
             ),
         }],
     }

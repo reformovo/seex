@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use seex::AlignmentAxis;
 use seex::ProjectId;
 use seex::RunId;
-use seex_chart_core::AxisRange;
+use seex_plot::AxisRange;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::domain::SourceAlias;

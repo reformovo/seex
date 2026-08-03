@@ -446,7 +446,7 @@ mod tests {
     use seex::EvidenceCompleteness;
     use seex::ProjectId;
     use seex::{Run, RunId, RunStatus};
-    use seex_chart_core::{DataPoint, Series, SeriesId};
+    use seex_plot::{DataPoint, Series, SeriesId};
 
     use crate::SourceError;
     use crate::data::worker::WorkerError;

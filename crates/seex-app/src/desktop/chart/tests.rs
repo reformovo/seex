@@ -6,13 +6,13 @@ use crate::data::query::{
 };
 use crate::data::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker, recv_event_for_test};
 use crate::domain::DataSourceId;
+use seex::EvidenceCompleteness;
+use seex::ProjectId;
+use seex::{AlignedMetricPoint, AlignmentViewport};
 use seex::{Client, LogOptions, RunOptions};
-use seex_chart_core::{DataPoint, Series, SeriesId};
-use seex_model::alignment::{AlignedMetricPoint, AlignmentViewport};
-use seex_model::comparison::EvidenceCompleteness;
-use seex_model::metric::{MetricKey, MetricPoint, Step};
-use seex_model::run::{Run, RunId, RunStatus};
-use seex_model::types::ProjectId;
+use seex::{MetricKey, MetricPoint, Step};
+use seex::{Run, RunId, RunStatus};
+use seex_plot::{DataPoint, Series, SeriesId};
 
 use super::*;
 use gpui::size;

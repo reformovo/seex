@@ -5456,18 +5456,14 @@ version = "0.1.0-beta.0"
 dependencies = [
  "gpui",
  "seex",
- "seex-chart-core",
  "seex-core",
  "seex-model",
+ "seex-plot",
  "seex-storage",
  "tempfile",
  "thiserror 2.0.18",
  "toml_edit 0.25.12+spec-1.1.0",
 ]
-
-[[package]]
-name = "seex-chart-core"
-version = "0.1.0-beta.0"
 
 [[package]]
 name = "seex-core"
@@ -5483,6 +5479,10 @@ version = "0.1.0-beta.0"
 dependencies = [
  "seex",
 ]
+
+[[package]]
+name = "seex-plot"
+version = "0.1.0-beta.0"
 
 [[package]]
 name = "seex-python"

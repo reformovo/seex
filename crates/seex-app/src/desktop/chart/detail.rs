@@ -4,7 +4,7 @@ use gpui::{
     AnyView, Context, Entity, IntoElement, ParentElement, Pixels, Point, Render, StyleRefinement,
     Styled, Window,
 };
-use seex_chart_core::{AxisRange, BrushState, CanvasSize, Viewport};
+use seex_plot::{AxisRange, BrushState, CanvasSize, Viewport};
 
 use crate::data::query::CurveSnapshot;
 use crate::domain::RunRef;

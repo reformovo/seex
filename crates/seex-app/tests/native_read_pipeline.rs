@@ -3,7 +3,12 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+use seex::AlignmentViewport;
 use seex::CatalogBackend;
+use seex::EvidenceCompleteness;
+use seex::MetricKey;
+use seex::ProjectId;
+use seex::RunId;
 use seex::{Client, LogOptions, RunOptions};
 use seex_app::SourceError;
 use seex_app::config::ConfiguredSource;
@@ -14,11 +19,6 @@ use seex_app::data::worker::{
     Generation, ReadEventReceiver, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
 };
 use seex_app::domain::{DataSourceId, RunRef, SourceAlias};
-use seex_model::alignment::AlignmentViewport;
-use seex_model::comparison::EvidenceCompleteness;
-use seex_model::metric::MetricKey;
-use seex_model::run::RunId;
-use seex_model::types::ProjectId;
 
 mod support;
 
@@ -310,7 +310,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         assert_eq!(resources.snapshot_points, resources.returned_points);
         assert_eq!(
             resources.snapshot_bytes,
-            resources.snapshot_points * std::mem::size_of::<seex_chart_core::DataPoint>() as u64
+            resources.snapshot_points * std::mem::size_of::<seex_plot::DataPoint>() as u64
         );
     }
     assert_eq!(

@@ -85,7 +85,7 @@ use gpui::{
 };
 use seex::AlignmentViewport;
 use seex::MetricKey;
-use seex_chart_core::CanvasSize;
+use seex_plot::CanvasSize;
 
 use super::super::chart;
 use super::super::command::WorkbenchCommand;

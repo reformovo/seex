@@ -147,9 +147,9 @@ fn open_local_reader(root_path: &Path) -> Result<Reader, SourceError> {
 mod tests {
     use std::fs;
 
+    use seex::ProjectId;
+    use seex::RunId;
     use seex::{Client, LogOptions, RunOptions};
-    use seex_model::run::RunId;
-    use seex_model::types::ProjectId;
 
     use super::{DiscoveryRequest, ReadSession, SourceError};
 

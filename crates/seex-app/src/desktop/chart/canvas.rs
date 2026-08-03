@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use gpui::{Bounds, ContentMask, PathBuilder, Pixels, Rgba, Styled, canvas, fill, point, px, size};
-use seex_chart_core::{AxisRange, BrushState, Viewport};
+use seex_plot::{AxisRange, BrushState, Viewport};
 
 use crate::data::query::CurveSnapshot;
 use crate::domain::RunRef;

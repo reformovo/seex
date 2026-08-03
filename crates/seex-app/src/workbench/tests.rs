@@ -1,5 +1,5 @@
 use seex::AlignmentAxis;
-use seex_chart_core::AxisRange;
+use seex_plot::AxisRange;
 
 use crate::domain::SourceAlias;
 use crate::workbench::toml_document::{

@@ -9,7 +9,7 @@ use gpui::{
 };
 use seex::AlignmentAxis;
 use seex::EvidenceReason;
-use seex_chart_core::{AxisRange, BrushState, Viewport};
+use seex_plot::{AxisRange, BrushState, Viewport};
 
 use super::super::chart::{self, HoverPoint};
 use super::super::command::WorkbenchCommand;
@@ -328,7 +328,7 @@ impl AnalysisWorkspace {
                 (Some(brush.selected()), Some(brush.home()))
             });
         let mut ticks = selected
-            .map(|range| seex_chart_core::linear_ticks(range, 6))
+            .map(|range| seex_plot::linear_ticks(range, 6))
             .unwrap_or_default();
         if let (Some(home), Some(step)) = (
             home,

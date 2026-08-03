@@ -823,7 +823,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use seex_model::metric::MetricKey;
+    use seex::MetricKey;
 
     use crate::data::query::{CurveAxis, CurveSelection};
 

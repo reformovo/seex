@@ -5,7 +5,7 @@ use seex::{AlignmentQueryError, AlignmentViewport};
 use seex::{EvidenceCompleteness, EvidenceReason, ObjectiveEvidence};
 use seex::{MetricAggregate, MetricKey};
 use seex::{MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, Timestamp};
-use seex_chart_core::{DataPoint, Series, SeriesId};
+use seex_plot::{DataPoint, Series, SeriesId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CurveAxis {
@@ -118,7 +118,7 @@ pub enum QueryError {
     #[error(transparent)]
     Alignment(#[from] AlignmentQueryError),
     #[error(transparent)]
-    Chart(#[from] seex_chart_core::ChartError),
+    Chart(#[from] seex_plot::PlotError),
     #[error(transparent)]
     Sdk(#[from] seex::Error),
     #[error(transparent)]
@@ -392,7 +392,7 @@ mod tests {
         detail_budget, overview_budget,
     };
     use seex::{Client, LogOptions, ProjectId, RunOptions, RunStatus};
-    use seex_chart_core::{AxisRange, BrushState};
+    use seex_plot::{AxisRange, BrushState};
 
     #[test]
     fn screen_budgets_clamp_density_and_overflow() {

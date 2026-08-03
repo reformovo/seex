@@ -14,7 +14,7 @@ pub use interaction::{
 
 /// Errors produced while constructing or transforming chart data.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ChartError {
+pub enum PlotError {
     EmptySeriesId,
     InvalidPoint { index: usize },
     UnsortedSeries { index: usize },
@@ -25,7 +25,7 @@ pub enum ChartError {
     InvalidTransform,
 }
 
-impl fmt::Display for ChartError {
+impl fmt::Display for PlotError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptySeriesId => formatter.write_str("series id must not be empty"),
@@ -51,7 +51,7 @@ impl fmt::Display for ChartError {
     }
 }
 
-impl Error for ChartError {}
+impl Error for PlotError {}
 
 /// Stable identity for one chart series.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -62,11 +62,11 @@ impl SeriesId {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::EmptySeriesId`] when the value is blank.
-    pub fn new(value: impl Into<String>) -> Result<Self, ChartError> {
+    /// Returns [`PlotError::EmptySeriesId`] when the value is blank.
+    pub fn new(value: impl Into<String>) -> Result<Self, PlotError> {
         let value = value.into();
         if value.trim().is_empty() {
-            return Err(ChartError::EmptySeriesId);
+            return Err(PlotError::EmptySeriesId);
         }
         Ok(Self(value))
     }
@@ -108,13 +108,13 @@ impl Series {
     /// # Errors
     ///
     /// Returns an error for non-finite coordinates or decreasing x values.
-    pub fn new(id: SeriesId, points: Vec<DataPoint>) -> Result<Self, ChartError> {
+    pub fn new(id: SeriesId, points: Vec<DataPoint>) -> Result<Self, PlotError> {
         for (index, point) in points.iter().enumerate() {
             if !point.x.is_finite() || !point.y.is_finite() {
-                return Err(ChartError::InvalidPoint { index });
+                return Err(PlotError::InvalidPoint { index });
             }
             if index > 0 && point.x < points[index - 1].x {
-                return Err(ChartError::UnsortedSeries { index });
+                return Err(PlotError::UnsortedSeries { index });
             }
         }
         Ok(Self { id, points })
@@ -155,12 +155,12 @@ const MIN_CONSTANT_Y_PADDING: f64 = 1e-9;
 ///
 /// # Errors
 ///
-/// Returns [`ChartError::InvalidRange`] when padding would produce a
+/// Returns [`PlotError::InvalidRange`] when padding would produce a
 /// non-finite range.
 pub fn visible_y_range(
     series: &[Series],
     x_range: AxisRange,
-) -> Result<Option<AxisRange>, ChartError> {
+) -> Result<Option<AxisRange>, PlotError> {
     visible_y_range_for(series, x_range)
 }
 
@@ -168,12 +168,12 @@ pub fn visible_y_range(
 ///
 /// # Errors
 ///
-/// Returns [`ChartError::InvalidRange`] when padding would produce a
+/// Returns [`PlotError::InvalidRange`] when padding would produce a
 /// non-finite range.
 pub fn visible_y_range_for<'a>(
     series: impl IntoIterator<Item = &'a Series>,
     x_range: AxisRange,
-) -> Result<Option<AxisRange>, ChartError> {
+) -> Result<Option<AxisRange>, PlotError> {
     let mut bounds: Option<(f64, f64)> = None;
     for series in series {
         let points = series.points();
@@ -215,7 +215,7 @@ pub fn visible_y_range_for<'a>(
 /// The fields are private so callers must use [`AxisRange::new`].
 ///
 /// ```compile_fail
-/// use seex_chart_core::AxisRange;
+/// use seex_plot::AxisRange;
 /// let _invalid = AxisRange { start: 1.0, end: 1.0 };
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -229,11 +229,11 @@ impl AxisRange {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidRange`] for an empty range, non-finite
+    /// Returns [`PlotError::InvalidRange`] for an empty range, non-finite
     /// endpoint, or overflowing span.
-    pub fn new(start: f64, end: f64) -> Result<Self, ChartError> {
+    pub fn new(start: f64, end: f64) -> Result<Self, PlotError> {
         if !start.is_finite() || !end.is_finite() || start >= end || !(end - start).is_finite() {
-            return Err(ChartError::InvalidRange);
+            return Err(PlotError::InvalidRange);
         }
         Ok(Self { start, end })
     }
@@ -269,7 +269,7 @@ impl Viewport {
 /// The fields are private so callers must use [`CanvasSize::new`].
 ///
 /// ```compile_fail
-/// use seex_chart_core::CanvasSize;
+/// use seex_plot::CanvasSize;
 /// let _invalid = CanvasSize { width: 0.0, height: 100.0 };
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -283,10 +283,10 @@ impl CanvasSize {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidCanvasSize`] for invalid dimensions.
-    pub fn new(width: f64, height: f64) -> Result<Self, ChartError> {
+    /// Returns [`PlotError::InvalidCanvasSize`] for invalid dimensions.
+    pub fn new(width: f64, height: f64) -> Result<Self, PlotError> {
         if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-            return Err(ChartError::InvalidCanvasSize);
+            return Err(PlotError::InvalidCanvasSize);
         }
         Ok(Self { width, height })
     }
@@ -313,15 +313,15 @@ impl LinearScale {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidOutputRange`] for a non-finite, empty, or
+    /// Returns [`PlotError::InvalidOutputRange`] for a non-finite, empty, or
     /// overflowing output interval.
-    pub fn new(domain: AxisRange, output_start: f64, output_end: f64) -> Result<Self, ChartError> {
+    pub fn new(domain: AxisRange, output_start: f64, output_end: f64) -> Result<Self, PlotError> {
         if !output_start.is_finite()
             || !output_end.is_finite()
             || output_start == output_end
             || !(output_end - output_start).is_finite()
         {
-            return Err(ChartError::InvalidOutputRange);
+            return Err(PlotError::InvalidOutputRange);
         }
         Ok(Self {
             domain,
@@ -382,7 +382,7 @@ pub fn build_path(
     series: &Series,
     viewport: Viewport,
     canvas: CanvasSize,
-) -> Result<Vec<ScreenPoint>, ChartError> {
+) -> Result<Vec<ScreenPoint>, PlotError> {
     let visible = series.visible_points(viewport.x);
     let x_scale = LinearScale::new(viewport.x, 0.0, canvas.width())?;
     let y_scale = LinearScale::new(viewport.y, canvas.height(), 0.0)?;
@@ -406,8 +406,8 @@ mod tests {
         let invalid = Series::new(id.clone(), vec![DataPoint::new(0.0, f64::NAN)]);
         let unsorted = Series::new(id, vec![DataPoint::new(2.0, 1.0), DataPoint::new(1.0, 2.0)]);
 
-        assert_eq!(invalid, Err(ChartError::InvalidPoint { index: 0 }));
-        assert_eq!(unsorted, Err(ChartError::UnsortedSeries { index: 1 }));
+        assert_eq!(invalid, Err(PlotError::InvalidPoint { index: 0 }));
+        assert_eq!(unsorted, Err(PlotError::UnsortedSeries { index: 1 }));
     }
 
     #[test]
@@ -500,7 +500,7 @@ mod tests {
 
         assert_eq!(
             visible_y_range(&[series], range(1.0, 2.0)),
-            Err(ChartError::InvalidRange)
+            Err(PlotError::InvalidRange)
         );
     }
 
@@ -533,7 +533,7 @@ mod tests {
     fn axis_range_rejects_overflowing_span() {
         assert_eq!(
             AxisRange::new(-f64::MAX, f64::MAX),
-            Err(ChartError::InvalidRange)
+            Err(PlotError::InvalidRange)
         );
     }
 
@@ -541,7 +541,7 @@ mod tests {
     fn linear_scale_rejects_overflowing_output_span() {
         assert_eq!(
             LinearScale::new(range(0.0, 1.0), -f64::MAX, f64::MAX),
-            Err(ChartError::InvalidOutputRange)
+            Err(PlotError::InvalidOutputRange)
         );
     }
 
@@ -569,10 +569,10 @@ mod tests {
 
     #[test]
     fn invariant_types_reject_invalid_dimensions() {
-        assert_eq!(AxisRange::new(1.0, 1.0), Err(ChartError::InvalidRange));
+        assert_eq!(AxisRange::new(1.0, 1.0), Err(PlotError::InvalidRange));
         assert_eq!(
             CanvasSize::new(0.0, 100.0),
-            Err(ChartError::InvalidCanvasSize)
+            Err(PlotError::InvalidCanvasSize)
         );
     }
 
