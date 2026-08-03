@@ -487,6 +487,8 @@ impl Render for SourceManagement {
                         div()
                             .id("choose-source")
                             .debug_selector(|| "choose-source".to_owned())
+                            .track_focus(&self.source_focus)
+                            .tab_index(if preflighting { -1 } else { 0 })
                             .h(theme.spacing.control_height)
                             .px_2()
                             .flex()
@@ -498,7 +500,6 @@ impl Render for SourceManagement {
                             .gap_2()
                             .when(!preflighting, |element| {
                                 element
-                                    .track_focus(&self.source_focus)
                                     .cursor_pointer()
                                     .on_click(cx.listener(|_, _, _, cx| {
                                         cx.emit(SourceManagementEvent::ChooseSource);
