@@ -218,7 +218,7 @@ impl ViewerApp {
                 Err(error) => {
                     app.session.update(cx, |session, cx| {
                         session.transient_error = Some(error.to_string());
-                        session.workbench_path = None;
+                        session.autosave_blocked = true;
                         session.publish_snapshot();
                         cx.notify();
                     });

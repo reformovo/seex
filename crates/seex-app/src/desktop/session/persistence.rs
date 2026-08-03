@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gpui::{AppContext, Context};
 
@@ -80,31 +81,86 @@ impl WorkbenchSession {
         layout: ViewerLayoutState,
         cx: &mut Context<Self>,
     ) {
-        self.layout = layout;
-        self.publish_semantic_snapshot();
+        if self.layout != layout {
+            self.layout = layout;
+            self.persistence_dirty = true;
+            self.publish_semantic_snapshot();
+        }
+        self.schedule_autosave(Duration::from_millis(250), cx);
+    }
+
+    #[expect(dead_code, reason = "used by the upcoming U6 import transaction")]
+    pub(crate) fn flush_now(&mut self, cx: &mut Context<Self>) {
+        self.flush_requested = true;
+        self.schedule_autosave(Duration::ZERO, cx);
+    }
+
+    fn schedule_autosave(&mut self, delay: Duration, cx: &mut Context<Self>) {
+        if self.autosave_blocked || self.autosave_in_flight || !self.persistence_dirty {
+            return;
+        }
         let Some(path) = self.workbench_path.clone() else {
             return;
         };
-        let document = self.semantic_snapshot().document.clone();
-        let encoded = document.encode();
+        let snapshot = self.semantic_snapshot();
+        let encoded = snapshot.document.encode();
         if self.last_saved_workbench.as_deref() == Some(&encoded) {
             self.persistence_dirty = false;
+            self.flush_requested = false;
             return;
         }
-        self.last_saved_workbench = Some(encoded);
-        self.persistence_dirty = false;
-        let save = cx.background_spawn(async move { document.save(&path) });
-        cx.spawn(async move |this, cx| {
-            if let Err(error) = save.await {
-                let _ = this.update(cx, |session, cx| {
+        let timer = cx.background_executor().timer(delay);
+        self.autosave_task = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            let request = this
+                .update(cx, |session, _| {
+                    if session.autosave_blocked || session.autosave_in_flight {
+                        return None;
+                    }
+                    session.autosave_in_flight = true;
+                    Some((snapshot, path, encoded))
+                })
+                .ok()
+                .flatten();
+            let Some((snapshot, path, encoded)) = request else {
+                return;
+            };
+            let revision = snapshot.revision;
+            let save = cx.background_spawn(async move { snapshot.document.save(&path) });
+            let result = save.await;
+            let _ = this.update(cx, |session, cx| {
+                session.autosave_in_flight = false;
+                let succeeded = result.is_ok();
+                if let Err(error) = result {
                     session.transient_error = Some(error.to_string());
                     session.persistence_dirty = true;
-                    session.publish_snapshot();
-                    cx.notify();
+                } else {
+                    session.last_saved_workbench = Some(encoded);
+                    session.persistence_dirty = session.semantic_snapshot.revision != revision;
+                }
+                cx.emit(super::WorkbenchSessionEvent::AutosaveFinished {
+                    revision,
+                    succeeded,
                 });
-            }
-        })
-        .detach();
+                session.publish_snapshot();
+                cx.notify();
+                if succeeded && session.persistence_dirty {
+                    let delay = if session.flush_requested {
+                        Duration::ZERO
+                    } else {
+                        Duration::from_millis(250)
+                    };
+                    let weak = cx.entity().downgrade();
+                    cx.defer(move |cx| {
+                        let _ = weak.update(cx, |session, cx| {
+                            session.schedule_autosave(delay, cx);
+                        });
+                    });
+                } else if succeeded {
+                    session.flush_requested = false;
+                }
+            });
+        }));
     }
 }
 

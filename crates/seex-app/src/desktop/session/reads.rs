@@ -337,6 +337,12 @@ impl ViewerApp {
                     }
                 }
             }
+            WorkbenchSessionEvent::AutosaveFinished {
+                revision,
+                succeeded,
+            } => {
+                let _ = (revision, succeeded);
+            }
         }
         cx.notify();
     }

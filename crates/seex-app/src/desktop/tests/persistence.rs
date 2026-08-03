@@ -133,6 +133,7 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
             cx.notify();
         })
         .expect("viewer should remain open");
+    cx.executor().advance_clock(Duration::from_millis(250));
     let mut loaded = None;
     for _ in 0..1_000 {
         cx.run_until_parked();
@@ -200,6 +201,65 @@ fn semantic_snapshot_excludes_machine_and_transient_state(cx: &mut TestAppContex
     ] {
         assert!(!encoded.contains(excluded));
     }
+}
+
+#[gpui::test]
+fn autosave_coalesces_latest_revision_and_respects_blocked_documents(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().expect("test directory should be created");
+    let path = root.path().join("workbench.toml");
+    let blocked_path = root.path().join("blocked.toml");
+    std::fs::write(&blocked_path, "schema_version = 99\n")
+        .expect("invalid workbench should be written");
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, session_cx| {
+                session.workbench_path = Some(path.clone());
+                for name in ["First", "Latest"] {
+                    let view_id = session.views.active().view_id.clone();
+                    assert!(session.views.rename(&view_id, name));
+                    session.persistence_dirty = true;
+                    session.publish_semantic_snapshot();
+                    session.sync_layout_and_persist(session.layout, session_cx);
+                }
+            });
+        })
+        .expect("viewer should remain open");
+    cx.executor().advance_clock(Duration::from_millis(249));
+    cx.run_until_parked();
+    assert!(!path.exists());
+    cx.executor().advance_clock(Duration::from_millis(1));
+    for _ in 0..100 {
+        cx.run_until_parked();
+        if path.exists() {
+            break;
+        }
+    }
+    let saved = WorkbenchDocument::load(&path)
+        .expect("saved workbench should remain readable")
+        .expect("latest workbench should be saved");
+    assert_eq!(saved.views[0].name, "Latest");
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, session_cx| {
+                session.workbench_path = Some(blocked_path.clone());
+                session.autosave_blocked = true;
+                let view_id = session.views.active().view_id.clone();
+                assert!(session.views.rename(&view_id, "Blocked"));
+                session.persistence_dirty = true;
+                session.publish_semantic_snapshot();
+                session.sync_layout_and_persist(session.layout, session_cx);
+            });
+        })
+        .expect("viewer should remain open");
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(blocked_path).expect("blocked document should remain readable"),
+        "schema_version = 99\n"
+    );
 }
 
 #[gpui::test]

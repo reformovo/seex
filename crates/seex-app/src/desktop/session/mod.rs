@@ -150,6 +150,10 @@ pub(crate) struct WorkbenchSession {
     pub last_saved_workbench: Option<String>,
     pub layout: ViewerLayoutState,
     pub persistence_dirty: bool,
+    pub autosave_blocked: bool,
+    autosave_in_flight: bool,
+    flush_requested: bool,
+    autosave_task: Option<Task<()>>,
     snapshot: Arc<SessionSnapshot>,
     semantic_snapshot: Arc<SemanticWorkbenchSnapshot>,
 }
@@ -164,6 +168,7 @@ pub(crate) struct SessionReadEffect {
 #[derive(Clone, Debug)]
 pub(crate) enum WorkbenchSessionEvent {
     ReadApplied(SessionReadEffect),
+    AutosaveFinished { revision: u64, succeeded: bool },
 }
 
 impl EventEmitter<WorkbenchSessionEvent> for WorkbenchSession {}
@@ -193,6 +198,10 @@ impl WorkbenchSession {
             last_saved_workbench: None,
             layout,
             persistence_dirty: false,
+            autosave_blocked: false,
+            autosave_in_flight: false,
+            flush_requested: false,
+            autosave_task: None,
             snapshot,
             semantic_snapshot,
         }
