@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use gpui::{Context, KeyDownEvent};
+use gpui::{
+    App, Context, Entity, FocusHandle, HitboxBehavior, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, Pixels, SharedString, canvas, prelude::*,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct EditOutcome {
@@ -58,9 +61,59 @@ impl TextInput {
         self.select_all = true;
     }
 
-    pub fn move_to_end(&mut self) {
-        self.cursor = self.text.len();
+    pub fn move_to(&mut self, cursor: usize) {
+        self.cursor = cursor.min(self.text.len());
+        debug_assert!(self.text.is_char_boundary(self.cursor));
         self.select_all = false;
+    }
+
+    pub fn cursor_target(
+        input: Entity<Self>,
+        focus: FocusHandle,
+        left_inset: Pixels,
+    ) -> impl IntoElement {
+        let prepaint_input = input.clone();
+        canvas(
+            move |bounds, window, cx| {
+                let text: SharedString = prepaint_input.read(cx).text().replace('\n', " ").into();
+                let style = window.text_style();
+                let line = (!text.is_empty()).then(|| {
+                    window.text_system().shape_line(
+                        text.clone(),
+                        style.font_size.to_pixels(window.rem_size()),
+                        &[style.to_run(text.len())],
+                        None,
+                    )
+                });
+                (window.insert_hitbox(bounds, HitboxBehavior::Normal), line)
+            },
+            move |bounds, (hitbox, line), window, _cx: &mut App| {
+                let current_view = window.current_view();
+                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                    if event.button != MouseButton::Left
+                        || !phase.bubble()
+                        || !hitbox.is_hovered(window)
+                    {
+                        return;
+                    }
+                    let cursor = line.as_ref().map_or(0, |line| {
+                        line.closest_index_for_x(event.position.x - bounds.left())
+                    });
+                    input.update(cx, |input, cx| {
+                        input.move_to(cursor);
+                        input.start_blink(cx);
+                    });
+                    focus.focus(window);
+                    cx.notify(current_view);
+                    cx.stop_propagation();
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .right_0()
+        .bottom_0()
+        .left(left_inset)
     }
 
     pub fn edit(&mut self, event: &KeyDownEvent) -> EditOutcome {

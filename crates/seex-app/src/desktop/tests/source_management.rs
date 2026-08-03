@@ -1,4 +1,4 @@
-use gpui::{Modifiers, TestAppContext, px, size};
+use gpui::{Modifiers, TestAppContext, point, px, size};
 use seex::{Client, Project, RunId, RunOptions};
 
 use super::super::test_support::{open_viewer, saved_workbench, wait_for_viewer};
@@ -198,7 +198,10 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     let alias = cx
         .debug_bounds("source-alias-input")
         .expect("Alias input should render");
-    cx.simulate_click(alias.center(), Modifiers::default());
+    cx.simulate_click(
+        point(alias.origin.x + px(9.), alias.center().y),
+        Modifiers::default(),
+    );
     cx.simulate_keystrokes("local");
 
     let confirm = cx
@@ -239,7 +242,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     let saved = saved
         .parse::<toml_edit::DocumentMut>()
         .expect("Source config should remain valid TOML");
-    let projects = saved["sources"]["researchlocal"]["projects"]
+    let projects = saved["sources"]["localresearch"]["projects"]
         .as_array()
         .expect("Source Project allowlist should be an array");
     assert_eq!(projects.len(), 1);

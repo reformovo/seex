@@ -159,6 +159,25 @@ fn project_filter_uses_placeholder_and_blinking_caret_states(cx: &mut TestAppCon
             .expect("viewer should remain open"),
         "viewexr"
     );
+    cx.simulate_click(
+        point(filter.origin.x + px(13.), filter.center().y),
+        Modifiers::default(),
+    );
+    cx.simulate_keystrokes("z");
+    assert_eq!(
+        window
+            .read_with(&cx, |viewer, cx| {
+                viewer
+                    .project_sidebar
+                    .read(cx)
+                    .filter
+                    .read(cx)
+                    .text()
+                    .to_owned()
+            })
+            .expect("viewer should remain open"),
+        "zviewexr"
+    );
     let prefix = cx
         .debug_bounds("project-run-filter-value")
         .expect("filter value before the cursor should render");

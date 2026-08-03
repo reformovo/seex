@@ -297,15 +297,6 @@ impl SourceManagement {
         }
     }
 
-    fn focus_alias(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.alias.update(cx, |input, cx| {
-            input.move_to_end();
-            input.start_blink(cx);
-        });
-        self.alias_focus.focus(window);
-        cx.notify();
-    }
-
     fn handle_dialog_key(
         &mut self,
         event: &KeyDownEvent,
@@ -537,6 +528,7 @@ impl Render for SourceManagement {
                             .debug_selector(|| "source-alias-input".to_owned())
                             .track_focus(&self.alias_focus)
                             .h(theme.spacing.control_height)
+                            .relative()
                             .px_2()
                             .flex()
                             .items_center()
@@ -545,9 +537,6 @@ impl Render for SourceManagement {
                             .rounded(theme.spacing.corner_radius)
                             .cursor_text()
                             .on_key_down(cx.listener(Self::edit_alias))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.focus_alias(window, cx);
-                            }))
                             .children(alias_select_all.then(|| {
                                 div()
                                     .id("source-alias-selection")
@@ -568,6 +557,11 @@ impl Render for SourceManagement {
                                     .bg(theme.colors.text)
                             }))
                             .children((!alias_select_all).then(|| div().child(alias_suffix)))
+                            .child(TextInput::cursor_target(
+                                self.alias.clone(),
+                                self.alias_focus.clone(),
+                                px(8.),
+                            ))
                     }))
                     .children(
                         matches!(mode, SourceMode::Manage)

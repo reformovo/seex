@@ -178,6 +178,7 @@ impl Render for AnalysisViewBar {
                                 .id(SharedString::from(format!("rename-view:{}", view.view_id)))
                                 .debug_selector(|| "rename-view-input".to_owned())
                                 .track_focus(&focus)
+                                .relative()
                                 .flex_1()
                                 .min_w(px(0.))
                                 .px_1()
@@ -186,7 +187,6 @@ impl Render for AnalysisViewBar {
                                 .items_center()
                                 .cursor_text()
                                 .on_key_down(cx.listener(Self::on_view_name_key))
-                                .on_click(|_, _, cx| cx.stop_propagation())
                                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                                     this.finish_rename_analysis_view(true, cx);
                                 }))
@@ -226,6 +226,11 @@ impl Render for AnalysisViewBar {
                                         .debug_selector(|| "rename-view-suffix".to_owned())
                                         .child(view_name_suffix.clone())
                                 }))
+                                .child(TextInput::cursor_target(
+                                    name_input.clone(),
+                                    focus.clone(),
+                                    px(4.),
+                                ))
                         } else {
                             div()
                                 .id(SharedString::from(format!("view-name:{}", view.view_id)))

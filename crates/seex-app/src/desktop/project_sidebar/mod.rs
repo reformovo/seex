@@ -231,7 +231,6 @@ impl ProjectSidebar {
         let (filter_prefix, filter_suffix) = filter_text.split_at(filter_cursor);
         let filter_prefix = filter_prefix.to_owned();
         let filter_suffix = filter_suffix.to_owned();
-        let click_filter_focus = filter_focus.clone();
         let filter_focused = filter_focus.is_focused(window);
 
         let mut resources = div()
@@ -492,6 +491,7 @@ impl ProjectSidebar {
                             .debug_selector(|| "project-run-filter".to_owned())
                             .track_focus(&filter_focus)
                             .cursor_text()
+                            .relative()
                             .px_3()
                             .h(theme.spacing.control_height)
                             .w_full()
@@ -503,14 +503,6 @@ impl ProjectSidebar {
                             .border_1()
                             .border_color(theme.colors.border)
                             .on_key_down(cx.listener(Self::on_filter_key))
-                            .on_click(cx.listener(move |_this, _, window, cx| {
-                                filter_input.update(cx, |input, cx| {
-                                    input.move_to_end();
-                                    input.start_blink(cx);
-                                });
-                                click_filter_focus.focus(window);
-                                cx.notify();
-                            }))
                             .children((!filter_focused && filter_text.is_empty()).then(|| {
                                 div()
                                     .id("project-run-filter-placeholder")
@@ -542,7 +534,12 @@ impl ProjectSidebar {
                                     .debug_selector(|| "project-run-filter-suffix".to_owned())
                                     .text_color(theme.colors.text)
                                     .child(filter_suffix)
-                            })),
+                            }))
+                            .child(TextInput::cursor_target(
+                                filter_input,
+                                filter_focus,
+                                px(12.),
+                            )),
                     ),
             )
             .child(resources)
