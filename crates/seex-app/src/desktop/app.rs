@@ -674,6 +674,7 @@ impl ViewerApp {
             SourceManagementEvent::ConfirmedWorkbench => self.confirm_workbench_import(cx),
             SourceManagementEvent::Cancelled => {
                 self.pending_workbench_import = None;
+                self.pending_import_flush_revision = None;
             }
         }
     }
@@ -827,7 +828,11 @@ impl ViewerApp {
 
     fn confirm_workbench_import(&mut self, cx: &mut Context<Self>) {
         if self.pending_workbench_import.is_none() {
-            self.report_source_error("Workbench import plan is unavailable".to_owned(), cx);
+            let error = "Workbench import plan is unavailable".to_owned();
+            self.source_management.update(cx, |management, cx| {
+                management.finish_workbench_save(error.clone(), cx);
+            });
+            self.report_source_error(error, cx);
             return;
         }
         let flush_revision = self
@@ -856,8 +861,11 @@ impl ViewerApp {
         };
         if !succeeded {
             self.pending_import_flush_revision = None;
-            self.pending_workbench_import = None;
-            self.report_source_error("Could not flush the current Workbench".to_owned(), cx);
+            let error = "Could not flush the current Workbench".to_owned();
+            self.source_management.update(cx, |management, cx| {
+                management.finish_workbench_save(error.clone(), cx);
+            });
+            self.report_source_error(error, cx);
             return;
         }
         if *revision < target {
@@ -925,29 +933,38 @@ impl ViewerApp {
     }
 
     fn persist_workbench_import(&mut self, cx: &mut Context<Self>) {
+        let Some(workbench_path) = self.session.read(cx).workbench_path.clone() else {
+            let error = "Current Workbench path is unavailable".to_owned();
+            self.source_management.update(cx, |management, cx| {
+                management.finish_workbench_save(error.clone(), cx);
+            });
+            self.report_source_error(error, cx);
+            return;
+        };
         let Some(mut pending) = self.pending_workbench_import.take() else {
             return;
         };
-        let Some(workbench_path) = self.session.read(cx).workbench_path.clone() else {
-            self.report_source_error("Current Workbench path is unavailable".to_owned(), cx);
-            return;
-        };
         let write = cx.background_spawn(async move {
-            if std::fs::read(&pending.external_path).map_err(|error| error.to_string())?
-                != pending.external_fingerprint
-            {
-                return Err("Imported Workbench changed after preflight".to_owned());
+            let result = (|| {
+                if std::fs::read(&pending.external_path).map_err(|error| error.to_string())?
+                    != pending.external_fingerprint
+                {
+                    return Err("Imported Workbench changed after preflight".to_owned());
+                }
+                let original = match std::fs::read(&workbench_path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.to_string()),
+                };
+                pending
+                    .configuration
+                    .save_with_workbench(&workbench_path, original, &pending.plan.document)
+                    .map_err(|error| error.to_string())
+            })();
+            match result {
+                Ok(()) => Ok(pending),
+                Err(error) => Err((pending, error)),
             }
-            let original = match std::fs::read(&workbench_path) {
-                Ok(bytes) => Some(bytes),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error.to_string()),
-            };
-            pending
-                .configuration
-                .save_with_workbench(&workbench_path, original, &pending.plan.document)
-                .map_err(|error| error.to_string())?;
-            Ok(pending)
         });
         cx.spawn(async move |this, cx| match write.await {
             Ok(pending) => {
@@ -959,11 +976,20 @@ impl ViewerApp {
                         session.replace_sources(sources, &[], session_cx);
                     });
                     viewer.restore_toml_workbench(pending.plan.document, cx);
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.complete_workbench_save(cx);
+                    });
                     cx.notify();
                 });
             }
-            Err(error) => {
-                let _ = this.update(cx, |viewer, cx| viewer.report_source_error(error, cx));
+            Err((pending, error)) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.pending_workbench_import = Some(pending);
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.finish_workbench_save(error.clone(), cx);
+                    });
+                    viewer.report_source_error(error, cx);
+                });
             }
         })
         .detach();

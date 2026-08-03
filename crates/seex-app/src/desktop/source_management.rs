@@ -52,6 +52,8 @@ pub(crate) struct SourceManagement {
     next_generation: u64,
     sources: Option<SourcesDraft>,
     workbench: Option<WorkbenchImportPlan>,
+    workbench_saving: bool,
+    workbench_error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -195,6 +197,8 @@ impl SourceManagement {
             next_generation: 1,
             sources: None,
             workbench: None,
+            workbench_saving: false,
+            workbench_error: None,
         }
     }
 
@@ -206,6 +210,8 @@ impl SourceManagement {
         cx: &mut Context<Self>,
     ) -> Vec<SourcePreflightRequest> {
         self.workbench = None;
+        self.workbench_saving = false;
+        self.workbench_error = None;
         let mut items = Vec::with_capacity(existing.len());
         let mut requests = Vec::with_capacity(existing.len());
         for source in existing {
@@ -515,10 +521,33 @@ impl SourceManagement {
         cx.notify();
     }
 
+    pub(crate) fn finish_workbench_save(&mut self, error: String, cx: &mut Context<Self>) {
+        self.workbench_saving = false;
+        self.workbench_error = Some(error);
+        cx.notify();
+    }
+
+    pub(crate) fn complete_workbench_save(&mut self, cx: &mut Context<Self>) {
+        self.workbench = None;
+        self.workbench_saving = false;
+        self.workbench_error = None;
+        cx.notify();
+    }
+
     #[cfg(feature = "test-support")]
     #[cfg_attr(not(test), expect(dead_code, reason = "used by GPUI black-box tests"))]
     pub(crate) fn is_open(&self) -> bool {
         self.sources.is_some() || self.workbench.is_some()
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    pub(crate) fn is_workbench_saving(&self) -> bool {
+        self.workbench.is_some() && self.workbench_saving
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    pub(crate) fn confirm_workbench_for_test(&mut self, cx: &mut Context<Self>) {
+        self.confirm_workbench(cx);
     }
 
     #[cfg(all(test, feature = "test-support"))]
@@ -563,6 +592,8 @@ impl SourceManagement {
     pub(crate) fn begin_workbench(&mut self, plan: WorkbenchImportPlan, cx: &mut Context<Self>) {
         self.sources = None;
         self.workbench = Some(plan);
+        self.workbench_saving = false;
+        self.workbench_error = None;
         cx.notify();
     }
 
@@ -684,19 +715,25 @@ impl SourceManagement {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
-        if self.sources.as_ref().is_some_and(|draft| draft.saving) {
+        if self.sources.as_ref().is_some_and(|draft| draft.saving) || self.workbench_saving {
             return;
         }
         self.next_generation = self.next_generation.saturating_add(1);
         self.alias.update(cx, |input, cx| input.stop_blink(cx));
         self.sources = None;
         self.workbench = None;
+        self.workbench_saving = false;
+        self.workbench_error = None;
         cx.emit(SourceManagementEvent::Cancelled);
         cx.notify();
     }
 
     fn confirm_workbench(&mut self, cx: &mut Context<Self>) {
-        self.workbench = None;
+        if self.workbench.is_none() || self.workbench_saving {
+            return;
+        }
+        self.workbench_saving = true;
+        self.workbench_error = None;
         cx.emit(SourceManagementEvent::ConfirmedWorkbench);
         cx.notify();
     }
@@ -773,7 +810,14 @@ fn validate_alias(draft: &SourcesDraft, id: u64, alias: &str) -> Result<SourceAl
 impl Render for SourceManagement {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(plan) = self.workbench.as_ref() {
-            return render_workbench_import(plan, window, cx).into_any_element();
+            return render_workbench_import(
+                plan,
+                self.workbench_saving,
+                self.workbench_error.as_deref(),
+                window,
+                cx,
+            )
+            .into_any_element();
         }
         let Some(draft) = self.sources.clone() else {
             return div().into_any_element();
@@ -1273,6 +1317,8 @@ fn render_projects(
 
 fn render_workbench_import(
     plan: &WorkbenchImportPlan,
+    saving: bool,
+    error: Option<&str>,
     window: &Window,
     cx: &mut Context<SourceManagement>,
 ) -> gpui::AnyElement {
@@ -1322,6 +1368,13 @@ fn render_workbench_import(
                 "No allowlist changes",
                 theme,
             ))
+            .children(error.map(|error| {
+                div()
+                    .id("workbench-import-error")
+                    .debug_selector(|| "workbench-import-error".to_owned())
+                    .text_color(theme.colors.error_text)
+                    .child(error.to_owned())
+            }))
             .child(
                 div()
                     .flex()
@@ -1333,21 +1386,25 @@ fn render_workbench_import(
                             "Cancel",
                             theme,
                             DialogButtonKind::Secondary,
-                            false,
+                            saving,
                         )
-                        .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                        .when(!saving, |button| {
+                            button.on_click(cx.listener(|this, _, _, cx| this.cancel(cx)))
+                        }),
                     )
                     .child(
                         components::dialog_button(
                             "confirm-workbench-import",
-                            "Import",
+                            if saving { "Importing…" } else { "Import" },
                             theme,
                             DialogButtonKind::Primary,
-                            false,
+                            saving,
                         )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.confirm_workbench(cx);
-                        })),
+                        .when(!saving, |button| {
+                            button.on_click(cx.listener(|this, _, _, cx| {
+                                this.confirm_workbench(cx);
+                            }))
+                        }),
                     ),
             ),
         )

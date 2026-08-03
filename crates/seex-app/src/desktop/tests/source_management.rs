@@ -1176,10 +1176,21 @@ fn workbench_import_confirms_rewrites_and_replaces_blocked_live_state(cx: &mut T
             assert_eq!(plan.allowlist_additions.len(), 1);
         })
         .expect("viewer should remain open");
-    let confirm = cx
-        .debug_bounds("confirm-workbench-import")
-        .expect("import confirmation should render");
-    cx.simulate_click(confirm.center(), Modifiers::default());
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.confirm_workbench_for_test(cx);
+            });
+        })
+        .expect("viewer should remain open");
+    window
+        .read_with(&cx, |viewer, cx| {
+            assert!(viewer.source_management.read(cx).is_workbench_saving());
+        })
+        .expect("viewer should remain open");
+    cx.refresh()
+        .expect("saving import confirmation should render");
+    assert!(cx.debug_bounds("workbench-import-dialog").is_some());
     wait_for_viewer(window, &cx, |viewer, cx| {
         let session = viewer.session.read(cx);
         session.views.active().name == "Imported"
@@ -1426,6 +1437,15 @@ fn invalid_or_unwritable_workbench_import_keeps_live_state(cx: &mut TestAppConte
             .as_ref()
             .is_some_and(|error| error.contains("directory"))
     });
+    cx.refresh()
+        .expect("failed import confirmation should render");
+    assert!(cx.debug_bounds("workbench-import-dialog").is_some());
+    assert!(cx.debug_bounds("workbench-import-error").is_some());
+    window
+        .read_with(&cx, |viewer, cx| {
+            assert!(!viewer.source_management.read(cx).is_workbench_saving());
+        })
+        .expect("viewer should remain open");
     assert_ne!(
         window
             .read_with(&cx, |viewer, cx| viewer
