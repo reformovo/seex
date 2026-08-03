@@ -59,7 +59,6 @@ pub(crate) struct ProjectSidebar {
 pub(crate) enum ProjectSidebarEvent {
     Command(WorkbenchCommand),
     OpenSources,
-    ManageSource(DataSourceId),
     RemoveProject(ProjectRef),
     DismissOtherPopovers,
     HoveredRun {
@@ -784,12 +783,6 @@ impl ProjectSidebar {
         cx.notify();
     }
 
-    fn manage_source(&mut self, source_id: DataSourceId, cx: &mut Context<Self>) {
-        self.menu = None;
-        cx.emit(ProjectSidebarEvent::ManageSource(source_id));
-        cx.notify();
-    }
-
     fn project_listing_runs(&self, project: &SidebarProject) -> Vec<RunRef> {
         let Some(session) = self.snapshot.as_ref() else {
             return Vec::new();
@@ -1039,10 +1032,7 @@ impl ViewerApp {
             ProjectSidebarEvent::Command(command) => {
                 self.dispatch_workbench_command(command.clone(), cx);
             }
-            ProjectSidebarEvent::OpenSources => self.open_source_import(window, cx),
-            ProjectSidebarEvent::ManageSource(source_id) => {
-                self.manage_source_projects(source_id.clone(), window, cx);
-            }
+            ProjectSidebarEvent::OpenSources => self.open_sources(window, cx),
             ProjectSidebarEvent::RemoveProject(project) => {
                 self.confirm_remove_project(project.clone(), window, cx);
             }

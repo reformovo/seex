@@ -653,7 +653,6 @@ impl ProjectSidebar {
         let placement_ref = project.project_ref.clone();
         let archive_ref = project.project_ref.clone();
         let remove_ref = project.project_ref.clone();
-        let manage_source = project.project_ref.source_id.clone();
 
         components::popover(theme)
             .id(SharedString::from(format!(
@@ -774,19 +773,6 @@ impl ProjectSidebar {
                     cx.notify();
                 }))
             }))
-            .child(
-                sidebar_menu_item(
-                    "manage-source-projects",
-                    "Manage source projects",
-                    IconName::Folder,
-                    theme,
-                )
-                .debug_selector(|| "manage-source-projects".to_owned())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.manage_source(manage_source.clone(), cx);
-                    cx.stop_propagation();
-                })),
-            )
             .child(
                 sidebar_menu_item("remove-project", "Remove project", IconName::Close, theme)
                     .on_click(cx.listener(move |this, _, _, cx| {
