@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui::{Context, EventEmitter, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px};
 use seex::{Project, ProjectId};
 
-use crate::config::same_source_path;
+use crate::config::{ConfiguredSource, same_source_path};
 use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
 use crate::workbench::import::WorkbenchImportPlan;
@@ -44,7 +44,8 @@ struct SourceDraft {
     selected: HashSet<ProjectId>,
     preflighting: Option<(u64, PathBuf)>,
     source_error: Option<String>,
-    existing_sources: Vec<(SourceAlias, PathBuf)>,
+    existing_sources: Vec<ConfiguredSource>,
+    imported_projects: HashMap<ProjectId, SourceAlias>,
     validation_error: Option<String>,
 }
 
@@ -72,7 +73,7 @@ impl SourceManagement {
 
     pub(crate) fn begin_import(
         &mut self,
-        existing_sources: Vec<(SourceAlias, PathBuf)>,
+        existing_sources: Vec<ConfiguredSource>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -89,6 +90,7 @@ impl SourceManagement {
             preflighting: None,
             source_error: None,
             existing_sources,
+            imported_projects: HashMap::new(),
             validation_error: None,
         });
         self.source_generation = self.source_generation.saturating_add(1);
@@ -133,16 +135,18 @@ impl SourceManagement {
         draft.preflighting = None;
         match result {
             Ok((preflight, alias)) => {
-                if let Some((existing_alias, _)) = draft
+                draft.imported_projects = draft
                     .existing_sources
                     .iter()
-                    .find(|(_, root_path)| same_source_path(root_path, &preflight.root_path))
-                {
-                    draft.source_error =
-                        Some(format!("Source is already imported as {existing_alias}"));
-                    cx.notify();
-                    return;
-                }
+                    .filter(|source| same_source_path(&source.root_path, &preflight.root_path))
+                    .flat_map(|source| {
+                        source
+                            .projects
+                            .iter()
+                            .cloned()
+                            .map(|project_id| (project_id, source.alias.clone()))
+                    })
+                    .collect();
                 draft.root_path = Some(preflight.root_path);
                 draft.projects = preflight.projects;
                 draft.selected.clear();
@@ -191,6 +195,7 @@ impl SourceManagement {
             preflighting: None,
             source_error: None,
             existing_sources: Vec::new(),
+            imported_projects: HashMap::new(),
             validation_error: None,
         });
         self.alias_focus.focus(window);
@@ -213,6 +218,9 @@ impl SourceManagement {
         let Some(draft) = self.draft.as_mut() else {
             return;
         };
+        if draft.imported_projects.contains_key(&project_id) {
+            return;
+        }
         if !draft.selected.insert(project_id.clone()) {
             draft.selected.remove(&project_id);
         }
@@ -227,6 +235,7 @@ impl SourceManagement {
         draft.selected = draft
             .projects
             .iter()
+            .filter(|project| !draft.imported_projects.contains_key(&project.project_id))
             .map(|project| project.project_id.clone())
             .collect();
         draft.validation_error = None;
@@ -344,7 +353,7 @@ fn validate_alias(draft: &SourceDraft, alias: &str) -> Result<SourceAlias, &'sta
     if draft
         .existing_sources
         .iter()
-        .any(|(existing, _)| existing == &alias)
+        .any(|existing| existing.alias == alias)
     {
         return Err("Source alias is already configured");
     }
@@ -468,8 +477,12 @@ impl Render for SourceManagement {
         let mode = draft.mode;
         let projects = draft.projects.clone();
         let selected = draft.selected.clone();
+        let imported_projects = draft.imported_projects.clone();
         let selected_count = selected.len();
-        let project_count = projects.len();
+        let project_count = projects
+            .iter()
+            .filter(|project| !imported_projects.contains_key(&project.project_id))
+            .count();
         let has_projects = !projects.is_empty();
         let preflighting = draft.preflighting.is_some();
         let source_error = draft.source_error.clone();
@@ -651,6 +664,8 @@ impl Render for SourceManagement {
                             .children(projects.into_iter().map(|project| {
                                 let project_id = project.project_id.clone();
                                 let checked = selected.contains(&project_id);
+                                let imported_as = imported_projects.get(&project_id).cloned();
+                                let selectable = imported_as.is_none();
                                 let selector = format!("source-project:{}", project_id.as_str());
                                 let id_selector =
                                     format!("source-project-id:{}", project_id.as_str());
@@ -665,11 +680,14 @@ impl Render for SourceManagement {
                                     .gap_2()
                                     .flex()
                                     .items_center()
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(theme.colors.element_hover))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.toggle_project(project_id.clone(), cx);
-                                    }))
+                                    .when(!selectable, |row| row.opacity(0.55).cursor_default())
+                                    .when(selectable, |row| {
+                                        row.cursor_pointer()
+                                            .hover(|style| style.bg(theme.colors.element_hover))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.toggle_project(project_id.clone(), cx);
+                                            }))
+                                    })
                                     .child(
                                         div()
                                             .min_w(px(0.))
@@ -685,7 +703,15 @@ impl Render for SourceManagement {
                                                     .debug_selector(move || id_selector.clone())
                                                     .truncate()
                                                     .text_color(theme.colors.text_muted)
-                                                    .child(project.project_id.as_str().to_owned()),
+                                                    .child(imported_as.map_or_else(
+                                                        || project.project_id.as_str().to_owned(),
+                                                        |alias| {
+                                                            format!(
+                                                                "{} · Already imported as {alias}",
+                                                                project.project_id.as_str()
+                                                            )
+                                                        },
+                                                    )),
                                             ),
                                     )
                                     .child(components::checkbox(checkbox_selector, theme, checked))

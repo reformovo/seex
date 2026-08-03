@@ -3,6 +3,7 @@ use seex::{Client, Project, RunId, RunOptions};
 
 use super::super::test_support::{open_viewer, saved_workbench, wait_for_viewer};
 use super::*;
+use crate::config::ConfiguredSource;
 use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
 
@@ -116,10 +117,11 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
         .update(&mut cx, |viewer, window, cx| {
             viewer.source_management.update(cx, |management, cx| {
                 management.begin_import(
-                    vec![(
-                        SourceAlias::new("research").expect("test alias should be valid"),
-                        scope.path().join("configured-source"),
-                    )],
+                    vec![ConfiguredSource {
+                        alias: SourceAlias::new("research").expect("test alias should be valid"),
+                        root_path: scope.path().join("configured-source"),
+                        projects: vec![ProjectId::from_string("configured")],
+                    }],
                     window,
                     cx,
                 );
@@ -256,29 +258,38 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn source_confirmation_rejects_an_already_configured_directory(cx: &mut TestAppContext) {
-    let source = tempfile::tempdir().expect("test Source should be created");
+fn source_confirmation_disables_imported_projects_but_allows_new_ones(cx: &mut TestAppContext) {
+    let (source, one, two) = source_with_two_projects();
     let scope = tempfile::tempdir().expect("test scope should be created");
     let alias = SourceAlias::new("research").expect("test alias should be valid");
     let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
     window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.save_confirmed_source(
+                ConfirmedSource {
+                    manage: false,
+                    alias: alias.clone(),
+                    root_path: source.path().to_owned(),
+                    projects: vec![one.clone()],
+                },
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        !viewer.session_snapshot(cx).sources.is_empty()
+    });
+    window
         .update(&mut cx, |viewer, window, cx| {
+            viewer.open_source_import(window, cx);
             viewer.source_management.update(cx, |management, cx| {
-                management.begin_import(
-                    vec![(alias.clone(), source.path().to_owned())],
-                    window,
-                    cx,
-                );
                 let generation = management
                     .begin_source_preflight(source.path().to_owned(), cx)
                     .expect("open confirmation should accept preflight");
                 management.finish_source_preflight(
                     generation,
                     Ok((
-                        SourcePreflight {
-                            root_path: source.path().to_owned(),
-                            projects: Vec::new(),
-                        },
+                        SourcePreflight::load(source.path()).expect("Source should preflight"),
                         SourceAlias::new("research-2").expect("suggested alias should be valid"),
                     )),
                     window,
@@ -289,7 +300,10 @@ fn source_confirmation_rejects_an_already_configured_directory(cx: &mut TestAppC
         .expect("viewer should remain open");
     cx.refresh().expect("confirmation should render");
 
-    assert!(cx.debug_bounds("source-selection-error").is_some());
+    let imported = cx
+        .debug_bounds("source-project:one")
+        .expect("imported Project should remain visible");
+    cx.simulate_click(imported.center(), Modifiers::default());
     let confirm = cx
         .debug_bounds("confirm-source")
         .expect("disabled Import control should render");
@@ -302,6 +316,18 @@ fn source_confirmation_rejects_an_already_configured_directory(cx: &mut TestAppC
                 .is_open())
             .expect("viewer should remain open")
     );
+
+    let available = cx
+        .debug_bounds("source-project:two")
+        .expect("new Project should remain selectable");
+    cx.simulate_click(available.center(), Modifiers::default());
+    cx.simulate_click(confirm.center(), Modifiers::default());
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.session_snapshot(cx).sources.iter().any(|source| {
+            source.source_id.alias().as_str() == "research-2"
+                && source.project_allowlist == [two.clone()]
+        })
+    });
 }
 
 #[gpui::test]

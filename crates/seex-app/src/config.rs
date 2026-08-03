@@ -121,9 +121,12 @@ impl SourceConfiguration {
         root_path: &Path,
         projects: &[ProjectId],
     ) -> Result<(), ConfigEditError> {
-        if let Some(existing_alias) = source_path_conflict(&self.sources, alias, root_path) {
-            return Err(ConfigEditError::SourcePathConflict {
+        if let Some((existing_alias, project_id)) =
+            source_project_conflict(&self.sources, alias, root_path, projects)
+        {
+            return Err(ConfigEditError::SourceProjectConflict {
                 alias: alias.to_string(),
+                project_id: project_id.as_str().to_owned(),
                 existing_alias: existing_alias.to_string(),
             });
         }
@@ -316,7 +319,7 @@ fn load_source_configuration(
         )?;
     }
     let sources = sources.into_values().collect::<Vec<_>>();
-    validate_source_paths(&sources)?;
+    validate_source_projects(&sources)?;
     Ok(SourceConfiguration {
         global,
         project: project_document,
@@ -326,15 +329,17 @@ fn load_source_configuration(
     })
 }
 
-fn validate_source_paths(sources: &[OwnedConfiguredSource]) -> Result<(), ConfigEditError> {
+fn validate_source_projects(sources: &[OwnedConfiguredSource]) -> Result<(), ConfigEditError> {
     for source in sources {
-        if let Some(existing_alias) = source_path_conflict(
+        if let Some((existing_alias, project_id)) = source_project_conflict(
             sources,
             &source.configured.alias,
             &source.configured.root_path,
+            &source.configured.projects,
         ) {
-            return Err(ConfigEditError::SourcePathConflict {
+            return Err(ConfigEditError::SourceProjectConflict {
                 alias: source.configured.alias.to_string(),
+                project_id: project_id.as_str().to_owned(),
                 existing_alias: existing_alias.to_string(),
             });
         }
@@ -342,16 +347,24 @@ fn validate_source_paths(sources: &[OwnedConfiguredSource]) -> Result<(), Config
     Ok(())
 }
 
-fn source_path_conflict<'a>(
+fn source_project_conflict<'a, 'p>(
     sources: &'a [OwnedConfiguredSource],
     alias: &SourceAlias,
     root_path: &Path,
-) -> Option<&'a SourceAlias> {
-    sources
-        .iter()
-        .map(|source| &source.configured)
-        .find(|source| &source.alias != alias && same_source_path(&source.root_path, root_path))
-        .map(|source| &source.alias)
+    projects: &'p [ProjectId],
+) -> Option<(&'a SourceAlias, &'p ProjectId)> {
+    for source in sources.iter().map(|source| &source.configured) {
+        if &source.alias == alias || !same_source_path(&source.root_path, root_path) {
+            continue;
+        }
+        if let Some(project_id) = projects
+            .iter()
+            .find(|project_id| source.projects.contains(project_id))
+        {
+            return Some((&source.alias, project_id));
+        }
+    }
+    None
 }
 
 fn merge_sources(
@@ -667,9 +680,12 @@ pub enum ConfigEditError {
     InvalidSourceDefinition { alias: String },
     #[error("Source alias {alias} has conflicting global and project definitions")]
     SourceAliasConflict { alias: String },
-    #[error("Source path for alias {alias} is already configured as {existing_alias}")]
-    SourcePathConflict {
+    #[error(
+        "Project {project_id} for Source alias {alias} is already configured as {existing_alias}"
+    )]
+    SourceProjectConflict {
         alias: String,
+        project_id: String,
         existing_alias: String,
     },
     #[error("configuration path has no parent directory")]
@@ -808,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn source_configuration_rejects_duplicate_source_paths()
+    fn source_configuration_rejects_duplicate_projects_for_the_same_source()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let source_root = root.path().join("source");
@@ -829,11 +845,17 @@ mod tests {
 
         assert!(matches!(
             configuration.set_source(&second, &duplicate_root, std::slice::from_ref(&project)),
-            Err(ConfigEditError::SourcePathConflict {
+            Err(ConfigEditError::SourceProjectConflict {
                 alias,
+                project_id,
                 existing_alias,
-            }) if alias == "second" && existing_alias == "first"
+            }) if alias == "second" && project_id == "project" && existing_alias == "first"
         ));
+        configuration.set_source(
+            &second,
+            &duplicate_root,
+            &[ProjectId::from_string("other-project")],
+        )?;
 
         let config_path = root.path().join(".seex/config.toml");
         fs::create_dir_all(config_path.parent().ok_or("config parent")?)?;
@@ -841,14 +863,14 @@ mod tests {
             &config_path,
             format!(
                 "schema_version = 1\n[sources.first]\npath = {:?}\nprojects = ['one']\n\
-                 [sources.second]\npath = {:?}\nprojects = ['two']\n",
+                 [sources.second]\npath = {:?}\nprojects = ['one']\n",
                 source_root.to_string_lossy(),
                 source_root.to_string_lossy(),
             ),
         )?;
         assert!(matches!(
             SourceConfiguration::load_for_scope_at(None, Some(root.path())),
-            Err(ConfigEditError::SourcePathConflict { .. })
+            Err(ConfigEditError::SourceProjectConflict { .. })
         ));
         Ok(())
     }
