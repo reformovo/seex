@@ -103,6 +103,99 @@ impl SourceConfiguration {
             .collect()
     }
 
+    /// Adds or updates a Source in every document that owns its alias.
+    pub fn set_source(
+        &mut self,
+        alias: &SourceAlias,
+        root_path: &Path,
+        projects: &[ProjectId],
+    ) -> Result<(), ConfigEditError> {
+        let owners = self
+            .sources
+            .iter()
+            .find(|source| &source.configured.alias == alias)
+            .map(|source| source.owners.clone())
+            .unwrap_or_else(|| vec![self.active_scope()]);
+        for owner in &owners {
+            self.document_mut(*owner)?
+                .set_source(alias, root_path, projects)?;
+        }
+        let configured = ConfiguredSource {
+            alias: alias.clone(),
+            root_path: root_path.to_owned(),
+            projects: projects.to_vec(),
+        };
+        if let Some(source) = self
+            .sources
+            .iter_mut()
+            .find(|source| &source.configured.alias == alias)
+        {
+            source.configured = configured;
+        } else {
+            self.sources
+                .push(OwnedConfiguredSource { configured, owners });
+            self.sources.sort_by(|left, right| {
+                left.configured
+                    .alias
+                    .as_str()
+                    .cmp(right.configured.alias.as_str())
+            });
+        }
+        Ok(())
+    }
+
+    /// Removes one Project and deletes the Source definition when it becomes empty.
+    pub fn remove_project(
+        &mut self,
+        alias: &SourceAlias,
+        project_id: &ProjectId,
+    ) -> Result<(), ConfigEditError> {
+        let index = self
+            .sources
+            .iter()
+            .position(|source| &source.configured.alias == alias)
+            .ok_or_else(|| ConfigEditError::UnknownSource(alias.to_string()))?;
+        let source = self.sources[index].clone();
+        let mut projects = source.configured.projects.clone();
+        let previous = projects.len();
+        projects.retain(|project| project != project_id);
+        if projects.len() == previous {
+            return Err(ConfigEditError::UnknownProject(
+                project_id.as_str().to_owned(),
+            ));
+        }
+        for owner in &source.owners {
+            let document = self.document_mut(*owner)?;
+            if projects.is_empty() {
+                document.remove_source(alias);
+            } else {
+                document.set_source(alias, &source.configured.root_path, &projects)?;
+            }
+        }
+        if projects.is_empty() {
+            self.sources.remove(index);
+        } else {
+            self.sources[index].configured.projects = projects;
+        }
+        Ok(())
+    }
+
+    /// Atomically replaces all changed configuration documents after validating
+    /// every stale-read fingerprint.
+    pub fn save(&self) -> Result<(), ConfigEditError> {
+        save_documents(std::iter::once(&self.global).chain(self.project.as_ref()))
+    }
+
+    fn document_mut(&mut self, scope: ConfigScope) -> Result<&mut EditableConfig, ConfigEditError> {
+        match scope {
+            ConfigScope::Global => Ok(&mut self.global),
+            ConfigScope::Project => self
+                .project
+                .as_mut()
+                .ok_or(ConfigEditError::MissingProjectScope),
+        }
+    }
+
     fn load_for_scope_at(
         project_root: Option<&Path>,
         home: Option<&Path>,
@@ -303,6 +396,14 @@ impl EditableConfig {
         Ok(())
     }
 
+    pub fn remove_source(&mut self, alias: &SourceAlias) {
+        if let Some(sources) = self.document.get_mut("sources")
+            && let Some(sources) = sources.as_table_like_mut()
+        {
+            sources.remove(alias.as_str());
+        }
+    }
+
     /// Atomically saves the document if its original bytes are still current.
     ///
     /// # Errors
@@ -310,34 +411,87 @@ impl EditableConfig {
     /// Returns [`ConfigEditError::StaleRead`] rather than overwriting an
     /// external edit. I/O failures leave the destination untouched.
     pub fn save(&self) -> Result<(), ConfigEditError> {
-        let parent = self.path.parent().ok_or(ConfigEditError::MissingParent)?;
-        fs::create_dir_all(parent)?;
-        let temporary = temporary_path(&self.path);
-        let result = self.write_and_replace(&temporary);
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result
+        save_documents(std::iter::once(self))
     }
+}
 
-    fn write_and_replace(&self, temporary: &Path) -> Result<(), ConfigEditError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(temporary)?;
-        #[cfg(unix)]
-        if self.scope == ConfigScope::Global {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+struct StagedConfig<'a> {
+    document: &'a EditableConfig,
+    temporary: PathBuf,
+}
+
+fn save_documents<'a>(
+    documents: impl IntoIterator<Item = &'a EditableConfig>,
+) -> Result<(), ConfigEditError> {
+    let mut staged = Vec::new();
+    for document in documents {
+        let parent = document
+            .path
+            .parent()
+            .ok_or(ConfigEditError::MissingParent)?;
+        fs::create_dir_all(parent)?;
+        let temporary = temporary_path(&document.path);
+        let result = write_staged(document, &temporary);
+        if let Err(error) = result {
+            staged.iter().for_each(|item: &StagedConfig<'_>| {
+                let _ = fs::remove_file(&item.temporary);
+            });
+            return Err(error);
         }
-        file.write_all(self.document.to_string().as_bytes())?;
-        file.sync_all()?;
-        if read_optional(&self.path)? != self.original {
+        staged.push(StagedConfig {
+            document,
+            temporary,
+        });
+    }
+    for item in &staged {
+        if read_optional(&item.document.path)? != item.document.original {
+            staged.iter().for_each(|item| {
+                let _ = fs::remove_file(&item.temporary);
+            });
             return Err(ConfigEditError::StaleRead);
         }
-        fs::rename(temporary, &self.path)?;
-        Ok(())
     }
+    let mut promoted = Vec::new();
+    for item in &staged {
+        if let Err(error) = fs::rename(&item.temporary, &item.document.path) {
+            for previous in promoted.into_iter().rev() {
+                restore_original(previous)?;
+            }
+            staged.iter().for_each(|item| {
+                let _ = fs::remove_file(&item.temporary);
+            });
+            return Err(ConfigEditError::Io(error));
+        }
+        promoted.push(item.document);
+    }
+    Ok(())
+}
+
+fn restore_original(document: &EditableConfig) -> Result<(), ConfigEditError> {
+    match &document.original {
+        Some(bytes) => fs::write(&document.path, bytes)?,
+        None => match fs::remove_file(&document.path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ConfigEditError::Io(error)),
+        },
+    }
+    Ok(())
+}
+
+fn write_staged(document: &EditableConfig, temporary: &Path) -> Result<(), ConfigEditError> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temporary)?;
+    #[cfg(unix)]
+    if document.scope == ConfigScope::Global {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(document.document.to_string().as_bytes())?;
+    file.sync_all()?;
+    Ok(())
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, io::Error> {
@@ -370,6 +524,12 @@ pub enum ConfigEditError {
     SourceAliasConflict { alias: String },
     #[error("configuration path has no parent directory")]
     MissingParent,
+    #[error("project configuration is unavailable in the global Viewer scope")]
+    MissingProjectScope,
+    #[error("Source {0} is not configured")]
+    UnknownSource(String),
+    #[error("Project {0} is not imported")]
+    UnknownProject(String),
     #[error("configuration changed since it was read")]
     StaleRead,
     #[error("invalid configuration TOML: {0}")]
@@ -518,6 +678,60 @@ mod tests {
             fs::read_to_string(path)?,
             "schema_version = 1\n# external\n"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn multi_document_source_edits_are_all_or_nothing() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        let global_path = home.join(".seex/config.toml");
+        let project_path = project.join(".seex/config.toml");
+        fs::create_dir_all(global_path.parent().ok_or("global parent")?)?;
+        fs::create_dir_all(project_path.parent().ok_or("project parent")?)?;
+        let source_root = root.path().join("source");
+        let document = format!(
+            "schema_version = 1\n[sources.research]\npath = {:?}\nprojects = ['one', 'two']\n",
+            source_root.to_string_lossy()
+        );
+        fs::write(&global_path, &document)?;
+        fs::write(&project_path, &document)?;
+        let alias = SourceAlias::new("research")?;
+        let mut configuration =
+            SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        configuration.set_source(&alias, &source_root, &[ProjectId::from_string("one")])?;
+        fs::write(&project_path, "schema_version = 1\n# external\n")?;
+
+        assert!(matches!(
+            configuration.save(),
+            Err(ConfigEditError::StaleRead)
+        ));
+        assert_eq!(fs::read_to_string(&global_path)?, document);
+
+        fs::write(&project_path, &document)?;
+        let mut configuration =
+            SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        configuration.remove_project(&alias, &ProjectId::from_string("one"))?;
+        configuration.save()?;
+        for path in [&global_path, &project_path] {
+            let saved = fs::read_to_string(path)?.parse::<DocumentMut>()?;
+            assert_eq!(
+                saved["sources"]["research"]["projects"]
+                    .as_array()
+                    .and_then(|projects| projects.get(0))
+                    .and_then(toml_edit::Value::as_str),
+                Some("two")
+            );
+        }
+
+        let mut configuration =
+            SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        configuration.remove_project(&alias, &ProjectId::from_string("two"))?;
+        configuration.save()?;
+        for path in [&global_path, &project_path] {
+            assert!(!fs::read_to_string(path)?.contains("[sources.research]"));
+        }
         Ok(())
     }
 }
