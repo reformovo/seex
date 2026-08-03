@@ -55,7 +55,6 @@ pub fn run(project_path: Option<PathBuf>) {
                 KeyBinding::new("enter", ActivateSelection, Some(SELECTABLE_CONTEXT)),
                 KeyBinding::new("space", ActivateSelection, Some(SELECTABLE_CONTEXT)),
             ]);
-            cx.on_action(|_: &Quit, cx| cx.quit());
             cx.set_menus(menus());
             let bounds = Bounds::centered(None, size(px(1_200.), px(800.)), cx);
             let result = cx.open_window(

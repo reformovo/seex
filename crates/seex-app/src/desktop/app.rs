@@ -18,7 +18,7 @@ use gpui::{
 
 #[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
-use super::{ExportWorkbench, ImportSource, ImportWorkbench, ReloadSources};
+use super::{ExportWorkbench, ImportSource, ImportWorkbench, Quit, ReloadSources};
 
 #[path = "assets.rs"]
 mod assets;
@@ -78,6 +78,7 @@ pub(super) struct ViewerApp {
     source_configuration: Option<SourceConfiguration>,
     pending_workbench_import: Option<PendingWorkbenchImport>,
     pending_import_flush_revision: Option<u64>,
+    pending_quit_flush_revision: Option<u64>,
     project_root: Option<PathBuf>,
     pending_commands: Vec<command::WorkbenchCommand>,
     command_dispatch_pending: bool,
@@ -115,6 +116,7 @@ impl ViewerApp {
             source_configuration: None,
             pending_workbench_import: None,
             pending_import_flush_revision: None,
+            pending_quit_flush_revision: None,
             project_root: project_path.clone(),
             pending_commands: Vec::new(),
             command_dispatch_pending: false,
@@ -226,6 +228,7 @@ impl ViewerApp {
             cx.defer(move |cx| {
                 let _ = viewer.update(cx, |viewer, cx| {
                     viewer.handle_import_autosave_event(&event, cx);
+                    viewer.handle_quit_autosave_event(&event, cx);
                     viewer.handle_session_event(event, cx);
                 });
             });
@@ -642,6 +645,66 @@ impl ViewerApp {
         }
     }
 
+    fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_quit_flush_revision.is_some() {
+            return;
+        }
+        let flush_revision = self.session.update(cx, |session, cx| {
+            if session.autosave_blocked || !session.persistence_dirty {
+                None
+            } else {
+                let revision = session.semantic_snapshot().revision;
+                session.flush_now(cx);
+                Some(revision)
+            }
+        });
+        self.pending_quit_flush_revision = flush_revision;
+        if flush_revision.is_none() {
+            cx.quit();
+        }
+    }
+
+    fn handle_quit_autosave_event(
+        &mut self,
+        event: &WorkbenchSessionEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let WorkbenchSessionEvent::AutosaveFinished {
+            revision,
+            succeeded,
+        } = event
+        else {
+            return;
+        };
+        let Some(target) = self.pending_quit_flush_revision else {
+            return;
+        };
+        if !succeeded {
+            self.pending_quit_flush_revision = None;
+            self.report_source_error(
+                "Could not flush the Workbench before quitting".to_owned(),
+                cx,
+            );
+            return;
+        }
+        if *revision < target {
+            return;
+        }
+        let next_revision = self.session.update(cx, |session, cx| {
+            session.persistence_dirty.then(|| {
+                let revision = session.semantic_snapshot().revision;
+                session.flush_now(cx);
+                revision
+            })
+        });
+        if let Some(revision) = next_revision {
+            self.pending_quit_flush_revision = Some(revision);
+        } else {
+            self.pending_quit_flush_revision = None;
+            cx.quit();
+        }
+    }
+
     fn persist_workbench_import(&mut self, cx: &mut Context<Self>) {
         let Some(mut pending) = self.pending_workbench_import.take() else {
             return;
@@ -1044,6 +1107,7 @@ impl Render for ViewerApp {
             .on_action(cx.listener(Self::on_reload_sources))
             .on_action(cx.listener(Self::on_import_workbench))
             .on_action(cx.listener(Self::on_export_workbench))
+            .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
             .on_action(cx.listener(Self::on_toggle_metric_sidebar))
