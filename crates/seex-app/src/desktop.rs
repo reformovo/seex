@@ -15,7 +15,7 @@ actions!(
     seex_app,
     [
         Refresh,
-        ImportSource,
+        OpenSources,
         ReloadSources,
         ImportWorkbench,
         ExportWorkbench,
@@ -86,7 +86,7 @@ fn menus() -> Vec<Menu> {
         Menu {
             name: "File".into(),
             items: vec![
-                MenuItem::action("Import Source…", ImportSource),
+                MenuItem::action("Sources…", OpenSources),
                 MenuItem::action("Reload Sources", ReloadSources),
                 MenuItem::action("Import Workbench…", ImportWorkbench),
                 MenuItem::action("Export Workbench…", ExportWorkbench),

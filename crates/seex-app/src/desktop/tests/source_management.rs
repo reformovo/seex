@@ -8,15 +8,15 @@ use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
 
 #[gpui::test]
-fn import_source_control_opens_confirmation_before_path_prompt(cx: &mut TestAppContext) {
+fn sources_control_opens_confirmation_before_path_prompt(cx: &mut TestAppContext) {
     let scope = tempfile::tempdir().expect("test scope should be created");
     let (_window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
     cx.run_until_parked();
     cx.refresh().expect("test window should refresh");
 
     let import = cx
-        .debug_bounds("import-source")
-        .expect("Import Source control should render");
+        .debug_bounds("sources")
+        .expect("Sources control should render");
     cx.simulate_click(import.center(), Modifiers::default());
     cx.run_until_parked();
     cx.refresh().expect("test window should refresh");

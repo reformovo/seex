@@ -58,7 +58,7 @@ pub(crate) struct ProjectSidebar {
 #[derive(Clone, Debug)]
 pub(crate) enum ProjectSidebarEvent {
     Command(WorkbenchCommand),
-    ImportSource,
+    OpenSources,
     ManageSource(DataSourceId),
     RemoveProject(ProjectRef),
     DismissOtherPopovers,
@@ -442,19 +442,14 @@ impl ProjectSidebar {
                             .flex()
                             .items_center()
                             .child(
-                                components::top_bar_icon_button(
-                                    "import-source",
-                                    theme,
-                                    false,
-                                    false,
-                                )
-                                .debug_selector(|| "import-source".to_owned())
-                                .tooltip(components::label_tooltip("Import Source", theme))
-                                .on_click(cx.listener(|_this, _, _, cx| {
-                                    cx.emit(ProjectSidebarEvent::ImportSource);
-                                    cx.notify();
-                                }))
-                                .child(components::icon(IconName::Plus, theme)),
+                                components::top_bar_icon_button("sources", theme, false, false)
+                                    .debug_selector(|| "sources".to_owned())
+                                    .tooltip(components::label_tooltip("Sources", theme))
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ProjectSidebarEvent::OpenSources);
+                                        cx.notify();
+                                    }))
+                                    .child(components::icon(IconName::FolderOpen, theme)),
                             )
                             .child(
                                 components::top_bar_icon_button(
@@ -1044,7 +1039,7 @@ impl ViewerApp {
             ProjectSidebarEvent::Command(command) => {
                 self.dispatch_workbench_command(command.clone(), cx);
             }
-            ProjectSidebarEvent::ImportSource => self.open_source_import(window, cx),
+            ProjectSidebarEvent::OpenSources => self.open_source_import(window, cx),
             ProjectSidebarEvent::ManageSource(source_id) => {
                 self.manage_source_projects(source_id.clone(), window, cx);
             }

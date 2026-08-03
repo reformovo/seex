@@ -19,7 +19,7 @@ use seex::ProjectId;
 
 #[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
-use super::{ExportWorkbench, ImportSource, ImportWorkbench, Quit, ReloadSources};
+use super::{ExportWorkbench, ImportWorkbench, OpenSources, Quit, ReloadSources};
 
 #[path = "assets.rs"]
 mod assets;
@@ -443,7 +443,7 @@ impl ViewerApp {
         .detach();
     }
 
-    fn on_import_source(&mut self, _: &ImportSource, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_open_sources(&mut self, _: &OpenSources, window: &mut Window, cx: &mut Context<Self>) {
         self.open_source_import(window, cx);
     }
 
@@ -1260,7 +1260,7 @@ impl Render for ViewerApp {
                 }),
             )
             .on_action(cx.listener(Self::on_refresh))
-            .on_action(cx.listener(Self::on_import_source))
+            .on_action(cx.listener(Self::on_open_sources))
             .on_action(cx.listener(Self::on_reload_sources))
             .on_action(cx.listener(Self::on_import_workbench))
             .on_action(cx.listener(Self::on_export_workbench))
