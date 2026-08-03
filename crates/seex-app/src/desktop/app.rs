@@ -1,14 +1,17 @@
 use std::path::PathBuf;
 
+use crate::config::{ConfiguredSource, SourceConfiguration};
+use crate::data::SourcePreflight;
 #[cfg(all(test, feature = "test-support"))]
 use crate::data::registry::SourceStatus;
-use crate::domain::RunRef;
+use crate::domain::{RunRef, suggest_source_alias};
 use crate::workbench::toml_document::TomlWorkbenchDocument;
 use gpui::{
-    Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, Render, SharedString, Window,
-    div, prelude::*,
+    Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render,
+    SharedString, Window, div, prelude::*,
 };
 
+use super::ImportSource;
 #[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
 
@@ -49,7 +52,7 @@ use inspector::*;
 use interaction::WorkbenchInteraction;
 use project_sidebar::*;
 use session::{SessionSnapshot, ViewerLayoutState, WorkbenchSession, default_workbench_path};
-use source_management::SourceManagement;
+use source_management::{ConfirmedSource, SourceManagement, SourceManagementEvent};
 use theme::ViewerTheme;
 use view_bar::{AnalysisViewBar, AnalysisViewBarEvent};
 use workspace::*;
@@ -64,6 +67,7 @@ pub(super) struct ViewerApp {
     session: gpui::Entity<WorkbenchSession>,
     workspace: gpui::Entity<AnalysisWorkspace>,
     source_management: gpui::Entity<SourceManagement>,
+    source_configuration: Option<SourceConfiguration>,
     pending_commands: Vec<command::WorkbenchCommand>,
     command_dispatch_pending: bool,
     run_hover_revision: u64,
@@ -90,6 +94,7 @@ impl ViewerApp {
             session,
             workspace: cx.new(AnalysisWorkspace::new),
             source_management: cx.new(SourceManagement::new),
+            source_configuration: None,
             pending_commands: Vec::new(),
             command_dispatch_pending: false,
             run_hover_revision: 0,
@@ -127,10 +132,11 @@ impl ViewerApp {
             cx.notify();
         })
         .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &app.project_sidebar,
-            |this, _, event: &ProjectSidebarEvent, cx| {
-                this.handle_project_sidebar_event(event, cx);
+            window,
+            |this, _, event: &ProjectSidebarEvent, window, cx| {
+                this.handle_project_sidebar_event(event, window, cx);
             },
         )
         .detach();
@@ -176,6 +182,13 @@ impl ViewerApp {
         .detach();
         cx.observe(&app.source_management, |_, _, cx| cx.notify())
             .detach();
+        cx.subscribe(
+            &app.source_management,
+            |this, _, event: &SourceManagementEvent, cx| {
+                this.handle_source_management_event(event, cx);
+            },
+        )
+        .detach();
         cx.observe(&app.session, |this, _, cx| {
             this.sync_child_snapshots(cx);
             cx.notify();
@@ -209,8 +222,12 @@ impl ViewerApp {
                 }
             }
         }
-        match crate::config::load_sources_for_scope(project_path.as_deref()) {
-            Ok(sources) => app.open_configured_sources(sources, cx),
+        match SourceConfiguration::load_for_scope(project_path.as_deref()) {
+            Ok(configuration) => {
+                let sources = configuration.configured_sources();
+                app.source_configuration = Some(configuration);
+                app.open_configured_sources(sources, cx);
+            }
             Err(error) => {
                 app.session.update(cx, |session, cx| {
                     session.transient_error = Some(error.to_string());
@@ -295,6 +312,114 @@ impl ViewerApp {
             workspace.update_overview_widths(logical_width, physical_width, cx);
         });
     }
+
+    fn choose_source_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let existing = self
+            .source_configuration
+            .as_ref()
+            .map(|configuration| {
+                configuration
+                    .sources
+                    .iter()
+                    .map(|source| source.configured.alias.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Import Source".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let paths = match prompt.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let preflight = cx.background_spawn(async move { SourcePreflight::load(&path) });
+            let result = preflight.await;
+            let _ = this.update_in(cx, |viewer, window, cx| match result {
+                Ok(preflight) => {
+                    let alias = suggest_source_alias(&preflight.root_path, &existing);
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.begin(preflight, alias, window, cx);
+                    });
+                }
+                Err(error) => viewer.report_source_error(error.to_string(), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn on_import_source(&mut self, _: &ImportSource, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose_source_directory(window, cx);
+    }
+
+    fn handle_source_management_event(
+        &mut self,
+        event: &SourceManagementEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if let SourceManagementEvent::Confirmed(source) = event {
+            self.save_confirmed_source(source.clone(), cx);
+        }
+    }
+
+    fn save_confirmed_source(&mut self, source: ConfirmedSource, cx: &mut Context<Self>) {
+        let Some(mut candidate) = self.source_configuration.clone() else {
+            self.report_source_error("Viewer configuration is unavailable".to_owned(), cx);
+            return;
+        };
+        if let Err(error) = candidate.set_source(&source.alias, &source.root_path, &source.projects)
+        {
+            self.report_source_error(error.to_string(), cx);
+            return;
+        }
+        let configured = ConfiguredSource {
+            alias: source.alias,
+            root_path: source.root_path,
+            projects: source.projects,
+        };
+        let save = cx.background_spawn(async move { candidate.save().map(|()| candidate) });
+        cx.spawn(async move |this, cx| match save.await {
+            Ok(configuration) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.source_configuration = Some(configuration);
+                    viewer.open_configured_sources(vec![configured], cx);
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.report_source_error(error.to_string(), cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn report_source_error(&mut self, message: String, cx: &mut Context<Self>) {
+        self.session.update(cx, |session, cx| {
+            session.transient_error = Some(message);
+            session.publish_snapshot();
+            cx.notify();
+        });
+    }
 }
 
 impl Render for ViewerApp {
@@ -355,6 +480,7 @@ impl Render for ViewerApp {
                 }),
             )
             .on_action(cx.listener(Self::on_refresh))
+            .on_action(cx.listener(Self::on_import_source))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
             .on_action(cx.listener(Self::on_toggle_metric_sidebar))

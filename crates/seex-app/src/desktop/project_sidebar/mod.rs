@@ -59,6 +59,7 @@ pub(crate) struct ProjectSidebar {
 #[derive(Clone, Debug)]
 pub(crate) enum ProjectSidebarEvent {
     Command(WorkbenchCommand),
+    ImportSource,
     DismissOtherPopovers,
     HoveredRun {
         run: RunRef,
@@ -424,6 +425,11 @@ impl ProjectSidebar {
                                 )
                                 .debug_selector(|| "import-source".to_owned())
                                 .tooltip(components::label_tooltip("Import Source", theme))
+                                .cursor_pointer()
+                                .on_click(cx.listener(|_this, _, _, cx| {
+                                    cx.emit(ProjectSidebarEvent::ImportSource);
+                                    cx.notify();
+                                }))
                                 .child(components::icon(IconName::Plus, theme)),
                             )
                             .child(
@@ -987,12 +993,14 @@ impl ViewerApp {
     pub(super) fn handle_project_sidebar_event(
         &mut self,
         event: &ProjectSidebarEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             ProjectSidebarEvent::Command(command) => {
                 self.dispatch_workbench_command(command.clone(), cx);
             }
+            ProjectSidebarEvent::ImportSource => self.choose_source_directory(window, cx),
             ProjectSidebarEvent::DismissOtherPopovers => {
                 self.analysis_view_bar.update(cx, |bar, cx| {
                     if bar.menu.take().is_some() {

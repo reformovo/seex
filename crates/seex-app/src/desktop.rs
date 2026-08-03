@@ -15,6 +15,7 @@ actions!(
     seex_app,
     [
         Refresh,
+        ImportSource,
         ResetView,
         ToggleProjectSidebar,
         ToggleMetricSidebar,
@@ -82,7 +83,11 @@ fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "File".into(),
-            items: vec![MenuItem::action("Refresh", Refresh)],
+            items: vec![
+                MenuItem::action("Import Source…", ImportSource),
+                MenuItem::separator(),
+                MenuItem::action("Refresh", Refresh),
+            ],
         },
         Menu {
             name: "View".into(),

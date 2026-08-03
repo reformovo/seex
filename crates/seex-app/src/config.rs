@@ -28,6 +28,7 @@ pub struct OwnedConfiguredSource {
 }
 
 /// The fixed Viewer scope, editable documents, and merged Source definitions.
+#[derive(Clone)]
 pub struct SourceConfiguration {
     pub global: EditableConfig,
     pub project: Option<EditableConfig>,
@@ -37,6 +38,7 @@ pub struct SourceConfiguration {
 }
 
 /// One loaded configuration document and its exact stale-read fingerprint.
+#[derive(Clone)]
 pub struct EditableConfig {
     path: PathBuf,
     scope: ConfigScope,

@@ -9,6 +9,7 @@ use crate::domain::SourceAlias;
 #[gpui::test]
 fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
+    let scope = tempfile::tempdir().expect("test scope should be created");
     let timestamp = "2026-01-01T00:00:00Z"
         .parse()
         .expect("test timestamp should parse");
@@ -20,7 +21,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
             created_at: timestamp,
         })
         .collect();
-    let (window, mut cx) = open_viewer(cx, None);
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
     window
         .update(&mut cx, |viewer, window, cx| {
             viewer.source_management.update(cx, |management, cx| {
@@ -64,6 +65,13 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
         .debug_bounds("confirm-source")
         .expect("confirm control should remain rendered");
     cx.simulate_click(confirm.center(), Modifiers::default());
+    let config_path = scope.path().join(".seex/config.toml");
+    for _ in 0..100 {
+        cx.run_until_parked();
+        if config_path.exists() {
+            break;
+        }
+    }
     assert!(
         !window
             .read_with(&cx, |viewer, cx| viewer
@@ -71,5 +79,60 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
                 .read(cx)
                 .is_open())
             .expect("viewer should remain open")
+    );
+    let saved = std::fs::read_to_string(config_path).expect("Source config should be saved");
+    let saved = saved
+        .parse::<toml_edit::DocumentMut>()
+        .expect("Source config should remain valid TOML");
+    let projects = saved["sources"]["research"]["projects"]
+        .as_array()
+        .expect("Source Project allowlist should be an array");
+    assert_eq!(projects.len(), 1);
+    assert_eq!(
+        projects.get(0).and_then(toml_edit::Value::as_str),
+        Some("one")
+    );
+}
+
+#[gpui::test]
+fn failed_source_config_write_does_not_switch_live_sources(cx: &mut TestAppContext) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let source = tempfile::tempdir().expect("test Source should be created");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    let config_path = scope.path().join(".seex/config.toml");
+    std::fs::create_dir_all(
+        config_path
+            .parent()
+            .expect("test config should have a parent"),
+    )
+    .expect("test config directory should be created");
+    std::fs::write(&config_path, "schema_version = 1\n# external\n")
+        .expect("external edit should be written");
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.save_confirmed_source(
+                ConfirmedSource {
+                    alias: SourceAlias::new("research").expect("test alias should be valid"),
+                    root_path: source.path().to_owned(),
+                    projects: vec![ProjectId::from_string("project")],
+                },
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .sources
+                .is_empty())
+            .expect("viewer should remain open")
+    );
+    assert_eq!(
+        std::fs::read_to_string(config_path).expect("external config should remain readable"),
+        "schema_version = 1\n# external\n"
     );
 }

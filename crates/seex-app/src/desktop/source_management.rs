@@ -11,7 +11,6 @@ use super::components::TextInput;
 use super::theme::ViewerTheme;
 
 #[derive(Clone, Debug)]
-#[expect(dead_code, reason = "consumed by the next U6 source import slice")]
 pub(crate) struct ConfirmedSource {
     pub alias: SourceAlias,
     pub root_path: PathBuf,
@@ -19,7 +18,6 @@ pub(crate) struct ConfirmedSource {
 }
 
 #[derive(Clone, Debug)]
-#[expect(dead_code, reason = "consumed by the next U6 source import slice")]
 pub(crate) enum SourceManagementEvent {
     Confirmed(ConfirmedSource),
     Cancelled,
@@ -51,10 +49,6 @@ impl SourceManagement {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "invoked by the next U6 source import slice")
-    )]
     pub(crate) fn begin(
         &mut self,
         preflight: SourcePreflight,
