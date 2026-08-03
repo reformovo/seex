@@ -1,7 +1,7 @@
 use std::fmt;
 
-use seex_model::run::{Run, RunId, RunStatus};
-use seex_model::types::ProjectId;
+use seex::ProjectId;
+use seex::{Run, RunId, RunStatus};
 
 pub const MAX_SELECTED_RUNS: usize = 20;
 
@@ -137,8 +137,8 @@ pub enum SelectionError {
 
 #[cfg(test)]
 mod tests {
-    use seex_model::run::{Run, RunId, RunStatus};
-    use seex_model::types::ProjectId;
+    use seex::ProjectId;
+    use seex::{Run, RunId, RunStatus};
 
     use super::{
         DataSourceId, MAX_SELECTED_RUNS, RunRef, SelectionError, SourceAlias, SourceAliasError,

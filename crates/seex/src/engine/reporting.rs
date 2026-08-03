@@ -11,6 +11,11 @@ use crate::engine::EngineError;
 use crate::model::metric::{MetricKey, Step};
 use crate::model::run::RunId;
 
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "retained for crate-local reporter acceptance tests"
+)]
 const DEFAULT_METRIC_BUFFER_CAPACITY: usize = 65_536;
 const METRIC_BATCH_MAX_REPORTS: usize = 8_192;
 const METRIC_BATCH_MAX_AGE: Duration = Duration::from_millis(10);
@@ -32,6 +37,11 @@ pub struct MetricReporter {
 }
 
 impl MetricReporter {
+    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "retained for crate-local reporter acceptance tests"
+    )]
     pub fn open(connection: Arc<Mutex<ProjectConnection>>) -> Self {
         Self::open_with_capacity(connection, DEFAULT_METRIC_BUFFER_CAPACITY)
     }
@@ -67,6 +77,7 @@ impl MetricReporter {
         }
     }
 
+    #[cfg(test)]
     pub fn report_metric(
         &self,
         run_id: RunId,
@@ -175,6 +186,7 @@ impl MetricReporter {
         self.inner.diagnostics.set_flush_timed_out(run_id);
     }
 
+    #[cfg(test)]
     pub fn drain_for(&self, timeout: Duration) -> bool {
         self.drain(Some(timeout)).is_ok()
     }
@@ -230,6 +242,7 @@ impl MetricReporter {
             .saturating_sub(1))
     }
 
+    #[cfg(test)]
     pub fn shutdown_for(&self, timeout: Duration) -> bool {
         self.shutdown(Some(timeout)).is_ok()
     }

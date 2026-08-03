@@ -9,7 +9,7 @@ use crate::data::worker::{
     WorkerClosed,
 };
 use crate::domain::DataSourceId;
-use seex_model::types::ProjectId;
+use seex::ProjectId;
 
 const MAX_CONCURRENT_SOURCE_READS: usize = 4;
 
@@ -289,8 +289,8 @@ pub enum SourceRegistryError {
 mod tests {
     use std::path::Path;
 
-    use seex_model::run::{Run, RunId, RunStatus};
-    use seex_model::types::{Project, ProjectId};
+    use seex::{Project, ProjectId};
+    use seex::{Run, RunId, RunStatus};
 
     use crate::config::ConfiguredSource;
     use crate::data::CatalogSnapshot;

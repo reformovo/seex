@@ -522,7 +522,7 @@ fn project_filter_finds_runs_beyond_the_revealed_page(cx: &mut TestAppContext) {
     window
         .update(&mut cx, |viewer, _, cx| {
             let filter = viewer.project_sidebar.read(cx).filter.clone();
-            filter.update(cx, |input, _| input.set_text("viewer"));
+            filter.update(cx, |input, _| input.set_text("project"));
             cx.notify();
         })
         .expect("viewer should remain open");

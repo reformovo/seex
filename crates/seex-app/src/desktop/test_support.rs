@@ -1,5 +1,3 @@
-use std::error::Error;
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -8,13 +6,10 @@ use gpui::{
     Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point,
     px, size,
 };
-use seex_core::engine::client::NativeClient;
-use seex_model::alignment::AlignmentAxis;
-use seex_model::run::RunId;
-use seex_model::types::ProjectId;
-use seex_storage::ProjectConnection;
-use seex_storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
-use seex_storage::config::resolve_storage_config;
+use seex::AlignmentAxis;
+use seex::ProjectId;
+use seex::RunId;
+use seex::{Client, LogOptions, RunOptions};
 
 use crate::config::ConfiguredSource;
 use crate::data::worker::ReadKind;
@@ -32,20 +27,21 @@ pub(super) fn fixture(metric_count: usize) -> (tempfile::TempDir, ProjectId, Run
 
 pub(super) fn fixture_with_metric(metric_key: &str) -> (tempfile::TempDir, ProjectId, RunId) {
     let root = tempfile::tempdir().expect("test directory should be created");
-    let client = NativeClient::open(root.path()).expect("test client should open");
-    let project = client
-        .create_project("viewer", Some(ProjectId::from_string("project")))
-        .expect("test project should be created");
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should open");
     let run = client
-        .create_run(&project.project_id, "run", Some(RunId::from_string("run")))
+        .start_run(RunOptions::new("project").id("run").name("run"))
         .expect("test Run should be created");
-    client
-        .run_handle(run.clone())
-        .log_metric_at_step(metric_key, 0, 1.)
+    run.log_with([(metric_key, 1.)], LogOptions::new().step(0))
         .expect("test metric should be logged");
-    client.finish_run(&run.run_id).expect("Run should finish");
-    client.shutdown(None).expect("test client should shut down");
-    (root, project.project_id, run.run_id)
+    run.finish().expect("Run should finish");
+    client.shutdown().expect("test client should shut down");
+    (
+        root,
+        ProjectId::from_string("project"),
+        run.run_id().clone(),
+    )
 }
 
 pub(super) fn fixture_with_runs(
@@ -62,146 +58,75 @@ pub(super) fn fixture_with_complete_runs(
     fixture_with_run_coverage(metric_count, run_count, true)
 }
 
-pub(super) fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
-    const MANIFEST: &str = "schema=v3\nruns=4\nmetrics=2\npoints_per_series=100000\n";
-    if root.join(".seex/config.toml").is_file() {
-        return if std::fs::read_to_string(root.join(".seex/viewer-benchmark.txt"))? == MANIFEST {
-            Ok(())
-        } else {
-            Err("Viewer benchmark dataset manifest does not match".into())
-        };
-    }
-    if root.exists() && std::fs::read_dir(root)?.next().is_some() {
-        return Err("refusing to replace a non-empty Viewer benchmark dataset".into());
-    }
-    std::fs::create_dir_all(root)?;
-    let client = NativeClient::open(root)?;
-    let project = client.create_project(
-        "viewer performance",
-        Some(ProjectId::from_string("viewer-performance")),
-    )?;
-    let run_ids = (0..4)
-        .map(|index| RunId::from_string(format!("run-{index}")))
-        .collect::<Vec<_>>();
-    for run_id in &run_ids {
-        client.create_run(&project.project_id, run_id.as_str(), Some(run_id.clone()))?;
-    }
-    client.shutdown(None)?;
-    drop(client);
-    let resolved = resolve_storage_config(root, None, None, None)?;
-    let connection = ProjectConnection::new(open_existing_native_connection_with_config(
-        NativeStorageConfig::with_backend_and_s3_config(
-            resolved.catalog_backend,
-            root,
-            resolved.catalog_path,
-            resolved.data_path,
-            None,
-        ),
-    )?);
-    for (run_index, run_id) in run_ids.iter().enumerate() {
-        for metric_index in 0..2 {
-            let metric = format!("metric-{metric_index}");
-            connection.execute(
-                "INSERT INTO dl.metric_points
-                 (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
-                 SELECT ?, ?, ?, step, epoch_ms(1700000000000 + step),
-                        ((step % 1000) + ?)::DOUBLE / 1000,
-                        epoch_ms(1700000000000 + step)
-                 FROM range(100000) AS points(step)",
-                (
-                    run_id.as_str(),
-                    &metric,
-                    &metric,
-                    (run_index + metric_index) as i64,
-                ),
-            )?;
-        }
-        connection.rebuild_metric_aggregates_for_run(run_id)?;
-        connection.execute(
-            "UPDATE seex_runs SET status = 'finished', started_at = epoch_ms(1700000000000),
-                    finished_at = now() WHERE run_id = ?",
-            [run_id.as_str()],
-        )?;
-    }
-    connection.flush_metric_points()?;
-    std::fs::write(root.join(".seex/viewer-benchmark.txt"), MANIFEST)?;
-    Ok(())
-}
-
 pub(super) fn fixture_with_run_coverage(
     metric_count: usize,
     run_count: usize,
     populate_all_runs: bool,
 ) -> (tempfile::TempDir, ProjectId, RunId) {
     let root = tempfile::tempdir().expect("test directory should be created");
-    let client = NativeClient::open(root.path()).expect("test client should open");
-    let project = client
-        .create_project("viewer", Some(ProjectId::from_string("project")))
-        .expect("test project should be created");
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should open");
     let mut first_run_id = None;
     for run_index in 0..run_count {
         let run_name = format!("baseline {run_index}");
+        let run_id = RunId::from_string(format!(
+            "run-{run_index}-with-a-very-long-identifier-that-requires-horizontal-scrolling"
+        ));
         let run = client
-            .create_run(
-                &project.project_id,
-                &run_name,
-                Some(RunId::from_string(format!(
-                    "run-{run_index}-with-a-very-long-identifier-that-requires-horizontal-scrolling"
-                ))),
+            .start_run(
+                RunOptions::new("project")
+                    .id(run_id.as_str())
+                    .name(&run_name),
             )
             .expect("test Run should be created");
         if run_index == 0 || populate_all_runs {
-            let handle = client.run_handle(run.clone());
             for index in 0..metric_count {
                 let metric_key = format!("metric-{index}");
-                handle
-                    .log_metric_at_step(&metric_key, 0, (run_index + index) as f64)
-                    .expect("test metric should be logged");
+                run.log_with(
+                    [(&metric_key, (run_index + index) as f64)],
+                    LogOptions::new().step(0),
+                )
+                .expect("test metric should be logged");
                 if populate_all_runs {
-                    handle
-                        .log_metric_at_step(&metric_key, 100, (run_index + index + 1) as f64)
-                        .expect("test metric extent should be logged");
+                    run.log_with(
+                        [(&metric_key, (run_index + index + 1) as f64)],
+                        LogOptions::new().step(100),
+                    )
+                    .expect("test metric extent should be logged");
                 }
             }
         }
-        client
-            .finish_run(&run.run_id)
-            .expect("test Run should finish");
-        first_run_id.get_or_insert(run.run_id);
+        run.finish().expect("test Run should finish");
+        first_run_id.get_or_insert(run_id);
     }
-    client.shutdown(None).expect("test client should shut down");
+    client.shutdown().expect("test client should shut down");
     (
         root,
-        project.project_id,
+        ProjectId::from_string("project"),
         first_run_id.expect("fixture should contain at least one Run"),
     )
 }
 
 pub(super) fn fixture_with_extent(end_step: i64) -> (tempfile::TempDir, ProjectId, RunId) {
     let root = tempfile::tempdir().expect("test directory should be created");
-    let client = NativeClient::open(root.path()).expect("test client should open");
-    let project = client
-        .create_project("viewer", Some(ProjectId::from_string("project")))
-        .expect("test project should be created");
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should open");
     let run = client
-        .create_run(
-            &project.project_id,
-            "baseline",
-            Some(RunId::from_string("run")),
-        )
+        .start_run(RunOptions::new("project").id("run").name("baseline"))
         .expect("test Run should be created");
-    let handle = client.run_handle(run.clone());
-    handle
-        .log_metric_at_step("loss", 0, 1.)
+    run.log_with([("loss", 1.)], LogOptions::new().step(0))
         .expect("test metric should be logged");
-    handle
-        .log_metric_at_step("loss", end_step, 0.5)
+    run.log_with([("loss", 0.5)], LogOptions::new().step(end_step))
         .expect("test metric should be logged");
-    client
-        .finish_run(&run.run_id)
-        .expect("test Run should finish");
-    client.shutdown(None).expect("test client should shut down");
-    (root, project.project_id, run.run_id)
+    run.finish().expect("test Run should finish");
+    client.shutdown().expect("test client should shut down");
+    (
+        root,
+        ProjectId::from_string("project"),
+        run.run_id().clone(),
+    )
 }
 
 pub(super) fn saved_workbench(
@@ -240,7 +165,7 @@ pub(super) fn saved_workbench(
             selected_metric: Some(metric.to_owned()),
             axis: AlignmentAxis::Step,
             viewport: Some(
-                seex_chart_core::AxisRange::new(0., 10.).expect("test viewport should be valid"),
+                seex_plot::AxisRange::new(0., 10.).expect("test viewport should be valid"),
             ),
         }],
     }

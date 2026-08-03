@@ -11,8 +11,8 @@ use gpui::{
     App, Context, EventEmitter, FocusHandle, IntoElement, ListAlignment, ListState, Render, Task,
     Window, div, list, prelude::*, px,
 };
-use seex_model::alignment::AlignmentAxis;
-use seex_model::metric::MetricKey;
+use seex::AlignmentAxis;
+use seex::MetricKey;
 
 use super::chart::HoverPoint;
 use super::components::TextInput;

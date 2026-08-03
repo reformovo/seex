@@ -1,6 +1,6 @@
-use seex::storage::bootstrap::open_native_connection;
-use seex::storage::{MetricWrite, ProjectConnection};
-use seex::{
+use crate::storage::bootstrap::open_native_connection;
+use crate::storage::{MetricWrite, ProjectConnection};
+use crate::{
     CatalogBackend, Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate,
     MetricKey, MetricQuery, MetricRange, ObjectiveDirection, ObjectiveMetric, Project, ProjectId,
     Reader, RelativeTime, RunId, RunStatus, Step, Timestamp,
@@ -119,7 +119,7 @@ impl Fixture {
     fn open() -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let connection = ProjectConnection::new(open_native_connection(root.path())?);
-        let created_at = seex::storage::time::current_timestamp("created_at")?;
+        let created_at = crate::storage::time::current_timestamp("created_at")?;
         let project = Project {
             project_id: ProjectId::from_string("project-1"),
             name: String::from("reader parity"),
@@ -193,7 +193,7 @@ impl Fixture {
         })
     }
 
-    fn query(&self, reader: &Reader, query: MetricQuery) -> seex::Result<seex::MetricSeries> {
+    fn query(&self, reader: &Reader, query: MetricQuery) -> crate::Result<crate::MetricSeries> {
         reader.query_metric(&self.run_id, &MetricKey::from_string("loss"), &query)
     }
 }

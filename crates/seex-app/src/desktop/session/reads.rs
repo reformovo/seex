@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use gpui::{Context, px};
-use seex_model::alignment::AlignmentViewport;
+use seex::AlignmentViewport;
 
 use crate::config::ConfiguredSource;
 use crate::data::DiscoveryRequest;

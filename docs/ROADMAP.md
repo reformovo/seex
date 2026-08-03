@@ -7,8 +7,8 @@
 > `release-notes/`.
 
 Pre-1.0 releases do not promise store, API, or machine-output compatibility.
-The next coordinated milestone is Cargo `0.1.0-beta.1`, Python `0.1.0b1`, and
-tag `v0.1.0-beta.1`, all built from the same source.
+Cargo `0.1.0-beta.1` and Python `0.1.0b1` package identities are prepared from
+one source. U7 creates tag `v0.1.0-beta.1` only after release qualification.
 
 ## 0.1.0 Beta / Unified SDK and Bounded Native Queries
 
@@ -316,20 +316,27 @@ baseline advanced to the candidate revision. See
 
 ### U5: Single-Crate Convergence and Packaging
 
-- [ ] After every consumer migrates, delete the temporary `seex-model`,
+- [x] After every consumer migrates, delete the temporary `seex-model`,
   `seex-storage`, and `seex-core` crates and re-exports.
-- [ ] Mechanically rename `seex-chart-core` to unpublished `seex-plot` without
+- [x] Mechanically rename `seex-chart-core` to unpublished `seex-plot` without
   behavior or performance changes. Keep it free of SDK, storage, PyO3, and GPUI
   dependencies.
-- [ ] Make `seex` the only publishable workspace crate. Set `publish = false`
+- [x] Make `seex` the only publishable workspace crate. Set `publish = false`
   for `seex-python`, `seex-app`, and `seex-plot`.
-- [ ] Verify `cargo package -p seex` contains no path dependency or PyO3, GPUI,
+- [x] Verify `cargo package -p seex` contains no path dependency or PyO3, GPUI,
   Desktop, or plot source; unpack and build/test it in an independent directory.
-- [ ] Align Cargo `0.1.0-beta.1`, Python `0.1.0b1`, and tag
-  `v0.1.0-beta.1` to one source without changing catalog/Parquet schemas or
-  adding a runtime dependency.
-- [ ] Run warning-free Rust formatting, Clippy, check, tests, doc tests, docs,
+- [x] Align Cargo `0.1.0-beta.1` and Python `0.1.0b1` to one source without
+  changing catalog/Parquet schemas or adding a runtime dependency. The matching
+  `v0.1.0-beta.1` tag is deliberately deferred to U7.
+- [x] Run warning-free Rust formatting, Clippy, check, tests, doc tests, docs,
   package verification, Python Acceptance, and affected performance comparisons.
+
+U5 converged the workspace at revision `0fab2af41727928083de6faa24f10f022378a2f5`.
+Local, package, wheel/sdist, CLI/Arrow, and online/offline LTTB Acceptance passed.
+MinIO/S3 and live partition-pruning were unavailable because the four required
+`SEEX_MINIO_*` connection variables were unset; `mc` was available. The compact
+dual-View RSS comparison was Inconclusive and did not advance its rolling
+baseline. See [`u5-performance-observations.md`](reference/u5-performance-observations.md).
 
 ### U6: Viewer Configuration and Workbench Experience
 
@@ -392,6 +399,9 @@ review slice and require explicit approval under the repository boundary.
 - [ ] Pass complete correctness and release Acceptance, then run only the
   reporting, Reader, Viewer CPU, and Viewer RSS comparisons affected since their
   rolling revisions.
+- [ ] After release Acceptance passes, create `v0.1.0-beta.1` from the exact
+  source whose Cargo and Python packages identify as beta.1; do not retag a
+  different source.
 - [ ] Use the compact dual-View workload for automated peak RSS: 4 Runs, 2
   Metrics, 100,000 points per series, three zoom round-trips, and four-way reads.
 - [ ] Prove stale requests and cancellation retain no snapshot or query working

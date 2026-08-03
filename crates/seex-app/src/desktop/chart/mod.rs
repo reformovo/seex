@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use crate::data::query::CurveSnapshot;
 use crate::domain::RunRef;
 use gpui::{Bounds, Path, PathBuilder, Pixels, Point, Rgba, WindowAppearance, point, px};
-use seex_chart_core::{
+use seex::EvidenceCompleteness;
+use seex_plot::{
     AxisRange, BrushState, CanvasSize, LinearScale, PathCache, ScreenPoint, Viewport,
     hit_test_point,
 };
-use seex_model::comparison::EvidenceCompleteness;
 
 use super::theme::ViewerTheme;
 
@@ -129,7 +129,7 @@ impl ChartAdapter {
             .collect::<Vec<_>>();
         for cache_id in removed {
             self.detail_gpui_paths.remove(&cache_id);
-            if let Ok(series_id) = seex_chart_core::SeriesId::new(cache_id) {
+            if let Ok(series_id) = seex_plot::SeriesId::new(cache_id) {
                 self.detail_projection_cache.invalidate_series(&series_id);
             }
         }

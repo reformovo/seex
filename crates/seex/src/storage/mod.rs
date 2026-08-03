@@ -1,5 +1,11 @@
 //! Native project and standalone Parquet storage for Seex.
 
+#![expect(
+    dead_code,
+    unused_imports,
+    reason = "private storage seams remain exercised by crate-local parity tests"
+)]
+
 mod alignment_query;
 pub mod bootstrap;
 pub mod config;

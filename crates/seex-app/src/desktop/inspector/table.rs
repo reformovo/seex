@@ -4,8 +4,8 @@ use gpui::{
     Context, MouseButton, MouseDownEvent, MouseUpEvent, SharedString, Transformation, div,
     prelude::*, px,
 };
-use seex_model::comparison::EvidenceCompleteness;
-use seex_model::run::RunStatus;
+use seex::EvidenceCompleteness;
+use seex::RunStatus;
 
 use crate::data::query::{InspectorRunSnapshot, InspectorSnapshot};
 use crate::domain::RunRef;

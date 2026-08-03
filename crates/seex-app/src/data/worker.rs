@@ -9,7 +9,7 @@ use std::thread::{self, JoinHandle};
 #[cfg(all(test, feature = "desktop", target_os = "macos"))]
 use std::time::{Duration, Instant};
 
-use seex_storage::ReadInterrupt;
+use seex::ReaderInterrupt;
 
 use crate::data::query::{
     CurveSnapshot, DetailRequest, InspectorRequest, InspectorSnapshot, OverviewRequest, QueryError,
@@ -282,11 +282,11 @@ struct RequestRegistry {
 struct ActiveRequest {
     generation: Generation,
     token: RequestToken,
-    interrupts: Vec<ReadInterrupt>,
+    interrupts: Vec<ReaderInterrupt>,
 }
 
 impl RequestRegistry {
-    fn mark_latest(&mut self, identity: &RequestIdentity) -> Option<Vec<ReadInterrupt>> {
+    fn mark_latest(&mut self, identity: &RequestIdentity) -> Option<Vec<ReaderInterrupt>> {
         let value = (identity.generation, identity.token);
         if self
             .latest
@@ -302,7 +302,7 @@ impl RequestRegistry {
             .map(|active| active.interrupts.clone())
     }
 
-    fn begin(&mut self, identity: &RequestIdentity, interrupts: Vec<ReadInterrupt>) -> bool {
+    fn begin(&mut self, identity: &RequestIdentity, interrupts: Vec<ReaderInterrupt>) -> bool {
         if !self.is_current(identity) {
             return false;
         }
@@ -762,7 +762,7 @@ fn execute(
         if !registry
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .begin(identity, session.interrupt_handles().into())
+            .begin(identity, session.interrupt_handles())
         {
             return Ok(None);
         }
@@ -823,7 +823,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use seex_model::metric::MetricKey;
+    use seex::MetricKey;
 
     use crate::data::query::{CurveAxis, CurveSelection};
 

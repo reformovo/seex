@@ -6,8 +6,8 @@ use gpui::{
     App, Context, EventEmitter, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Render, SharedString, Window, div, prelude::*, px,
 };
-use seex_model::run::Run;
-use seex_model::types::ProjectId;
+use seex::ProjectId;
+use seex::Run;
 
 use crate::domain::{DataSourceId, RunRef};
 use crate::workbench::ProjectRef;

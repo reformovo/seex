@@ -26,27 +26,6 @@ fn active_details_are_settled(viewer: &ViewerApp, cx: &App) -> bool {
         })
 }
 
-#[test]
-fn compact_benchmark_dataset_refuses_unrelated_data() {
-    let root = tempfile::tempdir().expect("test directory should be created");
-    std::fs::write(root.path().join("keep"), "user data").expect("sentinel should be written");
-
-    let error = ensure_viewer_benchmark_dataset(root.path())
-        .expect_err("benchmark dataset must not replace data");
-
-    assert!(error.to_string().contains("non-empty"));
-}
-
-#[test]
-#[ignore = "creates the retained 4 Run x 2 Metric x 100k Viewer benchmark dataset"]
-fn prepare_compact_viewer_benchmark_dataset() -> Result<(), Box<dyn std::error::Error>> {
-    assert!(
-        std::hint::black_box(!cfg!(debug_assertions)),
-        "benchmark dataset preparation requires --release"
-    );
-    ensure_viewer_benchmark_dataset(&benchmark_root())
-}
-
 #[gpui::test]
 #[ignore = "hardware-sensitive compact dual-View RSS benchmark"]
 fn compact_dual_view_peak_rss(cx: &mut TestAppContext) {

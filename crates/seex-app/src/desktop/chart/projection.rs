@@ -2,7 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use gpui::{Bounds, Path, Pixels, Point, point, px};
-use seex_chart_core::{AxisRange, LinearScale, ScreenPoint, Viewport, visible_y_range_for};
+use seex_plot::{AxisRange, LinearScale, ScreenPoint, Viewport, visible_y_range_for};
 
 use crate::data::query::CurveSnapshot;
 use crate::domain::RunRef;

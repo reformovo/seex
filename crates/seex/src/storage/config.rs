@@ -544,7 +544,7 @@ mod tests {
         fs::create_dir_all(root.join(".seex"))?;
         fs::write(
             home.join(".seex/config.toml"),
-            include_str!("../../../../tests/fixtures/config/v1-global.toml"),
+            include_str!("../../tests/fixtures/config/v1-global.toml"),
         )?;
         #[cfg(unix)]
         {
@@ -557,7 +557,7 @@ mod tests {
         }
         fs::write(
             root.join(".seex/config.toml"),
-            include_str!("../../../../tests/fixtures/config/v1-project.toml"),
+            include_str!("../../tests/fixtures/config/v1-project.toml"),
         )?;
 
         let layers = load_config_layers_from(&root, Some(&home))?;
@@ -596,7 +596,7 @@ mod tests {
         )?;
         fs::write(
             &config_path,
-            include_str!("../../../../tests/fixtures/config/v1-global.toml"),
+            include_str!("../../tests/fixtures/config/v1-global.toml"),
         )?;
         fs::set_permissions(&config_path, fs::Permissions::from_mode(0o644))?;
 
@@ -637,15 +637,11 @@ mod tests {
     {
         let layers = ConfigLayers {
             global: Some(ConfigDocument {
-                table: parse_config(include_str!(
-                    "../../../../tests/fixtures/config/v1-global.toml"
-                )),
+                table: parse_config(include_str!("../../tests/fixtures/config/v1-global.toml")),
                 base_path: PathBuf::from("home"),
             }),
             project: Some(ConfigDocument {
-                table: parse_config(include_str!(
-                    "../../../../tests/fixtures/config/v1-project.toml"
-                )),
+                table: parse_config(include_str!("../../tests/fixtures/config/v1-project.toml")),
                 base_path: PathBuf::from("project"),
             }),
         };

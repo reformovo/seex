@@ -6,7 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use seex_model::types::ProjectId;
+use seex::ProjectId;
 use toml_edit::{Array, DocumentMut, value};
 
 use crate::domain::SourceAlias;

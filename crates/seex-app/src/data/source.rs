@@ -1,12 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use seex::Reader;
-use seex_storage::bootstrap::{
-    NativeStorageConfig, is_s3_data_path, open_existing_native_connection_with_config,
-};
-use seex_storage::config::{InitConfigError, resolve_storage_config};
-use seex_storage::{ProjectConnection, ReadInterrupt, StorageError};
+use seex::{LocalReaderError, Reader, ReaderInterrupt};
 
 use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
@@ -16,10 +11,6 @@ pub enum SourceError {
     #[error("S3 data paths are unsupported by seex-app")]
     UnsupportedS3,
     #[error(transparent)]
-    Config(#[from] InitConfigError),
-    #[error(transparent)]
-    Storage(#[from] StorageError),
-    #[error(transparent)]
     Sdk(#[from] seex::Error),
 }
 
@@ -27,7 +18,6 @@ pub enum SourceError {
 pub struct ReadSession {
     root_path: PathBuf,
     reader: Reader,
-    connection: ProjectConnection,
 }
 
 impl ReadSession {
@@ -38,31 +28,17 @@ impl ReadSession {
     /// Returns [`SourceError::UnsupportedS3`] before credential resolution for
     /// an S3 data path. Other configuration and storage failures are preserved.
     pub fn open_existing(root_path: &Path) -> Result<Self, SourceError> {
-        let resolved = resolve_storage_config(root_path, None, None, None)?;
-        if resolved.data_path.as_deref().is_some_and(is_s3_data_path) {
-            return Err(SourceError::UnsupportedS3);
-        }
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            resolved.catalog_backend,
-            root_path,
-            resolved.catalog_path,
-            resolved.data_path,
-            None,
-        );
-        let connection = open_existing_native_connection_with_config(config)?;
-        let reader = Reader::builder(root_path).open()?;
+        let reader = open_local_reader(root_path)?;
         Ok(Self {
             root_path: root_path.to_owned(),
             reader,
-            connection: ProjectConnection::new(connection),
         })
     }
 
     pub(crate) fn try_clone(&self) -> Result<Self, SourceError> {
         Ok(Self {
             root_path: self.root_path.clone(),
-            reader: Reader::builder(&self.root_path).open()?,
-            connection: self.connection.try_clone()?,
+            reader: open_local_reader(&self.root_path)?,
         })
     }
 
@@ -148,32 +124,32 @@ impl ReadSession {
         })
     }
 
-    pub(crate) const fn connection(&self) -> &ProjectConnection {
-        &self.connection
-    }
-
     pub(crate) const fn reader(&self) -> &Reader {
         &self.reader
     }
 
     #[doc(hidden)]
-    pub fn interrupt_handles(&self) -> [ReadInterrupt; 2] {
-        [
-            self.reader
-                .interrupt_handle()
-                .expect("native ReadSession Reader must have a connection"),
-            self.connection.interrupt_handle(),
-        ]
+    pub fn interrupt_handles(&self) -> Vec<ReaderInterrupt> {
+        self.reader.interrupt_handle().into_iter().collect()
     }
+}
+
+fn open_local_reader(root_path: &Path) -> Result<Reader, SourceError> {
+    Reader::builder(root_path)
+        .open_local()
+        .map_err(|error| match error {
+            LocalReaderError::UnsupportedS3 => SourceError::UnsupportedS3,
+            LocalReaderError::Sdk(error) => SourceError::Sdk(error),
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use seex_core::engine::client::NativeClient;
-    use seex_model::run::RunId;
-    use seex_model::types::ProjectId;
+    use seex::ProjectId;
+    use seex::RunId;
+    use seex::{Client, LogOptions, RunOptions};
 
     use super::{DiscoveryRequest, ReadSession, SourceError};
 
@@ -198,45 +174,24 @@ mod tests {
     fn discovery_returns_newest_runs_and_selected_metric_union()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let client = NativeClient::open(root.path())?;
-        let project = client.create_project("viewer", Some(ProjectId::from_string("project-1")))?;
-        let first = client.create_run(
-            &project.project_id,
-            "first",
-            Some(RunId::from_string("run-1")),
-        )?;
-        client
-            .run_handle(first.clone())
-            .log_metric_at_step("loss", 0, 1.0)?;
-        client.finish_run(&first.run_id)?;
-        let second = client.create_run(
-            &project.project_id,
-            "second",
-            Some(RunId::from_string("run-2")),
-        )?;
-        client
-            .run_handle(second.clone())
-            .log_metric_at_step("accuracy", 0, 0.5)?;
-        client.finish_run(&second.run_id)?;
-        let other_project =
-            client.create_project("other", Some(ProjectId::from_string("project-2")))?;
-        let other = client.create_run(
-            &other_project.project_id,
-            "other",
-            Some(RunId::from_string("run-3")),
-        )?;
-        client
-            .run_handle(other.clone())
-            .log_metric_at_step("latency", 0, 2.)?;
-        client.finish_run(&other.run_id)?;
-        client.shutdown(None)?;
+        let client = Client::builder(root.path()).open()?;
+        let first = client.start_run(RunOptions::new("project-1").id("run-1").name("first"))?;
+        first.log_with([("loss", 1.0)], LogOptions::new().step(0))?;
+        first.finish()?;
+        let second = client.start_run(RunOptions::new("project-1").id("run-2").name("second"))?;
+        second.log_with([("accuracy", 0.5)], LogOptions::new().step(0))?;
+        second.finish()?;
+        let other = client.start_run(RunOptions::new("project-2").id("run-3").name("other"))?;
+        other.log_with([("latency", 2.0)], LogOptions::new().step(0))?;
+        other.finish()?;
+        client.shutdown()?;
 
         let session = ReadSession::open_existing(root.path())?;
         let snapshot = session.discover(&DiscoveryRequest {
             project_allowlist: None,
-            project_id: Some(project.project_id),
-            selected_run_ids: vec![first.run_id, RunId::from_string("removed")],
-            metric_runs: vec![(other_project.project_id, other.run_id)],
+            project_id: Some(ProjectId::from_string("project-1")),
+            selected_run_ids: vec![first.run_id().clone(), RunId::from_string("removed")],
+            metric_runs: vec![(ProjectId::from_string("project-2"), other.run_id().clone())],
         })?;
 
         assert_eq!(

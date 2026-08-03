@@ -83,9 +83,9 @@ use gpui::{
     ScrollWheelEvent, SharedString, WeakEntity, Window, anchored, deferred, div, point, prelude::*,
     px,
 };
-use seex_chart_core::CanvasSize;
-use seex_model::alignment::AlignmentViewport;
-use seex_model::metric::MetricKey;
+use seex::AlignmentViewport;
+use seex::MetricKey;
+use seex_plot::CanvasSize;
 
 use super::super::chart;
 use super::super::command::WorkbenchCommand;

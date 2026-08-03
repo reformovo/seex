@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::{
-    AxisRange, CanvasSize, ChartError, DataPoint, LinearScale, Series, SeriesId, Viewport,
+    AxisRange, CanvasSize, DataPoint, LinearScale, PlotError, Series, SeriesId, Viewport,
     build_path,
 };
 
@@ -47,7 +47,7 @@ impl PathCache {
         revision: u64,
         viewport: Viewport,
         canvas: CanvasSize,
-    ) -> Result<Arc<[ScreenPoint]>, ChartError> {
+    ) -> Result<Arc<[ScreenPoint]>, PlotError> {
         let key = PathCacheKey {
             revision,
             viewport_bits: [
@@ -145,7 +145,7 @@ pub fn hit_test_point(
     canvas: CanvasSize,
     cursor: ScreenPoint,
     radius: f64,
-) -> Result<Option<PointHit>, ChartError> {
+) -> Result<Option<PointHit>, PlotError> {
     if !cursor.x.is_finite() || !cursor.y.is_finite() || !radius.is_finite() || radius < 0.0 {
         return Ok(None);
     }
@@ -263,11 +263,11 @@ impl BrushState {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidBrushRange`] when the home range is
+    /// Returns [`PlotError::InvalidBrushRange`] when the home range is
     /// narrower than one axis unit.
-    pub fn new(home: AxisRange) -> Result<Self, ChartError> {
+    pub fn new(home: AxisRange) -> Result<Self, PlotError> {
         if home.span() < MIN_BRUSH_SPAN {
-            return Err(ChartError::InvalidBrushRange);
+            return Err(PlotError::InvalidBrushRange);
         }
         Ok(Self {
             home,
@@ -287,10 +287,10 @@ impl BrushState {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidTransform`] for a non-finite position.
-    pub fn resize_start(&mut self, position: f64) -> Result<(), ChartError> {
+    /// Returns [`PlotError::InvalidTransform`] for a non-finite position.
+    pub fn resize_start(&mut self, position: f64) -> Result<(), PlotError> {
         if !position.is_finite() {
-            return Err(ChartError::InvalidTransform);
+            return Err(PlotError::InvalidTransform);
         }
         let start = position.clamp(
             self.home.start(),
@@ -304,10 +304,10 @@ impl BrushState {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidTransform`] for a non-finite position.
-    pub fn resize_end(&mut self, position: f64) -> Result<(), ChartError> {
+    /// Returns [`PlotError::InvalidTransform`] for a non-finite position.
+    pub fn resize_end(&mut self, position: f64) -> Result<(), PlotError> {
         if !position.is_finite() {
-            return Err(ChartError::InvalidTransform);
+            return Err(PlotError::InvalidTransform);
         }
         let end = position.clamp(
             minimum_end_for_minimum_span(self.selected.start()),
@@ -321,10 +321,10 @@ impl BrushState {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidTransform`] for a non-finite delta.
-    pub fn pan_by(&mut self, delta: f64) -> Result<(), ChartError> {
+    /// Returns [`PlotError::InvalidTransform`] for a non-finite delta.
+    pub fn pan_by(&mut self, delta: f64) -> Result<(), PlotError> {
         if !delta.is_finite() {
-            return Err(ChartError::InvalidTransform);
+            return Err(PlotError::InvalidTransform);
         }
         let minimum_delta = self.home.start() - self.selected.start();
         let maximum_delta = self.home.end() - self.selected.end();
@@ -355,16 +355,16 @@ impl BrushState {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidTransform`] for an invalid factor or an
+    /// Returns [`PlotError::InvalidTransform`] for an invalid factor or an
     /// anchor outside the selected range.
-    pub fn zoom_at(&mut self, anchor: f64, factor: f64) -> Result<(), ChartError> {
+    pub fn zoom_at(&mut self, anchor: f64, factor: f64) -> Result<(), PlotError> {
         if !anchor.is_finite()
             || !factor.is_finite()
             || factor <= 0.0
             || anchor < self.selected.start()
             || anchor > self.selected.end()
         {
-            return Err(ChartError::InvalidTransform);
+            return Err(PlotError::InvalidTransform);
         }
         if factor == 1.0 {
             return Ok(());
@@ -414,10 +414,10 @@ impl ZoomState {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidTransform`] for non-finite deltas.
-    pub fn pan_by(&mut self, x_delta: f64, y_delta: f64) -> Result<(), ChartError> {
+    /// Returns [`PlotError::InvalidTransform`] for non-finite deltas.
+    pub fn pan_by(&mut self, x_delta: f64, y_delta: f64) -> Result<(), PlotError> {
         if !x_delta.is_finite() || !y_delta.is_finite() {
-            return Err(ChartError::InvalidTransform);
+            return Err(PlotError::InvalidTransform);
         }
         self.current = Viewport::new(
             AxisRange::new(
@@ -438,10 +438,10 @@ impl ZoomState {
     ///
     /// # Errors
     ///
-    /// Returns [`ChartError::InvalidTransform`] for invalid inputs.
-    pub fn zoom_at(&mut self, anchor: DataPoint, factor: f64) -> Result<(), ChartError> {
+    /// Returns [`PlotError::InvalidTransform`] for invalid inputs.
+    pub fn zoom_at(&mut self, anchor: DataPoint, factor: f64) -> Result<(), PlotError> {
         if !anchor.x.is_finite() || !anchor.y.is_finite() || !factor.is_finite() || factor <= 0.0 {
-            return Err(ChartError::InvalidTransform);
+            return Err(PlotError::InvalidTransform);
         }
         self.current = Viewport::new(
             zoom_range(self.current.x, anchor.x, factor)?,
@@ -455,7 +455,7 @@ impl ZoomState {
     }
 }
 
-fn zoom_range(range: AxisRange, anchor: f64, factor: f64) -> Result<AxisRange, ChartError> {
+fn zoom_range(range: AxisRange, anchor: f64, factor: f64) -> Result<AxisRange, PlotError> {
     AxisRange::new(
         anchor - (anchor - range.start()) / factor,
         anchor + (range.end() - anchor) / factor,
@@ -629,7 +629,7 @@ mod tests {
     fn brush_rejects_a_home_range_narrower_than_one_axis_unit() {
         assert_eq!(
             BrushState::new(range(0.0, 0.5)),
-            Err(ChartError::InvalidBrushRange)
+            Err(PlotError::InvalidBrushRange)
         );
         assert!(BrushState::new(range(0.0, 1.0)).is_ok());
     }
@@ -690,14 +690,14 @@ mod tests {
 
         assert_eq!(
             brush.resize_start(f64::NAN),
-            Err(ChartError::InvalidTransform)
+            Err(PlotError::InvalidTransform)
         );
         assert_eq!(
             brush.pan_by(f64::INFINITY),
-            Err(ChartError::InvalidTransform)
+            Err(PlotError::InvalidTransform)
         );
-        assert_eq!(brush.zoom_at(20.0, 2.0), Err(ChartError::InvalidTransform));
-        assert_eq!(brush.zoom_at(5.0, 0.0), Err(ChartError::InvalidTransform));
+        assert_eq!(brush.zoom_at(20.0, 2.0), Err(PlotError::InvalidTransform));
+        assert_eq!(brush.zoom_at(5.0, 0.0), Err(PlotError::InvalidTransform));
         assert_eq!(brush, initial);
     }
 

@@ -5,8 +5,8 @@ use crate::desktop::{
     ToggleMetricSidebar, ToggleProjectSidebar, UseElapsed, UseStep, ZoomIn, ZoomOut,
 };
 use gpui::{Context, Window};
-use seex_model::alignment::{AlignmentAxis, AlignmentViewport};
-use seex_model::metric::MetricKey;
+use seex::MetricKey;
+use seex::{AlignmentAxis, AlignmentViewport};
 
 use crate::domain::RunRef;
 use crate::workbench::ProjectRef;

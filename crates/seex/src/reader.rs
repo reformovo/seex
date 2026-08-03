@@ -26,8 +26,10 @@ use crate::model::metric::{
 };
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
-use crate::storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
-use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
+use crate::storage::bootstrap::{
+    NativeStorageConfig, is_s3_data_path, open_existing_native_connection_with_config,
+};
+use crate::storage::config::{S3ConnectionOverrides, resolve_init_config, resolve_storage_config};
 use crate::storage::{
     ParquetSource, ProjectConnection, ProjectMetricReader, SeriesDiagnostics,
     StandaloneMetricReader, StorageError,
@@ -45,6 +47,50 @@ pub struct ReaderBuilder {
 enum ReaderSource {
     Native(PathBuf),
     Parquet(String),
+}
+
+/// Failure while opening a Reader restricted to local data.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum LocalReaderError {
+    UnsupportedS3,
+    Sdk(Error),
+}
+
+impl fmt::Display for LocalReaderError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedS3 => formatter.write_str("S3 data paths are unsupported"),
+            Self::Sdk(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for LocalReaderError {}
+
+impl From<Error> for LocalReaderError {
+    fn from(error: Error) -> Self {
+        Self::Sdk(error)
+    }
+}
+
+/// Cloneable cancellation capability for one Reader connection.
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct ReaderInterrupt(crate::storage::ReadInterrupt);
+
+impl ReaderInterrupt {
+    pub fn interrupt(&self) {
+        self.0.interrupt();
+    }
+}
+
+/// One Run's summary and objective evidence for the Desktop inspector.
+#[doc(hidden)]
+pub struct DesktopMetricEvidence {
+    pub run: Run,
+    pub summary: Option<MetricAggregate>,
+    pub evidence: ObjectiveEvidence,
 }
 
 impl ReaderBuilder {
@@ -100,6 +146,19 @@ impl ReaderBuilder {
     /// Returns [`Error::Configuration`] for invalid effective configuration or
     /// [`Error::Storage`] when the existing native store cannot be opened.
     pub fn open(self) -> SdkResult<Reader> {
+        self.open_impl(false).map_err(|error| match error {
+            LocalReaderError::UnsupportedS3 => Error::UnsupportedQuery,
+            LocalReaderError::Sdk(error) => error,
+        })
+    }
+
+    /// Opens the configured native store only when its data path is local.
+    #[doc(hidden)]
+    pub fn open_local(self) -> std::result::Result<Reader, LocalReaderError> {
+        self.open_impl(true)
+    }
+
+    fn open_impl(self, local_only: bool) -> std::result::Result<Reader, LocalReaderError> {
         let root_path = match self.source {
             ReaderSource::Native(root_path) => root_path,
             ReaderSource::Parquet(source) => {
@@ -117,6 +176,18 @@ impl ReaderBuilder {
                 });
             }
         };
+        if local_only {
+            let storage = resolve_storage_config(
+                &root_path,
+                self.data_path.clone(),
+                self.catalog_backend.map(CatalogBackend::as_name),
+                self.catalog_path.clone(),
+            )
+            .map_err(|_| Error::Configuration)?;
+            if storage.data_path.as_deref().is_some_and(is_s3_data_path) {
+                return Err(LocalReaderError::UnsupportedS3);
+            }
+        }
         let resolved = resolve_init_config(
             &root_path,
             self.data_path,
@@ -376,10 +447,59 @@ impl Reader {
 
     /// Returns cancellation capability for this Reader's native connection.
     #[doc(hidden)]
-    pub fn interrupt_handle(&self) -> Option<crate::storage::ReadInterrupt> {
+    pub fn interrupt_handle(&self) -> Option<ReaderInterrupt> {
         self.connection
             .as_ref()
             .map(ProjectConnection::interrupt_handle)
+            .map(ReaderInterrupt)
+    }
+
+    /// Loads Run summaries and objective evidence for one Desktop inspector.
+    #[doc(hidden)]
+    pub fn inspect_metric_for_desktop(
+        &self,
+        run_ids: &[RunId],
+        metric_key: &MetricKey,
+        is_superseded: &mut dyn FnMut() -> bool,
+    ) -> SdkResult<Option<Vec<DesktopMetricEvidence>>> {
+        if is_superseded() {
+            return Ok(None);
+        }
+        let connection = self.native()?;
+        let runs = connection.get_runs(run_ids).map_err(public_storage_error)?;
+        if is_superseded() {
+            return Ok(None);
+        }
+        let store = NativeQueryStore::new(connection);
+        let mut summaries = store
+            .query_metric_summaries(run_ids, metric_key)
+            .map_err(Error::from)?
+            .into_iter()
+            .map(|summary| (summary.run_id.clone(), summary))
+            .collect::<HashMap<_, _>>();
+        if is_superseded() {
+            return Ok(None);
+        }
+        let objective = ObjectiveMetric {
+            metric_key: metric_key.clone(),
+            direction: crate::model::comparison::ObjectiveDirection::Minimize,
+        };
+        let evidence = store
+            .objective_evidence_for_runs(&runs, &objective)
+            .map_err(Error::from)?;
+        if is_superseded() {
+            return Ok(None);
+        }
+        Ok(Some(
+            runs.into_iter()
+                .zip(evidence)
+                .map(|(run, evidence)| DesktopMetricEvidence {
+                    summary: summaries.remove(&run.run_id),
+                    run,
+                    evidence,
+                })
+                .collect(),
+        ))
     }
 
     /// Desktop-only query retaining one real sample outside each range edge.

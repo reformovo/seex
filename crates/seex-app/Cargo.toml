@@ -1,10 +1,11 @@
 [package]
 name = "seex-app"
-version = "0.1.0-beta.0"
+version = "0.1.0-beta.1"
 edition = "2024"
 description = "Native desktop curve viewer for Seex."
 license = "MIT"
 repository = "https://github.com/reformovo/seex"
+publish = false
 
 [package.metadata.bundle]
 name = "Seex"
@@ -19,10 +20,7 @@ test-support = ["desktop", "gpui/test-support"]
 
 [dependencies]
 seex = { path = "../seex" }
-seex-chart-core = { path = "../seex-chart-core" }
-seex-core = { path = "../seex-core" }
-seex-model = { path = "../seex-model" }
-seex-storage = { path = "../seex-storage" }
+seex-plot = { path = "../seex-plot" }
 thiserror = "2"
 toml_edit = "0.25.12"
 

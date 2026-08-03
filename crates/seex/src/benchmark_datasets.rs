@@ -6,11 +6,11 @@ use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 
-use seex_core::engine::client::NativeClient;
-use seex_model::run::RunId;
-use seex_model::types::ProjectId;
-use seex_storage::ProjectConnection;
-use seex_storage::bootstrap::{
+use crate::engine::client::NativeClient;
+use crate::model::run::RunId;
+use crate::model::types::ProjectId;
+use crate::storage::ProjectConnection;
+use crate::storage::bootstrap::{
     CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
 };
 
@@ -170,4 +170,89 @@ fn prepare_reader_benchmark_dataset() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("SEEX_QUERY_BENCH_ROOT must name the prepared dataset")?;
     ensure_reader_benchmark_dataset(&root, backend()?)
+}
+
+const VIEWER_MANIFEST: &str = "schema=v3\nruns=4\nmetrics=2\npoints_per_series=100000\n";
+
+fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
+    if root.join(".seex/config.toml").is_file() {
+        return if fs::read_to_string(root.join(".seex/viewer-benchmark.txt"))? == VIEWER_MANIFEST {
+            Ok(())
+        } else {
+            Err("Viewer benchmark dataset manifest does not match".into())
+        };
+    }
+    if root.exists() && fs::read_dir(root)?.next().is_some() {
+        return Err("refusing to replace a non-empty Viewer benchmark dataset".into());
+    }
+    fs::create_dir_all(root)?;
+    let client = NativeClient::open(root)?;
+    let project = client.create_project(
+        "viewer performance",
+        Some(ProjectId::from_string("viewer-performance")),
+    )?;
+    let run_ids = (0..4)
+        .map(|index| RunId::from_string(format!("run-{index}")))
+        .collect::<Vec<_>>();
+    for run_id in &run_ids {
+        client.create_run(&project.project_id, run_id.as_str(), Some(run_id.clone()))?;
+    }
+    client.shutdown(None)?;
+    drop(client);
+    let connection = ProjectConnection::new(open_native_connection_with_config(
+        NativeStorageConfig::duckdb(root, None, None),
+    )?);
+    for (run_index, run_id) in run_ids.iter().enumerate() {
+        for metric_index in 0..2 {
+            let metric = format!("metric-{metric_index}");
+            connection.execute(
+                "INSERT INTO dl.metric_points
+                 (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
+                 SELECT ?, ?, ?, step, epoch_ms(1700000000000 + step),
+                        ((step % 1000) + ?)::DOUBLE / 1000,
+                        epoch_ms(1700000000000 + step)
+                 FROM range(100000) AS points(step)",
+                (
+                    run_id.as_str(),
+                    &metric,
+                    &metric,
+                    (run_index + metric_index) as i64,
+                ),
+            )?;
+        }
+        connection.rebuild_metric_aggregates_for_run(run_id)?;
+        connection.execute(
+            "UPDATE seex_runs SET status = 'finished', started_at = epoch_ms(1700000000000),
+                    finished_at = now() WHERE run_id = ?",
+            [run_id.as_str()],
+        )?;
+    }
+    connection.flush_metric_points()?;
+    fs::write(root.join(".seex/viewer-benchmark.txt"), VIEWER_MANIFEST)?;
+    Ok(())
+}
+
+#[test]
+fn compact_benchmark_dataset_refuses_unrelated_data() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    fs::write(root.path().join("keep"), "user data")?;
+
+    let error = ensure_viewer_benchmark_dataset(root.path())
+        .expect_err("benchmark dataset must not replace data");
+
+    assert!(error.to_string().contains("non-empty"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "creates the retained 4 Run x 2 Metric x 100k Viewer benchmark dataset"]
+fn prepare_compact_viewer_benchmark_dataset() -> Result<(), Box<dyn Error>> {
+    assert!(
+        black_box(!cfg!(debug_assertions)),
+        "benchmark dataset preparation requires --release"
+    );
+    let root = env::var_os("SEEX_VIEWER_BENCH_ROOT")
+        .map(PathBuf::from)
+        .ok_or("SEEX_VIEWER_BENCH_ROOT must name the prepared compact fixture")?;
+    ensure_viewer_benchmark_dataset(&root)
 }

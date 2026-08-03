@@ -1,6 +1,6 @@
-use seex_model::metric::MetricKey;
-use seex_model::run::{Run, RunId};
-use seex_model::types::{Project, ProjectId};
+use seex::MetricKey;
+use seex::{Project, ProjectId};
+use seex::{Run, RunId};
 
 pub mod query;
 pub mod registry;
