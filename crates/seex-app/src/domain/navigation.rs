@@ -1,5 +1,5 @@
+use seex::{AlignmentAxis, AlignmentViewport};
 use seex_chart_core::{AxisRange, BrushState};
-use seex_model::alignment::{AlignmentAxis, AlignmentViewport};
 
 /// Per-View navigation state shared by the brush, ruler, and Metric tracks.
 #[derive(Clone)]
@@ -104,7 +104,7 @@ impl ViewNavigation {
 
 #[cfg(test)]
 mod tests {
-    use seex_model::alignment::{AlignmentAxis, AlignmentViewport};
+    use seex::{AlignmentAxis, AlignmentViewport};
 
     use super::ViewNavigation;
 
