@@ -3,6 +3,7 @@ use gpui::{Modifiers, ScrollDelta, TestAppContext, TouchPhase, point, px, size};
 use super::super::test_support::*;
 use super::*;
 use crate::desktop::{ShowMetricInspector, ToggleBottomInspector, ToggleMetricSidebar};
+use crate::domain::SourceAlias;
 
 #[gpui::test]
 fn bottom_inspector_can_close_after_switching_to_an_empty_view(cx: &mut TestAppContext) {
@@ -47,10 +48,18 @@ fn bottom_inspector_can_close_after_switching_to_an_empty_view(cx: &mut TestAppC
 
 #[gpui::test]
 fn bottom_inspector_stays_disabled_without_sources_across_views(cx: &mut TestAppContext) {
+    let mut restored = saved_workbench(
+        SourceAlias::new("research").expect("test alias should be valid"),
+        ProjectId::from_string("project"),
+        Vec::new(),
+        "loss",
+    );
+    restored.layout.bottom_inspector_visible = false;
     let (window, mut cx) = open_viewer(cx, None);
     window
-        .update(&mut cx, |viewer, _, cx| {
-            viewer.select_metric(MetricKey::from_string("loss"), cx);
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.restore_toml_workbench(restored, cx);
+            viewer.focus.focus(window);
         })
         .expect("viewer should remain open");
     cx.run_until_parked();
@@ -61,6 +70,7 @@ fn bottom_inspector_stays_disabled_without_sources_across_views(cx: &mut TestApp
             window
                 .update(&mut cx, |viewer, _, cx| {
                     viewer.dispatch_workbench_command(WorkbenchCommand::CreateView, cx);
+                    viewer.select_metric(MetricKey::from_string("loss"), cx);
                 })
                 .expect("viewer should remain open");
             cx.run_until_parked();
@@ -70,11 +80,25 @@ fn bottom_inspector_stays_disabled_without_sources_across_views(cx: &mut TestApp
             .debug_bounds("toggle-bottom-inspector")
             .expect("bottom inspector toggle should render disabled");
         cx.simulate_click(toggle.center(), Modifiers::default());
+        cx.dispatch_action(ToggleBottomInspector);
+        cx.dispatch_action(ShowMetricInspector);
         assert!(
             !window
                 .read_with(&cx, |viewer, cx| viewer.inspector_visible(cx))
                 .expect("viewer should remain open")
         );
+        window
+            .read_with(&cx, |viewer, cx| {
+                assert!(
+                    viewer
+                        .session_snapshot(cx)
+                        .views
+                        .active()
+                        .selected_panel_id
+                        .is_some()
+                );
+            })
+            .expect("viewer should remain open");
     }
 }
 

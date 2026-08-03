@@ -4,7 +4,7 @@ use crate::desktop::{
     ClearLockedCursor, Refresh, ResetView, ShowMetricInspector, ToggleBottomInspector,
     ToggleMetricSidebar, ToggleProjectSidebar, UseElapsed, UseStep, ZoomIn, ZoomOut,
 };
-use gpui::{Context, Window};
+use gpui::{App, Context, Window};
 use seex::MetricKey;
 use seex::{AlignmentAxis, AlignmentViewport};
 
@@ -549,6 +549,10 @@ impl ViewerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_toggle_inspector(cx) {
+            self.focus.focus(window);
+            return;
+        }
         if self.inspector_visible(cx) {
             self.bottom_inspector.update(cx, |inspector, cx| {
                 inspector.visible = false;
@@ -576,6 +580,10 @@ impl ViewerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.can_toggle_inspector(cx) {
+            self.focus.focus(window);
+            return;
+        }
         if let Some(panel_id) = self
             .session_snapshot(cx)
             .views
@@ -586,6 +594,12 @@ impl ViewerApp {
             self.show_metric_inspector(&panel_id, cx);
         }
         self.focus.focus(window);
+    }
+
+    fn can_toggle_inspector(&self, cx: &App) -> bool {
+        let session = self.session_snapshot(cx);
+        !session.sources.is_empty()
+            && (self.inspector_visible(cx) || session.views.active().selected_panel_id.is_some())
     }
     pub(super) fn on_reset(&mut self, _: &ResetView, _: &mut Window, cx: &mut Context<Self>) {
         self.workspace.update(cx, |workspace, cx| {
