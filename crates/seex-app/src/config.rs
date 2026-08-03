@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use seex::ProjectId;
-use toml_edit::{Array, DocumentMut, value};
+use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, value};
 
 use crate::domain::SourceAlias;
 use crate::workbench::toml_document::TomlWorkbenchDocument;
@@ -485,11 +485,32 @@ impl EditableConfig {
         if projects.is_empty() || !projects.iter().all(|project| seen.insert(project.as_str())) {
             return Err(ConfigEditError::InvalidProjectAllowlist);
         }
-        let source = &mut self.document["sources"][alias.as_str()];
-        source["path"] = value(root_path);
+        if self.document.get("sources").is_none() {
+            let mut sources = Table::new();
+            sources.set_implicit(true);
+            self.document["sources"] = Item::Table(sources);
+        }
+        let sources_item = &mut self.document["sources"];
+        let sources_inline = sources_item.is_inline_table();
+        let sources = sources_item
+            .as_table_like_mut()
+            .ok_or_else(|| invalid_source(alias.as_str()))?;
+        if !sources.contains_key(alias.as_str()) {
+            let source = if sources_inline {
+                value(InlineTable::new())
+            } else {
+                Item::Table(Table::new())
+            };
+            sources.insert(alias.as_str(), source);
+        }
+        let source = sources
+            .get_mut(alias.as_str())
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| invalid_source(alias.as_str()))?;
+        source.insert("path", value(root_path));
         let mut allowlist = Array::new();
         allowlist.extend(projects.iter().map(|project| project.as_str()));
-        source["projects"] = value(allowlist);
+        source.insert("projects", value(allowlist));
         Ok(())
     }
 
@@ -784,6 +805,58 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn new_source_uses_standard_table_syntax() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("config.toml");
+        let mut config = EditableConfig::load(&path, ConfigScope::Project)?;
+        config.set_source(
+            &SourceAlias::new("pulseon-examples")?,
+            Path::new("/Users/kaikai/projects/pulseon-examples"),
+            &[ProjectId::from_string("viewer-20260728-182721-050201")],
+        )?;
+
+        config.save()?;
+
+        assert_eq!(
+            fs::read_to_string(path)?,
+            "schema_version = 1\n\n[sources.pulseon-examples]\n\
+             path = \"/Users/kaikai/projects/pulseon-examples\"\n\
+             projects = [\"viewer-20260728-182721-050201\"]\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn existing_inline_sources_remain_inline_when_extended()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("config.toml");
+        fs::write(
+            &path,
+            "schema_version = 1\n# keep\nsources = { legacy = { path = '/tmp/legacy', \
+             projects = ['one'] } }\n",
+        )?;
+        let mut config = EditableConfig::load(&path, ConfigScope::Project)?;
+        config.set_source(
+            &SourceAlias::new("added")?,
+            Path::new("/tmp/added"),
+            &[ProjectId::from_string("two")],
+        )?;
+
+        config.save()?;
+
+        let saved = fs::read_to_string(path)?;
+        assert!(saved.contains("# keep\nsources = {") && saved.contains("added = {"));
+        assert!(!saved.contains("[sources.added]"));
+        let parsed = saved.parse::<DocumentMut>()?;
+        assert_eq!(
+            parsed["sources"]["added"]["path"].as_str(),
+            Some("/tmp/added")
+        );
         Ok(())
     }
 
