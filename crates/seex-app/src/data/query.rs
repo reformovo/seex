@@ -1,11 +1,11 @@
 use crate::data::source::ReadSession;
 use crate::domain::{DataSourceId, RunRef};
+use seex::Run;
+use seex::{AlignmentQueryError, AlignmentViewport};
+use seex::{EvidenceCompleteness, EvidenceReason, ObjectiveEvidence};
+use seex::{MetricAggregate, MetricKey};
 use seex::{MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, Timestamp};
 use seex_chart_core::{DataPoint, Series, SeriesId};
-use seex_model::alignment::{AlignmentQueryError, AlignmentViewport};
-use seex_model::comparison::{EvidenceCompleteness, EvidenceReason, ObjectiveEvidence};
-use seex_model::metric::{MetricAggregate, MetricKey};
-use seex_model::run::Run;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CurveAxis {
@@ -391,10 +391,8 @@ mod tests {
         InspectorRequest, MetricKey, OverviewRequest, ReadSession, RunRef, brushable_range,
         detail_budget, overview_budget,
     };
+    use seex::{Client, LogOptions, ProjectId, RunOptions, RunStatus};
     use seex_chart_core::{AxisRange, BrushState};
-    use seex_core::engine::client::NativeClient;
-    use seex_model::run::{RunId, RunStatus};
-    use seex_model::types::ProjectId;
 
     #[test]
     fn screen_budgets_clamp_density_and_overflow() {
@@ -431,23 +429,21 @@ mod tests {
     fn absolute_time_uses_observation_timestamps_without_extending_alignment_axis()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let client = NativeClient::open(root.path())?;
-        let project = client.create_project("viewer", Some(ProjectId::from_string("project")))?;
-        let run = client.create_run(
-            &project.project_id,
-            "candidate",
-            Some(RunId::from_string("run")),
-        )?;
-        let handle = client.run_handle(run.clone());
-        handle.log_metric_at_step("loss", 0, 1.)?;
-        handle.log_metric_at_step("loss", 1, 0.5)?;
-        client.finish_run(&run.run_id)?;
-        client.shutdown(None)?;
+        let client = Client::builder(root.path()).open()?;
+        let run = client.start_run(RunOptions::new("project").id("run").name("candidate"))?;
+        run.log_with([("loss", 1.)], LogOptions::new().step(0))?;
+        run.log_with([("loss", 0.5)], LogOptions::new().step(1))?;
+        run.finish()?;
+        client.shutdown()?;
         let session = ReadSession::open_existing(root.path())?;
         let source_id = DataSourceId::new("source").expect("test alias should be valid");
         let selection = CurveSelection {
             source_id: source_id.clone(),
-            runs: vec![RunRef::new(source_id, project.project_id, run.run_id)],
+            runs: vec![RunRef::new(
+                source_id,
+                ProjectId::from_string("project"),
+                run.run_id().clone(),
+            )],
             metric_key: MetricKey::from_string("loss"),
             axis: CurveAxis::AbsoluteTime,
         };
@@ -518,19 +514,18 @@ mod tests {
     fn inspector_stops_when_superseded_between_storage_queries()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let client = NativeClient::open(root.path())?;
-        let project = client.create_project("viewer", Some(ProjectId::from_string("project")))?;
-        let run = client.create_run(
-            &project.project_id,
-            "candidate",
-            Some(RunId::from_string("run")),
-        )?;
-        client.shutdown(None)?;
+        let client = Client::builder(root.path()).open()?;
+        let run = client.start_run(RunOptions::new("project").id("run").name("candidate"))?;
+        client.shutdown()?;
         let session = ReadSession::open_existing(root.path())?;
         let source_id = DataSourceId::new("source").expect("test alias should be valid");
         let request = InspectorRequest {
             source_id: source_id.clone(),
-            runs: vec![RunRef::new(source_id, project.project_id, run.run_id)],
+            runs: vec![RunRef::new(
+                source_id,
+                ProjectId::from_string("project"),
+                run.run_id().clone(),
+            )],
             metric_key: MetricKey::from_string("loss"),
         };
         let mut checks = 0;

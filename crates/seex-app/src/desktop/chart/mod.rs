@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use crate::data::query::CurveSnapshot;
 use crate::domain::RunRef;
 use gpui::{Bounds, Path, PathBuilder, Pixels, Point, Rgba, WindowAppearance, point, px};
+use seex::EvidenceCompleteness;
 use seex_chart_core::{
     AxisRange, BrushState, CanvasSize, LinearScale, PathCache, ScreenPoint, Viewport,
     hit_test_point,
 };
-use seex_model::comparison::EvidenceCompleteness;
 
 use super::theme::ViewerTheme;
 

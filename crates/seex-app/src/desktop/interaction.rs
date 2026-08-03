@@ -58,8 +58,8 @@ fn replace_if_changed<T: PartialEq>(current: &mut T, next: T) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::domain::{DataSourceId, RunRef};
-    use seex_model::run::RunId;
-    use seex_model::types::ProjectId;
+    use seex::ProjectId;
+    use seex::RunId;
 
     use super::WorkbenchInteraction;
 
