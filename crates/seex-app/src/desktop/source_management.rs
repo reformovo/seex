@@ -21,6 +21,7 @@ pub(crate) struct ConfirmedSource {
 
 #[derive(Clone, Debug)]
 pub(crate) enum SourceManagementEvent {
+    ChooseSource,
     Confirmed(ConfirmedSource),
     ConfirmedWorkbench,
     Cancelled,
@@ -29,15 +30,20 @@ pub(crate) enum SourceManagementEvent {
 pub(crate) struct SourceManagement {
     alias: gpui::Entity<TextInput>,
     alias_focus: FocusHandle,
+    source_focus: FocusHandle,
+    source_generation: u64,
     draft: Option<SourceDraft>,
     workbench: Option<WorkbenchImportPlan>,
 }
 
 struct SourceDraft {
     mode: SourceMode,
-    root_path: PathBuf,
+    root_path: Option<PathBuf>,
     projects: Vec<Project>,
     selected: HashSet<ProjectId>,
+    preflighting: Option<(u64, PathBuf)>,
+    source_error: Option<String>,
+    existing_aliases: Vec<SourceAlias>,
     validation_error: Option<String>,
 }
 
@@ -56,38 +62,101 @@ impl SourceManagement {
         Self {
             alias,
             alias_focus: cx.focus_handle().tab_stop(true),
+            source_focus: cx.focus_handle().tab_stop(true),
+            source_generation: 0,
             draft: None,
             workbench: None,
         }
     }
 
-    pub(crate) fn begin(
+    pub(crate) fn begin_import(
         &mut self,
-        preflight: SourcePreflight,
-        alias: SourceAlias,
+        existing_aliases: Vec<SourceAlias>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.workbench = None;
         self.alias.update(cx, |input, cx| {
-            input.set_text(alias.as_str());
-            input.select_all();
-            input.start_blink(cx);
+            input.set_text("");
+            input.stop_blink(cx);
         });
-        let selected = preflight
-            .projects
-            .iter()
-            .map(|project| project.project_id.clone())
-            .collect();
         self.draft = Some(SourceDraft {
             mode: SourceMode::Import,
-            root_path: preflight.root_path,
-            projects: preflight.projects,
-            selected,
+            root_path: None,
+            projects: Vec::new(),
+            selected: HashSet::new(),
+            preflighting: None,
+            source_error: None,
+            existing_aliases,
             validation_error: None,
         });
-        self.alias_focus.focus(window);
+        self.source_generation = self.source_generation.saturating_add(1);
+        self.source_focus.focus(window);
         cx.notify();
+    }
+
+    pub(crate) fn begin_source_preflight(
+        &mut self,
+        root_path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Option<u64> {
+        let draft = self
+            .draft
+            .as_mut()
+            .filter(|draft| matches!(draft.mode, SourceMode::Import))?;
+        self.source_generation = self.source_generation.saturating_add(1);
+        let generation = self.source_generation;
+        draft.preflighting = Some((generation, root_path));
+        draft.source_error = None;
+        draft.validation_error = None;
+        cx.notify();
+        Some(generation)
+    }
+
+    pub(crate) fn finish_source_preflight(
+        &mut self,
+        generation: u64,
+        result: Result<(SourcePreflight, SourceAlias), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(draft) = self.draft.as_mut().filter(|draft| {
+            matches!(draft.mode, SourceMode::Import)
+                && draft
+                    .preflighting
+                    .as_ref()
+                    .is_some_and(|(current, _)| *current == generation)
+        }) else {
+            return;
+        };
+        draft.preflighting = None;
+        match result {
+            Ok((preflight, alias)) => {
+                draft.root_path = Some(preflight.root_path);
+                draft.projects = preflight.projects;
+                draft.selected.clear();
+                draft.source_error = None;
+                self.alias.update(cx, |input, cx| {
+                    input.set_text(alias.as_str());
+                    input.select_all();
+                    input.start_blink(cx);
+                });
+                self.alias_focus.focus(window);
+            }
+            Err(error) => draft.source_error = Some(error),
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn report_source_selection_error(&mut self, error: String, cx: &mut Context<Self>) {
+        if let Some(draft) = self
+            .draft
+            .as_mut()
+            .filter(|draft| matches!(draft.mode, SourceMode::Import))
+        {
+            draft.source_error = Some(error);
+            cx.notify();
+        }
     }
 
     pub(crate) fn begin_manage(
@@ -105,9 +174,12 @@ impl SourceManagement {
         });
         self.draft = Some(SourceDraft {
             mode: SourceMode::Manage,
-            root_path: preflight.root_path,
+            root_path: Some(preflight.root_path),
             projects: preflight.projects,
             selected: selected_projects.iter().cloned().collect(),
+            preflighting: None,
+            source_error: None,
+            existing_aliases: Vec::new(),
             validation_error: None,
         });
         self.alias_focus.focus(window);
@@ -138,6 +210,8 @@ impl SourceManagement {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.source_generation = self.source_generation.saturating_add(1);
+        self.alias.update(cx, |input, cx| input.stop_blink(cx));
         self.draft = None;
         self.workbench = None;
         cx.emit(SourceManagementEvent::Cancelled);
@@ -155,6 +229,11 @@ impl SourceManagement {
         let Some(draft) = self.draft.as_mut() else {
             return;
         };
+        let Some(root_path) = draft.root_path.clone() else {
+            draft.validation_error = Some("Choose a Source folder".to_owned());
+            cx.notify();
+            return;
+        };
         let alias = match SourceAlias::new(alias) {
             Ok(alias) => alias,
             Err(SourceAliasError::Invalid) => {
@@ -164,6 +243,11 @@ impl SourceManagement {
                 return;
             }
         };
+        if draft.existing_aliases.contains(&alias) {
+            draft.validation_error = Some("Source alias is already configured".to_owned());
+            cx.notify();
+            return;
+        }
         if draft.selected.is_empty() && matches!(draft.mode, SourceMode::Import) {
             draft.validation_error = Some("Select at least one Project".to_owned());
             cx.notify();
@@ -172,7 +256,7 @@ impl SourceManagement {
         let confirmed = ConfirmedSource {
             manage: matches!(draft.mode, SourceMode::Manage),
             alias,
-            root_path: draft.root_path.clone(),
+            root_path,
             projects: draft
                 .projects
                 .iter()
@@ -288,10 +372,22 @@ impl Render for SourceManagement {
         };
         let theme = ViewerTheme::for_appearance(window.appearance());
         let alias = self.alias.read(cx).text().to_owned();
-        let root_label = draft.root_path.to_string_lossy().into_owned();
+        let root_label = draft
+            .preflighting
+            .as_ref()
+            .map(|(_, path)| format!("Reading {}…", path.to_string_lossy()))
+            .or_else(|| {
+                draft
+                    .root_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "Choose a Source folder…".to_owned());
         let mode = draft.mode;
         let projects = draft.projects.clone();
         let selected = draft.selected.clone();
+        let preflighting = draft.preflighting.is_some();
+        let source_error = draft.source_error.clone();
         let error = draft.validation_error.clone();
         confirmation_overlay(
             "source-confirmation-overlay",
@@ -317,12 +413,42 @@ impl Render for SourceManagement {
                             SourceMode::Manage => "Manage Projects",
                         }),
                 )
+                .child(div().text_xs().child("Source"))
                 .child(
                     div()
+                        .id("choose-source")
+                        .debug_selector(|| "choose-source".to_owned())
+                        .track_focus(&self.source_focus)
+                        .h(theme.spacing.control_height)
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .border_1()
+                        .border_color(theme.colors.border)
+                        .rounded(theme.spacing.corner_radius)
                         .text_xs()
                         .text_color(theme.colors.text_muted)
+                        .when(
+                            matches!(mode, SourceMode::Import) && !preflighting,
+                            |element| {
+                                element
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(SourceManagementEvent::ChooseSource);
+                                    }))
+                            },
+                        )
+                        .when(preflighting, |element| {
+                            element.opacity(0.6).cursor_default()
+                        })
                         .child(root_label),
                 )
+                .children(source_error.map(|error| {
+                    div()
+                        .text_xs()
+                        .text_color(theme.colors.error_text)
+                        .child(error)
+                }))
                 .child(div().text_xs().child("Alias"))
                 .child(
                     div()

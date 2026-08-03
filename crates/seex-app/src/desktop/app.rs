@@ -350,7 +350,7 @@ impl ViewerApp {
         });
     }
 
-    fn choose_source_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_source_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let existing = self
             .source_configuration
             .as_ref()
@@ -362,6 +362,12 @@ impl ViewerApp {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        self.source_management.update(cx, |management, cx| {
+            management.begin_import(existing, window, cx);
+        });
+    }
+
+    fn choose_source_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -374,13 +380,17 @@ impl ViewerApp {
                 Ok(Ok(None)) => return,
                 Ok(Err(error)) => {
                     let _ = this.update_in(cx, |viewer, _, cx| {
-                        viewer.report_source_error(error.to_string(), cx);
+                        viewer.source_management.update(cx, |management, cx| {
+                            management.report_source_selection_error(error.to_string(), cx);
+                        });
                     });
                     return;
                 }
                 Err(error) => {
                     let _ = this.update_in(cx, |viewer, _, cx| {
-                        viewer.report_source_error(error.to_string(), cx);
+                        viewer.source_management.update(cx, |management, cx| {
+                            management.report_source_selection_error(error.to_string(), cx);
+                        });
                     });
                     return;
                 }
@@ -388,23 +398,48 @@ impl ViewerApp {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
+            let selected_path = path.clone();
+            let generation = this
+                .update_in(cx, |viewer, _, cx| {
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.begin_source_preflight(selected_path, cx)
+                    })
+                })
+                .ok()
+                .flatten();
+            let Some(generation) = generation else {
+                return;
+            };
             let preflight = cx.background_spawn(async move { SourcePreflight::load(&path) });
             let result = preflight.await;
-            let _ = this.update_in(cx, |viewer, window, cx| match result {
-                Ok(preflight) => {
-                    let alias = suggest_source_alias(&preflight.root_path, &existing);
-                    viewer.source_management.update(cx, |management, cx| {
-                        management.begin(preflight, alias, window, cx);
-                    });
-                }
-                Err(error) => viewer.report_source_error(error.to_string(), cx),
+            let _ = this.update_in(cx, |viewer, window, cx| {
+                let result = result
+                    .map(|preflight| {
+                        let existing = viewer
+                            .source_configuration
+                            .as_ref()
+                            .map(|configuration| {
+                                configuration
+                                    .sources
+                                    .iter()
+                                    .map(|source| source.configured.alias.clone())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+                        let alias = suggest_source_alias(&preflight.root_path, &existing);
+                        (preflight, alias)
+                    })
+                    .map_err(|error| error.to_string());
+                viewer.source_management.update(cx, |management, cx| {
+                    management.finish_source_preflight(generation, result, window, cx);
+                });
             });
         })
         .detach();
     }
 
     fn on_import_source(&mut self, _: &ImportSource, window: &mut Window, cx: &mut Context<Self>) {
-        self.choose_source_directory(window, cx);
+        self.open_source_import(window, cx);
     }
 
     fn on_reload_sources(
@@ -586,6 +621,7 @@ impl ViewerApp {
         cx: &mut Context<Self>,
     ) {
         match event {
+            SourceManagementEvent::ChooseSource => self.choose_source_directory(window, cx),
             SourceManagementEvent::Confirmed(source) => {
                 self.confirm_managed_source(source.clone(), window, cx);
             }

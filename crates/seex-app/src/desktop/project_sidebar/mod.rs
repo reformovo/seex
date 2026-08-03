@@ -1047,7 +1047,7 @@ impl ViewerApp {
             ProjectSidebarEvent::Command(command) => {
                 self.dispatch_workbench_command(command.clone(), cx);
             }
-            ProjectSidebarEvent::ImportSource => self.choose_source_directory(window, cx),
+            ProjectSidebarEvent::ImportSource => self.open_source_import(window, cx),
             ProjectSidebarEvent::ManageSource(source_id) => {
                 self.manage_source_projects(source_id.clone(), window, cx);
             }

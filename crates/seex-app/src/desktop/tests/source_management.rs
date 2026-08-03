@@ -7,6 +7,24 @@ use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
 
 #[gpui::test]
+fn import_source_control_opens_confirmation_before_path_prompt(cx: &mut TestAppContext) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let (_window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    cx.run_until_parked();
+    cx.refresh().expect("test window should refresh");
+
+    let import = cx
+        .debug_bounds("import-source")
+        .expect("Import Source control should render");
+    cx.simulate_click(import.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.refresh().expect("test window should refresh");
+
+    assert!(cx.debug_bounds("source-confirmation").is_some());
+    assert!(cx.debug_bounds("choose-source").is_some());
+}
+
+#[gpui::test]
 fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     let scope = tempfile::tempdir().expect("test scope should be created");
@@ -25,12 +43,19 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     window
         .update(&mut cx, |viewer, window, cx| {
             viewer.source_management.update(cx, |management, cx| {
-                management.begin(
-                    SourcePreflight {
-                        root_path: root.path().to_owned(),
-                        projects,
-                    },
-                    SourceAlias::new("research").expect("test alias should be valid"),
+                management.begin_import(Vec::new(), window, cx);
+                let generation = management
+                    .begin_source_preflight(root.path().to_owned(), cx)
+                    .expect("import confirmation should accept a Source preflight");
+                management.finish_source_preflight(
+                    generation,
+                    Ok((
+                        SourcePreflight {
+                            root_path: root.path().to_owned(),
+                            projects,
+                        },
+                        SourceAlias::new("research").expect("test alias should be valid"),
+                    )),
                     window,
                     cx,
                 );
@@ -41,14 +66,6 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     cx.refresh().expect("test window should refresh");
     assert!(cx.debug_bounds("source-confirmation").is_some());
 
-    for selector in ["source-project:one", "source-project:two"] {
-        let row = cx
-            .debug_bounds(selector)
-            .expect("Project choice should render");
-        cx.simulate_click(row.center(), Modifiers::default());
-    }
-    cx.run_until_parked();
-    cx.refresh().expect("test window should refresh");
     let confirm = cx
         .debug_bounds("confirm-source")
         .expect("confirm control should render");
@@ -59,7 +76,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
 
     let row = cx
         .debug_bounds("source-project:one")
-        .expect("Project choice should remain rendered");
+        .expect("Project choice should render");
     cx.simulate_click(row.center(), Modifiers::default());
     let confirm = cx
         .debug_bounds("confirm-source")
@@ -91,6 +108,60 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     assert_eq!(
         projects.get(0).and_then(toml_edit::Value::as_str),
         Some("one")
+    );
+}
+
+#[gpui::test]
+fn cancelled_confirmation_ignores_late_source_preflight(cx: &mut TestAppContext) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let source = tempfile::tempdir().expect("test Source should be created");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    let generation = window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_import(Vec::new(), window, cx);
+                management
+                    .begin_source_preflight(source.path().to_owned(), cx)
+                    .expect("open import confirmation should accept preflight")
+            })
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+    cx.refresh().expect("test window should refresh");
+
+    let cancel = cx
+        .debug_bounds("cancel-source")
+        .expect("Cancel control should render");
+    cx.simulate_click(cancel.center(), Modifiers::default());
+    cx.run_until_parked();
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.finish_source_preflight(
+                    generation,
+                    Ok((
+                        SourcePreflight {
+                            root_path: source.path().to_owned(),
+                            projects: Vec::new(),
+                        },
+                        SourceAlias::new("late").expect("test alias should be valid"),
+                    )),
+                    window,
+                    cx,
+                );
+            });
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+    cx.refresh().expect("test window should refresh");
+
+    assert!(
+        !window
+            .read_with(&cx, |viewer, cx| viewer
+                .source_management
+                .read(cx)
+                .is_open())
+            .expect("viewer should remain open")
     );
 }
 
