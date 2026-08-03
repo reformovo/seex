@@ -247,6 +247,37 @@ jobs:
           name: wheels-macos-${{ matrix.platform.target }}
           path: dist
 
+  viewer-macos-aarch64:
+    name: Viewer (macOS aarch64)
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - name: Verify Xcode Metal Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+          xcrun --find metal
+          xcrun --find metallib
+          xcrun metal --version
+      - name: Build unsigned Viewer
+        run: cargo build -p seex-app --release
+      - name: Prepare Viewer artifact and checksum
+        run: |
+          mkdir -p dist
+          cp target/release/seex-app dist/seex-app-macos-aarch64
+          cd dist
+          shasum -a 256 seex-app-macos-aarch64 > seex-app-macos-aarch64.sha256
+      - name: Upload Viewer artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: viewer-macos-aarch64
+          path: |
+            dist/seex-app-macos-aarch64
+            dist/seex-app-macos-aarch64.sha256
+
   sdist:
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
