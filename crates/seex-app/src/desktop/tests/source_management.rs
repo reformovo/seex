@@ -64,6 +64,22 @@ fn manage_and_workbench_dialogs_share_responsive_geometry(cx: &mut TestAppContex
     assert_eq!(dialog.size.width, px(568.));
     assert!(dialog.size.height <= px(288.));
 
+    cx.simulate_resize(size(px(480.), px(600.)));
+    cx.run_until_parked();
+    cx.refresh().expect("narrow Sources dialog should render");
+    let dialog = cx
+        .debug_bounds("sources-dialog")
+        .expect("narrow Sources dialog should render");
+    let list = cx
+        .debug_bounds("sources-list")
+        .expect("narrow Source list should render");
+    let detail = cx
+        .debug_bounds("source-detail")
+        .expect("narrow Source detail should render");
+    assert_eq!(dialog.size.width, px(448.));
+    assert!(list.bottom() <= detail.origin.y);
+
+    cx.simulate_resize(size(px(600.), px(320.)));
     window
         .update(&mut cx, |viewer, _, cx| {
             viewer.source_management.update(cx, |management, cx| {

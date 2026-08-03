@@ -881,6 +881,7 @@ impl SourceManagement {
     ) -> gpui::AnyElement {
         div()
             .id("sources-list")
+            .debug_selector(|| "sources-list".to_owned())
             .flex_none()
             .when(!narrow, |list| list.w(px(180.)).h_full())
             .when(narrow, |list| list.w_full().max_h(px(132.)))
@@ -891,7 +892,16 @@ impl SourceManagement {
             .children(draft.items.iter().map(|item| {
                 let id = item.id;
                 let selector = SharedString::from(format!("source-item:{}", item.alias));
+                let path_selector = SharedString::from(format!("source-item-path:{id}"));
                 let selected = draft.active == Some(id);
+                let path = item.root_path.to_string_lossy().into_owned();
+                let status_color = if matches!(item.status, DraftStatus::Unavailable(_)) {
+                    theme.colors.error_text
+                } else if item.removed || item.is_new() || item.is_dirty() {
+                    theme.colors.accent
+                } else {
+                    theme.colors.text_muted
+                };
                 div()
                     .id(selector.clone())
                     .debug_selector(move || selector.to_string())
@@ -918,11 +928,13 @@ impl SourceManagement {
                             .text_color(theme.colors.text_muted)
                             .child(
                                 div()
+                                    .id(path_selector)
                                     .min_w(px(0.))
                                     .truncate()
-                                    .child(item.root_path.to_string_lossy().into_owned()),
+                                    .tooltip(components::label_tooltip(path.clone(), theme))
+                                    .child(path),
                             )
-                            .child(item.status_label()),
+                            .child(div().text_color(status_color).child(item.status_label())),
                     )
             }))
             .children(draft.items.is_empty().then(|| {
@@ -990,6 +1002,8 @@ impl SourceManagement {
             .child(div().text_xs().child("Source"))
             .child(
                 div()
+                    .id("source-path")
+                    .debug_selector(|| "source-path".to_owned())
                     .h(theme.spacing.control_height)
                     .px_2()
                     .flex()
@@ -1002,9 +1016,12 @@ impl SourceManagement {
                     .child(components::icon(components::IconName::Folder, theme))
                     .child(
                         div()
+                            .id("source-path-label")
+                            .debug_selector(|| "source-path-label".to_owned())
                             .min_w(px(0.))
                             .flex_1()
                             .truncate()
+                            .tooltip(components::label_tooltip(root_label.clone(), theme))
                             .child(root_label.clone()),
                     )
                     .children(editable.then(|| {
@@ -1134,6 +1151,9 @@ impl SourceManagement {
                         DialogButtonKind::Secondary,
                         draft.saving,
                     )
+                    .when(!item.removed, |button| {
+                        button.text_color(theme.colors.error_text)
+                    })
                     .when(!draft.saving, |button| {
                         button.on_click(cx.listener(|this, _, _, cx| {
                             this.toggle_remove_source(cx);
