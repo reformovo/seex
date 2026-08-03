@@ -28,6 +28,8 @@ mod interaction;
 mod project_sidebar;
 #[path = "session/mod.rs"]
 mod session;
+#[path = "source_management.rs"]
+mod source_management;
 #[path = "theme.rs"]
 mod theme;
 #[path = "view_bar.rs"]
@@ -47,6 +49,7 @@ use inspector::*;
 use interaction::WorkbenchInteraction;
 use project_sidebar::*;
 use session::{SessionSnapshot, ViewerLayoutState, WorkbenchSession, default_workbench_path};
+use source_management::SourceManagement;
 use theme::ViewerTheme;
 use view_bar::{AnalysisViewBar, AnalysisViewBarEvent};
 use workspace::*;
@@ -60,6 +63,7 @@ pub(super) struct ViewerApp {
     bottom_inspector: gpui::Entity<BottomInspector>,
     session: gpui::Entity<WorkbenchSession>,
     workspace: gpui::Entity<AnalysisWorkspace>,
+    source_management: gpui::Entity<SourceManagement>,
     pending_commands: Vec<command::WorkbenchCommand>,
     command_dispatch_pending: bool,
     run_hover_revision: u64,
@@ -85,6 +89,7 @@ impl ViewerApp {
             bottom_inspector: cx.new(|_| BottomInspector::new()),
             session,
             workspace: cx.new(AnalysisWorkspace::new),
+            source_management: cx.new(SourceManagement::new),
             pending_commands: Vec::new(),
             command_dispatch_pending: false,
             run_hover_revision: 0,
@@ -169,6 +174,8 @@ impl ViewerApp {
             cx.notify();
         })
         .detach();
+        cx.observe(&app.source_management, |_, _, cx| cx.notify())
+            .detach();
         cx.observe(&app.session, |this, _, cx| {
             this.sync_child_snapshots(cx);
             cx.notify();
@@ -390,5 +397,6 @@ impl Render for ViewerApp {
                             ),
                     ),
             )
+            .child(self.source_management.clone())
     }
 }

@@ -316,6 +316,8 @@ mod shell;
 #[cfg(feature = "test-support")]
 mod sidebar;
 #[cfg(feature = "test-support")]
+mod source_management;
+#[cfg(feature = "test-support")]
 mod views;
 #[cfg(feature = "test-support")]
 mod workspace;
