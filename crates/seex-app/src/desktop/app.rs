@@ -642,18 +642,9 @@ impl ViewerApp {
             self.report_source_error("Workbench import plan is unavailable".to_owned(), cx);
             return;
         }
-        let flush_revision = self.session.update(cx, |session, cx| {
-            if session.autosave_blocked
-                || !session.persistence_dirty
-                || session.workbench_path.is_none()
-            {
-                None
-            } else {
-                let revision = session.semantic_snapshot().revision;
-                session.flush_now(cx);
-                session.persistence_dirty.then_some(revision)
-            }
-        });
+        let flush_revision = self
+            .session
+            .update(cx, |session, cx| session.flush_pending_revision(cx));
         self.pending_import_flush_revision = flush_revision;
         if flush_revision.is_none() {
             self.persist_workbench_import(cx);
@@ -684,13 +675,9 @@ impl ViewerApp {
         if *revision < target {
             return;
         }
-        let next_revision = self.session.update(cx, |session, cx| {
-            session.persistence_dirty.then(|| {
-                let revision = session.semantic_snapshot().revision;
-                session.flush_now(cx);
-                revision
-            })
-        });
+        let next_revision = self
+            .session
+            .update(cx, |session, cx| session.flush_pending_revision(cx));
         if let Some(revision) = next_revision {
             self.pending_import_flush_revision = Some(revision);
         } else {
@@ -703,18 +690,9 @@ impl ViewerApp {
         if self.pending_quit_flush_revision.is_some() {
             return;
         }
-        let flush_revision = self.session.update(cx, |session, cx| {
-            if session.autosave_blocked
-                || !session.persistence_dirty
-                || session.workbench_path.is_none()
-            {
-                None
-            } else {
-                let revision = session.semantic_snapshot().revision;
-                session.flush_now(cx);
-                session.persistence_dirty.then_some(revision)
-            }
-        });
+        let flush_revision = self
+            .session
+            .update(cx, |session, cx| session.flush_pending_revision(cx));
         self.pending_quit_flush_revision = flush_revision;
         if flush_revision.is_none() {
             cx.quit();
@@ -747,13 +725,9 @@ impl ViewerApp {
         if *revision < target {
             return;
         }
-        let next_revision = self.session.update(cx, |session, cx| {
-            session.persistence_dirty.then(|| {
-                let revision = session.semantic_snapshot().revision;
-                session.flush_now(cx);
-                revision
-            })
-        });
+        let next_revision = self
+            .session
+            .update(cx, |session, cx| session.flush_pending_revision(cx));
         if let Some(revision) = next_revision {
             self.pending_quit_flush_revision = Some(revision);
         } else {

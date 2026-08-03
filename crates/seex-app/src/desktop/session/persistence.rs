@@ -94,6 +94,15 @@ impl WorkbenchSession {
         self.schedule_autosave(Duration::ZERO, cx);
     }
 
+    pub(crate) fn flush_pending_revision(&mut self, cx: &mut Context<Self>) -> Option<u64> {
+        if self.autosave_blocked || !self.persistence_dirty || self.workbench_path.is_none() {
+            return None;
+        }
+        let revision = self.semantic_snapshot().revision;
+        self.flush_now(cx);
+        self.persistence_dirty.then_some(revision)
+    }
+
     fn schedule_autosave(&mut self, delay: Duration, cx: &mut Context<Self>) {
         if self.autosave_blocked || self.autosave_in_flight || !self.persistence_dirty {
             return;
