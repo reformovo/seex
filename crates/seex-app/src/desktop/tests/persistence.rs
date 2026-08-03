@@ -302,6 +302,23 @@ fn quit_flushes_the_latest_revision_before_finishing(cx: &mut TestAppContext) {
         .expect("saved workbench should remain readable")
         .expect("Quit should flush the workbench");
     assert_eq!(saved.views[0].name, "Before Quit");
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.persistence_dirty = true;
+                session.last_saved_workbench = Some(session.semantic_snapshot().document.encode());
+            });
+        })
+        .expect("test platform should keep the viewer open after Quit");
+    cx.dispatch_action(Quit);
+    assert!(
+        window
+            .read_with(&cx, |viewer, _| viewer
+                .pending_quit_flush_revision
+                .is_none())
+            .expect("viewer should remain open")
+    );
 }
 
 #[gpui::test]

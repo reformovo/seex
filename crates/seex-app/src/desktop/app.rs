@@ -643,12 +643,15 @@ impl ViewerApp {
             return;
         }
         let flush_revision = self.session.update(cx, |session, cx| {
-            if session.autosave_blocked || !session.persistence_dirty {
+            if session.autosave_blocked
+                || !session.persistence_dirty
+                || session.workbench_path.is_none()
+            {
                 None
             } else {
                 let revision = session.semantic_snapshot().revision;
                 session.flush_now(cx);
-                Some(revision)
+                session.persistence_dirty.then_some(revision)
             }
         });
         self.pending_import_flush_revision = flush_revision;
@@ -701,12 +704,15 @@ impl ViewerApp {
             return;
         }
         let flush_revision = self.session.update(cx, |session, cx| {
-            if session.autosave_blocked || !session.persistence_dirty {
+            if session.autosave_blocked
+                || !session.persistence_dirty
+                || session.workbench_path.is_none()
+            {
                 None
             } else {
                 let revision = session.semantic_snapshot().revision;
                 session.flush_now(cx);
-                Some(revision)
+                session.persistence_dirty.then_some(revision)
             }
         });
         self.pending_quit_flush_revision = flush_revision;
