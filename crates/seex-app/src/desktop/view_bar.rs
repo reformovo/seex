@@ -86,8 +86,11 @@ impl Render for AnalysisViewBar {
         let view_name_suffix = view_name_suffix.to_owned();
         let view_name_select_all = view_name_input.is_select_all();
         let view_name_cursor_visible = view_name_input.cursor_visible();
-        let can_refresh = !session.sources.is_empty();
+        let has_sources = !session.sources.is_empty();
+        let can_refresh = has_sources;
         let inspector_visible = self.inspector_visible;
+        let can_toggle_inspector = has_sources
+            && (inspector_visible || session.views.active().selected_panel_id.is_some());
         let sidebar_visible = self.sidebar_visible;
 
         components::tab_bar(theme)
@@ -299,8 +302,7 @@ impl Render for AnalysisViewBar {
                             "toggle-bottom-inspector",
                             theme,
                             inspector_visible,
-                            !inspector_visible
-                                && session.views.active().selected_panel_id.is_none(),
+                            !can_toggle_inspector,
                         )
                         .debug_selector(|| "toggle-bottom-inspector".to_owned())
                         .tooltip(components::label_tooltip(
@@ -311,14 +313,11 @@ impl Render for AnalysisViewBar {
                             },
                             theme,
                         ))
-                        .when(
-                            inspector_visible || session.views.active().selected_panel_id.is_some(),
-                            |button| {
-                                button.cursor_pointer().on_click(cx.listener(|_, _, _, cx| {
-                                    cx.emit(AnalysisViewBarEvent::ToggleBottomInspector);
-                                }))
-                            },
-                        )
+                        .when(can_toggle_inspector, |button| {
+                            button.cursor_pointer().on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(AnalysisViewBarEvent::ToggleBottomInspector);
+                            }))
+                        })
                         .child(components::icon(
                             if inspector_visible {
                                 IconName::PanelBottomClose

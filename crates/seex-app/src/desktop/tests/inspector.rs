@@ -6,7 +6,10 @@ use crate::desktop::{ShowMetricInspector, ToggleBottomInspector, ToggleMetricSid
 
 #[gpui::test]
 fn bottom_inspector_can_close_after_switching_to_an_empty_view(cx: &mut TestAppContext) {
-    let (window, mut cx) = open_viewer(cx, None);
+    let (root, _, _) = fixture(1);
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_owned());
+    wait_for_viewer(window, &cx, source_catalog_loaded);
     window
         .update(&mut cx, |viewer, _, cx| {
             viewer.select_metric(MetricKey::from_string("loss"), cx);
@@ -40,6 +43,39 @@ fn bottom_inspector_can_close_after_switching_to_an_empty_view(cx: &mut TestAppC
             .read_with(&cx, |viewer, cx| viewer.inspector_visible(cx))
             .expect("viewer should remain open")
     );
+}
+
+#[gpui::test]
+fn bottom_inspector_stays_disabled_without_sources_across_views(cx: &mut TestAppContext) {
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.select_metric(MetricKey::from_string("loss"), cx);
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+    cx.refresh().expect("first View should render");
+
+    for create_view in [false, true] {
+        if create_view {
+            window
+                .update(&mut cx, |viewer, _, cx| {
+                    viewer.dispatch_workbench_command(WorkbenchCommand::CreateView, cx);
+                })
+                .expect("viewer should remain open");
+            cx.run_until_parked();
+            cx.refresh().expect("new View should render");
+        }
+        let toggle = cx
+            .debug_bounds("toggle-bottom-inspector")
+            .expect("bottom inspector toggle should render disabled");
+        cx.simulate_click(toggle.center(), Modifiers::default());
+        assert!(
+            !window
+                .read_with(&cx, |viewer, cx| viewer.inspector_visible(cx))
+                .expect("viewer should remain open")
+        );
+    }
 }
 
 #[gpui::test]
