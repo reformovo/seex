@@ -37,7 +37,7 @@ pub(crate) enum WorkbenchCommand {
         project: ProjectRef,
         placement: ProjectPlacement,
     },
-    RemoveProject(ProjectRef),
+    ToggleProjectExpanded(ProjectRef),
     SetProjectRuns {
         runs: Vec<RunRef>,
         selected: bool,
@@ -223,8 +223,8 @@ impl WorkbenchSession {
                     ..CommandEffect::default()
                 }
             }
-            WorkbenchCommand::RemoveProject(project) => {
-                self.views.remove_project(project);
+            WorkbenchCommand::ToggleProjectExpanded(project) => {
+                self.views.toggle_project_expanded(project);
                 CommandEffect {
                     changed: true,
                     ..CommandEffect::default()
@@ -330,7 +330,7 @@ impl WorkbenchSession {
         };
         if effect.changed {
             self.persistence_dirty = true;
-            self.publish_snapshot();
+            self.publish_semantic_snapshot();
         }
         effect
     }
@@ -403,21 +403,6 @@ impl ViewerApp {
             | WorkbenchCommand::TogglePinnedRun(_)
             | WorkbenchCommand::SetRunArchived { .. } => {
                 self.request_missing_panel_curves(cx);
-                if self.inspector_visible(cx) {
-                    self.request_inspector(cx);
-                }
-            }
-            WorkbenchCommand::RemoveProject(project) => {
-                self.project_sidebar.update(cx, |sidebar, cx| {
-                    sidebar.project_focuses.remove(project);
-                    sidebar.run_focuses.retain(|run, _| {
-                        run.source_id != project.source_id || run.project_id != project.project_id
-                    });
-                    sidebar.menu = None;
-                    cx.notify();
-                });
-                self.refresh_catalog(cx);
-                self.request_overview(cx);
                 if self.inspector_visible(cx) {
                     self.request_inspector(cx);
                 }
@@ -502,6 +487,7 @@ impl ViewerApp {
             | WorkbenchCommand::CloseView(_)
             | WorkbenchCommand::RenameView { .. }
             | WorkbenchCommand::SetProjectPlacement { .. }
+            | WorkbenchCommand::ToggleProjectExpanded(_)
             | WorkbenchCommand::ZoomViewport { .. }
             | WorkbenchCommand::PanViewport(_)
             | WorkbenchCommand::ResizeBrushStart(_)

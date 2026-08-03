@@ -7,7 +7,7 @@ pub mod registry;
 mod source;
 pub mod worker;
 
-pub use source::{ReadSession, SourceError};
+pub use source::{ReadSession, SourceError, SourcePreflight};
 
 /// Catalog state requested for one viewer selection.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

@@ -7,7 +7,7 @@ use super::super::test_support::*;
 use super::*;
 
 #[gpui::test]
-fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppContext) {
+fn startup_without_project_sources_exposes_source_import(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     cx.executor().allow_parking();
 
@@ -16,21 +16,10 @@ fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppC
 
     window
         .read_with(&cx, |viewer, cx| {
-            assert!(viewer.session_snapshot(cx).sources.is_empty());
             assert!(viewer.session.read(cx).transient_error.is_none());
         })
         .expect("viewer should remain open");
-    let import_source = cx
-        .debug_bounds("import-source")
-        .expect("disabled Source import should retain its layout slot");
-    cx.simulate_click(import_source.center(), Modifiers::default());
-    cx.run_until_parked();
-    window
-        .read_with(&cx, |viewer, cx| {
-            assert!(viewer.session_snapshot(cx).sources.is_empty());
-            assert!(viewer.session.read(cx).transient_error.is_none());
-        })
-        .expect("viewer should remain open after clicking disabled Source import");
+    assert!(cx.debug_bounds("sources").is_some());
 }
 
 #[gpui::test]
@@ -49,7 +38,7 @@ fn startup_loads_sources_from_project_configuration(cx: &mut TestAppContext) {
     let (window, mut cx) = open_viewer(cx, Some(root.path().to_path_buf()));
     wait_for_viewer(window, &cx, source_catalog_loaded);
 
-    assert!(cx.debug_bounds("import-source").is_some());
+    assert!(cx.debug_bounds("sources").is_some());
 
     window
         .read_with(&cx, |viewer, cx| {

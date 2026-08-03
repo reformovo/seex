@@ -89,7 +89,7 @@ use seex_plot::CanvasSize;
 
 use super::super::chart;
 use super::super::command::WorkbenchCommand;
-use super::super::components::{self, IconName, ResizeEdge, resize_handle};
+use super::super::components::{self, IconName, ResizeEdge, TextInput, resize_handle};
 use super::{baseline_delta, hover_value_label, track_chart_frame, track_tooltip_width};
 
 impl super::AnalysisWorkspace {
@@ -336,6 +336,7 @@ impl super::AnalysisWorkspace {
                                         .id("metric-filter")
                                         .debug_selector(|| "metric-filter".to_owned())
                                         .track_focus(&filter_focus)
+                                        .relative()
                                         .h(theme.spacing.control_height)
                                         .px_2()
                                         .border_1()
@@ -345,7 +346,6 @@ impl super::AnalysisWorkspace {
                                         .items_center()
                                         .cursor_text()
                                         .on_key_down(cx.listener(Self::on_metric_filter_key))
-                                        .on_click(move |_, window, _| filter_focus.focus(window))
                                         .text_color(if metric_filter.is_empty() {
                                             theme.colors.text_muted
                                         } else {
@@ -355,7 +355,12 @@ impl super::AnalysisWorkspace {
                                             "Filter available metrics".to_owned()
                                         } else {
                                             metric_filter.clone()
-                                        }),
+                                        })
+                                        .child(TextInput::cursor_target(
+                                            metric_filter_entity.clone(),
+                                            filter_focus.clone(),
+                                            px(8.),
+                                        )),
                                 )
                                 .child(
                                     div()

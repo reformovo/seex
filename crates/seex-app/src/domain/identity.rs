@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::Path;
 
 use seex::ProjectId;
 use seex::{Run, RunId, RunStatus};
@@ -37,6 +38,42 @@ impl SourceAlias {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Suggests a portable Source alias without colliding with configured aliases.
+pub fn suggest_source_alias(path: &Path, existing: &[SourceAlias]) -> SourceAlias {
+    let raw = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("source");
+    let mut normalized = String::new();
+    let mut separated = false;
+    for character in raw.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+            normalized.push(character.to_ascii_lowercase());
+            separated = false;
+        } else if !normalized.is_empty() && !separated {
+            normalized.push('-');
+            separated = true;
+        }
+    }
+    let base = normalized
+        .trim_matches(|character| matches!(character, '.' | '_' | '-'))
+        .to_owned();
+    let base = if base.is_empty() { "source" } else { &base };
+    for suffix in 1_u64.. {
+        let candidate = if suffix == 1 {
+            base.to_owned()
+        } else {
+            format!("{base}-{suffix}")
+        };
+        if existing.iter().all(|alias| alias.as_str() != candidate)
+            && let Ok(alias) = SourceAlias::new(candidate)
+        {
+            return alias;
+        }
+    }
+    unreachable!("an increasing numeric suffix must produce a unique Source alias")
 }
 
 impl fmt::Display for SourceAlias {
@@ -137,12 +174,14 @@ pub enum SelectionError {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use seex::ProjectId;
     use seex::{Run, RunId, RunStatus};
 
     use super::{
         DataSourceId, MAX_SELECTED_RUNS, RunRef, SelectionError, SourceAlias, SourceAliasError,
-        run_matches_filter,
+        run_matches_filter, suggest_source_alias,
     };
 
     fn run_ref(source: &str, project: &str, run: &str) -> RunRef {
@@ -170,6 +209,23 @@ mod tests {
         for invalid in ["", "Research", ".hidden", "/tmp/research", "source alias"] {
             assert_eq!(SourceAlias::new(invalid), Err(SourceAliasError::Invalid));
         }
+    }
+
+    #[test]
+    fn source_alias_suggestions_normalize_names_and_avoid_collisions() {
+        let existing = [
+            SourceAlias::new("my-runs").expect("test alias should be valid"),
+            SourceAlias::new("my-runs-2").expect("test alias should be valid"),
+        ];
+
+        assert_eq!(
+            suggest_source_alias(Path::new("/tmp/My Runs"), &existing).as_str(),
+            "my-runs-3"
+        );
+        assert_eq!(
+            suggest_source_alias(Path::new("/tmp/实验"), &[]).as_str(),
+            "source"
+        );
     }
 
     #[test]

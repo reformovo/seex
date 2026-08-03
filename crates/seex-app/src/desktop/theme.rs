@@ -14,6 +14,7 @@ pub struct ViewerColors {
     pub window: Rgba,
     pub panel: Rgba,
     pub surface: Rgba,
+    pub modal_backdrop: Rgba,
     pub border: Rgba,
     pub transparent: Rgba,
     pub text: Rgba,
@@ -76,6 +77,7 @@ impl ViewerColors {
             window: rgb(0xf7f7f8),
             panel: rgb(0xf3f3f4),
             surface: rgb(0xffffff),
+            modal_backdrop: rgba(0x1118274d),
             border: rgb(0xd8dadd),
             transparent: rgba(0x00000000),
             text: rgb(0x202124),
@@ -115,6 +117,7 @@ impl ViewerColors {
             window: rgb(0x181818),
             panel: rgb(0x1f1f1f),
             surface: rgb(0x242424),
+            modal_backdrop: rgba(0x00000099),
             border: rgb(0x3a3a3a),
             transparent: rgba(0x00000000),
             text: rgb(0xe5e7eb),
@@ -180,6 +183,7 @@ mod tests {
         assert!(dark.dark);
         assert_ne!(light.colors.window, dark.colors.window);
         assert_ne!(light.colors.text, dark.colors.text);
+        assert_ne!(light.colors.modal_backdrop, dark.colors.modal_backdrop);
         assert_eq!(light.spacing, dark.spacing);
     }
 

@@ -34,6 +34,16 @@ resolve from `$HOME` when defined globally and `<root>` when defined by a
 project. Workbenches never merge: project scope uses or creates its project
 file, while no project scope uses the global file.
 
+If multiple aliases resolve to the same available Source directory, the Viewer
+installs only one effective definition. A definition owned by the current
+project scope wins over a global definition; aliases in the same scope are
+ordered lexicographically. The winning definition's Project allowlist is used
+without merging. Ignored definitions remain unchanged in their configuration
+documents during ordinary edits, and unavailable Workbench references to their
+aliases are retained. Explicitly removing the effective Source removes every
+definition for the same real path and clears Workbench references for all of
+those aliases so that an ignored definition cannot immediately become active.
+
 The project config is also the existing native storage config. It is one Seex
 configuration with field-level ownership: the SDK reads storage and S3 keys,
 while the desktop manages Sources and future settings. Storage keys and secrets
@@ -99,20 +109,28 @@ An alias is suggested from the selected directory name as a lowercase portable
 identifier. The user may edit it before confirming import. It must be unique in
 the configuration and does not change when the Source path changes.
 
-Source import follows this sequence:
+Source import and management use one Sources dialog:
 
-1. The user chooses a Source directory.
-2. Seex reads Project summaries without importing every Project's Runs.
-3. A confirmation view shows an editable alias and a Project multi-selection.
-4. Confirmation atomically writes the Source and its non-empty Project
-   allowlist to `config.toml`.
-5. Seex loads Runs only for the selected Projects.
+1. The user opens Sources from the Viewer header or File menu. Existing
+   effective Sources are listed and preflighted in the background.
+2. Add Sources accepts multiple directories. Seex reads Project summaries
+   without importing Runs and keeps independently completed drafts in the
+   dialog.
+3. New Sources have editable unique aliases and initially empty Project
+   selections. Existing paths and aliases are read-only while their allowlists
+   can be edited. Selecting an already configured real path focuses its
+   existing draft instead of creating another alias.
+4. Save validates every changed draft, stages all global and project document
+   changes, and atomically writes them once. A failure retains the dialog and
+   the previous live configuration.
+5. After the write succeeds, the Viewer replaces its effective Source set once
+   and loads Runs only for selected Projects.
 
-Manage Projects can add or remove allowlist entries later. Archive Project
-remains a reversible workbench-state operation. Remove Project becomes an
-unimport operation: after confirmation it removes the Project from the
-allowlist and clears its workbench references. The separate persisted
-`removed_projects` concept is retired.
+Unavailable existing Sources remain listed and may be explicitly removed, but
+their Project membership cannot be edited until they recover. Removing a
+Source or Projects requires one aggregate confirmation and clears the affected
+Workbench references. Archive Project remains reversible workbench state, and
+the separate persisted `removed_projects` concept remains retired.
 
 The application loads configuration at startup. UI changes apply immediately.
 External edits take effect only through Reload Sources. A reload validates the
@@ -208,7 +226,10 @@ recovery and disappear only through explicit cleanup or unimport.
 - SDK reporting leaves all config and workbench files byte-for-byte unchanged.
 - Alias suggestions handle collisions, remain stable across path changes, and
   can be edited before import.
-- Selecting part of a Source imports and loads Runs only for those Projects.
+- One Sources dialog can add and edit multiple Sources, while loading Runs only
+  for selected Projects after one successful configuration transaction.
+- Failed new Source drafts block Save; unchanged unavailable Sources do not
+  block unrelated valid changes.
 - Reloading an invalid external edit retains the last valid live Sources.
 - UI-driven config changes preserve comments and detect concurrent edits.
 - Existing native storage and S3 fields retain their values and semantics when

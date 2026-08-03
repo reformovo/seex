@@ -15,6 +15,10 @@ actions!(
     seex_app,
     [
         Refresh,
+        OpenSources,
+        ReloadSources,
+        ImportWorkbench,
+        ExportWorkbench,
         ResetView,
         ToggleProjectSidebar,
         ToggleMetricSidebar,
@@ -51,7 +55,6 @@ pub fn run(project_path: Option<PathBuf>) {
                 KeyBinding::new("enter", ActivateSelection, Some(SELECTABLE_CONTEXT)),
                 KeyBinding::new("space", ActivateSelection, Some(SELECTABLE_CONTEXT)),
             ]);
-            cx.on_action(|_: &Quit, cx| cx.quit());
             cx.set_menus(menus());
             let bounds = Bounds::centered(None, size(px(1_200.), px(800.)), cx);
             let result = cx.open_window(
@@ -82,7 +85,14 @@ fn menus() -> Vec<Menu> {
         },
         Menu {
             name: "File".into(),
-            items: vec![MenuItem::action("Refresh", Refresh)],
+            items: vec![
+                MenuItem::action("Sources…", OpenSources),
+                MenuItem::action("Reload Sources", ReloadSources),
+                MenuItem::action("Import Workbench…", ImportWorkbench),
+                MenuItem::action("Export Workbench…", ExportWorkbench),
+                MenuItem::separator(),
+                MenuItem::action("Refresh", Refresh),
+            ],
         },
         Menu {
             name: "View".into(),

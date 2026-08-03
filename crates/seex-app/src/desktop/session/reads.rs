@@ -28,6 +28,20 @@ struct PanelDetailQuery {
 }
 
 impl WorkbenchSession {
+    pub(crate) fn replace_sources(
+        &mut self,
+        sources: Vec<ConfiguredSource>,
+        visible_runs: &[RunRef],
+        cx: &mut Context<Self>,
+    ) {
+        self.event_tasks.clear();
+        self.sources = crate::data::registry::SourceRegistry::default();
+        self.panel_reads = crate::workbench::panel_reads::PanelReadCoordinator::default();
+        self.configure_sources(sources, visible_runs, cx);
+        self.publish_snapshot();
+        cx.notify();
+    }
+
     pub(crate) fn configure_sources(
         &mut self,
         sources: Vec<ConfiguredSource>,
@@ -157,9 +171,12 @@ impl WorkbenchSession {
     fn requestable_runs(&self, runs: Vec<RunRef>) -> Vec<RunRef> {
         runs.into_iter()
             .filter(|run| {
-                self.sources
-                    .source(&run.source_id)
-                    .is_some_and(|source| !matches!(source.status, SourceStatus::Failed(_)))
+                self.sources.source(&run.source_id).is_some_and(|source| {
+                    !matches!(source.status, SourceStatus::Failed(_))
+                        && source.catalog.runs.iter().any(|candidate| {
+                            candidate.project_id == run.project_id && candidate.run_id == run.run_id
+                        })
+                })
             })
             .collect()
     }
@@ -319,6 +336,12 @@ impl ViewerApp {
                         self.request_inspector(cx);
                     }
                 }
+            }
+            WorkbenchSessionEvent::AutosaveFinished {
+                revision,
+                succeeded,
+            } => {
+                let _ = (revision, succeeded);
             }
         }
         cx.notify();

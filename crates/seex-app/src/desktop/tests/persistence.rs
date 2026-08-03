@@ -1,4 +1,5 @@
 use gpui::{TestAppContext, px};
+use seex::{Client, LogOptions, RunOptions};
 
 use super::super::test_support::*;
 use super::*;
@@ -15,7 +16,10 @@ fn toml_workbench_restores_alias_qualified_runs(cx: &mut TestAppContext) {
     let document = TomlWorkbenchDocument {
         active_view: 0,
         layout: SavedLayout::default(),
-        expanded_projects: Vec::new(),
+        expanded_projects: vec![SavedProjectRef {
+            source_alias: alias.clone(),
+            project_id: ProjectId::from_string("project"),
+        }],
         pinned_projects: Vec::new(),
         archived_projects: Vec::new(),
         archived_runs: Vec::new(),
@@ -48,6 +52,10 @@ fn toml_workbench_restores_alias_qualified_runs(cx: &mut TestAppContext) {
             assert_eq!(
                 viewer.session_snapshot(cx).views.active().runs[0].source_id,
                 DataSourceId::from_alias(&alias)
+            );
+            assert_eq!(
+                viewer.session_snapshot(cx).views.expanded_projects().len(),
+                1
             );
         })
         .expect("viewer should remain open");
@@ -83,6 +91,10 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
                 session.views.archive_project(ProjectRef::new(
                     source_id.clone(),
                     ProjectId::from_string("archive"),
+                ));
+                session.views.toggle_project_expanded(ProjectRef::new(
+                    source_id.clone(),
+                    project_id.clone(),
                 ));
                 session.views.remove_project(ProjectRef::new(
                     source_id.clone(),
@@ -121,6 +133,7 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
             cx.notify();
         })
         .expect("viewer should remain open");
+    cx.executor().advance_clock(Duration::from_millis(250));
     let mut loaded = None;
     for _ in 0..1_000 {
         cx.run_until_parked();
@@ -140,6 +153,7 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
     assert!(loaded.views[0].metrics.is_empty());
     assert_eq!(loaded.pinned_projects.len(), 1);
     assert_eq!(loaded.archived_projects.len(), 1);
+    assert_eq!(loaded.expanded_projects.len(), 1);
     assert_eq!(loaded.archived_runs.len(), 1);
     assert!(loaded.views[0].baseline.is_some());
     assert_eq!(loaded.views[0].pinned_runs.len(), 1);
@@ -151,33 +165,232 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
 }
 
 #[gpui::test]
-fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppContext) {
+fn semantic_snapshot_excludes_machine_and_transient_state(cx: &mut TestAppContext) {
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.sources.configure(ConfiguredSource {
+                    alias: SourceAlias::new("private-source").expect("test alias should be valid"),
+                    root_path: "/secret/machine/path".into(),
+                    projects: vec![ProjectId::from_string("allowlisted-project")],
+                });
+                session.transient_error = Some("transient-secret-message".to_owned());
+                session.publish_snapshot();
+            });
+            viewer.select_metric(MetricKey::from_string("loss"), cx);
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+
+    let encoded = window
+        .read_with(&cx, |viewer, cx| {
+            viewer
+                .session
+                .read(cx)
+                .semantic_snapshot()
+                .document
+                .encode()
+        })
+        .expect("viewer should remain open");
+    assert!(encoded.contains("loss"));
+    for excluded in [
+        "/secret/machine/path",
+        "allowlisted-project",
+        "transient-secret-message",
+    ] {
+        assert!(!encoded.contains(excluded));
+    }
+}
+
+#[gpui::test]
+fn autosave_coalesces_latest_revision_and_respects_blocked_documents(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().expect("test directory should be created");
+    let path = root.path().join("workbench.toml");
+    let blocked_path = root.path().join("blocked.toml");
+    std::fs::write(&blocked_path, "schema_version = 99\n")
+        .expect("invalid workbench should be written");
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, session_cx| {
+                session.workbench_path = Some(path.clone());
+                for name in ["First", "Latest"] {
+                    let view_id = session.views.active().view_id.clone();
+                    assert!(session.views.rename(&view_id, name));
+                    session.persistence_dirty = true;
+                    session.publish_semantic_snapshot();
+                    session.sync_layout_and_persist(session.layout, session_cx);
+                }
+            });
+        })
+        .expect("viewer should remain open");
+    cx.executor().advance_clock(Duration::from_millis(249));
+    cx.run_until_parked();
+    assert!(!path.exists());
+    cx.executor().advance_clock(Duration::from_millis(1));
+    for _ in 0..100 {
+        cx.run_until_parked();
+        if path.exists() {
+            break;
+        }
+    }
+    let saved = WorkbenchDocument::load(&path)
+        .expect("saved workbench should remain readable")
+        .expect("latest workbench should be saved");
+    assert_eq!(saved.views[0].name, "Latest");
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, session_cx| {
+                session.workbench_path = Some(blocked_path.clone());
+                session.autosave_blocked = true;
+                let view_id = session.views.active().view_id.clone();
+                assert!(session.views.rename(&view_id, "Blocked"));
+                session.persistence_dirty = true;
+                session.publish_semantic_snapshot();
+                session.sync_layout_and_persist(session.layout, session_cx);
+            });
+        })
+        .expect("viewer should remain open");
+    cx.executor().advance_clock(Duration::from_millis(500));
+    cx.run_until_parked();
+    assert_eq!(
+        std::fs::read_to_string(blocked_path).expect("blocked document should remain readable"),
+        "schema_version = 99\n"
+    );
+}
+
+#[gpui::test]
+fn quit_flushes_the_latest_revision_before_finishing(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().expect("test directory should be created");
+    let path = root.path().join("workbench.toml");
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, session_cx| {
+                session.workbench_path = Some(path.clone());
+                let view_id = session.views.active().view_id.clone();
+                assert!(session.views.rename(&view_id, "Before Quit"));
+                session.persistence_dirty = true;
+                session.publish_semantic_snapshot();
+                session.sync_layout_and_persist(session.layout, session_cx);
+            });
+        })
+        .expect("viewer should remain open");
+    cx.executor().advance_clock(Duration::from_millis(249));
+    cx.run_until_parked();
+    assert!(!path.exists());
+
+    cx.dispatch_action(Quit);
+    for _ in 0..100 {
+        cx.run_until_parked();
+        if path.exists()
+            && window
+                .read_with(&cx, |viewer, _| {
+                    viewer.pending_quit_flush_revision.is_none()
+                })
+                .unwrap_or(true)
+        {
+            break;
+        }
+    }
+
+    let saved = WorkbenchDocument::load(&path)
+        .expect("saved workbench should remain readable")
+        .expect("Quit should flush the workbench");
+    assert_eq!(saved.views[0].name, "Before Quit");
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.persistence_dirty = true;
+                session.last_saved_workbench = Some(session.semantic_snapshot().document.encode());
+            });
+        })
+        .expect("test platform should keep the viewer open after Quit");
+    cx.dispatch_action(Quit);
+    assert!(
+        window
+            .read_with(&cx, |viewer, _| viewer
+                .pending_quit_flush_revision
+                .is_none())
+            .expect("viewer should remain open")
+    );
+}
+
+#[gpui::test]
+fn exported_workbench_uses_semantic_snapshot_without_changing_autosave_path(
+    cx: &mut TestAppContext,
+) {
+    let root = tempfile::tempdir().expect("test directory should be created");
+    let export_path = root.path().join("exported-workbench.toml");
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.select_metric(MetricKey::from_string("loss"), cx);
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+
+    cx.dispatch_action(ExportWorkbench);
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| Some(export_path.clone()));
+    for _ in 0..100 {
+        cx.run_until_parked();
+        if export_path.exists() {
+            break;
+        }
+    }
+
+    let exported = WorkbenchDocument::load(&export_path)
+        .expect("export should remain readable")
+        .expect("exported workbench should exist");
+    assert_eq!(exported.views[0].metrics, ["loss"]);
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session
+                .read(cx)
+                .workbench_path
+                .is_none())
+            .expect("viewer should remain open")
+    );
+    let encoded = std::fs::read_to_string(export_path).expect("export should be UTF-8");
+    for excluded in ["sources", "projects =", "path =", "transient_error"] {
+        assert!(!encoded.contains(excluded));
+    }
+}
+
+#[gpui::test]
+fn restored_state_retains_unavailable_runs_and_unknown_metrics(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
     let alias = SourceAlias::new("research").expect("test alias should be valid");
-    let document = saved_workbench(
+    let mut document = saved_workbench(
         alias.clone(),
         project_id.clone(),
         vec![run_id.clone(), RunId::from_string("removed")],
         "unknown-metric",
     );
+    document.layout.project_sidebar_visible = true;
+    let configured = ConfiguredSource {
+        alias,
+        root_path: root.path().to_path_buf(),
+        projects: vec![project_id],
+    };
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer(cx, None);
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_configured_sources(
-                vec![ConfiguredSource {
-                    alias,
-                    root_path: root.path().to_path_buf(),
-                    projects: vec![project_id],
-                }],
-                cx,
-            );
+            viewer.open_configured_sources(vec![configured.clone()], cx);
             viewer.restore_toml_workbench(document, cx);
             cx.notify();
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer.session_snapshot(cx).views.active().runs.len() == 1
+        viewer.session_snapshot(cx).views.active().runs.len() == 2
             && viewer.session_snapshot(cx).views.active().runs[0].run_id == run_id
             && viewer.session_snapshot(cx).views.active().panels[0]
                 .overview
@@ -199,14 +412,56 @@ fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppCo
                     .read(cx)
                     .transient_error
                     .as_deref()
-                    .is_some_and(|error| error.contains("no longer available"))
+                    .is_none_or(|error| !error.contains("no longer available"))
             })
+            .expect("viewer should remain open")
+    );
+    cx.refresh().expect("test window should refresh");
+    assert!(
+        cx.debug_bounds("unavailable-run:research/project/removed")
+            .is_some()
+    );
+
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should reopen");
+    let recovered = client
+        .start_run(RunOptions::new("project").id("removed").name("recovered"))
+        .expect("recovered Run should start");
+    recovered
+        .log_with([("unknown-metric", 1.)], LogOptions::new().step(0))
+        .expect("recovered metric should be logged");
+    recovered.finish().expect("recovered Run should finish");
+    client.shutdown().expect("test client should shut down");
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.open_configured_sources(vec![configured], cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .contains_catalog_run(&RunRef::new(
+                DataSourceId::new("research").expect("test source should be valid"),
+                ProjectId::from_string("project"),
+                RunId::from_string("removed"),
+            ))
+    });
+    cx.run_until_parked();
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .unavailable_references()
+                .1
+                .iter()
+                .all(|run| run.run_id.as_str() != "removed"))
             .expect("viewer should remain open")
     );
 }
 
 #[gpui::test]
-fn restored_missing_sources_retain_state_without_rendering_runs(cx: &mut TestAppContext) {
+fn restored_missing_sources_render_unavailable_references(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     let missing = root.path().join("moved-source");
     let alias = SourceAlias::new("research").expect("test alias should be valid");
@@ -277,9 +532,18 @@ fn restored_missing_sources_retain_state_without_rendering_runs(cx: &mut TestApp
         })
         .expect("viewer should remain open");
     cx.run_until_parked();
-    assert!(cx.debug_bounds("baseline-run-name-0").is_none());
-    assert!(cx.debug_bounds("pinned-run-name-0").is_none());
-    assert!(cx.debug_bounds("archived-run-name-0").is_none());
+    assert!(
+        cx.debug_bounds("unavailable-run:research/project/baseline")
+            .is_some()
+    );
+    assert!(
+        cx.debug_bounds("unavailable-run:research/project/pinned")
+            .is_some()
+    );
+    assert!(
+        cx.debug_bounds("unavailable-run:research/project/archived")
+            .is_some()
+    );
     assert!(cx.debug_bounds("empty-metric-chart:loss").is_some());
 }
 

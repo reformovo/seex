@@ -1,6 +1,6 @@
 use gpui::{
-    AnyView, App, Context, Div, ElementId, Render, SharedString, Stateful, Svg, Window, div,
-    prelude::*, px, svg,
+    AnyView, App, Context, Div, ElementId, Pixels, Render, SharedString, Stateful, Svg, Window,
+    div, prelude::*, px, svg,
 };
 
 use super::theme::ViewerTheme;
@@ -12,6 +12,146 @@ mod text_input;
 pub(super) use popover::{popover, popover_menu_item};
 pub(super) use resize_handle::{ResizeEdge, resize_handle};
 pub(super) use text_input::TextInput;
+
+#[derive(Clone, Copy)]
+pub(super) enum DialogButtonKind {
+    Primary,
+    Secondary,
+}
+
+pub(super) fn modal_backdrop(id: &'static str, theme: ViewerTheme) -> Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .occlude()
+        .absolute()
+        .inset_0()
+        .p_4()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.colors.modal_backdrop)
+}
+
+pub(super) fn dialog_surface(
+    id: &'static str,
+    width: Pixels,
+    max_height: Pixels,
+    theme: ViewerTheme,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .w(width)
+        .max_h(max_height)
+        .p_4()
+        .gap_3()
+        .flex()
+        .flex_col()
+        .overflow_y_scroll()
+        .rounded(theme.spacing.corner_radius)
+        .border_1()
+        .border_color(theme.colors.border)
+        .bg(theme.colors.surface)
+        .text_xs()
+        .text_color(theme.colors.text)
+}
+
+pub(super) fn dialog_title(label: &'static str) -> Div {
+    div()
+        .text_sm()
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(label)
+}
+
+pub(super) fn dialog_button(
+    id: &'static str,
+    label: &'static str,
+    theme: ViewerTheme,
+    kind: DialogButtonKind,
+    disabled: bool,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.to_owned())
+        .tab_index(if disabled { -1 } else { 0 })
+        .h(theme.spacing.control_height)
+        .px_3()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(theme.spacing.corner_radius)
+        .border_1()
+        .text_xs()
+        .when(matches!(kind, DialogButtonKind::Secondary), |button| {
+            button
+                .bg(theme.colors.surface)
+                .border_color(theme.colors.border)
+                .text_color(theme.colors.text)
+        })
+        .when(
+            matches!(kind, DialogButtonKind::Primary) && !disabled,
+            |button| {
+                button
+                    .bg(theme.colors.accent)
+                    .border_color(theme.colors.accent)
+                    .text_color(theme.colors.accent_text)
+            },
+        )
+        .when(!disabled, |button| {
+            button.cursor_pointer().hover(move |style| {
+                style.bg(match kind {
+                    DialogButtonKind::Primary => theme.colors.accent_hover,
+                    DialogButtonKind::Secondary => theme.colors.element_hover,
+                })
+            })
+        })
+        .when(disabled, |button| {
+            button
+                .bg(theme.colors.disabled)
+                .border_color(theme.colors.disabled)
+                .text_color(theme.colors.accent_text)
+                .opacity(0.45)
+                .cursor_default()
+        })
+        .child(label)
+}
+
+pub(super) fn checkbox(
+    id: impl Into<SharedString>,
+    theme: ViewerTheme,
+    checked: bool,
+) -> Stateful<Div> {
+    let id = id.into();
+    let selector = id.clone();
+    div()
+        .id(id)
+        .debug_selector(move || selector.to_string())
+        .size(px(14.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(3.))
+        .border_1()
+        .border_color(if checked {
+            theme.colors.accent
+        } else {
+            theme.colors.border
+        })
+        .bg(if checked {
+            theme.colors.accent
+        } else {
+            theme.colors.surface
+        })
+        .children(checked.then(|| {
+            div()
+                .text_xs()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme.colors.accent_text)
+                .child("✓")
+        }))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IconName {

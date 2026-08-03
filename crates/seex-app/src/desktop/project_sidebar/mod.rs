@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +39,6 @@ pub(super) enum RunHoverExitPolicy {
 pub(crate) struct ProjectSidebar {
     pub filter_focus: FocusHandle,
     pub filter: gpui::Entity<TextInput>,
-    pub expanded_projects: HashSet<(DataSourceId, ProjectId)>,
     pub project_focuses: HashMap<ProjectRef, FocusHandle>,
     pub run_focuses: HashMap<RunRef, FocusHandle>,
     pub menu: Option<ProjectRef>,
@@ -59,6 +58,8 @@ pub(crate) struct ProjectSidebar {
 #[derive(Clone, Debug)]
 pub(crate) enum ProjectSidebarEvent {
     Command(WorkbenchCommand),
+    OpenSources,
+    RemoveProject(ProjectRef),
     DismissOtherPopovers,
     HoveredRun {
         run: RunRef,
@@ -82,7 +83,6 @@ impl ProjectSidebar {
         Self {
             filter_focus: cx.focus_handle().tab_stop(true),
             filter,
-            expanded_projects: HashSet::new(),
             project_focuses: HashMap::new(),
             run_focuses: HashMap::new(),
             menu: None,
@@ -136,9 +136,6 @@ impl ProjectSidebar {
             for (project_index, project) in source.catalog.projects.iter().enumerate() {
                 let project_ref =
                     ProjectRef::new(source.source_id.clone(), project.project_id.clone());
-                if session.views.removed_projects().contains(&project_ref) {
-                    continue;
-                }
                 let placement = if session.views.archived_projects().contains(&project_ref) {
                     ProjectPlacement::Archived
                 } else if session.views.pinned_projects().contains(&project_ref) {
@@ -229,10 +226,10 @@ impl ProjectSidebar {
         let filter_cursor = filter.cursor();
         let filter_cursor_visible = filter.cursor_visible();
         let query = filter_text.trim().to_lowercase();
+        let (unavailable_projects, unavailable_runs) = session.unavailable_references();
         let (filter_prefix, filter_suffix) = filter_text.split_at(filter_cursor);
         let filter_prefix = filter_prefix.to_owned();
         let filter_suffix = filter_suffix.to_owned();
-        let click_filter_focus = filter_focus.clone();
         let filter_focused = filter_focus.is_focused(window);
 
         let mut resources = div()
@@ -266,6 +263,34 @@ impl ProjectSidebar {
             .cloned()
         {
             resources = resources.child(self.render_sidebar_project(project, &query, window, cx));
+        }
+        if !unavailable_projects.is_empty() || !unavailable_runs.is_empty() {
+            resources = resources.child(sidebar_group_label("Unavailable", theme));
+        }
+        for project in unavailable_projects {
+            let identity = format!(
+                "{}/{}",
+                project.source_id.as_str(),
+                project.project_id.as_str()
+            );
+            resources = resources.child(unavailable_reference_row(
+                format!("unavailable-project:{identity}"),
+                format!("{identity} — unavailable"),
+                theme,
+            ));
+        }
+        for run in unavailable_runs {
+            let identity = format!(
+                "{}/{}/{}",
+                run.source_id.as_str(),
+                run.project_id.as_str(),
+                run.run_id.as_str()
+            );
+            resources = resources.child(unavailable_reference_row(
+                format!("unavailable-run:{identity}"),
+                format!("{identity} — unavailable"),
+                theme,
+            ));
         }
         for (index, run) in pinned_runs.iter().take(pinned_limit).cloned().enumerate() {
             resources = resources.child(self.render_sidebar_run(
@@ -416,15 +441,14 @@ impl ProjectSidebar {
                             .flex()
                             .items_center()
                             .child(
-                                components::top_bar_icon_button(
-                                    "import-source",
-                                    theme,
-                                    false,
-                                    true,
-                                )
-                                .debug_selector(|| "import-source".to_owned())
-                                .tooltip(components::label_tooltip("Import Source", theme))
-                                .child(components::icon(IconName::Plus, theme)),
+                                components::top_bar_icon_button("sources", theme, false, false)
+                                    .debug_selector(|| "sources".to_owned())
+                                    .tooltip(components::label_tooltip("Sources", theme))
+                                    .on_click(cx.listener(|_this, _, _, cx| {
+                                        cx.emit(ProjectSidebarEvent::OpenSources);
+                                        cx.notify();
+                                    }))
+                                    .child(components::icon(IconName::FolderOpen, theme)),
                             )
                             .child(
                                 components::top_bar_icon_button(
@@ -461,6 +485,7 @@ impl ProjectSidebar {
                             .debug_selector(|| "project-run-filter".to_owned())
                             .track_focus(&filter_focus)
                             .cursor_text()
+                            .relative()
                             .px_3()
                             .h(theme.spacing.control_height)
                             .w_full()
@@ -472,14 +497,6 @@ impl ProjectSidebar {
                             .border_1()
                             .border_color(theme.colors.border)
                             .on_key_down(cx.listener(Self::on_filter_key))
-                            .on_click(cx.listener(move |_this, _, window, cx| {
-                                filter_input.update(cx, |input, cx| {
-                                    input.move_to_end();
-                                    input.start_blink(cx);
-                                });
-                                click_filter_focus.focus(window);
-                                cx.notify();
-                            }))
                             .children((!filter_focused && filter_text.is_empty()).then(|| {
                                 div()
                                     .id("project-run-filter-placeholder")
@@ -511,7 +528,12 @@ impl ProjectSidebar {
                                     .debug_selector(|| "project-run-filter-suffix".to_owned())
                                     .text_color(theme.colors.text)
                                     .child(filter_suffix)
-                            })),
+                            }))
+                            .child(TextInput::cursor_target(
+                                filter_input,
+                                filter_focus,
+                                px(12.),
+                            )),
                     ),
             )
             .child(resources)
@@ -561,6 +583,25 @@ fn sidebar_text_button(
         .text_color(theme.colors.text_muted)
         .hover(|style| style.text_color(theme.colors.text))
         .child(label.to_owned())
+}
+
+fn unavailable_reference_row(
+    id: String,
+    label: String,
+    theme: ViewerTheme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from(id.clone()))
+        .debug_selector(move || id.clone())
+        .h(theme.spacing.tree_row_height)
+        .px_2()
+        .flex()
+        .items_center()
+        .truncate()
+        .text_xs()
+        .text_color(theme.colors.disabled)
+        .cursor_default()
+        .child(label)
 }
 
 fn sidebar_menu_item(
@@ -673,10 +714,9 @@ impl ProjectSidebar {
         project_id: ProjectId,
         cx: &mut Context<Self>,
     ) {
-        let key = (source_id, project_id);
-        if !self.expanded_projects.insert(key.clone()) {
-            self.expanded_projects.remove(&key);
-        }
+        cx.emit(ProjectSidebarEvent::Command(
+            WorkbenchCommand::ToggleProjectExpanded(ProjectRef::new(source_id, project_id)),
+        ));
         cx.notify();
     }
 
@@ -739,9 +779,7 @@ impl ProjectSidebar {
 
     fn remove_project(&mut self, project: ProjectRef, cx: &mut Context<Self>) {
         self.menu = None;
-        cx.emit(ProjectSidebarEvent::Command(
-            WorkbenchCommand::RemoveProject(project),
-        ));
+        cx.emit(ProjectSidebarEvent::RemoveProject(project));
         cx.notify();
     }
 
@@ -987,11 +1025,16 @@ impl ViewerApp {
     pub(super) fn handle_project_sidebar_event(
         &mut self,
         event: &ProjectSidebarEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             ProjectSidebarEvent::Command(command) => {
                 self.dispatch_workbench_command(command.clone(), cx);
+            }
+            ProjectSidebarEvent::OpenSources => self.open_sources(window, cx),
+            ProjectSidebarEvent::RemoveProject(project) => {
+                self.confirm_remove_project(project.clone(), window, cx);
             }
             ProjectSidebarEvent::DismissOtherPopovers => {
                 self.analysis_view_bar.update(cx, |bar, cx| {

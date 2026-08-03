@@ -1,16 +1,25 @@
 use std::path::PathBuf;
 
+use crate::config::{ConfiguredSource, SourceConfiguration, same_source_path};
+use crate::data::SourcePreflight;
 #[cfg(all(test, feature = "test-support"))]
 use crate::data::registry::SourceStatus;
-use crate::domain::RunRef;
+use crate::domain::{DataSourceId, RunRef, SourceAlias, suggest_source_alias};
+use crate::workbench::ProjectRef;
+use crate::workbench::import::{
+    ImportSourceMapping, WorkbenchImportPlan, preflight_workbench_import,
+    referenced_projects_by_alias,
+};
 use crate::workbench::toml_document::TomlWorkbenchDocument;
 use gpui::{
-    Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, Render, SharedString, Window,
-    div, prelude::*,
+    Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, PathPromptOptions,
+    PromptLevel, Render, SharedString, Window, div, prelude::*,
 };
+use seex::ProjectId;
 
 #[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
+use super::{ExportWorkbench, ImportWorkbench, OpenSources, Quit, ReloadSources};
 
 #[path = "assets.rs"]
 mod assets;
@@ -28,6 +37,8 @@ mod interaction;
 mod project_sidebar;
 #[path = "session/mod.rs"]
 mod session;
+#[path = "source_management.rs"]
+mod source_management;
 #[path = "theme.rs"]
 mod theme;
 #[path = "view_bar.rs"]
@@ -46,7 +57,14 @@ pub(super) use assets::ViewerAssets;
 use inspector::*;
 use interaction::WorkbenchInteraction;
 use project_sidebar::*;
-use session::{SessionSnapshot, ViewerLayoutState, WorkbenchSession, default_workbench_path};
+use session::{
+    SessionSnapshot, ViewerLayoutState, WorkbenchSession, WorkbenchSessionEvent,
+    default_workbench_path,
+};
+use source_management::{
+    ConfirmedSource, SourceBatchPlan, SourceManagement, SourceManagementEvent,
+    SourcePreflightRequest,
+};
 use theme::ViewerTheme;
 use view_bar::{AnalysisViewBar, AnalysisViewBarEvent};
 use workspace::*;
@@ -60,10 +78,33 @@ pub(super) struct ViewerApp {
     bottom_inspector: gpui::Entity<BottomInspector>,
     session: gpui::Entity<WorkbenchSession>,
     workspace: gpui::Entity<AnalysisWorkspace>,
+    source_management: gpui::Entity<SourceManagement>,
+    source_configuration: Option<SourceConfiguration>,
+    pending_workbench_import: Option<PendingWorkbenchImport>,
+    pending_import_flush_revision: Option<u64>,
+    pending_quit_flush_revision: Option<u64>,
+    project_root: Option<PathBuf>,
     pending_commands: Vec<command::WorkbenchCommand>,
     command_dispatch_pending: bool,
     run_hover_revision: u64,
     hovered_run_region: Option<(RunRef, SharedString)>,
+}
+
+struct PendingWorkbenchImport {
+    external_path: PathBuf,
+    external_fingerprint: Vec<u8>,
+    configuration: SourceConfiguration,
+    plan: WorkbenchImportPlan,
+}
+
+struct WorkbenchImportPreparation {
+    external_path: PathBuf,
+    external_fingerprint: Vec<u8>,
+    configuration: SourceConfiguration,
+    document: TomlWorkbenchDocument,
+    local_sources: Vec<(ConfiguredSource, Vec<ProjectId>)>,
+    mappings: Vec<ImportSourceMapping>,
+    unresolved: Vec<(SourceAlias, Vec<ProjectId>)>,
 }
 
 impl ViewerApp {
@@ -85,6 +126,12 @@ impl ViewerApp {
             bottom_inspector: cx.new(|_| BottomInspector::new()),
             session,
             workspace: cx.new(AnalysisWorkspace::new),
+            source_management: cx.new(SourceManagement::new),
+            source_configuration: None,
+            pending_workbench_import: None,
+            pending_import_flush_revision: None,
+            pending_quit_flush_revision: None,
+            project_root: project_path.clone(),
             pending_commands: Vec::new(),
             command_dispatch_pending: false,
             run_hover_revision: 0,
@@ -122,10 +169,11 @@ impl ViewerApp {
             cx.notify();
         })
         .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &app.project_sidebar,
-            |this, _, event: &ProjectSidebarEvent, cx| {
-                this.handle_project_sidebar_event(event, cx);
+            window,
+            |this, _, event: &ProjectSidebarEvent, window, cx| {
+                this.handle_project_sidebar_event(event, window, cx);
             },
         )
         .detach();
@@ -169,6 +217,16 @@ impl ViewerApp {
             cx.notify();
         })
         .detach();
+        cx.observe(&app.source_management, |_, _, cx| cx.notify())
+            .detach();
+        cx.subscribe_in(
+            &app.source_management,
+            window,
+            |this, _, event: &SourceManagementEvent, window, cx| {
+                this.handle_source_management_event(event, window, cx);
+            },
+        )
+        .detach();
         cx.observe(&app.session, |this, _, cx| {
             this.sync_child_snapshots(cx);
             cx.notify();
@@ -178,11 +236,13 @@ impl ViewerApp {
             this.sync_workspace_width(window, cx);
         })
         .detach();
-        cx.subscribe(&app.session, |_, _, event, cx| {
+        cx.subscribe(&app.session, |_, _, event: &WorkbenchSessionEvent, cx| {
             let event = event.clone();
             let viewer = cx.entity().downgrade();
             cx.defer(move |cx| {
                 let _ = viewer.update(cx, |viewer, cx| {
+                    viewer.handle_import_autosave_event(&event, cx);
+                    viewer.handle_quit_autosave_event(&event, cx);
                     viewer.handle_session_event(event, cx);
                 });
             });
@@ -195,15 +255,19 @@ impl ViewerApp {
                 Err(error) => {
                     app.session.update(cx, |session, cx| {
                         session.transient_error = Some(error.to_string());
-                        session.workbench_path = None;
+                        session.autosave_blocked = true;
                         session.publish_snapshot();
                         cx.notify();
                     });
                 }
             }
         }
-        match crate::config::load_sources_for_scope(project_path.as_deref()) {
-            Ok(sources) => app.open_configured_sources(sources, cx),
+        match SourceConfiguration::load_for_scope(project_path.as_deref()) {
+            Ok(configuration) => {
+                let sources = configuration.configured_sources();
+                app.source_configuration = Some(configuration);
+                app.open_configured_sources(sources, cx);
+            }
             Err(error) => {
                 app.session.update(cx, |session, cx| {
                     session.transient_error = Some(error.to_string());
@@ -288,6 +352,948 @@ impl ViewerApp {
             workspace.update_overview_widths(logical_width, physical_width, cx);
         });
     }
+
+    fn open_sources(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let existing_sources = self
+            .source_configuration
+            .as_ref()
+            .map(SourceConfiguration::configured_sources)
+            .unwrap_or_default();
+        let existing_aliases = self
+            .source_configuration
+            .as_ref()
+            .map(|configuration| {
+                configuration
+                    .sources
+                    .iter()
+                    .map(|source| source.configured.alias.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let requests = self.source_management.update(cx, |management, cx| {
+            management.begin_sources(existing_sources, existing_aliases, window, cx)
+        });
+        self.spawn_source_preflights(requests, window, cx);
+    }
+
+    fn choose_source_directories(
+        &mut self,
+        replace: Option<u64>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: replace.is_none(),
+            prompt: Some("Add Sources".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let paths = match prompt.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.source_management.update(cx, |management, cx| {
+                            management.report_source_selection_error(error.to_string(), cx);
+                        });
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.source_management.update(cx, |management, cx| {
+                            management.report_source_selection_error(error.to_string(), cx);
+                        });
+                    });
+                    return;
+                }
+            };
+            if paths.is_empty() {
+                return;
+            }
+            let _ = this.update_in(cx, |viewer, window, cx| {
+                let requests = viewer.source_management.update(cx, |management, cx| {
+                    if let Some(draft_id) = replace {
+                        paths
+                            .into_iter()
+                            .next()
+                            .and_then(|path| management.replace_source_path(draft_id, path, cx))
+                            .into_iter()
+                            .collect()
+                    } else {
+                        management.queue_source_paths(paths, cx)
+                    }
+                });
+                viewer.spawn_source_preflights(requests, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn spawn_source_preflights(
+        &mut self,
+        requests: Vec<SourcePreflightRequest>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for request in requests {
+            let path = request.root_path.clone();
+            let preflight = cx.background_spawn(async move { SourcePreflight::load(&path) });
+            cx.spawn_in(window, async move |this, cx| {
+                let result = preflight.await.map_err(|error| error.to_string());
+                let _ = this.update_in(cx, |viewer, window, cx| {
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.finish_preflight(request, result, window, cx);
+                    });
+                });
+            })
+            .detach();
+        }
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    fn open_source_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_sources(window, cx);
+    }
+
+    fn on_open_sources(&mut self, _: &OpenSources, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_sources(window, cx);
+    }
+
+    fn on_reload_sources(
+        &mut self,
+        _: &ReloadSources,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reload_sources(cx);
+    }
+
+    fn on_export_workbench(
+        &mut self,
+        _: &ExportWorkbench,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let directory = self
+            .project_root
+            .clone()
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let prompt = cx.prompt_for_new_path(&directory, Some("workbench.toml"));
+        let snapshot = self.session.read(cx).semantic_snapshot();
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match prompt.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+            };
+            let save = cx.background_spawn(async move { snapshot.document.save(&path) });
+            if let Err(error) = save.await {
+                let _ = this.update_in(cx, |viewer, _, cx| {
+                    viewer.report_source_error(error.to_string(), cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn on_import_workbench(
+        &mut self,
+        _: &ImportWorkbench,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import Workbench".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let paths = match prompt.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+            };
+            if let Some(path) = paths.into_iter().next() {
+                let _ = this.update_in(cx, |viewer, window, cx| {
+                    viewer.preflight_workbench_path(path, window, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn preflight_workbench_path(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(configuration) = self.source_configuration.clone() else {
+            self.report_source_error("Viewer configuration is unavailable".to_owned(), cx);
+            return;
+        };
+        let preparation =
+            cx.background_spawn(async move { prepare_workbench_import(path, configuration) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = async {
+                let preparation = preparation.await?;
+                let mut selections = Vec::with_capacity(preparation.unresolved.len());
+                for (external_alias, _) in &preparation.unresolved {
+                    let prompt = cx
+                        .update(|_, cx| {
+                            cx.prompt_for_paths(PathPromptOptions {
+                                files: false,
+                                directories: true,
+                                multiple: false,
+                                prompt: Some(format!("Map Source {external_alias}").into()),
+                            })
+                        })
+                        .map_err(|error| error.to_string())?;
+                    let paths = prompt
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .map_err(|error| error.to_string())?;
+                    let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else {
+                        return Ok(None);
+                    };
+                    let preflight = cx
+                        .background_spawn(async move { SourcePreflight::load(&path) })
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    selections.push((external_alias.clone(), preflight));
+                }
+                finish_workbench_import(preparation, selections).map(Some)
+            }
+            .await;
+            match result {
+                Ok(Some(pending)) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.source_management.update(cx, |management, cx| {
+                            management.begin_workbench(pending.plan.clone(), cx);
+                        });
+                        viewer.pending_workbench_import = Some(pending);
+                        cx.notify();
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error, cx);
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn reload_sources(&mut self, cx: &mut Context<Self>) {
+        let project_root = self.project_root.clone();
+        let load = cx.background_spawn(async move { load_and_preflight_sources(project_root) });
+        cx.spawn(async move |this, cx| match load.await {
+            Ok((configuration, sources)) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.source_configuration = Some(configuration);
+                    let visible_runs = viewer.active_visible_runs(cx);
+                    viewer.session.update(cx, |session, session_cx| {
+                        session.replace_sources(sources, &visible_runs, session_cx);
+                    });
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                let _ = this.update(cx, |viewer, cx| viewer.report_source_error(error, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn handle_source_management_event(
+        &mut self,
+        event: &SourceManagementEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SourceManagementEvent::ChooseSources(replace) => {
+                self.choose_source_directories(*replace, window, cx);
+            }
+            SourceManagementEvent::Confirmed(plan) => {
+                self.confirm_source_batch(plan.clone(), window, cx);
+            }
+            SourceManagementEvent::ConfirmedWorkbench => self.confirm_workbench_import(cx),
+            SourceManagementEvent::Cancelled => {
+                self.pending_workbench_import = None;
+            }
+        }
+    }
+
+    fn confirm_source_batch(
+        &mut self,
+        plan: SourceBatchPlan,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut candidate) = self.source_configuration.clone() else {
+            self.source_management.update(cx, |management, cx| {
+                management.finish_save(Some("Viewer configuration is unavailable".to_owned()), cx);
+            });
+            return;
+        };
+        let removed_aliases = candidate
+            .sources
+            .iter()
+            .filter(|source| {
+                plan.removed_roots
+                    .iter()
+                    .any(|root| same_source_path(root, &source.configured.root_path))
+            })
+            .map(|source| source.configured.alias.clone())
+            .collect::<Vec<_>>();
+        let removed_sources = removed_aliases
+            .iter()
+            .map(DataSourceId::from_alias)
+            .collect::<Vec<_>>();
+        let mut removed_projects = Vec::<ProjectRef>::new();
+        for source in &candidate.sources {
+            let replacement = plan
+                .updates
+                .iter()
+                .find(|update| update.alias == source.configured.alias);
+            let projects = if removed_aliases.contains(&source.configured.alias) {
+                source.configured.projects.iter().collect::<Vec<_>>()
+            } else if let Some(replacement) = replacement {
+                source
+                    .configured
+                    .projects
+                    .iter()
+                    .filter(|project| !replacement.projects.contains(project))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            for project in projects {
+                let project = ProjectRef::new(
+                    DataSourceId::from_alias(&source.configured.alias),
+                    project.clone(),
+                );
+                if !removed_projects.contains(&project) {
+                    removed_projects.push(project);
+                }
+            }
+        }
+        let update = (|| {
+            for alias in &removed_aliases {
+                candidate.remove_source(alias)?;
+            }
+            for source in &plan.updates {
+                candidate.set_source(&source.alias, &source.root_path, &source.projects)?;
+            }
+            Ok::<(), crate::config::ConfigEditError>(())
+        })();
+        if let Err(error) = update {
+            self.source_management.update(cx, |management, cx| {
+                management.finish_save(Some(error.to_string()), cx);
+            });
+            return;
+        }
+        if removed_projects.is_empty() {
+            self.save_source_batch(candidate, removed_sources, removed_projects, cx);
+            return;
+        }
+        let message = format!(
+            "This unimports {} Project{} and removes all of their Workbench references.",
+            removed_projects.len(),
+            if removed_projects.len() == 1 { "" } else { "s" }
+        );
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Remove Sources or Projects?",
+            Some(&message),
+            &["Remove", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if matches!(answer.await, Ok(0)) {
+                let _ = this.update_in(cx, |viewer, _, cx| {
+                    viewer.save_source_batch(candidate, removed_sources, removed_projects, cx);
+                });
+            } else {
+                let _ = this.update_in(cx, |viewer, _, cx| {
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.finish_save(None, cx);
+                    });
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn save_source_batch(
+        &mut self,
+        mut candidate: SourceConfiguration,
+        removed_sources: Vec<DataSourceId>,
+        removed_projects: Vec<ProjectRef>,
+        cx: &mut Context<Self>,
+    ) {
+        let save = cx.background_spawn(async move { candidate.save().map(|()| candidate) });
+        cx.spawn(async move |this, cx| match save.await {
+            Ok(configuration) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    let sources = configuration.configured_sources();
+                    let visible_runs = viewer.active_visible_runs(cx);
+                    viewer.source_configuration = Some(configuration);
+                    viewer.session.update(cx, |session, session_cx| {
+                        for source_id in &removed_sources {
+                            session.views.remove_source(source_id);
+                        }
+                        for project in &removed_projects {
+                            session.views.remove_project(project.clone());
+                        }
+                        if !removed_sources.is_empty() || !removed_projects.is_empty() {
+                            session.persistence_dirty = true;
+                        }
+                        session.replace_sources(sources, &visible_runs, session_cx);
+                        if !removed_sources.is_empty() || !removed_projects.is_empty() {
+                            session.publish_semantic_snapshot();
+                        }
+                    });
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.complete_save(cx);
+                    });
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.finish_save(Some(error.to_string()), cx);
+                    });
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn confirm_workbench_import(&mut self, cx: &mut Context<Self>) {
+        if self.pending_workbench_import.is_none() {
+            self.report_source_error("Workbench import plan is unavailable".to_owned(), cx);
+            return;
+        }
+        let flush_revision = self
+            .session
+            .update(cx, |session, cx| session.flush_pending_revision(cx));
+        self.pending_import_flush_revision = flush_revision;
+        if flush_revision.is_none() {
+            self.persist_workbench_import(cx);
+        }
+    }
+
+    fn handle_import_autosave_event(
+        &mut self,
+        event: &WorkbenchSessionEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let WorkbenchSessionEvent::AutosaveFinished {
+            revision,
+            succeeded,
+        } = event
+        else {
+            return;
+        };
+        let Some(target) = self.pending_import_flush_revision else {
+            return;
+        };
+        if !succeeded {
+            self.pending_import_flush_revision = None;
+            self.pending_workbench_import = None;
+            self.report_source_error("Could not flush the current Workbench".to_owned(), cx);
+            return;
+        }
+        if *revision < target {
+            return;
+        }
+        let next_revision = self
+            .session
+            .update(cx, |session, cx| session.flush_pending_revision(cx));
+        if let Some(revision) = next_revision {
+            self.pending_import_flush_revision = Some(revision);
+        } else {
+            self.pending_import_flush_revision = None;
+            self.persist_workbench_import(cx);
+        }
+    }
+
+    fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_quit_flush_revision.is_some() {
+            return;
+        }
+        let flush_revision = self
+            .session
+            .update(cx, |session, cx| session.flush_pending_revision(cx));
+        self.pending_quit_flush_revision = flush_revision;
+        if flush_revision.is_none() {
+            cx.quit();
+        }
+    }
+
+    fn handle_quit_autosave_event(
+        &mut self,
+        event: &WorkbenchSessionEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let WorkbenchSessionEvent::AutosaveFinished {
+            revision,
+            succeeded,
+        } = event
+        else {
+            return;
+        };
+        let Some(target) = self.pending_quit_flush_revision else {
+            return;
+        };
+        if !succeeded {
+            self.pending_quit_flush_revision = None;
+            self.report_source_error(
+                "Could not flush the Workbench before quitting".to_owned(),
+                cx,
+            );
+            return;
+        }
+        if *revision < target {
+            return;
+        }
+        let next_revision = self
+            .session
+            .update(cx, |session, cx| session.flush_pending_revision(cx));
+        if let Some(revision) = next_revision {
+            self.pending_quit_flush_revision = Some(revision);
+        } else {
+            self.pending_quit_flush_revision = None;
+            cx.quit();
+        }
+    }
+
+    fn persist_workbench_import(&mut self, cx: &mut Context<Self>) {
+        let Some(mut pending) = self.pending_workbench_import.take() else {
+            return;
+        };
+        let Some(workbench_path) = self.session.read(cx).workbench_path.clone() else {
+            self.report_source_error("Current Workbench path is unavailable".to_owned(), cx);
+            return;
+        };
+        let write = cx.background_spawn(async move {
+            if std::fs::read(&pending.external_path).map_err(|error| error.to_string())?
+                != pending.external_fingerprint
+            {
+                return Err("Imported Workbench changed after preflight".to_owned());
+            }
+            let original = match std::fs::read(&workbench_path) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.to_string()),
+            };
+            pending
+                .configuration
+                .save_with_workbench(&workbench_path, original, &pending.plan.document)
+                .map_err(|error| error.to_string())?;
+            Ok(pending)
+        });
+        cx.spawn(async move |this, cx| match write.await {
+            Ok(pending) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    let sources = pending.configuration.configured_sources();
+                    viewer.source_configuration = Some(pending.configuration);
+                    viewer.session.update(cx, |session, session_cx| {
+                        session.autosave_blocked = false;
+                        session.replace_sources(sources, &[], session_cx);
+                    });
+                    viewer.restore_toml_workbench(pending.plan.document, cx);
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                let _ = this.update(cx, |viewer, cx| viewer.report_source_error(error, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn save_confirmed_source(&mut self, source: ConfirmedSource, cx: &mut Context<Self>) {
+        let Some(mut candidate) = self.source_configuration.clone() else {
+            self.report_source_error("Viewer configuration is unavailable".to_owned(), cx);
+            return;
+        };
+        let existing = candidate
+            .sources
+            .iter()
+            .find(|configured| configured.configured.alias == source.alias)
+            .map(|configured| configured.configured.clone());
+        if !source.manage && existing.is_some() {
+            self.report_source_error(
+                format!("Source alias {} is already configured", source.alias),
+                cx,
+            );
+            return;
+        }
+        let update = if source.projects.is_empty() {
+            candidate.remove_source(&source.alias)
+        } else {
+            candidate.set_source(&source.alias, &source.root_path, &source.projects)
+        };
+        if let Err(error) = update {
+            self.report_source_error(error.to_string(), cx);
+            return;
+        }
+        let removed_projects = existing
+            .as_ref()
+            .map(|existing| {
+                existing
+                    .projects
+                    .iter()
+                    .filter(|project| !source.projects.contains(project))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let source_id = DataSourceId::from_alias(&source.alias);
+        let configured = (!source.projects.is_empty()).then_some(ConfiguredSource {
+            alias: source.alias,
+            root_path: source.root_path,
+            projects: source.projects,
+        });
+        let save = cx.background_spawn(async move { candidate.save().map(|()| candidate) });
+        cx.spawn(async move |this, cx| match save.await {
+            Ok(configuration) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.source_configuration = Some(configuration);
+                    viewer.session.update(cx, |session, session_cx| {
+                        for project_id in &removed_projects {
+                            session.views.remove_project(ProjectRef::new(
+                                source_id.clone(),
+                                project_id.clone(),
+                            ));
+                        }
+                        if !removed_projects.is_empty() {
+                            session.persistence_dirty = true;
+                        }
+                        if configured.is_none() {
+                            session.sources.remove(&source_id);
+                            session.event_tasks.remove(&source_id);
+                        }
+                        if removed_projects.is_empty() {
+                            session.publish_snapshot();
+                        } else {
+                            session.publish_semantic_snapshot();
+                        }
+                        session_cx.notify();
+                    });
+                    if let Some(configured) = configured {
+                        viewer.open_configured_sources(vec![configured], cx);
+                    }
+                    cx.notify();
+                });
+            }
+            Err(error) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.report_source_error(error.to_string(), cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    fn manage_source_projects(
+        &mut self,
+        _source_id: DataSourceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_sources(window, cx);
+    }
+
+    fn confirm_remove_project(
+        &mut self,
+        project: ProjectRef,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Remove Project?",
+            Some("This unimports the Project and removes its Workbench references."),
+            &["Remove", "Cancel"],
+            cx,
+        );
+        let configured = self
+            .source_configuration
+            .as_ref()
+            .and_then(|configuration| {
+                configuration
+                    .sources
+                    .iter()
+                    .find(|source| source.configured.alias == *project.source_id.alias())
+                    .map(|source| source.configured.clone())
+            });
+        cx.spawn_in(window, async move |this, cx| {
+            if !matches!(answer.await, Ok(0)) {
+                return;
+            }
+            let _ = this.update_in(cx, |viewer, _, cx| {
+                let Some(configured) = configured else {
+                    viewer
+                        .report_source_error("Source configuration is unavailable".to_owned(), cx);
+                    return;
+                };
+                let projects = configured
+                    .projects
+                    .into_iter()
+                    .filter(|project_id| project_id != &project.project_id)
+                    .collect();
+                viewer.save_confirmed_source(
+                    ConfirmedSource {
+                        manage: true,
+                        alias: configured.alias,
+                        root_path: configured.root_path,
+                        projects,
+                    },
+                    cx,
+                );
+            });
+        })
+        .detach();
+    }
+
+    fn report_source_error(&mut self, message: String, cx: &mut Context<Self>) {
+        self.session.update(cx, |session, cx| {
+            session.transient_error = Some(message);
+            session.publish_snapshot();
+            cx.notify();
+        });
+    }
+}
+
+fn load_and_preflight_sources(
+    project_root: Option<PathBuf>,
+) -> Result<(SourceConfiguration, Vec<ConfiguredSource>), String> {
+    let configuration = SourceConfiguration::load_for_scope(project_root.as_deref())
+        .map_err(|error| error.to_string())?;
+    let sources = configuration.configured_sources();
+    for source in &sources {
+        let preflight =
+            SourcePreflight::load(&source.root_path).map_err(|error| error.to_string())?;
+        if let Some(project_id) = source.projects.iter().find(|project_id| {
+            !preflight
+                .projects
+                .iter()
+                .any(|project| &project.project_id == *project_id)
+        }) {
+            return Err(format!(
+                "Source {} does not contain Project {}",
+                source.alias,
+                project_id.as_str()
+            ));
+        }
+    }
+    Ok((configuration, sources))
+}
+
+fn prepare_workbench_import(
+    external_path: PathBuf,
+    configuration: SourceConfiguration,
+) -> Result<WorkbenchImportPreparation, String> {
+    let external_fingerprint = std::fs::read(&external_path).map_err(|error| error.to_string())?;
+    let raw = std::str::from_utf8(&external_fingerprint)
+        .map_err(|_| "Imported Workbench is not UTF-8".to_owned())?;
+    let document = TomlWorkbenchDocument::decode(raw).map_err(|error| error.to_string())?;
+    let mut referenced = referenced_projects_by_alias(&document)
+        .into_iter()
+        .collect::<Vec<_>>();
+    referenced.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
+
+    let mut local_sources = Vec::new();
+    for source in configuration.configured_sources() {
+        let preflight =
+            SourcePreflight::load(&source.root_path).map_err(|error| error.to_string())?;
+        let available = preflight
+            .projects
+            .into_iter()
+            .map(|project| project.project_id)
+            .collect::<Vec<_>>();
+        if let Some(project_id) = source
+            .projects
+            .iter()
+            .find(|project_id| !available.contains(project_id))
+        {
+            return Err(format!(
+                "Source {} does not contain Project {}",
+                source.alias,
+                project_id.as_str()
+            ));
+        }
+        local_sources.push((source, available));
+    }
+
+    let mut mappings = Vec::new();
+    let mut unresolved = Vec::new();
+    for (external_alias, required_projects) in referenced {
+        let candidates = local_sources
+            .iter()
+            .filter(|(_, available)| {
+                required_projects
+                    .iter()
+                    .all(|project| available.contains(project))
+            })
+            .collect::<Vec<_>>();
+        let selected = candidates
+            .iter()
+            .copied()
+            .find(|(source, _)| source.alias == external_alias)
+            .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
+        if let Some(selected) = selected {
+            mappings.push(ImportSourceMapping {
+                external_alias,
+                local_alias: selected.0.alias.clone(),
+                available_projects: selected.1.clone(),
+                imported_projects: selected.0.projects.clone(),
+            });
+        } else {
+            unresolved.push((external_alias, required_projects));
+        }
+    }
+    Ok(WorkbenchImportPreparation {
+        external_path,
+        external_fingerprint,
+        configuration,
+        document,
+        local_sources,
+        mappings,
+        unresolved,
+    })
+}
+
+fn finish_workbench_import(
+    mut preparation: WorkbenchImportPreparation,
+    selections: Vec<(SourceAlias, SourcePreflight)>,
+) -> Result<PendingWorkbenchImport, String> {
+    let mut new_sources = Vec::<(SourceAlias, PathBuf)>::new();
+    let mut used_aliases = preparation
+        .configuration
+        .sources
+        .iter()
+        .map(|source| source.configured.alias.clone())
+        .collect::<Vec<_>>();
+    for (external_alias, required_projects) in &preparation.unresolved {
+        let selected = selections
+            .iter()
+            .find(|(alias, _)| alias == external_alias)
+            .map(|(_, preflight)| preflight)
+            .ok_or_else(|| format!("Source {external_alias} is not mapped"))?;
+        let available_projects = selected
+            .projects
+            .iter()
+            .map(|project| project.project_id.clone())
+            .collect::<Vec<_>>();
+        if let Some(project_id) = required_projects
+            .iter()
+            .find(|project| !available_projects.contains(project))
+        {
+            return Err(format!(
+                "Source {} does not contain Project {}",
+                external_alias,
+                project_id.as_str()
+            ));
+        }
+        let existing = preparation
+            .local_sources
+            .iter()
+            .find(|(source, _)| same_source_path(&source.root_path, &selected.root_path));
+        let (local_alias, imported_projects) = if let Some((source, _)) = existing {
+            (source.alias.clone(), source.projects.clone())
+        } else if let Some((alias, _)) = new_sources
+            .iter()
+            .find(|(_, root_path)| same_source_path(root_path, &selected.root_path))
+        {
+            (alias.clone(), Vec::new())
+        } else {
+            let alias = if used_aliases.contains(external_alias) {
+                suggest_source_alias(&selected.root_path, &used_aliases)
+            } else {
+                external_alias.clone()
+            };
+            used_aliases.push(alias.clone());
+            new_sources.push((alias.clone(), selected.root_path.clone()));
+            (alias, Vec::new())
+        };
+        preparation.mappings.push(ImportSourceMapping {
+            external_alias: external_alias.clone(),
+            local_alias,
+            available_projects,
+            imported_projects,
+        });
+    }
+    preparation.mappings.sort_by(|left, right| {
+        left.external_alias
+            .as_str()
+            .cmp(right.external_alias.as_str())
+    });
+    let plan = preflight_workbench_import(preparation.document, &preparation.mappings)
+        .map_err(|error| error.to_string())?;
+    for (alias, additions) in &plan.allowlist_additions {
+        let existing = preparation
+            .configuration
+            .sources
+            .iter()
+            .find(|source| &source.configured.alias == alias)
+            .map(|source| source.configured.clone());
+        let (root_path, mut projects) = if let Some(source) = existing {
+            (source.root_path, source.projects)
+        } else {
+            let root_path = new_sources
+                .iter()
+                .find(|(new_alias, _)| new_alias == alias)
+                .map(|(_, root_path)| root_path.clone())
+                .ok_or_else(|| format!("Source {alias} is unavailable"))?;
+            (root_path, Vec::new())
+        };
+        projects.extend(additions.iter().cloned());
+        preparation
+            .configuration
+            .set_source(alias, &root_path, &projects)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(PendingWorkbenchImport {
+        external_path: preparation.external_path,
+        external_fingerprint: preparation.external_fingerprint,
+        configuration: preparation.configuration,
+        plan,
+    })
 }
 
 impl Render for ViewerApp {
@@ -348,6 +1354,11 @@ impl Render for ViewerApp {
                 }),
             )
             .on_action(cx.listener(Self::on_refresh))
+            .on_action(cx.listener(Self::on_open_sources))
+            .on_action(cx.listener(Self::on_reload_sources))
+            .on_action(cx.listener(Self::on_import_workbench))
+            .on_action(cx.listener(Self::on_export_workbench))
+            .on_action(cx.listener(Self::on_quit))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
             .on_action(cx.listener(Self::on_toggle_metric_sidebar))
@@ -390,5 +1401,6 @@ impl Render for ViewerApp {
                             ),
                     ),
             )
+            .child(self.source_management.clone())
     }
 }

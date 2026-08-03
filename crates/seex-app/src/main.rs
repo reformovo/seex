@@ -24,15 +24,15 @@ fn main() -> ExitCode {
     run(project_path)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "desktop", target_os = "macos"))]
 fn run(project_path: Option<PathBuf>) -> ExitCode {
     seex_app::desktop::run(project_path);
     ExitCode::SUCCESS
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(all(feature = "desktop", target_os = "macos")))]
 fn run(_project_path: Option<PathBuf>) -> ExitCode {
-    eprintln!("seex-app is unsupported on this platform");
+    eprintln!("seex-app desktop support is unavailable in this build");
     ExitCode::SUCCESS
 }
 

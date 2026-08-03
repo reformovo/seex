@@ -4,6 +4,7 @@ use std::sync::Arc;
 use seex::AlignmentViewport;
 use seex::MetricKey;
 use seex::ProjectId;
+#[cfg(test)]
 use seex::RunId;
 
 use crate::data::query::{CurveSnapshot, InspectorSnapshot};
@@ -111,7 +112,7 @@ pub struct AnalysisViews {
     views: Vec<AnalysisView>,
     pinned_projects: Vec<ProjectRef>,
     archived_projects: Vec<ProjectRef>,
-    removed_projects: Vec<ProjectRef>,
+    expanded_projects: Vec<ProjectRef>,
     archived_runs: Vec<RunRef>,
     active_view_id: AnalysisViewId,
     next_id: u64,
@@ -135,7 +136,7 @@ impl Default for AnalysisViews {
             views: vec![view],
             pinned_projects: Vec::new(),
             archived_projects: Vec::new(),
-            removed_projects: Vec::new(),
+            expanded_projects: Vec::new(),
             archived_runs: Vec::new(),
             next_id: 2,
         }
@@ -258,7 +259,16 @@ impl AnalysisViews {
                     )
                 })
                 .collect(),
-            removed_projects: Vec::new(),
+            expanded_projects: document
+                .expanded_projects
+                .iter()
+                .map(|project| {
+                    ProjectRef::new(
+                        DataSourceId::from_alias(&project.source_alias),
+                        project.project_id.clone(),
+                    )
+                })
+                .collect(),
             archived_runs: document.archived_runs.iter().map(saved_run_ref).collect(),
             active_view_id,
             next_id,
@@ -278,8 +288,20 @@ impl AnalysisViews {
         &self.archived_projects
     }
 
-    pub fn removed_projects(&self) -> &[ProjectRef] {
-        &self.removed_projects
+    pub fn expanded_projects(&self) -> &[ProjectRef] {
+        &self.expanded_projects
+    }
+
+    pub fn toggle_project_expanded(&mut self, project: ProjectRef) {
+        if let Some(index) = self
+            .expanded_projects
+            .iter()
+            .position(|candidate| candidate == &project)
+        {
+            self.expanded_projects.remove(index);
+        } else {
+            self.expanded_projects.push(project);
+        }
     }
 
     pub fn archived_runs(&self) -> &[RunRef] {
@@ -468,6 +490,7 @@ impl AnalysisViews {
     }
 
     pub fn remove_project(&mut self, project: ProjectRef) {
+        self.expanded_projects.retain(|item| item != &project);
         self.pinned_projects.retain(|item| item != &project);
         self.archived_projects.retain(|item| item != &project);
         self.archived_runs.retain(|run| !project.contains_run(run));
@@ -490,9 +513,6 @@ impl AnalysisViews {
             if !removed.is_empty() {
                 invalidate_view_panels(view);
             }
-        }
-        if !self.removed_projects.contains(&project) {
-            self.removed_projects.push(project);
         }
     }
 
@@ -587,47 +607,6 @@ impl AnalysisViews {
             panel.inspector_generation = None;
             panel.requested_detail_viewport = None;
         }
-    }
-
-    pub fn reconcile_source_runs(
-        &mut self,
-        source_id: &DataSourceId,
-        available_runs: &[(ProjectId, RunId)],
-    ) -> Vec<RunRef> {
-        let mut removed = Vec::new();
-        for view in &mut self.views {
-            let stale = view
-                .runs
-                .iter()
-                .filter(|run| {
-                    &run.source_id == source_id
-                        && !available_runs.iter().any(|(project_id, run_id)| {
-                            project_id == &run.project_id && run_id == &run.run_id
-                        })
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            view.runs.retain(|run| !stale.contains(run));
-            view.pinned_runs.retain(|run| !stale.contains(run));
-            if view
-                .baseline
-                .as_ref()
-                .is_some_and(|run| stale.contains(run))
-            {
-                view.baseline = None;
-            }
-            if !stale.is_empty() {
-                invalidate_view_panels(view);
-            }
-            removed.extend(stale);
-        }
-        self.archived_runs.retain(|run| {
-            &run.source_id != source_id
-                || available_runs.iter().any(|(project_id, run_id)| {
-                    project_id == &run.project_id && run_id == &run.run_id
-                })
-        });
-        removed
     }
 
     pub fn begin_active_panel_read(
@@ -799,7 +778,7 @@ impl AnalysisViews {
             .retain(|project| &project.source_id != source_id);
         self.archived_projects
             .retain(|project| &project.source_id != source_id);
-        self.removed_projects
+        self.expanded_projects
             .retain(|project| &project.source_id != source_id);
         self.archived_runs.retain(|run| &run.source_id != source_id);
     }
