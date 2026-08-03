@@ -67,7 +67,7 @@ impl WorkbenchSession {
             .filter(|source| source.root_path.is_dir())
             .map(|source| source.source_id.clone())
             .collect();
-        self.publish_snapshot();
+        self.publish_semantic_snapshot();
         cx.notify();
         RestoredWorkbench {
             layout: self.layout,
@@ -81,10 +81,11 @@ impl WorkbenchSession {
         cx: &mut Context<Self>,
     ) {
         self.layout = layout;
+        self.publish_semantic_snapshot();
         let Some(path) = self.workbench_path.clone() else {
             return;
         };
-        let document = self.workbench_document(layout);
+        let document = self.semantic_snapshot().document.clone();
         let encoded = document.encode();
         if self.last_saved_workbench.as_deref() == Some(&encoded) {
             self.persistence_dirty = false;
@@ -105,77 +106,74 @@ impl WorkbenchSession {
         })
         .detach();
     }
+}
 
-    fn workbench_document(&self, layout: ViewerLayoutState) -> TomlWorkbenchDocument {
-        let save_project = |project: &ProjectRef| TomlProjectRef {
-            source_alias: project.source_id.alias().clone(),
-            project_id: project.project_id.clone(),
-        };
-        let save_run = |run: &RunRef| TomlRunRef {
-            source_alias: run.source_id.alias().clone(),
-            project_id: run.project_id.clone(),
-            run_id: run.run_id.clone(),
-        };
-        let views = self
-            .views
-            .views()
+pub(super) fn workbench_document(
+    views_state: &crate::workbench::AnalysisViews,
+    layout: ViewerLayoutState,
+) -> TomlWorkbenchDocument {
+    let save_project = |project: &ProjectRef| TomlProjectRef {
+        source_alias: project.source_id.alias().clone(),
+        project_id: project.project_id.clone(),
+    };
+    let save_run = |run: &RunRef| TomlRunRef {
+        source_alias: run.source_id.alias().clone(),
+        project_id: run.project_id.clone(),
+        run_id: run.run_id.clone(),
+    };
+    let views = views_state
+        .views()
+        .iter()
+        .map(|view| TomlAnalysisView {
+            name: view.name.clone(),
+            runs: view.runs.iter().map(&save_run).collect(),
+            baseline: view.baseline.as_ref().map(&save_run),
+            pinned_runs: view.pinned_runs.iter().map(&save_run).collect(),
+            metrics: view
+                .panels
+                .iter()
+                .map(|panel| panel.metric_key.as_str().to_owned())
+                .collect(),
+            metric_heights: view
+                .panels
+                .iter()
+                .map(|panel| (panel.metric_key.as_str().to_owned(), panel.row_height))
+                .collect(),
+            selected_metric: view
+                .selected_panel_id
+                .as_ref()
+                .and_then(|panel_id| view.panels.iter().find(|panel| &panel.panel_id == panel_id))
+                .map(|panel| panel.metric_key.as_str().to_owned()),
+            axis: view.navigation.axis(),
+            viewport: view.navigation.brush().map(|brush| brush.selected()),
+        })
+        .collect();
+    TomlWorkbenchDocument {
+        active_view: views_state.active_index(),
+        layout: SavedLayout {
+            project_sidebar_visible: layout.project_sidebar_visible,
+            project_sidebar_width: layout.project_sidebar_width,
+            metric_sidebar_compact: layout.metric_sidebar_compact,
+            bottom_inspector_visible: layout.bottom_inspector_visible,
+            bottom_inspector_height: layout.bottom_inspector_height,
+        },
+        expanded_projects: views_state
+            .expanded_projects()
             .iter()
-            .map(|view| TomlAnalysisView {
-                name: view.name.clone(),
-                runs: view.runs.iter().map(&save_run).collect(),
-                baseline: view.baseline.as_ref().map(&save_run),
-                pinned_runs: view.pinned_runs.iter().map(&save_run).collect(),
-                metrics: view
-                    .panels
-                    .iter()
-                    .map(|panel| panel.metric_key.as_str().to_owned())
-                    .collect(),
-                metric_heights: view
-                    .panels
-                    .iter()
-                    .map(|panel| (panel.metric_key.as_str().to_owned(), panel.row_height))
-                    .collect(),
-                selected_metric: view
-                    .selected_panel_id
-                    .as_ref()
-                    .and_then(|panel_id| {
-                        view.panels.iter().find(|panel| &panel.panel_id == panel_id)
-                    })
-                    .map(|panel| panel.metric_key.as_str().to_owned()),
-                axis: view.navigation.axis(),
-                viewport: view.navigation.brush().map(|brush| brush.selected()),
-            })
-            .collect();
-        TomlWorkbenchDocument {
-            active_view: self.views.active_index(),
-            layout: SavedLayout {
-                project_sidebar_visible: layout.project_sidebar_visible,
-                project_sidebar_width: layout.project_sidebar_width,
-                metric_sidebar_compact: layout.metric_sidebar_compact,
-                bottom_inspector_visible: layout.bottom_inspector_visible,
-                bottom_inspector_height: layout.bottom_inspector_height,
-            },
-            expanded_projects: self
-                .views
-                .expanded_projects()
-                .iter()
-                .map(&save_project)
-                .collect(),
-            pinned_projects: self
-                .views
-                .pinned_projects()
-                .iter()
-                .map(&save_project)
-                .collect(),
-            archived_projects: self
-                .views
-                .archived_projects()
-                .iter()
-                .map(&save_project)
-                .collect(),
-            archived_runs: self.views.archived_runs().iter().map(&save_run).collect(),
-            views,
-        }
+            .map(&save_project)
+            .collect(),
+        pinned_projects: views_state
+            .pinned_projects()
+            .iter()
+            .map(&save_project)
+            .collect(),
+        archived_projects: views_state
+            .archived_projects()
+            .iter()
+            .map(&save_project)
+            .collect(),
+        archived_runs: views_state.archived_runs().iter().map(&save_run).collect(),
+        views,
     }
 }
 

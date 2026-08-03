@@ -330,7 +330,7 @@ impl WorkbenchSession {
         };
         if effect.changed {
             self.persistence_dirty = true;
-            self.publish_snapshot();
+            self.publish_semantic_snapshot();
         }
         effect
     }

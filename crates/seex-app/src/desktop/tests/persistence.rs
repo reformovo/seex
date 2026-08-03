@@ -164,6 +164,45 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn semantic_snapshot_excludes_machine_and_transient_state(cx: &mut TestAppContext) {
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.sources.configure(ConfiguredSource {
+                    alias: SourceAlias::new("private-source").expect("test alias should be valid"),
+                    root_path: "/secret/machine/path".into(),
+                    projects: vec![ProjectId::from_string("allowlisted-project")],
+                });
+                session.transient_error = Some("transient-secret-message".to_owned());
+                session.publish_snapshot();
+            });
+            viewer.select_metric(MetricKey::from_string("loss"), cx);
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+
+    let encoded = window
+        .read_with(&cx, |viewer, cx| {
+            viewer
+                .session
+                .read(cx)
+                .semantic_snapshot()
+                .document
+                .encode()
+        })
+        .expect("viewer should remain open");
+    assert!(encoded.contains("loss"));
+    for excluded in [
+        "/secret/machine/path",
+        "allowlisted-project",
+        "transient-secret-message",
+    ] {
+        assert!(!encoded.contains(excluded));
+    }
+}
+
+#[gpui::test]
 fn restored_state_retains_unavailable_runs_and_unknown_metrics(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
     let alias = SourceAlias::new("research").expect("test alias should be valid");

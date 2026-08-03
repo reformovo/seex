@@ -22,6 +22,12 @@ pub(crate) struct SessionSnapshot {
     pub sources: Arc<[crate::data::registry::ImportedSource]>,
 }
 
+#[derive(Clone)]
+pub(crate) struct SemanticWorkbenchSnapshot {
+    pub revision: u64,
+    pub document: crate::workbench::toml_document::TomlWorkbenchDocument,
+}
+
 impl SessionSnapshot {
     pub(crate) fn contains_catalog_project(
         &self,
@@ -145,6 +151,7 @@ pub(crate) struct WorkbenchSession {
     pub layout: ViewerLayoutState,
     pub persistence_dirty: bool,
     snapshot: Arc<SessionSnapshot>,
+    semantic_snapshot: Arc<SemanticWorkbenchSnapshot>,
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +177,11 @@ impl WorkbenchSession {
             views: views.clone(),
             sources: sources.snapshot(),
         });
+        let layout = ViewerLayoutState::default();
+        let semantic_snapshot = Arc::new(SemanticWorkbenchSnapshot {
+            revision: 0,
+            document: persistence::workbench_document(&views, layout),
+        });
         Self {
             views,
             panel_reads: PanelReadCoordinator::default(),
@@ -179,14 +191,27 @@ impl WorkbenchSession {
             transient_error: None,
             workbench_path,
             last_saved_workbench: None,
-            layout: ViewerLayoutState::default(),
+            layout,
             persistence_dirty: false,
             snapshot,
+            semantic_snapshot,
         }
     }
 
     pub(crate) fn snapshot(&self) -> Arc<SessionSnapshot> {
         Arc::clone(&self.snapshot)
+    }
+
+    pub(crate) fn semantic_snapshot(&self) -> Arc<SemanticWorkbenchSnapshot> {
+        Arc::clone(&self.semantic_snapshot)
+    }
+
+    pub(crate) fn publish_semantic_snapshot(&mut self) {
+        self.semantic_snapshot = Arc::new(SemanticWorkbenchSnapshot {
+            revision: self.semantic_snapshot.revision.saturating_add(1),
+            document: persistence::workbench_document(&self.views, self.layout),
+        });
+        self.publish_snapshot();
     }
 
     pub(crate) fn publish_snapshot(&mut self) {

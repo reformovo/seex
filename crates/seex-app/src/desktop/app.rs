@@ -475,7 +475,11 @@ impl ViewerApp {
                             session.sources.remove(&source_id);
                             session.event_tasks.remove(&source_id);
                         }
-                        session.publish_snapshot();
+                        if removed_projects.is_empty() {
+                            session.publish_snapshot();
+                        } else {
+                            session.publish_semantic_snapshot();
+                        }
                         session_cx.notify();
                     });
                     if let Some(configured) = configured {
