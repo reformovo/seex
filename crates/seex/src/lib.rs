@@ -37,6 +37,10 @@ mod ducklake_test_support;
 #[cfg(test)]
 mod native_engine_behavior;
 
+#[doc(hidden)]
+pub use crate::model::alignment::{
+    AlignedMetricPoint, AlignmentAxis, AlignmentQueryError, AlignmentViewport,
+};
 pub use crate::model::comparison::{
     ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
     EvidenceCompleteness, EvidenceReason, MetricComparisonResult, ObjectiveDirection,
@@ -52,6 +56,7 @@ pub use client::{
 pub use config::{CatalogBackend, S3Options};
 pub use error::{Error, Result};
 pub use reader::{
-    MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, MetricSample,
-    MetricSeries, MetricSeriesError, Reader, ReaderBuilder, RelativeTime, Timestamp,
+    DesktopMetricEvidence, LocalReaderError, MetricAxis, MetricCoordinate, MetricQuery,
+    MetricQueryError, MetricRange, MetricSample, MetricSeries, MetricSeriesError, Reader,
+    ReaderBuilder, ReaderInterrupt, RelativeTime, Timestamp,
 };

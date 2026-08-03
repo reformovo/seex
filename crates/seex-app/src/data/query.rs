@@ -1,18 +1,11 @@
-use std::collections::HashMap;
-
 use crate::data::source::ReadSession;
 use crate::domain::{DataSourceId, RunRef};
 use seex::{MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, Timestamp};
 use seex_chart_core::{DataPoint, Series, SeriesId};
-use seex_core::engine::EngineError;
-use seex_core::engine::query::NativeQueryStore;
 use seex_model::alignment::{AlignmentQueryError, AlignmentViewport};
-use seex_model::comparison::{
-    EvidenceCompleteness, EvidenceReason, ObjectiveDirection, ObjectiveEvidence, ObjectiveMetric,
-};
+use seex_model::comparison::{EvidenceCompleteness, EvidenceReason, ObjectiveEvidence};
 use seex_model::metric::{MetricAggregate, MetricKey};
 use seex_model::run::Run;
-use seex_storage::StorageError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CurveAxis {
@@ -127,10 +120,6 @@ pub enum QueryError {
     #[error(transparent)]
     Chart(#[from] seex_chart_core::ChartError),
     #[error(transparent)]
-    Core(#[from] EngineError),
-    #[error(transparent)]
-    Storage(#[from] StorageError),
-    #[error(transparent)]
     Sdk(#[from] seex::Error),
     #[error(transparent)]
     MetricQuery(#[from] MetricQueryError),
@@ -219,42 +208,28 @@ impl ReadSession {
             .iter()
             .map(|run| run.run_id.clone())
             .collect::<Vec<_>>();
-        let runs = self.connection().get_runs(&run_ids)?;
-        if is_superseded() {
+        let Some(evidence) = self.reader().inspect_metric_for_desktop(
+            &run_ids,
+            &request.metric_key,
+            is_superseded,
+        )?
+        else {
             return Ok(None);
-        }
-        let store = NativeQueryStore::new(self.connection());
-        let mut summaries = store
-            .query_metric_summaries(&run_ids, &request.metric_key)?
-            .into_iter()
-            .map(|summary| (summary.run_id.clone(), summary))
-            .collect::<HashMap<_, _>>();
-        if is_superseded() {
-            return Ok(None);
-        }
-        let objective = ObjectiveMetric {
-            metric_key: request.metric_key.clone(),
-            direction: ObjectiveDirection::Minimize,
         };
-        let evidence = store.objective_evidence_for_runs(&runs, &objective)?;
-        if is_superseded() {
-            return Ok(None);
-        }
-        let snapshots = runs
+        let snapshots = evidence
             .into_iter()
-            .zip(evidence)
-            .filter_map(|(run, evidence)| {
+            .filter_map(|item| {
+                let run = item.run;
                 let run_ref = request.runs.iter().find(|selected| {
                     selected.source_id == request.source_id
                         && selected.project_id == run.project_id
                         && selected.run_id == run.run_id
                 })?;
-                let summary = summaries.remove(&run.run_id);
                 Some(InspectorRunSnapshot {
                     run_ref: run_ref.clone(),
                     run,
-                    summary,
-                    evidence,
+                    summary: item.summary,
+                    evidence: item.evidence,
                 })
             })
             .collect::<Vec<_>>();

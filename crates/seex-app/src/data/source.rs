@@ -1,12 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use seex::Reader;
-use seex_storage::bootstrap::{
-    NativeStorageConfig, is_s3_data_path, open_existing_native_connection_with_config,
-};
-use seex_storage::config::{InitConfigError, resolve_storage_config};
-use seex_storage::{ProjectConnection, ReadInterrupt, StorageError};
+use seex::{LocalReaderError, Reader, ReaderInterrupt};
+use seex_storage::StorageError;
 
 use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
@@ -15,8 +11,6 @@ use crate::data::{CatalogSnapshot, DiscoveryRequest};
 pub enum SourceError {
     #[error("S3 data paths are unsupported by seex-app")]
     UnsupportedS3,
-    #[error(transparent)]
-    Config(#[from] InitConfigError),
     #[error(transparent)]
     Storage(#[from] StorageError),
     #[error(transparent)]
@@ -27,7 +21,6 @@ pub enum SourceError {
 pub struct ReadSession {
     root_path: PathBuf,
     reader: Reader,
-    connection: ProjectConnection,
 }
 
 impl ReadSession {
@@ -38,31 +31,17 @@ impl ReadSession {
     /// Returns [`SourceError::UnsupportedS3`] before credential resolution for
     /// an S3 data path. Other configuration and storage failures are preserved.
     pub fn open_existing(root_path: &Path) -> Result<Self, SourceError> {
-        let resolved = resolve_storage_config(root_path, None, None, None)?;
-        if resolved.data_path.as_deref().is_some_and(is_s3_data_path) {
-            return Err(SourceError::UnsupportedS3);
-        }
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            resolved.catalog_backend,
-            root_path,
-            resolved.catalog_path,
-            resolved.data_path,
-            None,
-        );
-        let connection = open_existing_native_connection_with_config(config)?;
-        let reader = Reader::builder(root_path).open()?;
+        let reader = open_local_reader(root_path)?;
         Ok(Self {
             root_path: root_path.to_owned(),
             reader,
-            connection: ProjectConnection::new(connection),
         })
     }
 
     pub(crate) fn try_clone(&self) -> Result<Self, SourceError> {
         Ok(Self {
             root_path: self.root_path.clone(),
-            reader: Reader::builder(&self.root_path).open()?,
-            connection: self.connection.try_clone()?,
+            reader: open_local_reader(&self.root_path)?,
         })
     }
 
@@ -148,23 +127,26 @@ impl ReadSession {
         })
     }
 
-    pub(crate) const fn connection(&self) -> &ProjectConnection {
-        &self.connection
-    }
-
     pub(crate) const fn reader(&self) -> &Reader {
         &self.reader
     }
 
     #[doc(hidden)]
-    pub fn interrupt_handles(&self) -> [ReadInterrupt; 2] {
-        [
-            self.reader
-                .interrupt_handle()
-                .expect("native ReadSession Reader must have a connection"),
-            self.connection.interrupt_handle(),
-        ]
+    pub fn interrupt_handles(&self) -> Vec<ReaderInterrupt> {
+        self.reader.interrupt_handle().into_iter().collect()
     }
+}
+
+fn open_local_reader(root_path: &Path) -> Result<Reader, SourceError> {
+    Reader::builder(root_path)
+        .open_local()
+        .map_err(|error| match error {
+            LocalReaderError::UnsupportedS3 => SourceError::UnsupportedS3,
+            LocalReaderError::Sdk(seex::Error::CatalogNotFound { name }) => {
+                SourceError::Storage(StorageError::CatalogNotFound { name })
+            }
+            LocalReaderError::Sdk(error) => SourceError::Sdk(error),
+        })
 }
 
 #[cfg(test)]
