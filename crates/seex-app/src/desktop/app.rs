@@ -203,10 +203,11 @@ impl ViewerApp {
         .detach();
         cx.observe(&app.source_management, |_, _, cx| cx.notify())
             .detach();
-        cx.subscribe(
+        cx.subscribe_in(
             &app.source_management,
-            |this, _, event: &SourceManagementEvent, cx| {
-                this.handle_source_management_event(event, cx);
+            window,
+            |this, _, event: &SourceManagementEvent, window, cx| {
+                this.handle_source_management_event(event, window, cx);
             },
         )
         .detach();
@@ -527,17 +528,59 @@ impl ViewerApp {
     fn handle_source_management_event(
         &mut self,
         event: &SourceManagementEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             SourceManagementEvent::Confirmed(source) => {
-                self.save_confirmed_source(source.clone(), cx);
+                self.confirm_managed_source(source.clone(), window, cx);
             }
             SourceManagementEvent::ConfirmedWorkbench => self.confirm_workbench_import(cx),
             SourceManagementEvent::Cancelled => {
                 self.pending_workbench_import = None;
             }
         }
+    }
+
+    fn confirm_managed_source(
+        &mut self,
+        source: ConfirmedSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let removes_projects = source.manage
+            && self
+                .source_configuration
+                .as_ref()
+                .is_some_and(|configuration| {
+                    configuration.sources.iter().any(|configured| {
+                        configured.configured.alias == source.alias
+                            && configured
+                                .configured
+                                .projects
+                                .iter()
+                                .any(|project| !source.projects.contains(project))
+                    })
+                });
+        if !removes_projects {
+            self.save_confirmed_source(source, cx);
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Remove Projects?",
+            Some("This unimports the deselected Projects and removes their Workbench references."),
+            &["Remove", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if matches!(answer.await, Ok(0)) {
+                let _ = this.update_in(cx, |viewer, _, cx| {
+                    viewer.save_confirmed_source(source, cx);
+                });
+            }
+        })
+        .detach();
     }
 
     fn confirm_workbench_import(&mut self, cx: &mut Context<Self>) {

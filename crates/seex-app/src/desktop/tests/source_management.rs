@@ -177,25 +177,58 @@ fn managing_projects_updates_allowlist_and_clears_unimported_references(cx: &mut
             .first()
             .is_some_and(|source| source.project_allowlist.len() == 2)
     });
+    let source_id = DataSourceId::from_alias(&alias);
     window
-        .update(&mut cx, |viewer, _, cx| {
+        .update(&mut cx, |viewer, window, cx| {
             viewer.session.update(cx, |session, _| {
-                session.views.pin_project(ProjectRef::new(
-                    DataSourceId::from_alias(&alias),
-                    one.clone(),
-                ));
+                session
+                    .views
+                    .pin_project(ProjectRef::new(source_id.clone(), one.clone()));
             });
-            viewer.save_confirmed_source(
-                ConfirmedSource {
-                    manage: true,
-                    alias: alias.clone(),
-                    root_path: source.path().to_owned(),
-                    projects: vec![two.clone()],
-                },
-                cx,
-            );
+            viewer.manage_source_projects(source_id.clone(), window, cx);
         })
         .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.source_management.read(cx).is_open()
+    });
+    cx.refresh().expect("Manage Projects should render");
+    let one_row = cx
+        .debug_bounds("source-project:one")
+        .expect("Project one should render");
+    cx.simulate_click(one_row.center(), Modifiers::default());
+    let save = cx
+        .debug_bounds("confirm-source")
+        .expect("Manage Save should render");
+    cx.simulate_click(save.center(), Modifiers::default());
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert_eq!(
+        window
+            .read_with(&cx, |viewer, cx| viewer.session_snapshot(cx).sources[0]
+                .project_allowlist
+                .clone())
+            .expect("viewer should remain open"),
+        [one.clone(), two.clone()]
+    );
+
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.manage_source_projects(source_id, window, cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.source_management.read(cx).is_open()
+    });
+    cx.refresh().expect("Manage Projects should render");
+    let one_row = cx
+        .debug_bounds("source-project:one")
+        .expect("Project one should render");
+    cx.simulate_click(one_row.center(), Modifiers::default());
+    let save = cx
+        .debug_bounds("confirm-source")
+        .expect("Manage Save should render");
+    cx.simulate_click(save.center(), Modifiers::default());
+    cx.simulate_prompt_answer("Remove");
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer
             .session_snapshot(cx)
