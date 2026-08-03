@@ -1,5 +1,6 @@
 //! Analysis views, coordinated panel reads, and viewer-owned persistence.
 
+pub(crate) mod import;
 pub mod panel_reads;
 pub mod toml_document;
 mod view;
