@@ -45,6 +45,21 @@ fn manage_and_workbench_dialogs_share_responsive_geometry(cx: &mut TestAppContex
     window
         .update(&mut cx, |viewer, window, cx| {
             viewer.source_management.update(cx, |management, cx| {
+                management.begin_sources(Vec::new(), Vec::new(), window, cx);
+            });
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+    cx.refresh().expect("empty Sources dialog should render");
+    let empty_height = cx
+        .debug_bounds("sources-dialog")
+        .expect("empty Sources dialog should render")
+        .size
+        .height;
+
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
                 management.begin_manage(
                     SourcePreflight {
                         root_path: source.path().to_owned(),
@@ -62,6 +77,17 @@ fn manage_and_workbench_dialogs_share_responsive_geometry(cx: &mut TestAppContex
             });
         })
         .expect("viewer should remain open");
+    cx.run_until_parked();
+    cx.refresh()
+        .expect("populated Sources dialog should render");
+    assert_eq!(
+        cx.debug_bounds("sources-dialog")
+            .expect("populated Sources dialog should render")
+            .size
+            .height,
+        empty_height
+    );
+
     cx.simulate_resize(size(px(600.), px(320.)));
     cx.run_until_parked();
     cx.refresh().expect("Manage dialog should render");

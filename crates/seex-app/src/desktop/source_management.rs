@@ -791,6 +791,7 @@ impl Render for SourceManagement {
         components::modal_backdrop("sources-overlay", theme)
             .child(
                 components::dialog_surface("sources-dialog", width, max_height, theme)
+                    .h(max_height)
                     .on_key_down(cx.listener(Self::handle_dialog_key))
                     .child(
                         div()
@@ -819,7 +820,8 @@ impl Render for SourceManagement {
                             .id("sources-body")
                             .debug_selector(|| "sources-body".to_owned())
                             .w_full()
-                            .min_h(px(300.))
+                            .min_h(px(0.))
+                            .flex_1()
                             .gap_3()
                             .flex()
                             .when(narrow, |body| body.flex_col())
