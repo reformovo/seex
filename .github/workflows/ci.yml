@@ -28,6 +28,11 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Run Rust tests
         run: cargo test --workspace --all-features
+      - name: Validate online and explicit offline LTTB loading
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        run: >-
+          cargo test -p seex lttb_online_and_explicit_offline_paths --
+          --ignored --nocapture
 
   python:
     name: Python checks
@@ -111,7 +116,7 @@ jobs:
         run: python -m pytest tests/test_catalog_backend_parity.py
       - name: Accept partition pruning for both catalog backends
         run: python scripts/accept_minio_partition_pruning.py
-      - name: Validate online and offline LTTB paths from the wheel
+      - name: Validate bounded Reader behavior from the wheel
         run: python scripts/rc_lttb_validation.py
 
   linux:

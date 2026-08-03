@@ -578,17 +578,21 @@ pub fn percent_encode_metric_key(value: &str) -> String {
 }
 
 fn ensure_lttb_extension_loaded(connection: &Connection) -> Result<(), StorageError> {
-    if lttb_function_available(connection) {
+    let (loaded, installed) = lttb_extension_state(connection);
+    if loaded {
         return Ok(());
     }
     if let Some(path) = std::env::var_os(LTTB_EXTENSION_PATH_ENV) {
         return load_lttb_extension_from_path(connection, Path::new(&path));
     }
 
-    let load_error = match connection.execute_batch("LOAD lttb;") {
-        Ok(()) if lttb_function_available(connection) => return Ok(()),
-        Ok(()) => None,
-        Err(source) => Some(source.to_string()),
+    let load_error = match installed {
+        true => match connection.execute_batch("LOAD lttb;") {
+            Ok(()) if lttb_function_available(connection) => return Ok(()),
+            Ok(()) => None,
+            Err(source) => Some(source.to_string()),
+        },
+        false => None,
     };
     if lttb_auto_install_allowed(std::env::var_os(LTTB_AUTO_INSTALL_ENV).as_deref()) {
         return install_and_load_lttb_extension(connection);
@@ -641,6 +645,18 @@ fn lttb_function_available(connection: &Connection) -> bool {
         .is_ok()
 }
 
+fn lttb_extension_state(connection: &Connection) -> (bool, bool) {
+    connection
+        .query_row(
+            "SELECT loaded, installed
+             FROM duckdb_extensions()
+             WHERE extension_name = 'lttb'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((false, false))
+}
+
 fn lttb_auto_install_allowed(value: Option<&std::ffi::OsStr>) -> bool {
     value
         .and_then(std::ffi::OsStr::to_str)
@@ -658,6 +674,45 @@ mod tests {
         assert!(!lttb_auto_install_allowed(None));
         assert!(!lttb_auto_install_allowed(Some(OsStr::new("0"))));
         assert!(lttb_auto_install_allowed(Some(OsStr::new("true"))));
+    }
+
+    #[test]
+    fn lttb_install_check_does_not_download_the_extension() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let home = tempfile::tempdir()?;
+        let config =
+            duckdb::Config::default().with("home_directory", home.path().to_string_lossy())?;
+        let connection = Connection::open_in_memory_with_flags(config)?;
+
+        assert_eq!(lttb_extension_state(&connection), (false, false));
+        assert!(!home.path().join(".duckdb/extensions").exists());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "network-dependent release LTTB acceptance"]
+    fn lttb_online_and_explicit_offline_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let online_home = tempfile::tempdir()?;
+        let online_config = duckdb::Config::default()
+            .with("home_directory", online_home.path().to_string_lossy())?;
+        let online = Connection::open_in_memory_with_flags(online_config)?;
+        install_and_load_lttb_extension(&online)?;
+        let extension_path: String = online.query_row(
+            "SELECT install_path FROM duckdb_extensions() WHERE extension_name = 'lttb'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(Path::new(&extension_path).is_file());
+
+        let offline_home = tempfile::tempdir()?;
+        let offline_config = duckdb::Config::default()
+            .with("home_directory", offline_home.path().to_string_lossy())?
+            .allow_unsigned_extensions()?;
+        let offline = Connection::open_in_memory_with_flags(offline_config)?;
+        load_lttb_extension_from_path(&offline, Path::new(&extension_path))?;
+
+        assert_eq!(lttb_extension_state(&offline), (true, false));
+        Ok(())
     }
 
     #[test]
