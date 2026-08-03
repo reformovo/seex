@@ -99,15 +99,16 @@
           "read_concurrency": 4
         }
       },
-      "revision": "20a51dc3342a2e54a039d0c587e1253a466d0d76",
+      "revision": "12f6a555d0b5ad4a9891ffaf3de2efcb7e740f26",
       "stable_summary": {
-        "verdict": "inconclusive",
-        "elapsed_seconds": 8.76,
-        "combined_median_peak_bytes": 465494016,
-        "combined_median_warm_bytes": 431603712,
-        "capture_peak_bytes": [462438400, 479019008, 453951488, 468549632]
+        "verdict": "pass",
+        "baseline_revision": "20a51dc3342a2e54a039d0c587e1253a466d0d76",
+        "combined_median_peak_bytes": 402989056,
+        "combined_median_final_bytes": 402989056,
+        "combined_peak_change": -0.154338,
+        "capture_peak_bytes": [401162240, 404815872]
       },
-      "artifact_sha256": "6c115f1ae20350985f4ba3831de341436cfd0f55c8bf5e86a091e377d2d67012"
+      "artifact_sha256": "dc9fe6457955ec8bb55bbc0bd352c76279e69cb27f9d0942ac97ee78c309c3e4"
     }
   }
 }

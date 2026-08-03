@@ -346,50 +346,58 @@ management, autosave, and export/import as separate candidates.
 
 #### U6.1: Source management and scope
 
-- [ ] Implement Source directory preflight, editable alias and Project
+- [x] Implement Source directory preflight, editable alias and Project
   multi-selection confirmation, configuration writeback, Manage Projects, and
   Reload Sources. Reject an invalid reload without replacing the last valid
   live Sources.
-- [ ] Select project scope only from the Source root used to launch or
+- [x] Select project scope only from the Source root used to launch or
   explicitly open Viewer. Importing another Source does not change scope;
   configuration merges global and project documents, while workbenches never
   merge and no project scope uses `~/.seex/workbench.toml`.
-- [ ] Keep Archive Project as reversible workbench state. Make Remove Project
+- [x] Keep Archive Project as reversible workbench state. Make Remove Project
   a confirmed unimport that removes the allowlist entry and its workbench
   references; retire persisted `removed_projects`.
 
 #### U6.2: Semantic autosave
 
-- [ ] Persist Views and the active View; selected, baseline, pinned, and
+- [x] Persist Views and the active View; selected, baseline, pinned, and
   archived Runs and Projects; Metrics, selected Metric, row heights, axis and
   viewport; major component visibility and dimensions; and expanded Projects.
-- [ ] Exclude Source paths and allowlists, hover/focus and menu state, filter
+- [x] Exclude Source paths and allowlists, hover/focus and menu state, filter
   text, scroll positions, query results, pending tasks, cursors, and transient
   errors from workbench state.
-- [ ] Have `WorkbenchSession` produce immutable semantic snapshots and
+- [x] Have `WorkbenchSession` produce immutable semantic snapshots and
   coalesce changes. Serialize and atomically replace the file on a GPUI
   background task, then update entities on the foreground; render callbacks
   consume plain snapshots and never perform I/O or re-enter an Entity.
-- [ ] Report invalid or unsupported documents without overwriting them. Retain
+- [x] Report invalid or unsupported documents without overwriting them. Retain
   unavailable Source, Project, and Run references across save and restart so
   they recover when mappings or data return.
 
 #### U6.3: Export, import, and exit criteria
 
-- [ ] Export only `workbench.toml`, never config, Source paths, allowlists,
+- [x] Export only `workbench.toml`, never config, Source paths, allowlists,
   native data, secrets, or transient state.
-- [ ] Before import, autosave the current workbench and preflight every alias,
+- [x] Before import, autosave the current workbench and preflight every alias,
   Project, rewrite, and allowlist addition. After confirmation, complete all
   file writes before switching live configuration and workbench state; a
   failure keeps the previous live state.
-- [ ] Cover every acceptance scenario in the accepted design, including
+- [x] Cover every acceptance scenario in the accepted design, including
   owner-only secret files, invalid external edit fallback, alias remapping,
   missing-reference recovery, archive/unimport behavior, and failed import
   without a live-state switch.
-- [ ] Pass pure Rust tests for configuration, permissions, aliases, codecs,
+- [x] Pass pure Rust tests for configuration, permissions, aliases, codecs,
   unsupported-schema rejection, and source preservation; pass GPUI tests for Source
   confirmation, reload, autosave, archive/unimport, recovery, export, and
   import. Run `cargo check`, `cargo test`, and affected Viewer comparisons.
+
+U6 completed the Viewer configuration and workbench experience at candidate
+revision `12f6a555d0b5ad4a9891ffaf3de2efcb7e740f26`. All local Rust, GPUI,
+release startup, and Python Acceptance passed. The compact dual-View RSS
+preservation comparison passed and advanced its rolling baseline; the chart
+CPU comparison was not run because U6 did not modify the `seex-plot` chart CPU
+path. See
+[`u6-performance-observations.md`](reference/u6-performance-observations.md).
 
 ### U7: Final Resource, Metal, and Release Qualification
 
