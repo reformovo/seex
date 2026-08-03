@@ -942,12 +942,19 @@ impl SourceManagement {
             }))
             .children(draft.items.is_empty().then(|| {
                 div()
-                    .h(px(72.))
+                    .size_full()
+                    .min_h(px(72.))
                     .p_2()
                     .flex()
                     .items_center()
+                    .justify_center()
                     .text_color(theme.colors.text_muted)
-                    .child("No Sources configured")
+                    .child(
+                        div()
+                            .id("sources-empty")
+                            .debug_selector(|| "sources-empty".to_owned())
+                            .child("No Sources configured"),
+                    )
             }))
             .into_any_element()
     }
@@ -1134,35 +1141,43 @@ impl SourceManagement {
                     .text_color(theme.colors.error_text)
                     .child(error)
             }))
-            .children(
-                (!item.removed && item.is_ready() && item.selected.is_empty()).then(|| {
-                    div()
-                        .text_color(theme.colors.error_text)
-                        .child("Select at least one Project or remove this Source.")
-                }),
-            )
             .child(
-                div().flex().justify_end().child(
-                    components::dialog_button(
-                        "remove-source",
-                        if item.removed {
-                            "Undo Remove"
-                        } else {
-                            "Remove Source"
-                        },
-                        theme,
-                        DialogButtonKind::Secondary,
-                        draft.saving,
-                    )
-                    .when(!item.removed, |button| {
-                        button.text_color(theme.colors.error_text)
-                    })
-                    .when(!draft.saving, |button| {
-                        button.on_click(cx.listener(|this, _, _, cx| {
-                            this.toggle_remove_source(cx);
-                        }))
-                    }),
-                ),
+                div()
+                    .min_h(theme.spacing.control_height)
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(div().min_w(px(0.)).flex_1().children(
+                        (!item.removed && item.is_ready() && item.selected.is_empty()).then(|| {
+                            div()
+                                .id("source-project-selection-error")
+                                .debug_selector(|| "source-project-selection-error".to_owned())
+                                .text_color(theme.colors.error_text)
+                                .child("Select at least one Project or remove this Source.")
+                        }),
+                    ))
+                    .child(
+                        components::dialog_button(
+                            "remove-source",
+                            if item.removed {
+                                "Undo Remove"
+                            } else {
+                                "Remove Source"
+                            },
+                            theme,
+                            DialogButtonKind::Secondary,
+                            draft.saving,
+                        )
+                        .when(!item.removed, |button| {
+                            button.text_color(theme.colors.error_text)
+                        })
+                        .when(!draft.saving, |button| {
+                            button.on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_remove_source(cx);
+                            }))
+                        }),
+                    ),
             )
             .into_any_element()
     }

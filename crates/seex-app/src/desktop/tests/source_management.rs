@@ -22,6 +22,14 @@ fn sources_control_opens_confirmation_before_path_prompt(cx: &mut TestAppContext
 
     assert!(cx.debug_bounds("sources-dialog").is_some());
     assert!(cx.debug_bounds("add-sources").is_some());
+    let list = cx
+        .debug_bounds("sources-list")
+        .expect("empty Sources list should render");
+    let empty = cx
+        .debug_bounds("sources-empty")
+        .expect("empty Sources message should render");
+    assert!(f32::from(empty.center().x - list.center().x).abs() <= 1.);
+    assert!(f32::from(empty.center().y - list.center().y).abs() <= 1.);
 }
 
 #[gpui::test]
@@ -78,6 +86,20 @@ fn manage_and_workbench_dialogs_share_responsive_geometry(cx: &mut TestAppContex
         .expect("narrow Source detail should render");
     assert_eq!(dialog.size.width, px(448.));
     assert!(list.bottom() <= detail.origin.y);
+
+    let clear = cx
+        .debug_bounds("clear-projects")
+        .expect("Clear Projects should render");
+    cx.simulate_click(clear.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.refresh().expect("empty Project selection should render");
+    let warning = cx
+        .debug_bounds("source-project-selection-error")
+        .expect("empty Project selection warning should render");
+    let remove = cx
+        .debug_bounds("remove-source")
+        .expect("Remove Source should render");
+    assert!(f32::from(warning.center().y - remove.center().y).abs() <= 1.);
 
     cx.simulate_resize(size(px(600.), px(320.)));
     window
