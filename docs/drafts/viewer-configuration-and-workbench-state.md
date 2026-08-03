@@ -34,6 +34,13 @@ resolve from `$HOME` when defined globally and `<root>` when defined by a
 project. Workbenches never merge: project scope uses or creates its project
 file, while no project scope uses the global file.
 
+If multiple aliases resolve to the same available Source directory, the Viewer
+installs only one effective definition. A definition owned by the current
+project scope wins over a global definition; aliases in the same scope are
+ordered lexicographically. The winning definition's Project allowlist is used
+without merging. Ignored definitions remain unchanged in their configuration
+documents, and unavailable Workbench references to their aliases are retained.
+
 The project config is also the existing native storage config. It is one Seex
 configuration with field-level ownership: the SDK reads storage and S3 keys,
 while the desktop manages Sources and future settings. Storage keys and secrets

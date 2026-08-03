@@ -108,10 +108,31 @@ impl SourceConfiguration {
     }
 
     pub fn configured_sources(&self) -> Vec<ConfiguredSource> {
-        self.sources
-            .iter()
-            .map(|source| source.configured.clone())
-            .collect()
+        let active_scope = self.active_scope();
+        let mut candidates = self.sources.iter().collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            let priority = |source: &OwnedConfiguredSource| {
+                usize::from(!source.owners.contains(&active_scope))
+            };
+            priority(left).cmp(&priority(right)).then_with(|| {
+                left.configured
+                    .alias
+                    .as_str()
+                    .cmp(right.configured.alias.as_str())
+            })
+        });
+        let mut configured = Vec::<ConfiguredSource>::new();
+        for candidate in candidates {
+            if configured
+                .iter()
+                .any(|source| same_source_path(&source.root_path, &candidate.configured.root_path))
+            {
+                continue;
+            }
+            configured.push(candidate.configured.clone());
+        }
+        configured.sort_by(|left, right| left.alias.as_str().cmp(right.alias.as_str()));
+        configured
     }
 
     /// Adds or updates a Source in every document that owns its alias.
@@ -121,15 +142,6 @@ impl SourceConfiguration {
         root_path: &Path,
         projects: &[ProjectId],
     ) -> Result<(), ConfigEditError> {
-        if let Some((existing_alias, project_id)) =
-            source_project_conflict(&self.sources, alias, root_path, projects)
-        {
-            return Err(ConfigEditError::SourceProjectConflict {
-                alias: alias.to_string(),
-                project_id: project_id.as_str().to_owned(),
-                existing_alias: existing_alias.to_string(),
-            });
-        }
         let owners = self
             .sources
             .iter()
@@ -318,53 +330,13 @@ fn load_source_configuration(
             ConfigScope::Project,
         )?;
     }
-    let sources = sources.into_values().collect::<Vec<_>>();
-    validate_source_projects(&sources)?;
     Ok(SourceConfiguration {
         global,
         project: project_document,
         global_base: global_base.to_owned(),
         project_base: project.map(|(_, base)| base.to_owned()),
-        sources,
+        sources: sources.into_values().collect(),
     })
-}
-
-fn validate_source_projects(sources: &[OwnedConfiguredSource]) -> Result<(), ConfigEditError> {
-    for source in sources {
-        if let Some((existing_alias, project_id)) = source_project_conflict(
-            sources,
-            &source.configured.alias,
-            &source.configured.root_path,
-            &source.configured.projects,
-        ) {
-            return Err(ConfigEditError::SourceProjectConflict {
-                alias: source.configured.alias.to_string(),
-                project_id: project_id.as_str().to_owned(),
-                existing_alias: existing_alias.to_string(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn source_project_conflict<'a, 'p>(
-    sources: &'a [OwnedConfiguredSource],
-    alias: &SourceAlias,
-    root_path: &Path,
-    projects: &'p [ProjectId],
-) -> Option<(&'a SourceAlias, &'p ProjectId)> {
-    for source in sources.iter().map(|source| &source.configured) {
-        if &source.alias == alias || !same_source_path(&source.root_path, root_path) {
-            continue;
-        }
-        if let Some(project_id) = projects
-            .iter()
-            .find(|project_id| source.projects.contains(project_id))
-        {
-            return Some((&source.alias, project_id));
-        }
-    }
-    None
 }
 
 fn merge_sources(
@@ -680,14 +652,6 @@ pub enum ConfigEditError {
     InvalidSourceDefinition { alias: String },
     #[error("Source alias {alias} has conflicting global and project definitions")]
     SourceAliasConflict { alias: String },
-    #[error(
-        "Project {project_id} for Source alias {alias} is already configured as {existing_alias}"
-    )]
-    SourceProjectConflict {
-        alias: String,
-        project_id: String,
-        existing_alias: String,
-    },
     #[error("configuration path has no parent directory")]
     MissingParent,
     #[error("multiple transaction documents target {0}")]
@@ -824,10 +788,14 @@ mod tests {
     }
 
     #[test]
-    fn source_configuration_rejects_duplicate_projects_for_the_same_source()
+    fn source_configuration_selects_one_definition_for_duplicate_paths()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
         let source_root = root.path().join("source");
+        fs::create_dir_all(home.join(".seex"))?;
+        fs::create_dir_all(project.join(".seex"))?;
         fs::create_dir(&source_root)?;
         #[cfg(unix)]
         let duplicate_root = {
@@ -837,41 +805,39 @@ mod tests {
         };
         #[cfg(not(unix))]
         let duplicate_root = source_root.clone();
-        let first = SourceAlias::new("first")?;
-        let second = SourceAlias::new("second")?;
-        let project = ProjectId::from_string("project");
-        let mut configuration = SourceConfiguration::load_for_scope_at(None, Some(root.path()))?;
-        configuration.set_source(&first, &source_root, std::slice::from_ref(&project))?;
-
-        assert!(matches!(
-            configuration.set_source(&second, &duplicate_root, std::slice::from_ref(&project)),
-            Err(ConfigEditError::SourceProjectConflict {
-                alias,
-                project_id,
-                existing_alias,
-            }) if alias == "second" && project_id == "project" && existing_alias == "first"
-        ));
-        configuration.set_source(
-            &second,
-            &duplicate_root,
-            &[ProjectId::from_string("other-project")],
-        )?;
-
-        let config_path = root.path().join(".seex/config.toml");
-        fs::create_dir_all(config_path.parent().ok_or("config parent")?)?;
         fs::write(
-            &config_path,
+            home.join(".seex/config.toml"),
             format!(
-                "schema_version = 1\n[sources.first]\npath = {:?}\nprojects = ['one']\n\
-                 [sources.second]\npath = {:?}\nprojects = ['one']\n",
+                "schema_version = 1\n[sources.alpha]\npath = {:?}\nprojects = ['global']\n\
+                 [sources.beta]\npath = {:?}\nprojects = ['ignored-global']\n",
                 source_root.to_string_lossy(),
+                duplicate_root.to_string_lossy(),
+            ),
+        )?;
+        fs::write(
+            project.join(".seex/config.toml"),
+            format!(
+                "schema_version = 1\n[sources.zeta]\npath = {:?}\nprojects = ['project']\n",
                 source_root.to_string_lossy(),
             ),
         )?;
-        assert!(matches!(
-            SourceConfiguration::load_for_scope_at(None, Some(root.path())),
-            Err(ConfigEditError::SourceProjectConflict { .. })
-        ));
+
+        let global = SourceConfiguration::load_for_scope_at(None, Some(&home))?;
+        assert_eq!(global.sources.len(), 2);
+        assert_eq!(global.configured_sources()[0].alias.as_str(), "alpha");
+        assert_eq!(
+            global.configured_sources()[0].projects[0].as_str(),
+            "global"
+        );
+
+        let scoped = SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        assert_eq!(scoped.sources.len(), 3);
+        assert_eq!(scoped.configured_sources().len(), 1);
+        assert_eq!(scoped.configured_sources()[0].alias.as_str(), "zeta");
+        assert_eq!(
+            scoped.configured_sources()[0].projects[0].as_str(),
+            "project"
+        );
         Ok(())
     }
 
