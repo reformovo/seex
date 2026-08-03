@@ -171,9 +171,12 @@ impl WorkbenchSession {
     fn requestable_runs(&self, runs: Vec<RunRef>) -> Vec<RunRef> {
         runs.into_iter()
             .filter(|run| {
-                self.sources
-                    .source(&run.source_id)
-                    .is_some_and(|source| !matches!(source.status, SourceStatus::Failed(_)))
+                self.sources.source(&run.source_id).is_some_and(|source| {
+                    !matches!(source.status, SourceStatus::Failed(_))
+                        && source.catalog.runs.iter().any(|candidate| {
+                            candidate.project_id == run.project_id && candidate.run_id == run.run_id
+                        })
+                })
             })
             .collect()
     }

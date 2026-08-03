@@ -4,6 +4,7 @@ use std::sync::Arc;
 use seex::AlignmentViewport;
 use seex::MetricKey;
 use seex::ProjectId;
+#[cfg(test)]
 use seex::RunId;
 
 use crate::data::query::{CurveSnapshot, InspectorSnapshot};
@@ -577,47 +578,6 @@ impl AnalysisViews {
             panel.inspector_generation = None;
             panel.requested_detail_viewport = None;
         }
-    }
-
-    pub fn reconcile_source_runs(
-        &mut self,
-        source_id: &DataSourceId,
-        available_runs: &[(ProjectId, RunId)],
-    ) -> Vec<RunRef> {
-        let mut removed = Vec::new();
-        for view in &mut self.views {
-            let stale = view
-                .runs
-                .iter()
-                .filter(|run| {
-                    &run.source_id == source_id
-                        && !available_runs.iter().any(|(project_id, run_id)| {
-                            project_id == &run.project_id && run_id == &run.run_id
-                        })
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            view.runs.retain(|run| !stale.contains(run));
-            view.pinned_runs.retain(|run| !stale.contains(run));
-            if view
-                .baseline
-                .as_ref()
-                .is_some_and(|run| stale.contains(run))
-            {
-                view.baseline = None;
-            }
-            if !stale.is_empty() {
-                invalidate_view_panels(view);
-            }
-            removed.extend(stale);
-        }
-        self.archived_runs.retain(|run| {
-            &run.source_id != source_id
-                || available_runs.iter().any(|(project_id, run_id)| {
-                    project_id == &run.project_id && run_id == &run.run_id
-                })
-        });
-        removed
     }
 
     pub fn begin_active_panel_read(

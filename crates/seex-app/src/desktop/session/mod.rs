@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -23,6 +23,20 @@ pub(crate) struct SessionSnapshot {
 }
 
 impl SessionSnapshot {
+    pub(crate) fn contains_catalog_project(
+        &self,
+        project_ref: &crate::workbench::ProjectRef,
+    ) -> bool {
+        self.sources.iter().any(|source| {
+            source.source_id == project_ref.source_id
+                && source
+                    .catalog
+                    .projects
+                    .iter()
+                    .any(|project| project.project_id == project_ref.project_id)
+        })
+    }
+
     pub(crate) fn contains_catalog_run(&self, run_ref: &RunRef) -> bool {
         self.sources.iter().any(|source| {
             source.source_id == run_ref.source_id
@@ -36,6 +50,39 @@ impl SessionSnapshot {
 
     pub(crate) fn active_catalog_run_count(&self) -> usize {
         self.catalog_visible_run_count(self.views.active())
+    }
+
+    pub(crate) fn unavailable_references(
+        &self,
+    ) -> (Vec<crate::workbench::ProjectRef>, Vec<RunRef>) {
+        let mut runs = HashSet::new();
+        for view in self.views.views() {
+            runs.extend(view.runs.iter().cloned());
+            runs.extend(view.baseline.iter().cloned());
+            runs.extend(view.pinned_runs.iter().cloned());
+        }
+        runs.extend(self.views.archived_runs().iter().cloned());
+        let unavailable_runs = runs
+            .iter()
+            .filter(|run| !self.contains_catalog_run(run))
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut projects = self
+            .views
+            .pinned_projects()
+            .iter()
+            .chain(self.views.archived_projects())
+            .cloned()
+            .collect::<HashSet<_>>();
+        projects.extend(
+            runs.into_iter()
+                .map(|run| crate::workbench::ProjectRef::new(run.source_id, run.project_id)),
+        );
+        let unavailable_projects = projects
+            .into_iter()
+            .filter(|project| !self.contains_catalog_project(project))
+            .collect();
+        (unavailable_projects, unavailable_runs)
     }
 
     pub(crate) fn active_selection_has_capacity(&self) -> bool {
@@ -207,23 +254,6 @@ impl WorkbenchSession {
     fn apply_read_event(&mut self, event: ReadEvent) -> SessionReadEffect {
         let kind = event.kind;
         let succeeded = event.result.is_ok();
-        if let Ok(crate::data::worker::ReadSnapshot::Catalog(snapshot)) = &event.result {
-            let available_runs = snapshot
-                .runs
-                .iter()
-                .map(|run| (run.project_id.clone(), run.run_id.clone()))
-                .collect::<Vec<_>>();
-            let removed = self
-                .views
-                .reconcile_source_runs(&event.source_id, &available_runs);
-            if !removed.is_empty() {
-                self.persistence_dirty = true;
-                self.transient_error = Some(format!(
-                    "{} persisted Run selection(s) are no longer available",
-                    removed.len()
-                ));
-            }
-        }
         self.sources.apply_event(&event);
         if !matches!(
             kind,

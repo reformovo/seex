@@ -229,6 +229,7 @@ impl ProjectSidebar {
         let filter_cursor = filter.cursor();
         let filter_cursor_visible = filter.cursor_visible();
         let query = filter_text.trim().to_lowercase();
+        let (unavailable_projects, unavailable_runs) = session.unavailable_references();
         let (filter_prefix, filter_suffix) = filter_text.split_at(filter_cursor);
         let filter_prefix = filter_prefix.to_owned();
         let filter_suffix = filter_suffix.to_owned();
@@ -266,6 +267,34 @@ impl ProjectSidebar {
             .cloned()
         {
             resources = resources.child(self.render_sidebar_project(project, &query, window, cx));
+        }
+        if !unavailable_projects.is_empty() || !unavailable_runs.is_empty() {
+            resources = resources.child(sidebar_group_label("Unavailable", theme));
+        }
+        for project in unavailable_projects {
+            let identity = format!(
+                "{}/{}",
+                project.source_id.as_str(),
+                project.project_id.as_str()
+            );
+            resources = resources.child(unavailable_reference_row(
+                format!("unavailable-project:{identity}"),
+                format!("{identity} — unavailable"),
+                theme,
+            ));
+        }
+        for run in unavailable_runs {
+            let identity = format!(
+                "{}/{}/{}",
+                run.source_id.as_str(),
+                run.project_id.as_str(),
+                run.run_id.as_str()
+            );
+            resources = resources.child(unavailable_reference_row(
+                format!("unavailable-run:{identity}"),
+                format!("{identity} — unavailable"),
+                theme,
+            ));
         }
         for (index, run) in pinned_runs.iter().take(pinned_limit).cloned().enumerate() {
             resources = resources.child(self.render_sidebar_run(
@@ -566,6 +595,25 @@ fn sidebar_text_button(
         .text_color(theme.colors.text_muted)
         .hover(|style| style.text_color(theme.colors.text))
         .child(label.to_owned())
+}
+
+fn unavailable_reference_row(
+    id: String,
+    label: String,
+    theme: ViewerTheme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from(id.clone()))
+        .debug_selector(move || id.clone())
+        .h(theme.spacing.tree_row_height)
+        .px_2()
+        .flex()
+        .items_center()
+        .truncate()
+        .text_xs()
+        .text_color(theme.colors.disabled)
+        .cursor_default()
+        .child(label)
 }
 
 fn sidebar_menu_item(

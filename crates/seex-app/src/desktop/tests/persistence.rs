@@ -1,4 +1,5 @@
 use gpui::{TestAppContext, px};
+use seex::{Client, LogOptions, RunOptions};
 
 use super::super::test_support::*;
 use super::*;
@@ -151,33 +152,32 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
 }
 
 #[gpui::test]
-fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppContext) {
+fn restored_state_retains_unavailable_runs_and_unknown_metrics(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
     let alias = SourceAlias::new("research").expect("test alias should be valid");
-    let document = saved_workbench(
+    let mut document = saved_workbench(
         alias.clone(),
         project_id.clone(),
         vec![run_id.clone(), RunId::from_string("removed")],
         "unknown-metric",
     );
+    document.layout.project_sidebar_visible = true;
+    let configured = ConfiguredSource {
+        alias,
+        root_path: root.path().to_path_buf(),
+        projects: vec![project_id],
+    };
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer(cx, None);
     window
         .update(&mut cx, |viewer, _, cx| {
-            viewer.open_configured_sources(
-                vec![ConfiguredSource {
-                    alias,
-                    root_path: root.path().to_path_buf(),
-                    projects: vec![project_id],
-                }],
-                cx,
-            );
+            viewer.open_configured_sources(vec![configured.clone()], cx);
             viewer.restore_toml_workbench(document, cx);
             cx.notify();
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer.session_snapshot(cx).views.active().runs.len() == 1
+        viewer.session_snapshot(cx).views.active().runs.len() == 2
             && viewer.session_snapshot(cx).views.active().runs[0].run_id == run_id
             && viewer.session_snapshot(cx).views.active().panels[0]
                 .overview
@@ -199,14 +199,56 @@ fn restored_state_reconciles_removed_runs_and_unknown_metrics(cx: &mut TestAppCo
                     .read(cx)
                     .transient_error
                     .as_deref()
-                    .is_some_and(|error| error.contains("no longer available"))
+                    .is_none_or(|error| !error.contains("no longer available"))
             })
+            .expect("viewer should remain open")
+    );
+    cx.refresh().expect("test window should refresh");
+    assert!(
+        cx.debug_bounds("unavailable-run:research/project/removed")
+            .is_some()
+    );
+
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should reopen");
+    let recovered = client
+        .start_run(RunOptions::new("project").id("removed").name("recovered"))
+        .expect("recovered Run should start");
+    recovered
+        .log_with([("unknown-metric", 1.)], LogOptions::new().step(0))
+        .expect("recovered metric should be logged");
+    recovered.finish().expect("recovered Run should finish");
+    client.shutdown().expect("test client should shut down");
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.open_configured_sources(vec![configured], cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .contains_catalog_run(&RunRef::new(
+                DataSourceId::new("research").expect("test source should be valid"),
+                ProjectId::from_string("project"),
+                RunId::from_string("removed"),
+            ))
+    });
+    cx.run_until_parked();
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .unavailable_references()
+                .1
+                .iter()
+                .all(|run| run.run_id.as_str() != "removed"))
             .expect("viewer should remain open")
     );
 }
 
 #[gpui::test]
-fn restored_missing_sources_retain_state_without_rendering_runs(cx: &mut TestAppContext) {
+fn restored_missing_sources_render_unavailable_references(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     let missing = root.path().join("moved-source");
     let alias = SourceAlias::new("research").expect("test alias should be valid");
@@ -277,9 +319,18 @@ fn restored_missing_sources_retain_state_without_rendering_runs(cx: &mut TestApp
         })
         .expect("viewer should remain open");
     cx.run_until_parked();
-    assert!(cx.debug_bounds("baseline-run-name-0").is_none());
-    assert!(cx.debug_bounds("pinned-run-name-0").is_none());
-    assert!(cx.debug_bounds("archived-run-name-0").is_none());
+    assert!(
+        cx.debug_bounds("unavailable-run:research/project/baseline")
+            .is_some()
+    );
+    assert!(
+        cx.debug_bounds("unavailable-run:research/project/pinned")
+            .is_some()
+    );
+    assert!(
+        cx.debug_bounds("unavailable-run:research/project/archived")
+            .is_some()
+    );
     assert!(cx.debug_bounds("empty-metric-chart:loss").is_some());
 }
 
