@@ -143,15 +143,25 @@ impl SourceConfiguration {
         root_path: &Path,
         projects: &[ProjectId],
     ) -> Result<(), ConfigEditError> {
-        let owners = self
+        let existing = self
             .sources
             .iter()
             .find(|source| &source.configured.alias == alias)
+            .cloned();
+        let owners = existing
+            .as_ref()
             .map(|source| source.owners.clone())
             .unwrap_or_else(|| vec![self.active_scope()]);
+        let preserve_path = existing
+            .as_ref()
+            .is_some_and(|source| same_source_path(&source.configured.root_path, root_path));
         for owner in &owners {
-            self.document_mut(*owner)?
-                .set_source(alias, root_path, projects)?;
+            let document = self.document_mut(*owner)?;
+            if preserve_path {
+                document.set_source_projects(alias, projects)?;
+            } else {
+                document.set_source(alias, root_path, projects)?;
+            }
         }
         let configured = ConfiguredSource {
             alias: alias.clone(),
@@ -202,7 +212,7 @@ impl SourceConfiguration {
             if projects.is_empty() {
                 document.remove_source(alias);
             } else {
-                document.set_source(alias, &source.configured.root_path, &projects)?;
+                document.set_source_projects(alias, &projects)?;
             }
         }
         if projects.is_empty() {
@@ -540,6 +550,30 @@ impl EditableConfig {
         {
             self.dirty |= sources.remove(alias.as_str()).is_some();
         }
+    }
+
+    fn set_source_projects(
+        &mut self,
+        alias: &SourceAlias,
+        projects: &[ProjectId],
+    ) -> Result<(), ConfigEditError> {
+        let mut seen = HashSet::with_capacity(projects.len());
+        if projects.is_empty() || !projects.iter().all(|project| seen.insert(project.as_str())) {
+            return Err(ConfigEditError::InvalidProjectAllowlist);
+        }
+        let previous = self.document.to_string();
+        let source = self
+            .document
+            .get_mut("sources")
+            .and_then(Item::as_table_like_mut)
+            .and_then(|sources| sources.get_mut(alias.as_str()))
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| invalid_source(alias.as_str()))?;
+        let mut allowlist = Array::new();
+        allowlist.extend(projects.iter().map(|project| project.as_str()));
+        source.insert("projects", value(allowlist));
+        self.dirty |= self.document.to_string() != previous;
+        Ok(())
     }
 
     fn mark_saved(&mut self) {
@@ -937,6 +971,52 @@ mod tests {
         assert_eq!(
             scoped.configured_sources()[0].projects[0].as_str(),
             "project"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn project_allowlist_update_preserves_relative_source_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        let project_path = project.join(".seex/config.toml");
+        fs::create_dir_all(project_path.parent().ok_or("project config parent")?)?;
+        fs::write(
+            &project_path,
+            "schema_version = 1\n[sources.research]\npath = '../portable-data'\n\
+             projects = ['one']\n",
+        )?;
+        let mut configuration =
+            SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        let alias = SourceAlias::new("research")?;
+        let effective_path = configuration.configured_sources()[0].root_path.clone();
+
+        configuration.set_source(
+            &alias,
+            &effective_path,
+            &[ProjectId::from_string("one"), ProjectId::from_string("two")],
+        )?;
+        configuration.save()?;
+
+        let saved = fs::read_to_string(&project_path)?.parse::<DocumentMut>()?;
+        assert_eq!(
+            saved["sources"]["research"]["path"].as_str(),
+            Some("../portable-data")
+        );
+
+        let replacement = root.path().join("replacement");
+        configuration.set_source(
+            &alias,
+            &replacement,
+            &[ProjectId::from_string("one"), ProjectId::from_string("two")],
+        )?;
+        configuration.save()?;
+        let saved = fs::read_to_string(project_path)?.parse::<DocumentMut>()?;
+        assert_eq!(
+            saved["sources"]["research"]["path"].as_str(),
+            replacement.to_str()
         );
         Ok(())
     }
