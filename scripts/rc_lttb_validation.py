@@ -29,12 +29,11 @@ def main() -> None:
         online_root = root / "online"
         _seed_store(online_root)
         _assert_downsampled(_query_cli(online_root, environment))
-        extension_path = _find_extension(duckdb_home, pathlib.Path.home() / ".duckdb")
+        extension_paths = _find_extensions(duckdb_home, pathlib.Path.home() / ".duckdb")
 
         offline_root = root / "offline"
         _seed_store(offline_root)
-        environment["SEEX_LTTB_EXTENSION_PATH"] = str(extension_path)
-        _assert_downsampled(_query_cli(offline_root, environment))
+        _assert_downsampled(_query_cli_with_local_extension(offline_root, environment, extension_paths))
 
     print("validated online and explicit offline LTTB paths")
 
@@ -88,11 +87,33 @@ def _assert_downsampled(document: dict[str, object]) -> None:
         raise RuntimeError("LTTB query did not preserve the bounded curve contract")
 
 
-def _find_extension(*roots: pathlib.Path) -> pathlib.Path:
-    candidates = [candidate for root in roots for candidate in root.rglob("lttb.duckdb_extension")]
+def _find_extensions(*roots: pathlib.Path) -> list[pathlib.Path]:
+    candidates: set[pathlib.Path] = set()
+    for root in roots:
+        candidates.update(root.rglob("lttb.duckdb_extension"))
     if not candidates:
         raise RuntimeError("online LTTB install did not produce a local extension")
-    return max(candidates, key=lambda path: path.stat().st_mtime_ns)
+    return sorted(candidates, key=lambda path: path.stat().st_mtime_ns, reverse=True)
+
+
+def _query_cli_with_local_extension(
+    project_root: pathlib.Path,
+    environment: dict[str, str],
+    extension_paths: list[pathlib.Path],
+) -> dict[str, object]:
+    offline_environment = environment.copy()
+    offline_environment.pop("SEEX_LTTB_AUTO_INSTALL", None)
+    last_error: subprocess.CalledProcessError | None = None
+    for extension_path in extension_paths:
+        offline_environment["SEEX_LTTB_EXTENSION_PATH"] = str(extension_path)
+        try:
+            return _query_cli(project_root, offline_environment)
+        except subprocess.CalledProcessError as error:
+            last_error = error
+    message = f"none of {len(extension_paths)} local LTTB extensions could be loaded"
+    if last_error is not None and last_error.stderr:
+        message = f"{message}; last failure: {last_error.stderr.strip()}"
+    raise RuntimeError(message) from last_error
 
 
 if __name__ == "__main__":
