@@ -45,6 +45,7 @@ pub struct EditableConfig {
     scope: ConfigScope,
     original: Option<Vec<u8>>,
     document: DocumentMut,
+    dirty: bool,
 }
 
 /// One validated machine-local Source definition.
@@ -228,7 +229,12 @@ impl SourceConfiguration {
     /// Atomically replaces all changed configuration documents after validating
     /// every stale-read fingerprint.
     pub fn save(&mut self) -> Result<(), ConfigEditError> {
-        save_documents(std::iter::once(&self.global).chain(self.project.as_ref()))?;
+        save_files(
+            std::iter::once(&self.global)
+                .chain(self.project.as_ref())
+                .filter(|document| document.dirty)
+                .map(|document| StagedFile::configuration_in_scope(document, &self.global.path)),
+        )?;
         self.mark_saved();
         Ok(())
     }
@@ -259,7 +265,8 @@ impl SourceConfiguration {
         save_files(
             std::iter::once(&self.global)
                 .chain(self.project.as_ref())
-                .map(StagedFile::configuration)
+                .filter(|document| document.dirty)
+                .map(|document| StagedFile::configuration_in_scope(document, &self.global.path))
                 .chain(std::iter::once(workbench)),
         )?;
         self.mark_saved();
@@ -267,18 +274,27 @@ impl SourceConfiguration {
     }
 
     fn mark_saved(&mut self) {
-        if let Some(project) = self
-            .project
-            .as_mut()
-            .filter(|project| project.path == self.global.path)
-        {
-            let saved = project.document.to_string().into_bytes();
+        if let Some(project) = self.project.as_mut().filter(|project| {
+            project.path == self.global.path && (project.dirty || self.global.dirty)
+        }) {
+            let document = if project.dirty {
+                project.document.clone()
+            } else {
+                self.global.document.clone()
+            };
+            let saved = document.to_string().into_bytes();
+            self.global.document = document.clone();
             self.global.original = Some(saved.clone());
+            self.global.dirty = false;
+            project.document = document;
             project.original = Some(saved);
+            project.dirty = false;
             return;
         }
-        self.global.mark_saved();
-        if let Some(project) = self.project.as_mut() {
+        if self.global.dirty {
+            self.global.mark_saved();
+        }
+        if let Some(project) = self.project.as_mut().filter(|project| project.dirty) {
             project.mark_saved();
         }
     }
@@ -466,6 +482,7 @@ impl EditableConfig {
             scope,
             original,
             document,
+            dirty: false,
         })
     }
 
@@ -481,6 +498,7 @@ impl EditableConfig {
         root_path: &Path,
         projects: &[ProjectId],
     ) -> Result<(), ConfigEditError> {
+        let previous = self.document.to_string();
         let root_path = root_path.to_str().ok_or(ConfigEditError::NonUtf8Path)?;
         let mut seen = HashSet::with_capacity(projects.len());
         if projects.is_empty() || !projects.iter().all(|project| seen.insert(project.as_str())) {
@@ -512,6 +530,7 @@ impl EditableConfig {
         let mut allowlist = Array::new();
         allowlist.extend(projects.iter().map(|project| project.as_str()));
         source.insert("projects", value(allowlist));
+        self.dirty |= self.document.to_string() != previous;
         Ok(())
     }
 
@@ -519,12 +538,13 @@ impl EditableConfig {
         if let Some(sources) = self.document.get_mut("sources")
             && let Some(sources) = sources.as_table_like_mut()
         {
-            sources.remove(alias.as_str());
+            self.dirty |= sources.remove(alias.as_str()).is_some();
         }
     }
 
     fn mark_saved(&mut self) {
         self.original = Some(self.document.to_string().into_bytes());
+        self.dirty = false;
     }
 
     /// Atomically saves the document if its original bytes are still current.
@@ -557,6 +577,12 @@ impl StagedFile {
             global: document.scope == ConfigScope::Global,
             configuration: true,
         }
+    }
+
+    fn configuration_in_scope(document: &EditableConfig, global_path: &Path) -> Self {
+        let mut staged = Self::configuration(document);
+        staged.global |= document.path == global_path;
+        staged
     }
 }
 
@@ -1050,6 +1076,69 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn project_edit_does_not_create_an_unchanged_global_document()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        let global_path = home.join(".seex/config.toml");
+        let project_path = project.join(".seex/config.toml");
+        let mut configuration =
+            SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        configuration.set_source(
+            &SourceAlias::new("research")?,
+            root.path(),
+            &[ProjectId::from_string("project")],
+        )?;
+
+        configuration.save()?;
+
+        assert!(!global_path.exists());
+        assert!(project_path.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn workbench_only_save_ignores_unchanged_configuration_documents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::workbench::toml_document::SavedLayout;
+
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        let project = root.path().join("project");
+        let global_path = home.join(".seex/config.toml");
+        let project_path = project.join(".seex/config.toml");
+        let workbench_path = project.join(".seex/workbench.toml");
+        fs::create_dir_all(global_path.parent().ok_or("global parent")?)?;
+        fs::write(&global_path, "schema_version = 1\n# loaded\n")?;
+        let mut configuration =
+            SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        fs::write(&global_path, "schema_version = 1\n# external\n")?;
+        let workbench = TomlWorkbenchDocument {
+            active_view: 0,
+            layout: SavedLayout::default(),
+            expanded_projects: Vec::new(),
+            pinned_projects: Vec::new(),
+            archived_projects: Vec::new(),
+            archived_runs: Vec::new(),
+            views: Vec::new(),
+        };
+
+        configuration.save_with_workbench(&workbench_path, None, &workbench)?;
+
+        assert_eq!(
+            fs::read_to_string(global_path)?,
+            "schema_version = 1\n# external\n"
+        );
+        assert!(!project_path.exists());
+        assert_eq!(
+            TomlWorkbenchDocument::load(&workbench_path)?,
+            Some(workbench)
+        );
         Ok(())
     }
 
