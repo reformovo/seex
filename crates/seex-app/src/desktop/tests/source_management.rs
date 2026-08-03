@@ -1,7 +1,7 @@
 use gpui::{Modifiers, TestAppContext};
-use seex::{Client, Project, RunOptions};
+use seex::{Client, Project, RunId, RunOptions};
 
-use super::super::test_support::{open_viewer, wait_for_viewer};
+use super::super::test_support::{open_viewer, saved_workbench, wait_for_viewer};
 use super::*;
 use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
@@ -207,7 +207,10 @@ fn managing_projects_updates_allowlist_and_clears_unimported_references(cx: &mut
     window
         .read_with(&cx, |viewer, cx| {
             let snapshot = viewer.session_snapshot(cx);
-            assert_eq!(snapshot.sources[0].project_allowlist, [two.clone()]);
+            assert_eq!(
+                snapshot.sources[0].project_allowlist,
+                std::slice::from_ref(&two)
+            );
             assert!(snapshot.views.pinned_projects().is_empty());
         })
         .expect("viewer should remain open");
@@ -305,4 +308,202 @@ fn reload_sources_rejects_invalid_candidates_before_switching_live_state(cx: &mu
                     && source.project_allowlist == [ProjectId::from_string("two")]
             })
     });
+}
+
+fn source_with_two_projects() -> (tempfile::TempDir, ProjectId, ProjectId) {
+    let root = tempfile::tempdir().expect("test Source should be created");
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should open");
+    let one = ProjectId::from_string("one");
+    let two = ProjectId::from_string("two");
+    for project in [&one, &two] {
+        client
+            .start_run(
+                RunOptions::new(project.as_str())
+                    .id(project.as_str())
+                    .name("available"),
+            )
+            .expect("test Run should start")
+            .finish()
+            .expect("test Run should finish");
+    }
+    client.shutdown().expect("test client should shut down");
+    (root, one, two)
+}
+
+#[gpui::test]
+fn workbench_import_confirms_rewrites_and_replaces_blocked_live_state(cx: &mut TestAppContext) {
+    let (source, one, two) = source_with_two_projects();
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let external = scope.path().join("external.toml");
+    let workbench_path = scope.path().join(".seex/workbench.toml");
+    let local_alias = SourceAlias::new("research").expect("local alias should be valid");
+    let external_alias = SourceAlias::new("portable").expect("external alias should be valid");
+    let mut imported = saved_workbench(
+        external_alias,
+        two.clone(),
+        vec![RunId::from_string("missing")],
+        "loss",
+    );
+    imported.views[0].name = "Imported".to_owned();
+    imported
+        .save(&external)
+        .expect("external workbench should save");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.save_confirmed_source(
+                ConfirmedSource {
+                    manage: false,
+                    alias: local_alias.clone(),
+                    root_path: source.path().to_owned(),
+                    projects: vec![one.clone()],
+                },
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .sources
+            .first()
+            .is_some_and(|source| source.project_allowlist == [one.clone()])
+    });
+    std::fs::write(&workbench_path, "schema_version = 99\n")
+        .expect("invalid local workbench should be written");
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.workbench_path = Some(workbench_path.clone());
+                session.autosave_blocked = true;
+            });
+            viewer.preflight_workbench_path(external.clone(), cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.source_management.read(cx).is_open()
+    });
+    cx.refresh().expect("confirmation should render");
+    window
+        .read_with(&cx, |viewer, _| {
+            let plan = &viewer
+                .pending_workbench_import
+                .as_ref()
+                .expect("pending import should remain available")
+                .plan;
+            assert_eq!(plan.alias_rewrites.len(), 1);
+            assert_eq!(plan.allowlist_additions.len(), 1);
+        })
+        .expect("viewer should remain open");
+    let confirm = cx
+        .debug_bounds("confirm-workbench-import")
+        .expect("import confirmation should render");
+    cx.simulate_click(confirm.center(), Modifiers::default());
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        let session = viewer.session.read(cx);
+        session.views.active().name == "Imported"
+            && !session.autosave_blocked
+            && session
+                .sources
+                .sources()
+                .next()
+                .is_some_and(|source| source.project_allowlist == [one.clone(), two.clone()])
+    });
+
+    let saved = WorkbenchDocument::load(&workbench_path)
+        .expect("imported workbench should decode")
+        .expect("imported workbench should exist");
+    assert_eq!(saved.views[0].runs[0].source_alias, local_alias);
+    assert_eq!(saved.views[0].runs[0].run_id.as_str(), "missing");
+}
+
+#[gpui::test]
+fn invalid_or_unwritable_workbench_import_keeps_live_state(cx: &mut TestAppContext) {
+    let (source, one, _) = source_with_two_projects();
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let invalid = scope.path().join("invalid.toml");
+    std::fs::write(&invalid, "schema_version = 99\n")
+        .expect("invalid external workbench should be written");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.preflight_workbench_path(invalid, cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.session.read(cx).transient_error.is_some()
+    });
+    assert!(
+        !window
+            .read_with(&cx, |viewer, cx| viewer
+                .source_management
+                .read(cx)
+                .is_open())
+            .expect("viewer should remain open")
+    );
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.save_confirmed_source(
+                ConfirmedSource {
+                    manage: false,
+                    alias: SourceAlias::new("research").expect("alias should be valid"),
+                    root_path: source.path().to_owned(),
+                    projects: vec![one.clone()],
+                },
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        !viewer.session_snapshot(cx).sources.is_empty()
+    });
+    let external = scope.path().join("external.toml");
+    saved_workbench(
+        SourceAlias::new("research").expect("alias should be valid"),
+        one,
+        vec![RunId::from_string("missing")],
+        "loss",
+    )
+    .save(&external)
+    .expect("external workbench should save");
+    let destination = scope.path().join("unwritable-workbench");
+    std::fs::create_dir(&destination).expect("destination directory should be created");
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.workbench_path = Some(destination);
+            });
+            viewer.preflight_workbench_path(external, cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.source_management.read(cx).is_open()
+    });
+    cx.refresh().expect("confirmation should render");
+    let confirm = cx
+        .debug_bounds("confirm-workbench-import")
+        .expect("import confirmation should render");
+    cx.simulate_click(confirm.center(), Modifiers::default());
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session
+            .read(cx)
+            .transient_error
+            .as_ref()
+            .is_some_and(|error| error.contains("directory"))
+    });
+    assert_ne!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .views
+                .active()
+                .name
+                .clone())
+            .expect("viewer should remain open"),
+        "Restored"
+    );
 }

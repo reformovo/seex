@@ -20,17 +20,7 @@ fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppC
             assert!(viewer.session.read(cx).transient_error.is_none());
         })
         .expect("viewer should remain open");
-    let import_source = cx
-        .debug_bounds("import-source")
-        .expect("disabled Source import should retain its layout slot");
-    cx.simulate_click(import_source.center(), Modifiers::default());
-    cx.run_until_parked();
-    window
-        .read_with(&cx, |viewer, cx| {
-            assert!(viewer.session_snapshot(cx).sources.is_empty());
-            assert!(viewer.session.read(cx).transient_error.is_none());
-        })
-        .expect("viewer should remain open after clicking disabled Source import");
+    assert!(cx.debug_bounds("import-source").is_some());
 }
 
 #[gpui::test]
