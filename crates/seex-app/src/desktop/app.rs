@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{ConfiguredSource, SourceConfiguration, same_source_path};
 use crate::data::SourcePreflight;
@@ -110,6 +110,25 @@ struct WorkbenchImportPreparation {
 impl ViewerApp {
     pub(super) fn new(
         project_path: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_home(project_path, None, window, cx)
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    fn new_for_test(
+        project_path: Option<PathBuf>,
+        home: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_home(project_path, Some(home), window, cx)
+    }
+
+    fn new_with_home(
+        project_path: Option<PathBuf>,
+        home: Option<&Path>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -262,7 +281,13 @@ impl ViewerApp {
                 }
             }
         }
-        match SourceConfiguration::load_for_scope(project_path.as_deref()) {
+        let configuration = match home {
+            Some(home) => {
+                SourceConfiguration::load_for_scope_at(project_path.as_deref(), Some(home))
+            }
+            None => SourceConfiguration::load_for_scope(project_path.as_deref()),
+        };
+        match configuration {
             Ok(configuration) => {
                 let sources = configuration.configured_sources();
                 app.source_configuration = Some(configuration);

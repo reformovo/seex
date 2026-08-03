@@ -293,7 +293,7 @@ impl SourceConfiguration {
         }
     }
 
-    fn load_for_scope_at(
+    pub(crate) fn load_for_scope_at(
         project_root: Option<&Path>,
         home: Option<&Path>,
     ) -> Result<Self, ConfigEditError> {
