@@ -1,5 +1,3 @@
-use std::error::Error;
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -12,9 +10,6 @@ use seex_core::engine::client::NativeClient;
 use seex_model::alignment::AlignmentAxis;
 use seex_model::run::RunId;
 use seex_model::types::ProjectId;
-use seex_storage::ProjectConnection;
-use seex_storage::bootstrap::{NativeStorageConfig, open_existing_native_connection_with_config};
-use seex_storage::config::resolve_storage_config;
 
 use crate::config::ConfiguredSource;
 use crate::data::worker::ReadKind;
@@ -60,72 +55,6 @@ pub(super) fn fixture_with_complete_runs(
     run_count: usize,
 ) -> (tempfile::TempDir, ProjectId, RunId) {
     fixture_with_run_coverage(metric_count, run_count, true)
-}
-
-pub(super) fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
-    const MANIFEST: &str = "schema=v3\nruns=4\nmetrics=2\npoints_per_series=100000\n";
-    if root.join(".seex/config.toml").is_file() {
-        return if std::fs::read_to_string(root.join(".seex/viewer-benchmark.txt"))? == MANIFEST {
-            Ok(())
-        } else {
-            Err("Viewer benchmark dataset manifest does not match".into())
-        };
-    }
-    if root.exists() && std::fs::read_dir(root)?.next().is_some() {
-        return Err("refusing to replace a non-empty Viewer benchmark dataset".into());
-    }
-    std::fs::create_dir_all(root)?;
-    let client = NativeClient::open(root)?;
-    let project = client.create_project(
-        "viewer performance",
-        Some(ProjectId::from_string("viewer-performance")),
-    )?;
-    let run_ids = (0..4)
-        .map(|index| RunId::from_string(format!("run-{index}")))
-        .collect::<Vec<_>>();
-    for run_id in &run_ids {
-        client.create_run(&project.project_id, run_id.as_str(), Some(run_id.clone()))?;
-    }
-    client.shutdown(None)?;
-    drop(client);
-    let resolved = resolve_storage_config(root, None, None, None)?;
-    let connection = ProjectConnection::new(open_existing_native_connection_with_config(
-        NativeStorageConfig::with_backend_and_s3_config(
-            resolved.catalog_backend,
-            root,
-            resolved.catalog_path,
-            resolved.data_path,
-            None,
-        ),
-    )?);
-    for (run_index, run_id) in run_ids.iter().enumerate() {
-        for metric_index in 0..2 {
-            let metric = format!("metric-{metric_index}");
-            connection.execute(
-                "INSERT INTO dl.metric_points
-                 (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
-                 SELECT ?, ?, ?, step, epoch_ms(1700000000000 + step),
-                        ((step % 1000) + ?)::DOUBLE / 1000,
-                        epoch_ms(1700000000000 + step)
-                 FROM range(100000) AS points(step)",
-                (
-                    run_id.as_str(),
-                    &metric,
-                    &metric,
-                    (run_index + metric_index) as i64,
-                ),
-            )?;
-        }
-        connection.rebuild_metric_aggregates_for_run(run_id)?;
-        connection.execute(
-            "UPDATE seex_runs SET status = 'finished', started_at = epoch_ms(1700000000000),
-                    finished_at = now() WHERE run_id = ?",
-            [run_id.as_str()],
-        )?;
-    }
-    connection.flush_metric_points()?;
-    std::fs::write(root.join(".seex/viewer-benchmark.txt"), MANIFEST)?;
-    Ok(())
 }
 
 pub(super) fn fixture_with_run_coverage(

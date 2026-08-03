@@ -33,6 +33,8 @@ mod reader;
 pub mod storage;
 
 #[cfg(test)]
+mod benchmark_datasets;
+#[cfg(test)]
 mod ducklake_test_support;
 #[cfg(test)]
 mod native_engine_behavior;

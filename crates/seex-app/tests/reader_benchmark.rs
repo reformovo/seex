@@ -6,9 +6,10 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use seex::{MetricKey, MetricQuery, MetricRange, Reader, RelativeTime, Step, Timestamp};
-use seex_model::run::RunId;
-use seex_storage::bootstrap::CatalogBackend;
+use seex::{
+    CatalogBackend, MetricKey, MetricQuery, MetricRange, Reader, RelativeTime, RunId, Step,
+    Timestamp,
+};
 
 const POINTS: i64 = 1_000_000;
 const SAMPLES: usize = 10;
