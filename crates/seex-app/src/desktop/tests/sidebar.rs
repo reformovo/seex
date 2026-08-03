@@ -965,7 +965,7 @@ fn project_row_click_toggles_runs_without_changing_analysis(cx: &mut TestAppCont
     assert_eq!(
         window
             .read_with(&cx, |viewer, cx| {
-                viewer.project_sidebar.read(cx).expanded_projects.len()
+                viewer.session_snapshot(cx).views.expanded_projects().len()
             })
             .expect("viewer should remain open"),
         0,

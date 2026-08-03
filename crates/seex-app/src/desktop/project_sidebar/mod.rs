@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,7 +39,6 @@ pub(super) enum RunHoverExitPolicy {
 pub(crate) struct ProjectSidebar {
     pub filter_focus: FocusHandle,
     pub filter: gpui::Entity<TextInput>,
-    pub expanded_projects: HashSet<(DataSourceId, ProjectId)>,
     pub project_focuses: HashMap<ProjectRef, FocusHandle>,
     pub run_focuses: HashMap<RunRef, FocusHandle>,
     pub menu: Option<ProjectRef>,
@@ -85,7 +84,6 @@ impl ProjectSidebar {
         Self {
             filter_focus: cx.focus_handle().tab_stop(true),
             filter,
-            expanded_projects: HashSet::new(),
             project_focuses: HashMap::new(),
             run_focuses: HashMap::new(),
             menu: None,
@@ -726,10 +724,9 @@ impl ProjectSidebar {
         project_id: ProjectId,
         cx: &mut Context<Self>,
     ) {
-        let key = (source_id, project_id);
-        if !self.expanded_projects.insert(key.clone()) {
-            self.expanded_projects.remove(&key);
-        }
+        cx.emit(ProjectSidebarEvent::Command(
+            WorkbenchCommand::ToggleProjectExpanded(ProjectRef::new(source_id, project_id)),
+        ));
         cx.notify();
     }
 

@@ -37,6 +37,7 @@ pub(crate) enum WorkbenchCommand {
         project: ProjectRef,
         placement: ProjectPlacement,
     },
+    ToggleProjectExpanded(ProjectRef),
     SetProjectRuns {
         runs: Vec<RunRef>,
         selected: bool,
@@ -217,6 +218,13 @@ impl WorkbenchSession {
                     }
                     ProjectPlacement::Archived => self.views.archive_project(project),
                 }
+                CommandEffect {
+                    changed: true,
+                    ..CommandEffect::default()
+                }
+            }
+            WorkbenchCommand::ToggleProjectExpanded(project) => {
+                self.views.toggle_project_expanded(project);
                 CommandEffect {
                     changed: true,
                     ..CommandEffect::default()
@@ -479,6 +487,7 @@ impl ViewerApp {
             | WorkbenchCommand::CloseView(_)
             | WorkbenchCommand::RenameView { .. }
             | WorkbenchCommand::SetProjectPlacement { .. }
+            | WorkbenchCommand::ToggleProjectExpanded(_)
             | WorkbenchCommand::ZoomViewport { .. }
             | WorkbenchCommand::PanViewport(_)
             | WorkbenchCommand::ResizeBrushStart(_)

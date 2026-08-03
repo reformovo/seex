@@ -155,7 +155,12 @@ impl WorkbenchSession {
                 bottom_inspector_visible: layout.bottom_inspector_visible,
                 bottom_inspector_height: layout.bottom_inspector_height,
             },
-            expanded_projects: Vec::new(),
+            expanded_projects: self
+                .views
+                .expanded_projects()
+                .iter()
+                .map(&save_project)
+                .collect(),
             pinned_projects: self
                 .views
                 .pinned_projects()

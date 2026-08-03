@@ -112,6 +112,7 @@ pub struct AnalysisViews {
     views: Vec<AnalysisView>,
     pinned_projects: Vec<ProjectRef>,
     archived_projects: Vec<ProjectRef>,
+    expanded_projects: Vec<ProjectRef>,
     archived_runs: Vec<RunRef>,
     active_view_id: AnalysisViewId,
     next_id: u64,
@@ -135,6 +136,7 @@ impl Default for AnalysisViews {
             views: vec![view],
             pinned_projects: Vec::new(),
             archived_projects: Vec::new(),
+            expanded_projects: Vec::new(),
             archived_runs: Vec::new(),
             next_id: 2,
         }
@@ -257,6 +259,16 @@ impl AnalysisViews {
                     )
                 })
                 .collect(),
+            expanded_projects: document
+                .expanded_projects
+                .iter()
+                .map(|project| {
+                    ProjectRef::new(
+                        DataSourceId::from_alias(&project.source_alias),
+                        project.project_id.clone(),
+                    )
+                })
+                .collect(),
             archived_runs: document.archived_runs.iter().map(saved_run_ref).collect(),
             active_view_id,
             next_id,
@@ -274,6 +286,22 @@ impl AnalysisViews {
 
     pub fn archived_projects(&self) -> &[ProjectRef] {
         &self.archived_projects
+    }
+
+    pub fn expanded_projects(&self) -> &[ProjectRef] {
+        &self.expanded_projects
+    }
+
+    pub fn toggle_project_expanded(&mut self, project: ProjectRef) {
+        if let Some(index) = self
+            .expanded_projects
+            .iter()
+            .position(|candidate| candidate == &project)
+        {
+            self.expanded_projects.remove(index);
+        } else {
+            self.expanded_projects.push(project);
+        }
     }
 
     pub fn archived_runs(&self) -> &[RunRef] {
@@ -462,6 +490,7 @@ impl AnalysisViews {
     }
 
     pub fn remove_project(&mut self, project: ProjectRef) {
+        self.expanded_projects.retain(|item| item != &project);
         self.pinned_projects.retain(|item| item != &project);
         self.archived_projects.retain(|item| item != &project);
         self.archived_runs.retain(|run| !project.contains_run(run));
@@ -748,6 +777,8 @@ impl AnalysisViews {
         self.pinned_projects
             .retain(|project| &project.source_id != source_id);
         self.archived_projects
+            .retain(|project| &project.source_id != source_id);
+        self.expanded_projects
             .retain(|project| &project.source_id != source_id);
         self.archived_runs.retain(|run| &run.source_id != source_id);
     }

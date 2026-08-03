@@ -16,7 +16,10 @@ fn toml_workbench_restores_alias_qualified_runs(cx: &mut TestAppContext) {
     let document = TomlWorkbenchDocument {
         active_view: 0,
         layout: SavedLayout::default(),
-        expanded_projects: Vec::new(),
+        expanded_projects: vec![SavedProjectRef {
+            source_alias: alias.clone(),
+            project_id: ProjectId::from_string("project"),
+        }],
         pinned_projects: Vec::new(),
         archived_projects: Vec::new(),
         archived_runs: Vec::new(),
@@ -49,6 +52,10 @@ fn toml_workbench_restores_alias_qualified_runs(cx: &mut TestAppContext) {
             assert_eq!(
                 viewer.session_snapshot(cx).views.active().runs[0].source_id,
                 DataSourceId::from_alias(&alias)
+            );
+            assert_eq!(
+                viewer.session_snapshot(cx).views.expanded_projects().len(),
+                1
             );
         })
         .expect("viewer should remain open");
@@ -84,6 +91,10 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
                 session.views.archive_project(ProjectRef::new(
                     source_id.clone(),
                     ProjectId::from_string("archive"),
+                ));
+                session.views.toggle_project_expanded(ProjectRef::new(
+                    source_id.clone(),
+                    project_id.clone(),
                 ));
                 session.views.remove_project(ProjectRef::new(
                     source_id.clone(),
@@ -141,6 +152,7 @@ fn viewer_owned_workbench_state_is_saved_without_query_snapshots(cx: &mut TestAp
     assert!(loaded.views[0].metrics.is_empty());
     assert_eq!(loaded.pinned_projects.len(), 1);
     assert_eq!(loaded.archived_projects.len(), 1);
+    assert_eq!(loaded.expanded_projects.len(), 1);
     assert_eq!(loaded.archived_runs.len(), 1);
     assert!(loaded.views[0].baseline.is_some());
     assert_eq!(loaded.views[0].pinned_runs.len(), 1);

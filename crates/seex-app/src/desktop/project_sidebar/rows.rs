@@ -77,11 +77,12 @@ impl ProjectSidebar {
     ) -> gpui::Div {
         let theme = super::ViewerTheme::for_appearance(window.appearance());
         let project_ref = project.project_ref.clone();
-        let expanded_key = (
-            project.project_ref.source_id.clone(),
-            project.project_ref.project_id.clone(),
-        );
-        let expanded = self.expanded_projects.contains(&expanded_key);
+        let expanded = self.snapshot.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .views
+                .expanded_projects()
+                .contains(&project.project_ref)
+        });
         let menu_open = self.menu.as_ref() == Some(&project_ref);
         let hovered = self.hovered_project.as_ref() == Some(&project_ref);
         let project_focus = self

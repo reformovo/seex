@@ -64,13 +64,10 @@ impl ViewerTestActions for ViewerApp {
         project_id: ProjectId,
         cx: &mut Context<Self>,
     ) {
-        let key = (source_id, project_id);
-        self.project_sidebar.update(cx, |sidebar, cx| {
-            if !sidebar.expanded_projects.insert(key.clone()) {
-                sidebar.expanded_projects.remove(&key);
-            }
-            cx.notify();
-        });
+        self.dispatch_workbench_command(
+            WorkbenchCommand::ToggleProjectExpanded(ProjectRef::new(source_id, project_id)),
+            cx,
+        );
     }
 
     fn toggle_tree_run(&mut self, run: RunRef, cx: &mut Context<Self>) {
