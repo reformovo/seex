@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use gpui::{Context, EventEmitter, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px};
@@ -45,8 +45,17 @@ struct SourceDraft {
     preflighting: Option<(u64, PathBuf)>,
     source_error: Option<String>,
     existing_sources: Vec<ConfiguredSource>,
-    imported_projects: HashMap<ProjectId, SourceAlias>,
+    existing_aliases: Vec<SourceAlias>,
+    import_target: Option<ConfiguredSource>,
     validation_error: Option<String>,
+}
+
+impl SourceDraft {
+    fn is_imported(&self, project_id: &ProjectId) -> bool {
+        self.import_target
+            .as_ref()
+            .is_some_and(|source| source.projects.contains(project_id))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -74,6 +83,7 @@ impl SourceManagement {
     pub(crate) fn begin_import(
         &mut self,
         existing_sources: Vec<ConfiguredSource>,
+        existing_aliases: Vec<SourceAlias>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -90,7 +100,8 @@ impl SourceManagement {
             preflighting: None,
             source_error: None,
             existing_sources,
-            imported_projects: HashMap::new(),
+            existing_aliases,
+            import_target: None,
             validation_error: None,
         });
         self.source_generation = self.source_generation.saturating_add(1);
@@ -135,28 +146,31 @@ impl SourceManagement {
         draft.preflighting = None;
         match result {
             Ok((preflight, alias)) => {
-                draft.imported_projects = draft
+                draft.import_target = draft
                     .existing_sources
                     .iter()
-                    .filter(|source| same_source_path(&source.root_path, &preflight.root_path))
-                    .flat_map(|source| {
-                        source
-                            .projects
-                            .iter()
-                            .cloned()
-                            .map(|project_id| (project_id, source.alias.clone()))
-                    })
-                    .collect();
+                    .find(|source| same_source_path(&source.root_path, &preflight.root_path))
+                    .cloned();
                 draft.root_path = Some(preflight.root_path);
                 draft.projects = preflight.projects;
                 draft.selected.clear();
                 draft.source_error = None;
+                let alias = draft
+                    .import_target
+                    .as_ref()
+                    .map_or(alias, |source| source.alias.clone());
                 self.alias.update(cx, |input, cx| {
                     input.set_text(alias.as_str());
-                    input.select_all();
-                    input.start_blink(cx);
+                    if draft.import_target.is_some() {
+                        input.stop_blink(cx);
+                    } else {
+                        input.select_all();
+                        input.start_blink(cx);
+                    }
                 });
-                self.alias_focus.focus(window);
+                if draft.import_target.is_none() {
+                    self.alias_focus.focus(window);
+                }
             }
             Err(error) => draft.source_error = Some(error),
         }
@@ -195,7 +209,8 @@ impl SourceManagement {
             preflighting: None,
             source_error: None,
             existing_sources: Vec::new(),
-            imported_projects: HashMap::new(),
+            existing_aliases: Vec::new(),
+            import_target: None,
             validation_error: None,
         });
         self.alias_focus.focus(window);
@@ -218,7 +233,7 @@ impl SourceManagement {
         let Some(draft) = self.draft.as_mut() else {
             return;
         };
-        if draft.imported_projects.contains_key(&project_id) {
+        if draft.is_imported(&project_id) {
             return;
         }
         if !draft.selected.insert(project_id.clone()) {
@@ -235,7 +250,7 @@ impl SourceManagement {
         draft.selected = draft
             .projects
             .iter()
-            .filter(|project| !draft.imported_projects.contains_key(&project.project_id))
+            .filter(|project| !draft.is_imported(&project.project_id))
             .map(|project| project.project_id.clone())
             .collect();
         draft.validation_error = None;
@@ -276,22 +291,35 @@ impl SourceManagement {
             cx.notify();
             return;
         };
-        let Ok(alias) = validate_alias(draft, &alias) else {
-            return;
+        let alias = if let Some(target) = draft.import_target.as_ref() {
+            target.alias.clone()
+        } else {
+            let Ok(alias) = validate_alias(draft, &alias) else {
+                return;
+            };
+            alias
         };
         if draft.selected.is_empty() && matches!(draft.mode, SourceMode::Import) {
             return;
         }
+        let selected = draft
+            .projects
+            .iter()
+            .filter(|project| draft.selected.contains(&project.project_id))
+            .map(|project| project.project_id.clone())
+            .collect::<Vec<_>>();
+        let (manage, projects) = if let Some(target) = draft.import_target.as_ref() {
+            let mut projects = target.projects.clone();
+            projects.extend(selected);
+            (true, projects)
+        } else {
+            (matches!(draft.mode, SourceMode::Manage), selected)
+        };
         let confirmed = ConfirmedSource {
-            manage: matches!(draft.mode, SourceMode::Manage),
+            manage,
             alias,
             root_path,
-            projects: draft
-                .projects
-                .iter()
-                .filter(|project| draft.selected.contains(&project.project_id))
-                .map(|project| project.project_id.clone())
-                .collect(),
+            projects,
         };
         self.draft = None;
         cx.emit(SourceManagementEvent::Confirmed(confirmed));
@@ -339,7 +367,7 @@ impl SourceManagement {
         let alias = self.alias.read(cx).text();
         draft.root_path.is_some()
             && draft.preflighting.is_none()
-            && validate_alias(draft, alias).is_ok()
+            && (draft.import_target.is_some() || validate_alias(draft, alias).is_ok())
             && (!matches!(draft.mode, SourceMode::Import) || !draft.selected.is_empty())
     }
 }
@@ -350,18 +378,17 @@ fn validate_alias(draft: &SourceDraft, alias: &str) -> Result<SourceAlias, &'sta
     }
     let alias =
         SourceAlias::new(alias).map_err(|_| "Alias must be a lowercase portable identifier")?;
-    if draft
-        .existing_sources
-        .iter()
-        .any(|existing| existing.alias == alias)
-    {
+    if draft.existing_aliases.contains(&alias) {
         return Err("Source alias is already configured");
     }
     Ok(alias)
 }
 
 fn alias_validation_message(draft: &SourceDraft, alias: &str) -> Option<&'static str> {
-    if !matches!(draft.mode, SourceMode::Import) || draft.root_path.is_none() {
+    if !matches!(draft.mode, SourceMode::Import)
+        || draft.root_path.is_none()
+        || draft.import_target.is_some()
+    {
         return None;
     }
     validate_alias(draft, alias).err()
@@ -477,20 +504,25 @@ impl Render for SourceManagement {
         let mode = draft.mode;
         let projects = draft.projects.clone();
         let selected = draft.selected.clone();
-        let imported_projects = draft.imported_projects.clone();
+        let import_target = draft.import_target.clone();
+        let imported_projects = import_target
+            .as_ref()
+            .map(|source| source.projects.clone())
+            .unwrap_or_default();
         let selected_count = selected.len();
         let project_count = projects
             .iter()
-            .filter(|project| !imported_projects.contains_key(&project.project_id))
+            .filter(|project| !imported_projects.contains(&project.project_id))
             .count();
         let has_projects = !projects.is_empty();
         let preflighting = draft.preflighting.is_some();
         let source_error = draft.source_error.clone();
         let error = draft.validation_error.clone();
         let alias_error = alias_validation_message(draft, &alias);
+        let alias_editable = matches!(mode, SourceMode::Import) && import_target.is_none();
         let can_confirm = draft.root_path.is_some()
             && !preflighting
-            && validate_alias(draft, &alias).is_ok()
+            && (import_target.is_some() || validate_alias(draft, &alias).is_ok())
             && (!matches!(mode, SourceMode::Import) || !selected.is_empty());
         components::modal_backdrop("source-confirmation-overlay", theme)
             .child(
@@ -552,7 +584,7 @@ impl Render for SourceManagement {
                             .child(error)
                     }))
                     .child(div().text_xs().child("Alias"))
-                    .children(matches!(mode, SourceMode::Import).then(|| {
+                    .children(alias_editable.then(|| {
                         div()
                             .id("source-alias-input")
                             .debug_selector(|| "source-alias-input".to_owned())
@@ -594,7 +626,7 @@ impl Render for SourceManagement {
                             ))
                     }))
                     .children(
-                        matches!(mode, SourceMode::Manage)
+                        (matches!(mode, SourceMode::Manage) || import_target.is_some())
                             .then(|| readonly_value("source-alias-readonly", alias.clone(), theme)),
                     )
                     .children(alias_error.map(|error| {
@@ -663,8 +695,12 @@ impl Render for SourceManagement {
                             }))
                             .children(projects.into_iter().map(|project| {
                                 let project_id = project.project_id.clone();
-                                let checked = selected.contains(&project_id);
-                                let imported_as = imported_projects.get(&project_id).cloned();
+                                let imported = imported_projects.contains(&project_id);
+                                let checked = imported || selected.contains(&project_id);
+                                let imported_as = import_target
+                                    .as_ref()
+                                    .filter(|_| imported)
+                                    .map(|source| source.alias.clone());
                                 let selectable = imported_as.is_none();
                                 let selector = format!("source-project:{}", project_id.as_str());
                                 let id_selector =

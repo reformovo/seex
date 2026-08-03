@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::config::{ConfiguredSource, SourceConfiguration};
+use crate::config::{ConfiguredSource, SourceConfiguration, same_source_path};
 use crate::data::SourcePreflight;
 #[cfg(all(test, feature = "test-support"))]
 use crate::data::registry::SourceStatus;
@@ -351,19 +351,24 @@ impl ViewerApp {
     }
 
     fn open_source_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let existing = self
+        let existing_sources = self
+            .source_configuration
+            .as_ref()
+            .map(SourceConfiguration::configured_sources)
+            .unwrap_or_default();
+        let existing_aliases = self
             .source_configuration
             .as_ref()
             .map(|configuration| {
                 configuration
                     .sources
                     .iter()
-                    .map(|source| source.configured.clone())
+                    .map(|source| source.configured.alias.clone())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
         self.source_management.update(cx, |management, cx| {
-            management.begin_import(existing, window, cx);
+            management.begin_import(existing_sources, existing_aliases, window, cx);
         });
     }
 
@@ -1134,12 +1139,12 @@ fn finish_workbench_import(
         let existing = preparation
             .local_sources
             .iter()
-            .find(|(source, _)| source.root_path == selected.root_path);
+            .find(|(source, _)| same_source_path(&source.root_path, &selected.root_path));
         let (local_alias, imported_projects) = if let Some((source, _)) = existing {
             (source.alias.clone(), source.projects.clone())
         } else if let Some((alias, _)) = new_sources
             .iter()
-            .find(|(_, root_path)| root_path == &selected.root_path)
+            .find(|(_, root_path)| same_source_path(root_path, &selected.root_path))
         {
             (alias.clone(), Vec::new())
         } else {

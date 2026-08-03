@@ -122,6 +122,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
                         root_path: scope.path().join("configured-source"),
                         projects: vec![ProjectId::from_string("configured")],
                     }],
+                    vec![SourceAlias::new("research").expect("test alias should be valid")],
                     window,
                     cx,
                 );
@@ -261,23 +262,23 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
 fn source_confirmation_disables_imported_projects_but_allows_new_ones(cx: &mut TestAppContext) {
     let (source, one, two) = source_with_two_projects();
     let scope = tempfile::tempdir().expect("test scope should be created");
-    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let config_path = scope.path().join(".seex/config.toml");
+    std::fs::create_dir_all(config_path.parent().expect("config should have a parent"))
+        .expect("config directory should be created");
+    std::fs::write(
+        &config_path,
+        format!(
+            "schema_version = 1\n[sources.research]\npath = {:?}\nprojects = ['one']\n\
+             [sources.research-copy]\npath = {:?}\nprojects = ['one']\n",
+            source.path().to_string_lossy(),
+            source.path().to_string_lossy(),
+        ),
+    )
+    .expect("legacy duplicate config should be written");
     let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
-    window
-        .update(&mut cx, |viewer, _, cx| {
-            viewer.save_confirmed_source(
-                ConfirmedSource {
-                    manage: false,
-                    alias: alias.clone(),
-                    root_path: source.path().to_owned(),
-                    projects: vec![one.clone()],
-                },
-                cx,
-            );
-        })
-        .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
-        !viewer.session_snapshot(cx).sources.is_empty()
+        let sources = &viewer.session_snapshot(cx).sources;
+        sources.len() == 1 && sources[0].source_id.alias().as_str() == "research"
     });
     window
         .update(&mut cx, |viewer, window, cx| {
@@ -299,6 +300,8 @@ fn source_confirmation_disables_imported_projects_but_allows_new_ones(cx: &mut T
         })
         .expect("viewer should remain open");
     cx.refresh().expect("confirmation should render");
+    assert!(cx.debug_bounds("source-alias-input").is_none());
+    assert!(cx.debug_bounds("source-alias-readonly").is_some());
 
     let imported = cx
         .debug_bounds("source-project:one")
@@ -323,11 +326,25 @@ fn source_confirmation_disables_imported_projects_but_allows_new_ones(cx: &mut T
     cx.simulate_click(available.center(), Modifiers::default());
     cx.simulate_click(confirm.center(), Modifiers::default());
     wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer.session_snapshot(cx).sources.iter().any(|source| {
-            source.source_id.alias().as_str() == "research-2"
-                && source.project_allowlist == [two.clone()]
-        })
+        let sources = &viewer.session_snapshot(cx).sources;
+        sources.len() == 1
+            && sources[0].source_id.alias().as_str() == "research"
+            && sources[0].project_allowlist == [one.clone(), two.clone()]
     });
+    let saved = std::fs::read_to_string(config_path)
+        .expect("duplicate configuration should remain readable")
+        .parse::<toml_edit::DocumentMut>()
+        .expect("duplicate configuration should remain valid TOML");
+    let project_count = |alias: &str| {
+        saved["sources"][alias]["projects"]
+            .as_array()
+            .map(|projects| projects.len())
+    };
+    assert_eq!(
+        (project_count("research"), project_count("research-copy")),
+        (Some(2), Some(1))
+    );
+    assert!(saved["sources"].get("research-2").is_none());
 }
 
 #[gpui::test]
@@ -338,7 +355,7 @@ fn cancelled_confirmation_ignores_late_source_preflight(cx: &mut TestAppContext)
     let generation = window
         .update(&mut cx, |viewer, window, cx| {
             viewer.source_management.update(cx, |management, cx| {
-                management.begin_import(Vec::new(), window, cx);
+                management.begin_import(Vec::new(), Vec::new(), window, cx);
                 management
                     .begin_source_preflight(source.path().to_owned(), cx)
                     .expect("open import confirmation should accept preflight")
