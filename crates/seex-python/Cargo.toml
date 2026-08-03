@@ -11,6 +11,7 @@ publish = false
 [lib]
 name = "seex"
 crate-type = ["cdylib"]
+doc = false
 
 [dependencies]
 arrow = "58.3.0"
