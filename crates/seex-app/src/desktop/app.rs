@@ -14,7 +14,7 @@ use gpui::{
 
 #[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
-use super::{ImportSource, ReloadSources};
+use super::{ExportWorkbench, ImportSource, ReloadSources};
 
 #[path = "assets.rs"]
 mod assets;
@@ -382,6 +382,46 @@ impl ViewerApp {
         self.reload_sources(cx);
     }
 
+    fn on_export_workbench(
+        &mut self,
+        _: &ExportWorkbench,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let directory = self
+            .project_root
+            .clone()
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let prompt = cx.prompt_for_new_path(&directory, Some("workbench.toml"));
+        let snapshot = self.session.read(cx).semantic_snapshot();
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match prompt.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error.to_string(), cx);
+                    });
+                    return;
+                }
+            };
+            let save = cx.background_spawn(async move { snapshot.document.save(&path) });
+            if let Err(error) = save.await {
+                let _ = this.update_in(cx, |viewer, _, cx| {
+                    viewer.report_source_error(error.to_string(), cx);
+                });
+            }
+        })
+        .detach();
+    }
+
     fn reload_sources(&mut self, cx: &mut Context<Self>) {
         let project_root = self.project_root.clone();
         let load = cx.background_spawn(async move { load_and_preflight_sources(project_root) });
@@ -681,6 +721,7 @@ impl Render for ViewerApp {
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_import_source))
             .on_action(cx.listener(Self::on_reload_sources))
+            .on_action(cx.listener(Self::on_export_workbench))
             .on_action(cx.listener(Self::on_reset))
             .on_action(cx.listener(Self::on_toggle_project_sidebar))
             .on_action(cx.listener(Self::on_toggle_metric_sidebar))

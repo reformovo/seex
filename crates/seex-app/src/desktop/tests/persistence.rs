@@ -263,6 +263,49 @@ fn autosave_coalesces_latest_revision_and_respects_blocked_documents(cx: &mut Te
 }
 
 #[gpui::test]
+fn exported_workbench_uses_semantic_snapshot_without_changing_autosave_path(
+    cx: &mut TestAppContext,
+) {
+    let root = tempfile::tempdir().expect("test directory should be created");
+    let export_path = root.path().join("exported-workbench.toml");
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.select_metric(MetricKey::from_string("loss"), cx);
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+
+    cx.dispatch_action(ExportWorkbench);
+    assert!(cx.did_prompt_for_new_path());
+    cx.simulate_new_path_selection(|_| Some(export_path.clone()));
+    for _ in 0..100 {
+        cx.run_until_parked();
+        if export_path.exists() {
+            break;
+        }
+    }
+
+    let exported = WorkbenchDocument::load(&export_path)
+        .expect("export should remain readable")
+        .expect("exported workbench should exist");
+    assert_eq!(exported.views[0].metrics, ["loss"]);
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session
+                .read(cx)
+                .workbench_path
+                .is_none())
+            .expect("viewer should remain open")
+    );
+    let encoded = std::fs::read_to_string(export_path).expect("export should be UTF-8");
+    for excluded in ["sources", "projects =", "path =", "transient_error"] {
+        assert!(!encoded.contains(excluded));
+    }
+}
+
+#[gpui::test]
 fn restored_state_retains_unavailable_runs_and_unknown_metrics(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
     let alias = SourceAlias::new("research").expect("test alias should be valid");
