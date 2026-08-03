@@ -103,9 +103,14 @@ struct WorkbenchImportPreparation {
     external_fingerprint: Vec<u8>,
     configuration: SourceConfiguration,
     document: TomlWorkbenchDocument,
-    local_sources: Vec<(ConfiguredSource, Vec<ProjectId>)>,
+    local_sources: Vec<LocalSourceCandidate>,
     mappings: Vec<ImportSourceMapping>,
     unresolved: Vec<(SourceAlias, Vec<ProjectId>)>,
+}
+
+struct LocalSourceCandidate {
+    source: ConfiguredSource,
+    available_projects: Result<Vec<ProjectId>, String>,
 }
 
 impl ViewerApp {
@@ -1226,51 +1231,44 @@ fn prepare_workbench_import(
         .collect::<Vec<_>>();
     referenced.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
 
-    let mut local_sources = Vec::new();
-    for source in configuration.configured_sources() {
-        let preflight =
-            SourcePreflight::load(&source.root_path).map_err(|error| error.to_string())?;
-        let available = preflight
-            .projects
-            .into_iter()
-            .map(|project| project.project_id)
-            .collect::<Vec<_>>();
-        if let Some(project_id) = source
-            .projects
-            .iter()
-            .find(|project_id| !available.contains(project_id))
-        {
-            return Err(format!(
-                "Source {} does not contain Project {}",
-                source.alias,
-                project_id.as_str()
-            ));
-        }
-        local_sources.push((source, available));
-    }
+    let local_sources = configuration
+        .configured_sources()
+        .into_iter()
+        .map(|source| LocalSourceCandidate {
+            available_projects: preflight_import_candidate(&source),
+            source,
+        })
+        .collect::<Vec<_>>();
 
     let mut mappings = Vec::new();
     let mut unresolved = Vec::new();
     for (external_alias, required_projects) in referenced {
         let candidates = local_sources
             .iter()
-            .filter(|(_, available)| {
-                required_projects
-                    .iter()
-                    .all(|project| available.contains(project))
+            .filter_map(|candidate| {
+                candidate
+                    .available_projects
+                    .as_ref()
+                    .ok()
+                    .filter(|available| {
+                        required_projects
+                            .iter()
+                            .all(|project| available.contains(project))
+                    })
+                    .map(|available| (candidate, available))
             })
             .collect::<Vec<_>>();
         let selected = candidates
             .iter()
             .copied()
-            .find(|(source, _)| source.alias == external_alias)
+            .find(|(candidate, _)| candidate.source.alias == external_alias)
             .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
-        if let Some(selected) = selected {
+        if let Some((candidate, available_projects)) = selected {
             mappings.push(ImportSourceMapping {
                 external_alias,
-                local_alias: selected.0.alias.clone(),
-                available_projects: selected.1.clone(),
-                imported_projects: selected.0.projects.clone(),
+                local_alias: candidate.source.alias.clone(),
+                available_projects: available_projects.clone(),
+                imported_projects: candidate.source.projects.clone(),
             });
         } else {
             unresolved.push((external_alias, required_projects));
@@ -1285,6 +1283,27 @@ fn prepare_workbench_import(
         mappings,
         unresolved,
     })
+}
+
+fn preflight_import_candidate(source: &ConfiguredSource) -> Result<Vec<ProjectId>, String> {
+    let preflight = SourcePreflight::load(&source.root_path).map_err(|error| error.to_string())?;
+    let available = preflight
+        .projects
+        .into_iter()
+        .map(|project| project.project_id)
+        .collect::<Vec<_>>();
+    if let Some(project_id) = source
+        .projects
+        .iter()
+        .find(|project_id| !available.contains(project_id))
+    {
+        return Err(format!(
+            "Source {} does not contain Project {}",
+            source.alias,
+            project_id.as_str()
+        ));
+    }
+    Ok(available)
 }
 
 fn finish_workbench_import(
@@ -1322,9 +1341,12 @@ fn finish_workbench_import(
         let existing = preparation
             .local_sources
             .iter()
-            .find(|(source, _)| same_source_path(&source.root_path, &selected.root_path));
-        let (local_alias, imported_projects) = if let Some((source, _)) = existing {
-            (source.alias.clone(), source.projects.clone())
+            .find(|candidate| same_source_path(&candidate.source.root_path, &selected.root_path));
+        let (local_alias, imported_projects) = if let Some(candidate) = existing {
+            (
+                candidate.source.alias.clone(),
+                candidate.source.projects.clone(),
+            )
         } else if let Some((alias, _)) = new_sources
             .iter()
             .find(|(_, root_path)| same_source_path(root_path, &selected.root_path))

@@ -1345,6 +1345,49 @@ fn workbench_import_configures_a_new_source_only_after_confirmation(cx: &mut Tes
     );
 }
 
+#[test]
+fn workbench_import_ignores_unreferenced_unavailable_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (available_root, project_id, _) = source_with_two_projects();
+    let scope = tempfile::tempdir()?;
+    let external = scope.path().join("external.toml");
+    let available_alias = SourceAlias::new("available")?;
+    let unavailable_alias = SourceAlias::new("unavailable")?;
+    saved_workbench(
+        available_alias.clone(),
+        project_id.clone(),
+        vec![RunId::from_string("missing")],
+        "loss",
+    )
+    .save(&external)?;
+    let mut configuration =
+        SourceConfiguration::load_for_scope_at(Some(scope.path()), Some(scope.path()))?;
+    configuration.set_source(
+        &available_alias,
+        available_root.path(),
+        std::slice::from_ref(&project_id),
+    )?;
+    configuration.set_source(
+        &unavailable_alias,
+        &scope.path().join("missing-source"),
+        &[ProjectId::from_string("unrelated")],
+    )?;
+
+    let preparation = prepare_workbench_import(external, configuration)?;
+
+    assert!(preparation.unresolved.is_empty());
+    assert_eq!(preparation.mappings.len(), 1);
+    assert_eq!(preparation.mappings[0].local_alias, available_alias);
+    assert!(
+        preparation
+            .local_sources
+            .iter()
+            .find(|candidate| candidate.source.alias == unavailable_alias)
+            .is_some_and(|candidate| candidate.available_projects.is_err())
+    );
+    Ok(())
+}
+
 #[gpui::test]
 fn ambiguous_workbench_alias_uses_the_selected_existing_source(cx: &mut TestAppContext) {
     let (first, one, two) = source_with_two_projects();
