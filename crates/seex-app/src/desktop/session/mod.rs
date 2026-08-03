@@ -78,6 +78,7 @@ impl SessionSnapshot {
             .pinned_projects()
             .iter()
             .chain(self.views.archived_projects())
+            .chain(self.views.expanded_projects())
             .cloned()
             .collect::<HashSet<_>>();
         projects.extend(
