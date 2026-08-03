@@ -6,6 +6,14 @@ U7 roadmap update. No source, package, or workflow change may follow the
 qualification run; a required fix starts qualification again from its new
 HEAD.
 
+Revision `632beb9b85e8f45cc6043a62a2b284ae7cf89135` is superseded. A clean
+environment exposed that its ordinary Rust suite relied on a cached LTTB
+extension even though the test supplied a compatible local macro. Revision
+`54d3734` replaced the executable availability probe with DuckDB catalog
+metadata, preserving the no-automatic-download policy. The qualification run
+below must therefore use an empty temporary `HOME` for Rust tests while
+preserving the configured Cargo and Rustup homes.
+
 ## Release identity and authority boundary
 
 - Cargo packages identify as `0.1.0-beta.1`, Python distributions identify as
@@ -28,7 +36,7 @@ the accepted result without embedding machine-specific build output here.
 | Boundary | Qualification command |
 | --- | --- |
 | Rust format and build | `cargo fmt --all --check`; `cargo check --workspace --all-targets --all-features` |
-| Rust lint, tests, docs | `cargo clippy --workspace --all-targets --all-features -- -D warnings`; `cargo test --workspace --all-features`; `RUSTDOCFLAGS="-D warnings" cargo doc -p seex --no-deps` |
+| Rust lint, tests, docs | `cargo clippy --workspace --all-targets --all-features -- -D warnings`; run `cargo test --workspace --all-features` with an empty temporary `HOME`; `RUSTDOCFLAGS="-D warnings" cargo doc -p seex --no-deps` |
 | LTTB policy | `cargo test -p seex lttb_online_and_explicit_offline_paths -- --ignored --nocapture` |
 | Python quality | `uv run --group linting ruff format --check python scripts tests`; `uv run --group linting ruff check python scripts tests`; `uv run pyright`; `uv run pytest` |
 | Public crate | `uv run python scripts/package_smoke.py` |

@@ -5,6 +5,13 @@ This U7 slice qualifies the release resource boundary at candidate revision
 Python API, package metadata, catalog, DuckLake, or Parquet compatibility
 boundary. No tag, push, publication, or Profile was performed.
 
+This revision's local correctness result is not final release qualification.
+A later clean environment exposed an LTTB availability-probe defect that a
+developer-machine extension cache had masked. The resource comparison remains
+valid because it did not exercise that storage path; final correctness status
+and the superseding revision are recorded in
+[`u7-release-qualification.md`](u7-release-qualification.md).
+
 ## Release Acceptance
 
 The candidate ran on macOS 26.3 (25D125), arm64, with Rust/Cargo 1.97.1 and
