@@ -1,7 +1,10 @@
 use gpui::{Modifiers, TestAppContext, point, px, size};
 use seex::{Client, Project, RunId, RunOptions};
 
-use super::super::test_support::{open_viewer, saved_workbench, wait_for_viewer};
+use super::super::test_support::{
+    open_viewer, open_viewer_with_configured_source, saved_workbench, source_catalog_loaded,
+    wait_for_viewer,
+};
 use super::*;
 use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
@@ -30,6 +33,37 @@ fn sources_control_opens_confirmation_before_path_prompt(cx: &mut TestAppContext
         .expect("empty Sources message should render");
     assert!(f32::from(empty.center().x - list.center().x).abs() <= 1.);
     assert!(f32::from(empty.center().y - list.center().y).abs() <= 1.);
+}
+
+#[gpui::test]
+fn sources_backdrop_blocks_underlying_hover(cx: &mut TestAppContext) {
+    let (source, _, _) = source_with_two_projects();
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer_with_configured_source(cx, source.path().to_path_buf());
+    wait_for_viewer(window, &cx, source_catalog_loaded);
+    cx.refresh().expect("Viewer should render");
+    let project = cx
+        .debug_bounds("project-tree-row-0-0")
+        .expect("Project row should render");
+
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_sources(Vec::new(), Vec::new(), window, cx);
+            });
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+    cx.refresh().expect("Sources dialog should render");
+    cx.simulate_mouse_move(project.center(), None, Modifiers::default());
+    cx.run_until_parked();
+
+    window
+        .read_with(&cx, |viewer, cx| {
+            assert!(viewer.project_sidebar.read(cx).hovered_project.is_none());
+        })
+        .expect("viewer should remain open");
+    assert!(cx.debug_bounds("project-information-project").is_none());
 }
 
 #[gpui::test]

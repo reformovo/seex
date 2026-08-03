@@ -23,6 +23,7 @@ pub(super) fn modal_backdrop(id: &'static str, theme: ViewerTheme) -> Stateful<D
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
+        .occlude()
         .absolute()
         .inset_0()
         .p_4()
