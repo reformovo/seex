@@ -5,6 +5,7 @@ edition = "2024"
 description = "Native desktop curve viewer for Seex."
 license = "MIT"
 repository = "https://github.com/reformovo/seex"
+publish = false
 
 [package.metadata.bundle]
 name = "Seex"

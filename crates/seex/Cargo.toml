@@ -5,7 +5,6 @@ edition = "2024"
 description = "Unified Rust SDK facade for Seex."
 license = "MIT"
 repository = "https://github.com/reformovo/seex"
-publish = false
 
 [dependencies]
 chrono = "0.4"
