@@ -1,0 +1,21 @@
+# Shared schema-v1 fixture for SDK and Desktop configuration tests.
+schema_version = 1
+catalog_backend = "duckdb"
+catalog_path = ".seex/global-catalog.ducklake"
+data_path = "s3://global-bucket/metrics"
+
+[s3]
+endpoint = "objects.example.com"
+access_key_id = "global-access-key"
+secret_access_key = "global-secret"
+session_token = "global-session"
+region = "us-east-1"
+path_style = false
+use_ssl = true
+
+[sources.research]
+path = "experiments"
+projects = ["vision-baseline", "vision-large"]
+
+[future]
+preserved = "unknown application setting"

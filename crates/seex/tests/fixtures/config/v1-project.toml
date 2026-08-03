@@ -1,0 +1,12 @@
+# Project values override global values while S3 tables merge field by field.
+schema_version = 1
+catalog_backend = "sqlite"
+catalog_path = ".seex/catalog.sqlite"
+data_path = ".seex/data"
+
+[s3]
+region = "eu-west-1"
+
+[sources.local-benchmarks]
+path = "/Volumes/data/seex"
+projects = ["reader-benchmarks"]
