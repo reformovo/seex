@@ -43,7 +43,11 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     window
         .update(&mut cx, |viewer, window, cx| {
             viewer.source_management.update(cx, |management, cx| {
-                management.begin_import(Vec::new(), window, cx);
+                management.begin_import(
+                    vec![SourceAlias::new("research").expect("test alias should be valid")],
+                    window,
+                    cx,
+                );
                 let generation = management
                     .begin_source_preflight(root.path().to_owned(), cx)
                     .expect("import confirmation should accept a Source preflight");
@@ -65,6 +69,36 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     cx.run_until_parked();
     cx.refresh().expect("test window should refresh");
     assert!(cx.debug_bounds("source-confirmation").is_some());
+    assert!(cx.debug_bounds("source-alias-selection").is_some());
+    assert!(cx.debug_bounds("source-alias-caret").is_some());
+    assert!(cx.debug_bounds("source-alias-error").is_some());
+
+    let select_all = cx
+        .debug_bounds("select-all-projects")
+        .expect("Select all control should render");
+    cx.simulate_click(select_all.center(), Modifiers::default());
+    cx.simulate_keystrokes("enter");
+    cx.run_until_parked();
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .source_management
+                .read(cx)
+                .is_open())
+            .expect("viewer should remain open")
+    );
+    cx.refresh().expect("test window should refresh");
+    let clear = cx
+        .debug_bounds("clear-projects")
+        .expect("Clear control should render");
+    cx.simulate_click(clear.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.refresh().expect("test window should refresh");
+    let alias = cx
+        .debug_bounds("source-alias-input")
+        .expect("Alias input should render");
+    cx.simulate_click(alias.center(), Modifiers::default());
+    cx.simulate_keystrokes("local");
 
     let confirm = cx
         .debug_bounds("confirm-source")
@@ -78,10 +112,13 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
         .debug_bounds("source-project:one")
         .expect("Project choice should render");
     cx.simulate_click(row.center(), Modifiers::default());
-    let confirm = cx
-        .debug_bounds("confirm-source")
-        .expect("confirm control should remain rendered");
-    cx.simulate_click(confirm.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.refresh().expect("test window should refresh");
+    let alias = cx
+        .debug_bounds("source-alias-input")
+        .expect("Alias input should remain rendered");
+    cx.simulate_click(alias.center(), Modifiers::default());
+    cx.simulate_keystrokes("enter");
     let config_path = scope.path().join(".seex/config.toml");
     for _ in 0..100 {
         cx.run_until_parked();
@@ -101,7 +138,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     let saved = saved
         .parse::<toml_edit::DocumentMut>()
         .expect("Source config should remain valid TOML");
-    let projects = saved["sources"]["research"]["projects"]
+    let projects = saved["sources"]["researchlocal"]["projects"]
         .as_array()
         .expect("Source Project allowlist should be an array");
     assert_eq!(projects.len(), 1);
@@ -129,10 +166,7 @@ fn cancelled_confirmation_ignores_late_source_preflight(cx: &mut TestAppContext)
     cx.run_until_parked();
     cx.refresh().expect("test window should refresh");
 
-    let cancel = cx
-        .debug_bounds("cancel-source")
-        .expect("Cancel control should render");
-    cx.simulate_click(cancel.center(), Modifiers::default());
+    cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     window
         .update(&mut cx, |viewer, window, cx| {

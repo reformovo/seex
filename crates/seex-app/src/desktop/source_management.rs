@@ -5,7 +5,7 @@ use gpui::{Context, EventEmitter, FocusHandle, KeyDownEvent, Render, Window, div
 use seex::{Project, ProjectId};
 
 use crate::data::SourcePreflight;
-use crate::domain::{SourceAlias, SourceAliasError};
+use crate::domain::SourceAlias;
 use crate::workbench::import::WorkbenchImportPlan;
 
 use super::components::TextInput;
@@ -209,6 +209,28 @@ impl SourceManagement {
         cx.notify();
     }
 
+    fn select_all_projects(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.draft.as_mut() else {
+            return;
+        };
+        draft.selected = draft
+            .projects
+            .iter()
+            .map(|project| project.project_id.clone())
+            .collect();
+        draft.validation_error = None;
+        cx.notify();
+    }
+
+    fn clear_projects(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.draft.as_mut() else {
+            return;
+        };
+        draft.selected.clear();
+        draft.validation_error = None;
+        cx.notify();
+    }
+
     fn cancel(&mut self, cx: &mut Context<Self>) {
         self.source_generation = self.source_generation.saturating_add(1);
         self.alias.update(cx, |input, cx| input.stop_blink(cx));
@@ -234,23 +256,10 @@ impl SourceManagement {
             cx.notify();
             return;
         };
-        let alias = match SourceAlias::new(alias) {
-            Ok(alias) => alias,
-            Err(SourceAliasError::Invalid) => {
-                draft.validation_error =
-                    Some("Alias must be a lowercase portable identifier".to_owned());
-                cx.notify();
-                return;
-            }
-        };
-        if draft.existing_aliases.contains(&alias) {
-            draft.validation_error = Some("Source alias is already configured".to_owned());
-            cx.notify();
+        let Ok(alias) = validate_alias(draft, &alias) else {
             return;
-        }
+        };
         if draft.selected.is_empty() && matches!(draft.mode, SourceMode::Import) {
-            draft.validation_error = Some("Select at least one Project".to_owned());
-            cx.notify();
             return;
         }
         let confirmed = ConfirmedSource {
@@ -287,6 +296,60 @@ impl SourceManagement {
             cx.stop_propagation();
         }
     }
+
+    fn focus_alias(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.alias.update(cx, |input, cx| {
+            input.move_to_end();
+            input.start_blink(cx);
+        });
+        self.alias_focus.focus(window);
+        cx.notify();
+    }
+
+    fn handle_dialog_key(
+        &mut self,
+        event: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.keystroke.key.as_str() {
+            "escape" => self.cancel(cx),
+            "enter" if self.can_confirm(cx) => self.confirm(cx),
+            "enter" => {}
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
+    fn can_confirm(&self, cx: &gpui::App) -> bool {
+        let Some(draft) = self.draft.as_ref() else {
+            return false;
+        };
+        let alias = self.alias.read(cx).text();
+        draft.root_path.is_some()
+            && draft.preflighting.is_none()
+            && validate_alias(draft, alias).is_ok()
+            && (!matches!(draft.mode, SourceMode::Import) || !draft.selected.is_empty())
+    }
+}
+
+fn validate_alias(draft: &SourceDraft, alias: &str) -> Result<SourceAlias, &'static str> {
+    if alias.is_empty() {
+        return Err("Enter a Source alias");
+    }
+    let alias =
+        SourceAlias::new(alias).map_err(|_| "Alias must be a lowercase portable identifier")?;
+    if draft.existing_aliases.contains(&alias) {
+        return Err("Source alias is already configured");
+    }
+    Ok(alias)
+}
+
+fn alias_validation_message(draft: &SourceDraft, alias: &str) -> Option<&'static str> {
+    if !matches!(draft.mode, SourceMode::Import) || draft.root_path.is_none() {
+        return None;
+    }
+    validate_alias(draft, alias).err()
 }
 
 impl Render for SourceManagement {
@@ -371,7 +434,14 @@ impl Render for SourceManagement {
             return div().into_any_element();
         };
         let theme = ViewerTheme::for_appearance(window.appearance());
-        let alias = self.alias.read(cx).text().to_owned();
+        let alias_input = self.alias.read(cx);
+        let alias = alias_input.text().to_owned();
+        let (alias_prefix, alias_suffix) = alias.split_at(alias_input.cursor());
+        let alias_prefix = alias_prefix.to_owned();
+        let alias_suffix = alias_suffix.to_owned();
+        let alias_select_all = alias_input.is_select_all();
+        let alias_cursor_visible = alias_input.cursor_visible();
+        let alias_focused = self.alias_focus.is_focused(window);
         let root_label = draft
             .preflighting
             .as_ref()
@@ -386,14 +456,21 @@ impl Render for SourceManagement {
         let mode = draft.mode;
         let projects = draft.projects.clone();
         let selected = draft.selected.clone();
+        let has_projects = !projects.is_empty();
         let preflighting = draft.preflighting.is_some();
         let source_error = draft.source_error.clone();
         let error = draft.validation_error.clone();
+        let alias_error = alias_validation_message(draft, &alias);
+        let can_confirm = draft.root_path.is_some()
+            && !preflighting
+            && validate_alias(draft, &alias).is_ok()
+            && (!matches!(mode, SourceMode::Import) || !selected.is_empty());
         confirmation_overlay(
             "source-confirmation-overlay",
             div()
                 .id("source-confirmation")
                 .debug_selector(|| "source-confirmation".to_owned())
+                .on_key_down(cx.listener(Self::handle_dialog_key))
                 .w(px(480.))
                 .max_h(px(560.))
                 .p_4()
@@ -453,6 +530,7 @@ impl Render for SourceManagement {
                 .child(
                     div()
                         .id("source-alias-input")
+                        .debug_selector(|| "source-alias-input".to_owned())
                         .track_focus(&self.alias_focus)
                         .h(theme.spacing.control_height)
                         .px_2()
@@ -461,12 +539,75 @@ impl Render for SourceManagement {
                         .border_1()
                         .border_color(theme.colors.border)
                         .rounded(theme.spacing.corner_radius)
+                        .cursor_text()
                         .when(matches!(mode, SourceMode::Import), |element| {
-                            element.on_key_down(cx.listener(Self::edit_alias))
+                            element.on_key_down(cx.listener(Self::edit_alias)).on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.focus_alias(window, cx);
+                                }),
+                            )
                         })
-                        .child(alias),
+                        .children(alias_select_all.then(|| {
+                            div()
+                                .id("source-alias-selection")
+                                .debug_selector(|| "source-alias-selection".to_owned())
+                                .rounded(px(2.))
+                                .bg(theme.colors.element_active)
+                                .child(alias.clone())
+                        }))
+                        .children((!alias_select_all).then(|| div().child(alias_prefix)))
+                        .children((alias_focused && alias_cursor_visible).then(|| {
+                            div()
+                                .id("source-alias-caret")
+                                .debug_selector(|| "source-alias-caret".to_owned())
+                                .ml(px(1.))
+                                .w(px(1.))
+                                .h(px(14.))
+                                .flex_none()
+                                .bg(theme.colors.text)
+                        }))
+                        .children((!alias_select_all).then(|| div().child(alias_suffix))),
                 )
-                .child(div().text_xs().child("Projects"))
+                .children(alias_error.map(|error| {
+                    div()
+                        .id("source-alias-error")
+                        .debug_selector(|| "source-alias-error".to_owned())
+                        .text_xs()
+                        .text_color(theme.colors.error_text)
+                        .child(error)
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_xs().child("Projects"))
+                        .children(has_projects.then(|| {
+                            div()
+                                .flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .id("select-all-projects")
+                                        .debug_selector(|| "select-all-projects".to_owned())
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.select_all_projects(cx);
+                                        }))
+                                        .child("Select all"),
+                                )
+                                .child(
+                                    div()
+                                        .id("clear-projects")
+                                        .debug_selector(|| "clear-projects".to_owned())
+                                        .cursor_pointer()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.clear_projects(cx);
+                                        }))
+                                        .child("Clear"),
+                                )
+                        })),
+                )
                 .child(
                     div()
                         .id("source-project-list")
@@ -517,7 +658,10 @@ impl Render for SourceManagement {
                                 },
                                 theme,
                             )
-                            .on_click(cx.listener(|this, _, _, cx| this.confirm(cx))),
+                            .when(can_confirm, |button| {
+                                button.on_click(cx.listener(|this, _, _, cx| this.confirm(cx)))
+                            })
+                            .when(!can_confirm, |button| button.opacity(0.35).cursor_default()),
                         ),
                 ),
         )
