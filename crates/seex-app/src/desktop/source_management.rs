@@ -643,6 +643,8 @@ impl Render for SourceManagement {
                                 let selector = format!("source-project:{}", project_id.as_str());
                                 let id_selector =
                                     format!("source-project-id:{}", project_id.as_str());
+                                let checkbox_selector =
+                                    format!("source-project-checkbox:{}", project_id.as_str());
                                 div()
                                     .id(gpui::SharedString::from(selector.clone()))
                                     .debug_selector(move || selector.clone())
@@ -657,7 +659,6 @@ impl Render for SourceManagement {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.toggle_project(project_id.clone(), cx);
                                     }))
-                                    .child(components::checkbox(theme, checked))
                                     .child(
                                         div()
                                             .min_w(px(0.))
@@ -676,6 +677,7 @@ impl Render for SourceManagement {
                                                     .child(project.project_id.as_str().to_owned()),
                                             ),
                                     )
+                                    .child(components::checkbox(checkbox_selector, theme, checked))
                             })),
                     )
                     .children(error.map(|error| {

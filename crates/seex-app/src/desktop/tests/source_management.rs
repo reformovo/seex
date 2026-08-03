@@ -146,6 +146,17 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     assert!(cx.debug_bounds("source-alias-error").is_some());
     assert!(cx.debug_bounds("source-project-id:one").is_some());
     assert!(cx.debug_bounds("source-project-id:two").is_some());
+    let project_id = cx
+        .debug_bounds("source-project-id:one")
+        .expect("Project ID should render");
+    let checkbox = cx
+        .debug_bounds("source-project-checkbox:one")
+        .expect("Project checkbox should render");
+    assert!(checkbox.origin.x > project_id.origin.x);
+    let row = cx
+        .debug_bounds("source-project:one")
+        .expect("Project row should render");
+    assert_eq!(checkbox.right(), row.right() - px(8.));
     assert_eq!(
         cx.debug_bounds("source-confirmation")
             .expect("Source dialog should render")

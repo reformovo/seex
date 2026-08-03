@@ -116,8 +116,16 @@ pub(super) fn dialog_button(
         .child(label)
 }
 
-pub(super) fn checkbox(theme: ViewerTheme, checked: bool) -> Div {
+pub(super) fn checkbox(
+    id: impl Into<SharedString>,
+    theme: ViewerTheme,
+    checked: bool,
+) -> Stateful<Div> {
+    let id = id.into();
+    let selector = id.clone();
     div()
+        .id(id)
+        .debug_selector(move || selector.to_string())
         .size(px(14.))
         .flex_none()
         .flex()
@@ -137,9 +145,10 @@ pub(super) fn checkbox(theme: ViewerTheme, checked: bool) -> Div {
         })
         .children(checked.then(|| {
             div()
-                .size(px(6.))
-                .rounded(px(1.))
-                .bg(theme.colors.accent_text)
+                .text_xs()
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(theme.colors.accent_text)
+                .child("✓")
         }))
 }
 
