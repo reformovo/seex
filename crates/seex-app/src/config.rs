@@ -20,6 +20,22 @@ pub enum ConfigScope {
     Project,
 }
 
+/// One Source together with every configuration document that defines it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OwnedConfiguredSource {
+    pub configured: ConfiguredSource,
+    pub owners: Vec<ConfigScope>,
+}
+
+/// The fixed Viewer scope, editable documents, and merged Source definitions.
+pub struct SourceConfiguration {
+    pub global: EditableConfig,
+    pub project: Option<EditableConfig>,
+    pub global_base: PathBuf,
+    pub project_base: Option<PathBuf>,
+    pub sources: Vec<OwnedConfiguredSource>,
+}
+
 /// One loaded configuration document and its exact stale-read fingerprint.
 pub struct EditableConfig {
     path: PathBuf,
@@ -48,44 +64,122 @@ pub fn load_sources(
     project_path: &Path,
     project_base: &Path,
 ) -> Result<Vec<ConfiguredSource>, ConfigEditError> {
-    let global = EditableConfig::load(global_path, ConfigScope::Global)?;
-    let project = EditableConfig::load(project_path, ConfigScope::Project)?;
-    let mut merged = BTreeMap::new();
-    for source in parse_sources(&global.document, global_base)?
-        .into_iter()
-        .chain(parse_sources(&project.document, project_base)?)
-    {
-        let key = source.alias.as_str().to_owned();
-        if let Some(existing) = merged.get(&key) {
-            if existing != &source {
-                return Err(ConfigEditError::SourceAliasConflict { alias: key });
-            }
-        } else {
-            merged.insert(key, source);
-        }
-    }
-    Ok(merged.into_values().collect())
+    Ok(
+        load_source_configuration(global_path, global_base, Some((project_path, project_base)))?
+            .configured_sources(),
+    )
 }
 
 /// Loads Sources for the Viewer scope selected by an optional project root.
 pub fn load_sources_for_scope(
     project_root: Option<&Path>,
 ) -> Result<Vec<ConfiguredSource>, ConfigEditError> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    load_sources_for_scope_at(project_root, home.as_deref())
+    Ok(SourceConfiguration::load_for_scope(project_root)?.configured_sources())
 }
 
+impl SourceConfiguration {
+    /// Loads the global document and the optional fixed project document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigEditError`] when a document or Source is invalid.
+    pub fn load_for_scope(project_root: Option<&Path>) -> Result<Self, ConfigEditError> {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        Self::load_for_scope_at(project_root, home.as_deref())
+    }
+
+    pub fn active_scope(&self) -> ConfigScope {
+        if self.project.is_some() {
+            ConfigScope::Project
+        } else {
+            ConfigScope::Global
+        }
+    }
+
+    pub fn configured_sources(&self) -> Vec<ConfiguredSource> {
+        self.sources
+            .iter()
+            .map(|source| source.configured.clone())
+            .collect()
+    }
+
+    fn load_for_scope_at(
+        project_root: Option<&Path>,
+        home: Option<&Path>,
+    ) -> Result<Self, ConfigEditError> {
+        let global_base = home.or(project_root).unwrap_or_else(|| Path::new("."));
+        let global_path = global_base.join(".seex/config.toml");
+        let project = project_root.map(|root| (root.join(".seex/config.toml"), root));
+        load_source_configuration(
+            &global_path,
+            global_base,
+            project.as_ref().map(|(path, base)| (path.as_path(), *base)),
+        )
+    }
+}
+
+fn load_source_configuration(
+    global_path: &Path,
+    global_base: &Path,
+    project: Option<(&Path, &Path)>,
+) -> Result<SourceConfiguration, ConfigEditError> {
+    let global = EditableConfig::load(global_path, ConfigScope::Global)?;
+    let project_document = project
+        .map(|(path, _)| EditableConfig::load(path, ConfigScope::Project))
+        .transpose()?;
+    let mut sources = BTreeMap::new();
+    merge_sources(
+        &mut sources,
+        parse_sources(&global.document, global_base)?,
+        ConfigScope::Global,
+    )?;
+    if let (Some(document), Some((_, base))) = (&project_document, project) {
+        merge_sources(
+            &mut sources,
+            parse_sources(&document.document, base)?,
+            ConfigScope::Project,
+        )?;
+    }
+    Ok(SourceConfiguration {
+        global,
+        project: project_document,
+        global_base: global_base.to_owned(),
+        project_base: project.map(|(_, base)| base.to_owned()),
+        sources: sources.into_values().collect(),
+    })
+}
+
+fn merge_sources(
+    merged: &mut BTreeMap<String, OwnedConfiguredSource>,
+    sources: Vec<ConfiguredSource>,
+    scope: ConfigScope,
+) -> Result<(), ConfigEditError> {
+    for source in sources {
+        let key = source.alias.as_str().to_owned();
+        if let Some(existing) = merged.get_mut(&key) {
+            if existing.configured != source {
+                return Err(ConfigEditError::SourceAliasConflict { alias: key });
+            }
+            existing.owners.push(scope);
+        } else {
+            merged.insert(
+                key,
+                OwnedConfiguredSource {
+                    configured: source,
+                    owners: vec![scope],
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn load_sources_for_scope_at(
     project_root: Option<&Path>,
     home: Option<&Path>,
 ) -> Result<Vec<ConfiguredSource>, ConfigEditError> {
-    let global_base = home.or(project_root).unwrap_or_else(|| Path::new("."));
-    let global_path = global_base.join(".seex/config.toml");
-    let project_base = project_root.unwrap_or(global_base);
-    let project_path = project_root
-        .map(|root| root.join(".seex/config.toml"))
-        .unwrap_or_else(|| global_path.clone());
-    load_sources(&global_path, global_base, &project_path, project_base)
+    Ok(SourceConfiguration::load_for_scope_at(project_root, home)?.configured_sources())
 }
 
 fn parse_sources(
@@ -315,6 +409,26 @@ mod tests {
         assert_eq!(sources[1].root_path, home.join("experiments"));
         let scoped = load_sources_for_scope_at(Some(&project), Some(&home))?;
         assert_eq!(scoped.len(), 2);
+        let scoped = SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        assert_eq!(scoped.active_scope(), ConfigScope::Project);
+        assert_eq!(scoped.sources[0].owners, [ConfigScope::Project]);
+        assert_eq!(scoped.sources[1].owners, [ConfigScope::Global]);
+
+        fs::write(
+            &project_path,
+            format!(
+                "schema_version = 1\n[sources.research]\npath = {:?}\n\
+                 projects = ['vision-baseline', 'vision-large']\n",
+                home.join("experiments").to_string_lossy()
+            ),
+        )?;
+        let duplicated = SourceConfiguration::load_for_scope_at(Some(&project), Some(&home))?;
+        let research = duplicated
+            .sources
+            .iter()
+            .find(|source| source.configured.alias.as_str() == "research")
+            .ok_or("duplicated research Source")?;
+        assert_eq!(research.owners, [ConfigScope::Global, ConfigScope::Project]);
 
         fs::write(
             &project_path,
