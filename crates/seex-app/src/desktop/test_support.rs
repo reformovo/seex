@@ -6,7 +6,7 @@ use gpui::{
     Bounds, TestAppContext, VisualTestContext, WindowBounds, WindowHandle, WindowOptions, point,
     px, size,
 };
-use seex_core::engine::client::NativeClient;
+use seex::{Client, LogOptions, RunOptions};
 use seex_model::alignment::AlignmentAxis;
 use seex_model::run::RunId;
 use seex_model::types::ProjectId;
@@ -27,20 +27,21 @@ pub(super) fn fixture(metric_count: usize) -> (tempfile::TempDir, ProjectId, Run
 
 pub(super) fn fixture_with_metric(metric_key: &str) -> (tempfile::TempDir, ProjectId, RunId) {
     let root = tempfile::tempdir().expect("test directory should be created");
-    let client = NativeClient::open(root.path()).expect("test client should open");
-    let project = client
-        .create_project("viewer", Some(ProjectId::from_string("project")))
-        .expect("test project should be created");
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should open");
     let run = client
-        .create_run(&project.project_id, "run", Some(RunId::from_string("run")))
+        .start_run(RunOptions::new("project").id("run").name("run"))
         .expect("test Run should be created");
-    client
-        .run_handle(run.clone())
-        .log_metric_at_step(metric_key, 0, 1.)
+    run.log_with([(metric_key, 1.)], LogOptions::new().step(0))
         .expect("test metric should be logged");
-    client.finish_run(&run.run_id).expect("Run should finish");
-    client.shutdown(None).expect("test client should shut down");
-    (root, project.project_id, run.run_id)
+    run.finish().expect("Run should finish");
+    client.shutdown().expect("test client should shut down");
+    (
+        root,
+        ProjectId::from_string("project"),
+        run.run_id().clone(),
+    )
 }
 
 pub(super) fn fixture_with_runs(
@@ -63,74 +64,69 @@ pub(super) fn fixture_with_run_coverage(
     populate_all_runs: bool,
 ) -> (tempfile::TempDir, ProjectId, RunId) {
     let root = tempfile::tempdir().expect("test directory should be created");
-    let client = NativeClient::open(root.path()).expect("test client should open");
-    let project = client
-        .create_project("viewer", Some(ProjectId::from_string("project")))
-        .expect("test project should be created");
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should open");
     let mut first_run_id = None;
     for run_index in 0..run_count {
         let run_name = format!("baseline {run_index}");
+        let run_id = RunId::from_string(format!(
+            "run-{run_index}-with-a-very-long-identifier-that-requires-horizontal-scrolling"
+        ));
         let run = client
-            .create_run(
-                &project.project_id,
-                &run_name,
-                Some(RunId::from_string(format!(
-                    "run-{run_index}-with-a-very-long-identifier-that-requires-horizontal-scrolling"
-                ))),
+            .start_run(
+                RunOptions::new("project")
+                    .id(run_id.as_str())
+                    .name(&run_name),
             )
             .expect("test Run should be created");
         if run_index == 0 || populate_all_runs {
-            let handle = client.run_handle(run.clone());
             for index in 0..metric_count {
                 let metric_key = format!("metric-{index}");
-                handle
-                    .log_metric_at_step(&metric_key, 0, (run_index + index) as f64)
-                    .expect("test metric should be logged");
+                run.log_with(
+                    [(&metric_key, (run_index + index) as f64)],
+                    LogOptions::new().step(0),
+                )
+                .expect("test metric should be logged");
                 if populate_all_runs {
-                    handle
-                        .log_metric_at_step(&metric_key, 100, (run_index + index + 1) as f64)
-                        .expect("test metric extent should be logged");
+                    run.log_with(
+                        [(&metric_key, (run_index + index + 1) as f64)],
+                        LogOptions::new().step(100),
+                    )
+                    .expect("test metric extent should be logged");
                 }
             }
         }
-        client
-            .finish_run(&run.run_id)
-            .expect("test Run should finish");
-        first_run_id.get_or_insert(run.run_id);
+        run.finish().expect("test Run should finish");
+        first_run_id.get_or_insert(run_id);
     }
-    client.shutdown(None).expect("test client should shut down");
+    client.shutdown().expect("test client should shut down");
     (
         root,
-        project.project_id,
+        ProjectId::from_string("project"),
         first_run_id.expect("fixture should contain at least one Run"),
     )
 }
 
 pub(super) fn fixture_with_extent(end_step: i64) -> (tempfile::TempDir, ProjectId, RunId) {
     let root = tempfile::tempdir().expect("test directory should be created");
-    let client = NativeClient::open(root.path()).expect("test client should open");
-    let project = client
-        .create_project("viewer", Some(ProjectId::from_string("project")))
-        .expect("test project should be created");
+    let client = Client::builder(root.path())
+        .open()
+        .expect("test client should open");
     let run = client
-        .create_run(
-            &project.project_id,
-            "baseline",
-            Some(RunId::from_string("run")),
-        )
+        .start_run(RunOptions::new("project").id("run").name("baseline"))
         .expect("test Run should be created");
-    let handle = client.run_handle(run.clone());
-    handle
-        .log_metric_at_step("loss", 0, 1.)
+    run.log_with([("loss", 1.)], LogOptions::new().step(0))
         .expect("test metric should be logged");
-    handle
-        .log_metric_at_step("loss", end_step, 0.5)
+    run.log_with([("loss", 0.5)], LogOptions::new().step(end_step))
         .expect("test metric should be logged");
-    client
-        .finish_run(&run.run_id)
-        .expect("test Run should finish");
-    client.shutdown(None).expect("test client should shut down");
-    (root, project.project_id, run.run_id)
+    run.finish().expect("test Run should finish");
+    client.shutdown().expect("test client should shut down");
+    (
+        root,
+        ProjectId::from_string("project"),
+        run.run_id().clone(),
+    )
 }
 
 pub(super) fn saved_workbench(

@@ -3,6 +3,8 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+use seex::CatalogBackend;
+use seex::{Client, LogOptions, RunOptions};
 use seex_app::SourceError;
 use seex_app::config::ConfiguredSource;
 use seex_app::data::DiscoveryRequest;
@@ -12,14 +14,11 @@ use seex_app::data::worker::{
     Generation, ReadEventReceiver, ReadRequest, ReadSnapshot, ReadWorker, WorkerError,
 };
 use seex_app::domain::{DataSourceId, RunRef, SourceAlias};
-use seex_core::engine::client::NativeClient;
 use seex_model::alignment::AlignmentViewport;
 use seex_model::comparison::EvidenceCompleteness;
 use seex_model::metric::MetricKey;
 use seex_model::run::RunId;
 use seex_model::types::ProjectId;
-use seex_storage::StorageError;
-use seex_storage::bootstrap::CatalogBackend;
 
 mod support;
 
@@ -104,51 +103,49 @@ fn fixture(backend: CatalogBackend, absolute_paths: bool) -> Result<Fixture, Box
         ),
     )?;
 
-    let client = NativeClient::open_with_catalog_backend_storage_config(
-        root.path(),
-        backend,
-        Some(catalog_path),
-        Some(data_path),
-        None,
-        65_536,
-    )?;
+    let client = Client::builder(root.path())
+        .catalog_backend(backend)
+        .catalog_path(catalog_path)
+        .data_path(data_path)
+        .metric_queue_capacity(65_536)
+        .open()?;
     let project_id = ProjectId::from_string("project-1");
-    let project = client.create_project("viewer", Some(project_id.clone()))?;
     let complete_run_id = RunId::from_string("complete");
-    let complete = client.create_run(
-        &project.project_id,
-        "complete",
-        Some(complete_run_id.clone()),
+    let complete_handle = client.start_run(
+        RunOptions::new(project_id.as_str())
+            .id(complete_run_id.as_str())
+            .name("complete"),
     )?;
-    let complete_handle = client.run_handle(complete);
     for step in 0..SOURCE_POINTS {
-        complete_handle.log_metric_at_step("loss", step, step as f64)?;
+        complete_handle.log_with([("loss", step as f64)], LogOptions::new().step(step))?;
     }
-    client.finish_run(&complete_run_id)?;
+    complete_handle.finish()?;
 
     let invalid_run_id = RunId::from_string("invalid");
-    let invalid =
-        client.create_run(&project.project_id, "invalid", Some(invalid_run_id.clone()))?;
-    client
-        .run_handle(invalid)
-        .log_metric_at_step("loss", -1, 0.25)?;
-    client.fail_run(&invalid_run_id)?;
+    let invalid = client.start_run(
+        RunOptions::new(project_id.as_str())
+            .id(invalid_run_id.as_str())
+            .name("invalid"),
+    )?;
+    invalid.log_with([("loss", 0.25)], LogOptions::new().step(-1))?;
+    invalid.fail()?;
 
     let unavailable_run_id = RunId::from_string("unavailable");
-    client.create_run(
-        &project.project_id,
-        "unavailable",
-        Some(unavailable_run_id.clone()),
+    let unavailable = client.start_run(
+        RunOptions::new(project_id.as_str())
+            .id(unavailable_run_id.as_str())
+            .name("unavailable"),
     )?;
-    client.finish_run(&unavailable_run_id)?;
+    unavailable.finish()?;
 
     let running_run_id = RunId::from_string("running");
-    let running =
-        client.create_run(&project.project_id, "running", Some(running_run_id.clone()))?;
-    client
-        .run_handle(running)
-        .log_metric_at_step("loss", 0, 0.5)?;
-    client.shutdown(None)?;
+    let running = client.start_run(
+        RunOptions::new(project_id.as_str())
+            .id(running_run_id.as_str())
+            .name("running"),
+    )?;
+    running.log_with([("loss", 0.5)], LogOptions::new().step(0))?;
+    client.shutdown()?;
     Ok(Fixture {
         root,
         project_id,
@@ -424,8 +421,8 @@ fn worker_reports_a_missing_catalog_without_creating_it() -> Result<(), Box<dyn 
     assert_eq!(event.source_id, source_id);
     assert!(matches!(
         event.result,
-        Err(WorkerError::Source(SourceError::Storage(
-            StorageError::CatalogNotFound { .. }
+        Err(WorkerError::Source(SourceError::Sdk(
+            seex::Error::CatalogNotFound { .. }
         )))
     ));
     assert!(!root.path().join(".seex").exists());

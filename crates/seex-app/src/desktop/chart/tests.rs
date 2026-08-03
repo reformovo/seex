@@ -6,8 +6,8 @@ use crate::data::query::{
 };
 use crate::data::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker, recv_event_for_test};
 use crate::domain::DataSourceId;
+use seex::{Client, LogOptions, RunOptions};
 use seex_chart_core::{DataPoint, Series, SeriesId};
-use seex_core::engine::client::NativeClient;
 use seex_model::alignment::{AlignedMetricPoint, AlignmentViewport};
 use seex_model::comparison::EvidenceCompleteness;
 use seex_model::metric::{MetricKey, MetricPoint, Step};
@@ -252,18 +252,11 @@ fn hidden_runs_are_excluded_from_hover_evidence() {
 #[test]
 fn hover_maps_a_rendered_point_back_to_stored_evidence() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
-    let client = NativeClient::open(root.path())?;
-    let project = client.create_project("viewer", Some(ProjectId::from_string("project")))?;
-    let run = client.create_run(
-        &project.project_id,
-        "baseline",
-        Some(RunId::from_string("run")),
-    )?;
-    client
-        .run_handle(run.clone())
-        .log_metric_at_step("loss", 7, 1.25)?;
-    client.finish_run(&run.run_id)?;
-    client.shutdown(None)?;
+    let client = Client::builder(root.path()).open()?;
+    let run = client.start_run(RunOptions::new("project").id("run").name("baseline"))?;
+    run.log_with([("loss", 1.25)], LogOptions::new().step(7))?;
+    run.finish()?;
+    client.shutdown()?;
     let mut worker = ReadWorker::spawn(root.path())?;
     let events = worker
         .take_event_receiver()
@@ -271,8 +264,8 @@ fn hover_maps_a_rendered_point_back_to_stored_evidence() -> Result<(), Box<dyn s
     let source_id = DataSourceId::new("source").expect("test alias should be valid");
     let run_ref = RunRef::new(
         source_id.clone(),
-        run.project_id.clone(),
-        run.run_id.clone(),
+        ProjectId::from_string("project"),
+        run.run_id().clone(),
     );
     worker.submit(
         source_id.clone(),
