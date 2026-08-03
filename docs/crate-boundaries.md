@@ -1,78 +1,49 @@
 # Crate and Module Boundaries
 
-Seex is transitioning from Cargo-enforced product layers to one published Rust
-SDK. During the transition, the current crates remain authoritative and the
-workspace must build after every migration slice:
+Seex has one published Rust SDK and three private product crates:
 
 ```text
-seex-model <- seex-storage <- seex-core <- seex-python
-       ^                 ^                ^
-       +---------- seex-app --------+----> seex-chart-core
-```
-
-`seex-app` is the desktop composition root and may depend directly on the
-model, storage, core, and chart crates. Its `WorkbenchSession` owns native read
-coordination and immutable snapshots; independent GPUI entities own the
-sidebar, View bar, analysis workspace, inspector, and charts. All reverse
-dependencies, mutual entity subscriptions, and crate cycles are forbidden.
-
-The accepted final structure is:
-
-```text
-seex (published facade)
-  facade -> engine -> storage -> model
-       ^         Reader owns public reads
-       +-------------------------------+
+seex (published)
+  facade -> private engine -> private storage -> private model
+       ^              Reader owns all consumer reads
+       +---------------------------------------------+
 
 seex-python (private) ----> seex
 seex-app (private) -------> seex + seex-plot
 seex-plot (private) ------> no SDK, storage, PyO3, or GPUI dependency
 ```
 
-The arrows in the module chain point from a consumer to what it may use. Model
-does not depend on storage; storage does not depend on engine; engine does not
-depend on the facade. The transitional diagram is deleted when U5 removes the
-old crates. See [ADR 0015](adr/0015-unified-rust-sdk-performance-preserving-migration.md)
+Arrows point from a consumer to what it may use. Model does not depend on
+storage; storage does not depend on engine; engine does not depend on the
+facade. Reverse dependencies, cycles, and storage implementation types in a
+consumer API are forbidden. See [ADR 0015](adr/0015-unified-rust-sdk-performance-preserving-migration.md)
 and the accepted [SDK design](single-crate-rust-sdk.md).
 
-## Transitional Responsibilities
+## Responsibilities
 
-- **`seex-model`** owns projects, runs, metrics, typed identities, query
-  inputs, reduction policies, and query results. It has no storage, Python, or
-  rendering dependencies.
-- **`seex-storage`** owns project configuration, DuckDB/DuckLake catalogs,
-  schema bootstrap and validation, encoding, reads, writes, aggregate repair,
-  flush, S3 setup, and storage errors. It exposes a narrow metric-reader
-  interface implemented by the native project store and Parquet dataset reader.
-- **`seex-core`** owns client and run lifecycle, report admission, the
-  background queue, drain and finalization orchestration, shutdown, diagnostics,
-  and comparison use cases. It contains no SQL or Python bindings.
-- **`seex-python`** owns the PyO3 extension, Python classes and exceptions,
-  Arrow capsules, argument conversion, and error mapping. It contains no
-  product or storage policy.
-- **`seex-chart-core`** owns renderer-independent chart series, viewports,
-  scales, projected paths, hit testing, and interaction state. Its generic
-  chart points intentionally remain distinct from metric points.
-- **`seex-app`** owns source selection, background query scheduling,
-  conversion from metric points to chart points, GPUI state, and rendering.
-
-## Final Responsibilities
-
-- **`seex::model`** owns product identities, metric evidence, query inputs, and
-  comparison types. It has no storage, Python, or rendering dependency.
-- **`seex::storage`** is private and owns DuckDB/DuckLake, catalog and Parquet
+- **The `seex` root facade** owns stable `Client`, `RunHandle`, `Reader`,
+  options, public errors, and common product exports. Its private model module
+  owns identities, metric evidence, query inputs, and comparison types.
+- **The private `seex` storage module** owns DuckDB/DuckLake, catalog and Parquet
   I/O, schema validation, reduction, and storage errors.
-- **`seex::engine`** is private and owns Run lifecycle, atomic report admission,
+- **The private `seex` engine module** owns Run lifecycle, atomic report admission,
   the bounded writer queue, finalization, diagnostics, comparison, and ranking.
-- **The `seex` facade** owns the stable `Client`, `RunHandle`, `Reader`, options,
-  public errors, and common model exports. Storage implementation types never
-  appear in this API.
 - **`seex-python`** maps the facade to typed Python Run, Api, and Arrow surfaces.
   It contains no product, query, or storage policy.
 - **`seex-plot`** owns renderer-independent geometry and interaction. It remains
   independent of storage and GPUI.
 - **`seex-app`** composes the facade, plot crate, and GPUI. It derives private
   viewport query options but never depends on DuckDB or storage types.
+
+## Packaging Boundary
+
+Only `seex` is publishable. `seex-python`, `seex-app`, and `seex-plot` set
+`publish = false`; the PyO3 extension also opts out of rustdoc because its lib
+name intentionally matches the Python module. `cargo package -p seex` must
+contain no path dependency and no Python, Desktop, plot, PyO3, or GPUI source.
+[`package_smoke.py`](../scripts/package_smoke.py) checks both packaged manifests,
+extracts the archive into an independent temporary directory, and runs locked
+all-feature tests there.
 
 ## Reader Query Contract
 
