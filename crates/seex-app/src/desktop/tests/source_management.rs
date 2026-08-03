@@ -1081,6 +1081,60 @@ fn reload_sources_rejects_invalid_candidates_before_switching_live_state(cx: &mu
     });
 }
 
+#[gpui::test]
+fn older_reload_result_cannot_replace_newer_configuration(cx: &mut TestAppContext) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let older_root = tempfile::tempdir().expect("older Source should be created");
+    let newer_root = tempfile::tempdir().expect("newer Source should be created");
+    let older_alias = SourceAlias::new("older").expect("older alias should be valid");
+    let newer_alias = SourceAlias::new("newer").expect("newer alias should be valid");
+    let project_id = ProjectId::from_string("project");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            let mut older = viewer
+                .source_configuration
+                .clone()
+                .expect("Viewer configuration should load");
+            older
+                .set_source(
+                    &older_alias,
+                    older_root.path(),
+                    std::slice::from_ref(&project_id),
+                )
+                .expect("older Source should configure");
+            let mut newer = viewer
+                .source_configuration
+                .clone()
+                .expect("Viewer configuration should load");
+            newer
+                .set_source(
+                    &newer_alias,
+                    newer_root.path(),
+                    std::slice::from_ref(&project_id),
+                )
+                .expect("newer Source should configure");
+            let older_generation = viewer.begin_source_reload_for_test();
+            let newer_generation = viewer.begin_source_reload_for_test();
+
+            viewer.finish_source_reload_for_test(newer_generation, newer, cx);
+            viewer.finish_source_reload_for_test(older_generation, older, cx);
+        })
+        .expect("viewer should remain open");
+
+    window
+        .read_with(&cx, |viewer, _| {
+            let configured = viewer
+                .source_configuration
+                .as_ref()
+                .expect("newer configuration should remain installed")
+                .configured_sources();
+            assert_eq!(configured.len(), 1);
+            assert_eq!(configured[0].alias, newer_alias);
+        })
+        .expect("viewer should remain open");
+}
+
 fn source_with_two_projects() -> (tempfile::TempDir, ProjectId, ProjectId) {
     let root = tempfile::tempdir().expect("test Source should be created");
     let client = Client::builder(root.path())

@@ -83,6 +83,7 @@ pub(super) struct ViewerApp {
     pending_workbench_import: Option<PendingWorkbenchImport>,
     pending_import_flush_revision: Option<u64>,
     pending_quit_flush_revision: Option<u64>,
+    source_reload_generation: u64,
     project_root: Option<PathBuf>,
     pending_commands: Vec<command::WorkbenchCommand>,
     command_dispatch_pending: bool,
@@ -150,6 +151,7 @@ impl ViewerApp {
             pending_workbench_import: None,
             pending_import_flush_revision: None,
             pending_quit_flush_revision: None,
+            source_reload_generation: 0,
             project_root: project_path.clone(),
             pending_commands: Vec::new(),
             command_dispatch_pending: false,
@@ -638,24 +640,60 @@ impl ViewerApp {
     }
 
     fn reload_sources(&mut self, cx: &mut Context<Self>) {
+        let generation = self.begin_source_reload();
         let project_root = self.project_root.clone();
         let load = cx.background_spawn(async move { load_and_preflight_sources(project_root) });
-        cx.spawn(async move |this, cx| match load.await {
-            Ok((configuration, sources)) => {
-                let _ = this.update(cx, |viewer, cx| {
-                    viewer.source_configuration = Some(configuration);
-                    let visible_runs = viewer.active_visible_runs(cx);
-                    viewer.session.update(cx, |session, session_cx| {
-                        session.replace_sources(sources, &visible_runs, session_cx);
-                    });
-                    cx.notify();
-                });
-            }
-            Err(error) => {
-                let _ = this.update(cx, |viewer, cx| viewer.report_source_error(error, cx));
-            }
+        cx.spawn(async move |this, cx| {
+            let result = load.await;
+            let _ = this.update(cx, |viewer, cx| {
+                viewer.finish_source_reload(generation, result, cx);
+            });
         })
         .detach();
+    }
+
+    fn begin_source_reload(&mut self) -> u64 {
+        self.source_reload_generation = self.source_reload_generation.saturating_add(1);
+        self.source_reload_generation
+    }
+
+    fn finish_source_reload(
+        &mut self,
+        generation: u64,
+        result: Result<(SourceConfiguration, Vec<ConfiguredSource>), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.source_reload_generation {
+            return;
+        }
+        match result {
+            Ok((configuration, sources)) => {
+                self.source_configuration = Some(configuration);
+                let visible_runs = self.active_visible_runs(cx);
+                self.session.update(cx, |session, session_cx| {
+                    session.replace_sources(sources, &visible_runs, session_cx);
+                });
+                cx.notify();
+            }
+            Err(error) => {
+                self.report_source_error(error, cx);
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    fn begin_source_reload_for_test(&mut self) -> u64 {
+        self.begin_source_reload()
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    fn finish_source_reload_for_test(
+        &mut self,
+        generation: u64,
+        configuration: SourceConfiguration,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_source_reload(generation, Ok((configuration, Vec::new())), cx);
     }
 
     fn handle_source_management_event(
