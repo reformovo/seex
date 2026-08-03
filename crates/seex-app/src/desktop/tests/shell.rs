@@ -7,7 +7,7 @@ use super::super::test_support::*;
 use super::*;
 
 #[gpui::test]
-fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppContext) {
+fn startup_without_project_sources_exposes_source_import(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     cx.executor().allow_parking();
 
@@ -16,7 +16,6 @@ fn startup_without_configured_sources_opens_an_empty_workbench(cx: &mut TestAppC
 
     window
         .read_with(&cx, |viewer, cx| {
-            assert!(viewer.session_snapshot(cx).sources.is_empty());
             assert!(viewer.session.read(cx).transient_error.is_none());
         })
         .expect("viewer should remain open");

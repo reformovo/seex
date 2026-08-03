@@ -447,11 +447,10 @@ impl ProjectSidebar {
                                     "import-source",
                                     theme,
                                     false,
-                                    true,
+                                    false,
                                 )
                                 .debug_selector(|| "import-source".to_owned())
                                 .tooltip(components::label_tooltip("Import Source", theme))
-                                .cursor_pointer()
                                 .on_click(cx.listener(|_this, _, _, cx| {
                                     cx.emit(ProjectSidebarEvent::ImportSource);
                                     cx.notify();
