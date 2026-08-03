@@ -225,6 +225,7 @@ impl SourceConfiguration {
             original,
             contents: workbench.encode().into_bytes(),
             global: false,
+            configuration: false,
         };
         save_files(
             std::iter::once(&self.global)
@@ -482,6 +483,7 @@ struct StagedFile {
     original: Option<Vec<u8>>,
     contents: Vec<u8>,
     global: bool,
+    configuration: bool,
 }
 
 impl StagedFile {
@@ -492,6 +494,7 @@ impl StagedFile {
             original: document.original.clone(),
             contents: document.document.to_string().into_bytes(),
             global: document.scope == ConfigScope::Global,
+            configuration: true,
         }
     }
 }
@@ -503,7 +506,24 @@ fn save_documents<'a>(
 }
 
 fn save_files(files: impl IntoIterator<Item = StagedFile>) -> Result<(), ConfigEditError> {
-    let staged = files.into_iter().collect::<Vec<_>>();
+    let mut staged = Vec::<StagedFile>::new();
+    for file in files {
+        if let Some(existing) = staged
+            .iter_mut()
+            .find(|existing| existing.path == file.path)
+        {
+            if !existing.configuration || !file.configuration {
+                return Err(ConfigEditError::ConflictingDestination(file.path));
+            }
+            if existing.original != file.original {
+                return Err(ConfigEditError::StaleRead);
+            }
+            existing.contents = file.contents;
+            existing.global |= file.global;
+        } else {
+            staged.push(file);
+        }
+    }
     for file in &staged {
         let parent = file.path.parent().ok_or(ConfigEditError::MissingParent)?;
         fs::create_dir_all(parent)?;
@@ -595,6 +615,8 @@ pub enum ConfigEditError {
     SourceAliasConflict { alias: String },
     #[error("configuration path has no parent directory")]
     MissingParent,
+    #[error("multiple transaction documents target {0}")]
+    ConflictingDestination(PathBuf),
     #[error("project configuration is unavailable in the global Viewer scope")]
     MissingProjectScope,
     #[error("Source {0} is not configured")]
@@ -804,6 +826,36 @@ mod tests {
         configuration.save()?;
         for path in [&global_path, &project_path] {
             assert!(!fs::read_to_string(path)?.contains("[sources.research]"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn coincident_global_and_project_paths_preserve_global_permissions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join(".seex/config.toml");
+        fs::create_dir_all(path.parent().ok_or("config parent")?)?;
+        fs::write(&path, "schema_version = 1\n")?;
+        let mut configuration =
+            SourceConfiguration::load_for_scope_at(Some(root.path()), Some(root.path()))?;
+        configuration.set_source(
+            &SourceAlias::new("research")?,
+            root.path(),
+            &[ProjectId::from_string("project")],
+        )?;
+
+        configuration.save()?;
+
+        let saved = fs::read_to_string(&path)?.parse::<DocumentMut>()?;
+        assert_eq!(
+            saved["sources"]["research"]["path"].as_str(),
+            root.path().to_str()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(path)?.permissions().mode() & 0o777, 0o600);
         }
         Ok(())
     }
