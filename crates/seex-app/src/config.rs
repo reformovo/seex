@@ -238,6 +238,16 @@ impl SourceConfiguration {
     }
 
     fn mark_saved(&mut self) {
+        if let Some(project) = self
+            .project
+            .as_mut()
+            .filter(|project| project.path == self.global.path)
+        {
+            let saved = project.document.to_string().into_bytes();
+            self.global.original = Some(saved.clone());
+            project.original = Some(saved);
+            return;
+        }
         self.global.mark_saved();
         if let Some(project) = self.project.as_mut() {
             project.mark_saved();
@@ -846,11 +856,24 @@ mod tests {
         )?;
 
         configuration.save()?;
+        configuration.set_source(
+            &SourceAlias::new("research")?,
+            root.path(),
+            &[ProjectId::from_string("updated-project")],
+        )?;
+        configuration.save()?;
 
         let saved = fs::read_to_string(&path)?.parse::<DocumentMut>()?;
         assert_eq!(
             saved["sources"]["research"]["path"].as_str(),
             root.path().to_str()
+        );
+        assert_eq!(
+            saved["sources"]["research"]["projects"]
+                .as_array()
+                .and_then(|projects| projects.get(0))
+                .and_then(toml_edit::Value::as_str),
+            Some("updated-project")
         );
         #[cfg(unix)]
         {
