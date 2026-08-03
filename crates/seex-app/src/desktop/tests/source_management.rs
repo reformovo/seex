@@ -1,4 +1,4 @@
-use gpui::{Modifiers, TestAppContext};
+use gpui::{Modifiers, TestAppContext, px, size};
 use seex::{Client, Project, RunId, RunOptions};
 
 use super::super::test_support::{open_viewer, saved_workbench, wait_for_viewer};
@@ -25,6 +25,78 @@ fn import_source_control_opens_confirmation_before_path_prompt(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn manage_and_workbench_dialogs_share_responsive_geometry(cx: &mut TestAppContext) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let source = tempfile::tempdir().expect("test Source should be created");
+    let timestamp = "2026-01-01T00:00:00Z"
+        .parse()
+        .expect("test timestamp should parse");
+    let project_id = ProjectId::from_string("one");
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_manage(
+                    SourcePreflight {
+                        root_path: source.path().to_owned(),
+                        projects: vec![Project {
+                            project_id: project_id.clone(),
+                            name: "Project".to_owned(),
+                            created_at: timestamp,
+                        }],
+                    },
+                    alias.clone(),
+                    std::slice::from_ref(&project_id),
+                    window,
+                    cx,
+                );
+            });
+        })
+        .expect("viewer should remain open");
+    cx.simulate_resize(size(px(600.), px(320.)));
+    cx.run_until_parked();
+    cx.refresh().expect("Manage dialog should render");
+
+    let dialog = cx
+        .debug_bounds("source-confirmation")
+        .expect("Manage dialog should render");
+    assert_eq!(dialog.size.width, px(440.));
+    assert!(dialog.size.height <= px(288.));
+    assert!(cx.debug_bounds("source-readonly").is_some());
+    assert!(cx.debug_bounds("source-alias-readonly").is_some());
+    assert!(cx.debug_bounds("source-alias-input").is_none());
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_workbench(
+                    WorkbenchImportPlan {
+                        document: saved_workbench(
+                            alias.clone(),
+                            project_id.clone(),
+                            Vec::new(),
+                            "loss",
+                        ),
+                        alias_rewrites: vec![(alias.clone(), alias.clone())],
+                        allowlist_additions: vec![(alias.clone(), vec![project_id.clone()])],
+                    },
+                    cx,
+                );
+            });
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+    cx.refresh().expect("Workbench dialog should render");
+
+    let dialog = cx
+        .debug_bounds("workbench-import-dialog")
+        .expect("Workbench dialog should render");
+    assert_eq!(dialog.size.width, px(520.));
+    assert!(dialog.size.height <= px(288.));
+}
+
+#[gpui::test]
 fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     let scope = tempfile::tempdir().expect("test scope should be created");
@@ -35,7 +107,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
         .into_iter()
         .map(|id| Project {
             project_id: ProjectId::from_string(id),
-            name: id.to_owned(),
+            name: "Same name".to_owned(),
             created_at: timestamp,
         })
         .collect();
@@ -72,6 +144,24 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     assert!(cx.debug_bounds("source-alias-selection").is_some());
     assert!(cx.debug_bounds("source-alias-caret").is_some());
     assert!(cx.debug_bounds("source-alias-error").is_some());
+    assert!(cx.debug_bounds("source-project-id:one").is_some());
+    assert!(cx.debug_bounds("source-project-id:two").is_some());
+    assert_eq!(
+        cx.debug_bounds("source-confirmation")
+            .expect("Source dialog should render")
+            .size
+            .width,
+        px(440.)
+    );
+    for selector in ["choose-source", "source-alias-input", "confirm-source"] {
+        assert_eq!(
+            cx.debug_bounds(selector)
+                .expect("dialog control should render")
+                .size
+                .height,
+            px(28.)
+        );
+    }
 
     let select_all = cx
         .debug_bounds("select-all-projects")
@@ -297,6 +387,9 @@ fn managing_projects_updates_allowlist_and_clears_unimported_references(cx: &mut
         viewer.source_management.read(cx).is_open()
     });
     cx.refresh().expect("Manage Projects should render");
+    assert!(cx.debug_bounds("source-readonly").is_some());
+    assert!(cx.debug_bounds("source-alias-readonly").is_some());
+    assert!(cx.debug_bounds("source-alias-input").is_none());
     let one_row = cx
         .debug_bounds("source-project:one")
         .expect("Project one should render");
@@ -524,6 +617,13 @@ fn workbench_import_confirms_rewrites_and_replaces_blocked_live_state(cx: &mut T
         viewer.source_management.read(cx).is_open()
     });
     cx.refresh().expect("confirmation should render");
+    assert_eq!(
+        cx.debug_bounds("workbench-import-dialog")
+            .expect("Workbench dialog should render")
+            .size
+            .width,
+        px(520.)
+    );
     window
         .read_with(&cx, |viewer, _| {
             let plan = &viewer

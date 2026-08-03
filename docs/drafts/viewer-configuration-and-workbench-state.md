@@ -101,9 +101,12 @@ the configuration and does not change when the Source path changes.
 
 Source import follows this sequence:
 
-1. The user chooses a Source directory.
-2. Seex reads Project summaries without importing every Project's Runs.
-3. A confirmation view shows an editable alias and a Project multi-selection.
+1. The user opens the Import Source dialog, then chooses a Source directory
+   from inside that dialog.
+2. Seex reads Project summaries without importing every Project's Runs while
+   keeping the dialog open.
+3. The dialog shows an editable alias and an initially empty Project
+   multi-selection for confirmation.
 4. Confirmation atomically writes the Source and its non-empty Project
    allowlist to `config.toml`.
 5. Seex loads Runs only for the selected Projects.

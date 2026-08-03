@@ -8,7 +8,7 @@ use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
 use crate::workbench::import::WorkbenchImportPlan;
 
-use super::components::TextInput;
+use super::components::{self, DialogButtonKind, TextInput};
 use super::theme::ViewerTheme;
 
 #[derive(Clone, Debug)]
@@ -356,30 +356,20 @@ impl Render for SourceManagement {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(plan) = self.workbench.as_ref() {
             let theme = ViewerTheme::for_appearance(window.appearance());
+            let max_height = dialog_max_height(window);
             let rewrites = plan.alias_rewrites.clone();
             let additions = plan.allowlist_additions.clone();
-            return confirmation_overlay(
-                "workbench-import-confirmation",
-                div()
-                    .w(px(520.))
-                    .max_h(px(560.))
-                    .p_4()
-                    .gap_3()
-                    .flex()
-                    .flex_col()
-                    .rounded(theme.spacing.corner_radius)
-                    .border_1()
-                    .border_color(theme.colors.border)
-                    .bg(theme.colors.surface)
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Replace Workbench?"),
+            return components::modal_backdrop("workbench-import-confirmation", theme)
+                .child(
+                    components::dialog_surface(
+                        "workbench-import-dialog",
+                        px(520.),
+                        max_height,
+                        theme,
                     )
+                    .child(components::dialog_title("Replace Workbench?"))
                     .child(
                         div()
-                            .text_xs()
                             .text_color(theme.colors.text_muted)
                             .child("The imported Views and layout replace the current Workbench."),
                     )
@@ -418,22 +408,38 @@ impl Render for SourceManagement {
                             .justify_end()
                             .gap_2()
                             .child(
-                                dialog_button("cancel-workbench-import", "Cancel", theme)
-                                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                                components::dialog_button(
+                                    "cancel-workbench-import",
+                                    "Cancel",
+                                    theme,
+                                    DialogButtonKind::Secondary,
+                                    false,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                             )
                             .child(
-                                dialog_button("confirm-workbench-import", "Import", theme)
-                                    .on_click(cx.listener(|this, _, _, cx| {
+                                components::dialog_button(
+                                    "confirm-workbench-import",
+                                    "Import",
+                                    theme,
+                                    DialogButtonKind::Primary,
+                                    false,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _, _, cx| {
                                         this.confirm_workbench(cx);
-                                    })),
+                                    },
+                                )),
                             ),
                     ),
-            );
+                )
+                .into_any_element();
         }
         let Some(draft) = self.draft.as_ref() else {
             return div().into_any_element();
         };
         let theme = ViewerTheme::for_appearance(window.appearance());
+        let max_height = dialog_max_height(window);
         let alias_input = self.alias.read(cx);
         let alias = alias_input.text().to_owned();
         let (alias_prefix, alias_suffix) = alias.split_at(alias_input.cursor());
@@ -456,6 +462,8 @@ impl Render for SourceManagement {
         let mode = draft.mode;
         let projects = draft.projects.clone();
         let selected = draft.selected.clone();
+        let selected_count = selected.len();
+        let project_count = projects.len();
         let has_projects = !projects.is_empty();
         let preflighting = draft.preflighting.is_some();
         let source_error = draft.source_error.clone();
@@ -465,221 +473,272 @@ impl Render for SourceManagement {
             && !preflighting
             && validate_alias(draft, &alias).is_ok()
             && (!matches!(mode, SourceMode::Import) || !selected.is_empty());
-        confirmation_overlay(
-            "source-confirmation-overlay",
-            div()
-                .id("source-confirmation")
-                .debug_selector(|| "source-confirmation".to_owned())
-                .on_key_down(cx.listener(Self::handle_dialog_key))
-                .w(px(480.))
-                .max_h(px(560.))
-                .p_4()
-                .gap_3()
-                .flex()
-                .flex_col()
-                .rounded(theme.spacing.corner_radius)
-                .border_1()
-                .border_color(theme.colors.border)
-                .bg(theme.colors.surface)
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(match mode {
-                            SourceMode::Import => "Import Source",
-                            SourceMode::Manage => "Manage Projects",
-                        }),
-                )
-                .child(div().text_xs().child("Source"))
-                .child(
-                    div()
-                        .id("choose-source")
-                        .debug_selector(|| "choose-source".to_owned())
-                        .track_focus(&self.source_focus)
-                        .h(theme.spacing.control_height)
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .border_1()
-                        .border_color(theme.colors.border)
-                        .rounded(theme.spacing.corner_radius)
-                        .text_xs()
-                        .text_color(theme.colors.text_muted)
-                        .when(
-                            matches!(mode, SourceMode::Import) && !preflighting,
-                            |element| {
+        components::modal_backdrop("source-confirmation-overlay", theme)
+            .child(
+                components::dialog_surface("source-confirmation", px(440.), max_height, theme)
+                    .on_key_down(cx.listener(Self::handle_dialog_key))
+                    .child(components::dialog_title(match mode {
+                        SourceMode::Import => "Import Source",
+                        SourceMode::Manage => "Manage Projects",
+                    }))
+                    .child(div().text_xs().child("Source"))
+                    .children(matches!(mode, SourceMode::Import).then(|| {
+                        let tooltip = root_label.clone();
+                        div()
+                            .id("choose-source")
+                            .debug_selector(|| "choose-source".to_owned())
+                            .h(theme.spacing.control_height)
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .border_1()
+                            .border_color(theme.colors.border)
+                            .rounded(theme.spacing.corner_radius)
+                            .text_color(theme.colors.text_muted)
+                            .gap_2()
+                            .when(!preflighting, |element| {
                                 element
+                                    .track_focus(&self.source_focus)
                                     .cursor_pointer()
                                     .on_click(cx.listener(|_, _, _, cx| {
                                         cx.emit(SourceManagementEvent::ChooseSource);
                                     }))
-                            },
-                        )
-                        .when(preflighting, |element| {
-                            element.opacity(0.6).cursor_default()
-                        })
-                        .child(root_label),
-                )
-                .children(source_error.map(|error| {
-                    div()
-                        .text_xs()
-                        .text_color(theme.colors.error_text)
-                        .child(error)
-                }))
-                .child(div().text_xs().child("Alias"))
-                .child(
-                    div()
-                        .id("source-alias-input")
-                        .debug_selector(|| "source-alias-input".to_owned())
-                        .track_focus(&self.alias_focus)
-                        .h(theme.spacing.control_height)
-                        .px_2()
-                        .flex()
-                        .items_center()
-                        .border_1()
-                        .border_color(theme.colors.border)
-                        .rounded(theme.spacing.corner_radius)
-                        .cursor_text()
-                        .when(matches!(mode, SourceMode::Import), |element| {
-                            element.on_key_down(cx.listener(Self::edit_alias)).on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.focus_alias(window, cx);
-                                }),
-                            )
-                        })
-                        .children(alias_select_all.then(|| {
-                            div()
-                                .id("source-alias-selection")
-                                .debug_selector(|| "source-alias-selection".to_owned())
-                                .rounded(px(2.))
-                                .bg(theme.colors.element_active)
-                                .child(alias.clone())
-                        }))
-                        .children((!alias_select_all).then(|| div().child(alias_prefix)))
-                        .children((alias_focused && alias_cursor_visible).then(|| {
-                            div()
-                                .id("source-alias-caret")
-                                .debug_selector(|| "source-alias-caret".to_owned())
-                                .ml(px(1.))
-                                .w(px(1.))
-                                .h(px(14.))
-                                .flex_none()
-                                .bg(theme.colors.text)
-                        }))
-                        .children((!alias_select_all).then(|| div().child(alias_suffix))),
-                )
-                .children(alias_error.map(|error| {
-                    div()
-                        .id("source-alias-error")
-                        .debug_selector(|| "source-alias-error".to_owned())
-                        .text_xs()
-                        .text_color(theme.colors.error_text)
-                        .child(error)
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(div().text_xs().child("Projects"))
-                        .children(has_projects.then(|| {
-                            div()
-                                .flex()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .id("select-all-projects")
-                                        .debug_selector(|| "select-all-projects".to_owned())
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.select_all_projects(cx);
-                                        }))
-                                        .child("Select all"),
-                                )
-                                .child(
-                                    div()
-                                        .id("clear-projects")
-                                        .debug_selector(|| "clear-projects".to_owned())
-                                        .cursor_pointer()
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.clear_projects(cx);
-                                        }))
-                                        .child("Clear"),
-                                )
-                        })),
-                )
-                .child(
-                    div()
-                        .id("source-project-list")
-                        .max_h(px(300.))
-                        .overflow_y_scroll()
-                        .children(projects.into_iter().map(|project| {
-                            let project_id = project.project_id.clone();
-                            let checked = selected.contains(&project_id);
-                            let selector = format!("source-project:{}", project_id.as_str());
-                            div()
-                                .id(gpui::SharedString::from(selector.clone()))
-                                .debug_selector(move || selector.clone())
-                                .h(theme.spacing.tree_row_height)
-                                .px_2()
-                                .gap_2()
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .hover(|style| style.bg(theme.colors.element_hover))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.toggle_project(project_id.clone(), cx);
-                                }))
-                                .child(if checked { "☑" } else { "☐" })
-                                .child(project.name)
-                        })),
-                )
-                .children(error.map(|error| {
-                    div()
-                        .text_xs()
-                        .text_color(theme.colors.error_text)
-                        .child(error)
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            dialog_button("cancel-source", "Cancel", theme)
-                                .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-                        )
-                        .child(
-                            dialog_button(
-                                "confirm-source",
-                                match mode {
-                                    SourceMode::Import => "Import",
-                                    SourceMode::Manage => "Save",
-                                },
-                                theme,
-                            )
-                            .when(can_confirm, |button| {
-                                button.on_click(cx.listener(|this, _, _, cx| this.confirm(cx)))
                             })
-                            .when(!can_confirm, |button| button.opacity(0.35).cursor_default()),
-                        ),
-                ),
-        )
+                            .when(preflighting, |element| {
+                                element.opacity(0.6).cursor_default()
+                            })
+                            .child(components::icon(components::IconName::Folder, theme))
+                            .child(
+                                div()
+                                    .id("source-path-label")
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .tooltip(components::label_tooltip(tooltip, theme))
+                                    .child(root_label.clone()),
+                            )
+                            .child(div().text_color(theme.colors.accent).child("Browse"))
+                    }))
+                    .children(
+                        matches!(mode, SourceMode::Manage)
+                            .then(|| readonly_value("source-readonly", root_label.clone(), theme)),
+                    )
+                    .children(source_error.map(|error| {
+                        div()
+                            .text_xs()
+                            .text_color(theme.colors.error_text)
+                            .child(error)
+                    }))
+                    .child(div().text_xs().child("Alias"))
+                    .children(matches!(mode, SourceMode::Import).then(|| {
+                        div()
+                            .id("source-alias-input")
+                            .debug_selector(|| "source-alias-input".to_owned())
+                            .track_focus(&self.alias_focus)
+                            .h(theme.spacing.control_height)
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .border_1()
+                            .border_color(theme.colors.border)
+                            .rounded(theme.spacing.corner_radius)
+                            .cursor_text()
+                            .on_key_down(cx.listener(Self::edit_alias))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.focus_alias(window, cx);
+                            }))
+                            .children(alias_select_all.then(|| {
+                                div()
+                                    .id("source-alias-selection")
+                                    .debug_selector(|| "source-alias-selection".to_owned())
+                                    .rounded(px(2.))
+                                    .bg(theme.colors.element_active)
+                                    .child(alias.clone())
+                            }))
+                            .children((!alias_select_all).then(|| div().child(alias_prefix)))
+                            .children((alias_focused && alias_cursor_visible).then(|| {
+                                div()
+                                    .id("source-alias-caret")
+                                    .debug_selector(|| "source-alias-caret".to_owned())
+                                    .ml(px(1.))
+                                    .w(px(1.))
+                                    .h(px(14.))
+                                    .flex_none()
+                                    .bg(theme.colors.text)
+                            }))
+                            .children((!alias_select_all).then(|| div().child(alias_suffix)))
+                    }))
+                    .children(
+                        matches!(mode, SourceMode::Manage)
+                            .then(|| readonly_value("source-alias-readonly", alias.clone(), theme)),
+                    )
+                    .children(alias_error.map(|error| {
+                        div()
+                            .id("source-alias-error")
+                            .debug_selector(|| "source-alias-error".to_owned())
+                            .text_xs()
+                            .text_color(theme.colors.error_text)
+                            .child(error)
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(div().text_xs().child("Projects"))
+                            .children(has_projects.then(|| {
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .text_color(theme.colors.text_muted)
+                                    .child(format!("{selected_count}/{project_count} selected"))
+                                    .child(
+                                        div()
+                                            .id("select-all-projects")
+                                            .debug_selector(|| "select-all-projects".to_owned())
+                                            .cursor_pointer()
+                                            .text_color(theme.colors.accent)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.select_all_projects(cx);
+                                            }))
+                                            .child("Select all"),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("clear-projects")
+                                            .debug_selector(|| "clear-projects".to_owned())
+                                            .cursor_pointer()
+                                            .text_color(theme.colors.accent)
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.clear_projects(cx);
+                                            }))
+                                            .child("Clear"),
+                                    )
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("source-project-list")
+                            .debug_selector(|| "source-project-list".to_owned())
+                            .min_h(px(72.))
+                            .max_h(px(300.))
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .rounded(theme.spacing.corner_radius)
+                            .border_1()
+                            .border_color(theme.colors.border)
+                            .children((!has_projects).then(|| {
+                                div()
+                                    .h(px(72.))
+                                    .px_3()
+                                    .flex()
+                                    .items_center()
+                                    .text_color(theme.colors.text_muted)
+                                    .child("Choose a Source to inspect its Projects.")
+                            }))
+                            .children(projects.into_iter().map(|project| {
+                                let project_id = project.project_id.clone();
+                                let checked = selected.contains(&project_id);
+                                let selector = format!("source-project:{}", project_id.as_str());
+                                let id_selector =
+                                    format!("source-project-id:{}", project_id.as_str());
+                                div()
+                                    .id(gpui::SharedString::from(selector.clone()))
+                                    .debug_selector(move || selector.clone())
+                                    .min_h(px(42.))
+                                    .px_2()
+                                    .py_1()
+                                    .gap_2()
+                                    .flex()
+                                    .items_center()
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme.colors.element_hover))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.toggle_project(project_id.clone(), cx);
+                                    }))
+                                    .child(components::checkbox(theme, checked))
+                                    .child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .flex_1()
+                                            .flex()
+                                            .flex_col()
+                                            .child(div().truncate().child(project.name))
+                                            .child(
+                                                div()
+                                                    .id(gpui::SharedString::from(
+                                                        id_selector.clone(),
+                                                    ))
+                                                    .debug_selector(move || id_selector.clone())
+                                                    .truncate()
+                                                    .text_color(theme.colors.text_muted)
+                                                    .child(project.project_id.as_str().to_owned()),
+                                            ),
+                                    )
+                            })),
+                    )
+                    .children(error.map(|error| {
+                        div()
+                            .text_xs()
+                            .text_color(theme.colors.error_text)
+                            .child(error)
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                components::dialog_button(
+                                    "cancel-source",
+                                    "Cancel",
+                                    theme,
+                                    DialogButtonKind::Secondary,
+                                    false,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                            )
+                            .child(
+                                components::dialog_button(
+                                    "confirm-source",
+                                    match mode {
+                                        SourceMode::Import => "Import",
+                                        SourceMode::Manage => "Save",
+                                    },
+                                    theme,
+                                    DialogButtonKind::Primary,
+                                    !can_confirm,
+                                )
+                                .when(can_confirm, |button| {
+                                    button.on_click(cx.listener(|this, _, _, cx| this.confirm(cx)))
+                                }),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
-fn confirmation_overlay(id: &'static str, content: impl IntoElement) -> gpui::AnyElement {
+fn dialog_max_height(window: &Window) -> gpui::Pixels {
+    (window.viewport_size().height - px(32.))
+        .max(px(120.))
+        .min(px(560.))
+}
+
+fn readonly_value(
+    id: &'static str,
+    value: String,
+    theme: ViewerTheme,
+) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .debug_selector(move || id.to_owned())
-        .absolute()
-        .inset_0()
+        .h(theme.spacing.control_height)
         .flex()
         .items_center()
-        .justify_center()
-        .bg(gpui::rgba(0x00000066))
-        .child(content)
-        .into_any_element()
+        .truncate()
+        .text_color(theme.colors.text_muted)
+        .child(value)
 }
 
 fn import_summary(
@@ -690,31 +749,16 @@ fn import_summary(
 ) -> gpui::AnyElement {
     div()
         .id(id)
+        .p_2()
+        .rounded(theme.spacing.corner_radius)
+        .border_1()
+        .border_color(theme.colors.border)
+        .bg(theme.colors.panel)
         .max_h(px(140.))
         .overflow_y_scroll()
         .text_xs()
         .text_color(theme.colors.text_muted)
-        .children(lines.is_empty().then_some(empty))
-        .children(lines)
+        .children(lines.is_empty().then(|| div().child(empty)))
+        .children(lines.into_iter().map(|line| div().py_1().child(line)))
         .into_any_element()
-}
-
-fn dialog_button(
-    id: &'static str,
-    label: &'static str,
-    theme: ViewerTheme,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .debug_selector(move || id.to_owned())
-        .h(theme.spacing.control_height)
-        .px_3()
-        .flex()
-        .items_center()
-        .rounded(theme.spacing.corner_radius)
-        .border_1()
-        .border_color(theme.colors.border)
-        .cursor_pointer()
-        .hover(|style| style.bg(theme.colors.element_hover))
-        .child(label)
 }
