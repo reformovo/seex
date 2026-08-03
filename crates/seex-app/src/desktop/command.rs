@@ -37,6 +37,7 @@ pub(crate) enum WorkbenchCommand {
         project: ProjectRef,
         placement: ProjectPlacement,
     },
+    #[expect(dead_code, reason = "retired by the upcoming U6 workbench slice")]
     RemoveProject(ProjectRef),
     SetProjectRuns {
         runs: Vec<RunRef>,

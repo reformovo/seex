@@ -1,7 +1,7 @@
 use gpui::{Modifiers, TestAppContext};
-use seex::Project;
+use seex::{Client, Project, RunOptions};
 
-use super::super::test_support::open_viewer;
+use super::super::test_support::{open_viewer, wait_for_viewer};
 use super::*;
 use crate::data::SourcePreflight;
 use crate::domain::SourceAlias;
@@ -113,6 +113,7 @@ fn failed_source_config_write_does_not_switch_live_sources(cx: &mut TestAppConte
         .update(&mut cx, |viewer, _, cx| {
             viewer.save_confirmed_source(
                 ConfirmedSource {
+                    manage: false,
                     alias: SourceAlias::new("research").expect("test alias should be valid"),
                     root_path: source.path().to_owned(),
                     projects: vec![ProjectId::from_string("project")],
@@ -134,5 +135,105 @@ fn failed_source_config_write_does_not_switch_live_sources(cx: &mut TestAppConte
     assert_eq!(
         std::fs::read_to_string(config_path).expect("external config should remain readable"),
         "schema_version = 1\n# external\n"
+    );
+}
+
+#[gpui::test]
+fn managing_projects_updates_allowlist_and_clears_unimported_references(cx: &mut TestAppContext) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let source = tempfile::tempdir().expect("test Source should be created");
+    let client = Client::builder(source.path())
+        .open()
+        .expect("test client should open");
+    for project in ["one", "two"] {
+        client
+            .start_run(RunOptions::new(project).id(project).name(project))
+            .expect("test Run should start")
+            .finish()
+            .expect("test Run should finish");
+    }
+    client.shutdown().expect("test client should shut down");
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let one = ProjectId::from_string("one");
+    let two = ProjectId::from_string("two");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.save_confirmed_source(
+                ConfirmedSource {
+                    manage: false,
+                    alias: alias.clone(),
+                    root_path: source.path().to_owned(),
+                    projects: vec![one.clone(), two.clone()],
+                },
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .sources
+            .first()
+            .is_some_and(|source| source.project_allowlist.len() == 2)
+    });
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.views.pin_project(ProjectRef::new(
+                    DataSourceId::from_alias(&alias),
+                    one.clone(),
+                ));
+            });
+            viewer.save_confirmed_source(
+                ConfirmedSource {
+                    manage: true,
+                    alias: alias.clone(),
+                    root_path: source.path().to_owned(),
+                    projects: vec![two.clone()],
+                },
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .sources
+            .first()
+            .is_some_and(|source| source.project_allowlist == [two.clone()])
+    });
+
+    window
+        .read_with(&cx, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            assert_eq!(snapshot.sources[0].project_allowlist, [two.clone()]);
+            assert!(snapshot.views.pinned_projects().is_empty());
+        })
+        .expect("viewer should remain open");
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.save_confirmed_source(
+                ConfirmedSource {
+                    manage: true,
+                    alias,
+                    root_path: source.path().to_owned(),
+                    projects: Vec::new(),
+                },
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.session_snapshot(cx).sources.is_empty()
+    });
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .sources
+                .is_empty())
+            .expect("viewer should remain open")
     );
 }

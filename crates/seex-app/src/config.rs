@@ -182,10 +182,28 @@ impl SourceConfiguration {
         Ok(())
     }
 
+    pub fn remove_source(&mut self, alias: &SourceAlias) -> Result<(), ConfigEditError> {
+        let index = self
+            .sources
+            .iter()
+            .position(|source| &source.configured.alias == alias)
+            .ok_or_else(|| ConfigEditError::UnknownSource(alias.to_string()))?;
+        let source = self.sources.remove(index);
+        for owner in source.owners {
+            self.document_mut(owner)?.remove_source(alias);
+        }
+        Ok(())
+    }
+
     /// Atomically replaces all changed configuration documents after validating
     /// every stale-read fingerprint.
-    pub fn save(&self) -> Result<(), ConfigEditError> {
-        save_documents(std::iter::once(&self.global).chain(self.project.as_ref()))
+    pub fn save(&mut self) -> Result<(), ConfigEditError> {
+        save_documents(std::iter::once(&self.global).chain(self.project.as_ref()))?;
+        self.global.mark_saved();
+        if let Some(project) = self.project.as_mut() {
+            project.mark_saved();
+        }
+        Ok(())
     }
 
     fn document_mut(&mut self, scope: ConfigScope) -> Result<&mut EditableConfig, ConfigEditError> {
@@ -404,6 +422,10 @@ impl EditableConfig {
         {
             sources.remove(alias.as_str());
         }
+    }
+
+    fn mark_saved(&mut self) {
+        self.original = Some(self.document.to_string().into_bytes());
     }
 
     /// Atomically saves the document if its original bytes are still current.

@@ -4,11 +4,12 @@ use crate::config::{ConfiguredSource, SourceConfiguration};
 use crate::data::SourcePreflight;
 #[cfg(all(test, feature = "test-support"))]
 use crate::data::registry::SourceStatus;
-use crate::domain::{RunRef, suggest_source_alias};
+use crate::domain::{DataSourceId, RunRef, suggest_source_alias};
+use crate::workbench::ProjectRef;
 use crate::workbench::toml_document::TomlWorkbenchDocument;
 use gpui::{
-    Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Render,
-    SharedString, Window, div, prelude::*,
+    Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, PathPromptOptions,
+    PromptLevel, Render, SharedString, Window, div, prelude::*,
 };
 
 use super::ImportSource;
@@ -385,22 +386,69 @@ impl ViewerApp {
             self.report_source_error("Viewer configuration is unavailable".to_owned(), cx);
             return;
         };
-        if let Err(error) = candidate.set_source(&source.alias, &source.root_path, &source.projects)
-        {
+        let existing = candidate
+            .sources
+            .iter()
+            .find(|configured| configured.configured.alias == source.alias)
+            .map(|configured| configured.configured.clone());
+        if !source.manage && existing.is_some() {
+            self.report_source_error(
+                format!("Source alias {} is already configured", source.alias),
+                cx,
+            );
+            return;
+        }
+        let update = if source.projects.is_empty() {
+            candidate.remove_source(&source.alias)
+        } else {
+            candidate.set_source(&source.alias, &source.root_path, &source.projects)
+        };
+        if let Err(error) = update {
             self.report_source_error(error.to_string(), cx);
             return;
         }
-        let configured = ConfiguredSource {
+        let removed_projects = existing
+            .as_ref()
+            .map(|existing| {
+                existing
+                    .projects
+                    .iter()
+                    .filter(|project| !source.projects.contains(project))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let source_id = DataSourceId::from_alias(&source.alias);
+        let configured = (!source.projects.is_empty()).then(|| ConfiguredSource {
             alias: source.alias,
             root_path: source.root_path,
             projects: source.projects,
-        };
+        });
         let save = cx.background_spawn(async move { candidate.save().map(|()| candidate) });
         cx.spawn(async move |this, cx| match save.await {
             Ok(configuration) => {
                 let _ = this.update(cx, |viewer, cx| {
                     viewer.source_configuration = Some(configuration);
-                    viewer.open_configured_sources(vec![configured], cx);
+                    viewer.session.update(cx, |session, session_cx| {
+                        for project_id in &removed_projects {
+                            session.views.remove_project(ProjectRef::new(
+                                source_id.clone(),
+                                project_id.clone(),
+                            ));
+                        }
+                        if !removed_projects.is_empty() {
+                            session.persistence_dirty = true;
+                        }
+                        if configured.is_none() {
+                            session.sources.remove(&source_id);
+                            session.event_tasks.remove(&source_id);
+                        }
+                        session.publish_snapshot();
+                        session_cx.notify();
+                    });
+                    if let Some(configured) = configured {
+                        viewer.open_configured_sources(vec![configured], cx);
+                    }
                     cx.notify();
                 });
             }
@@ -409,6 +457,96 @@ impl ViewerApp {
                     viewer.report_source_error(error.to_string(), cx);
                 });
             }
+        })
+        .detach();
+    }
+
+    fn manage_source_projects(
+        &mut self,
+        source_id: DataSourceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(source) = self
+            .session_snapshot(cx)
+            .sources
+            .iter()
+            .find(|source| source.source_id == source_id)
+            .cloned()
+        else {
+            self.report_source_error(format!("Source {source_id} is unavailable"), cx);
+            return;
+        };
+        let root_path = source.root_path.clone();
+        let preflight = cx.background_spawn(async move { SourcePreflight::load(&root_path) });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = preflight.await;
+            let _ = this.update_in(cx, |viewer, window, cx| match result {
+                Ok(preflight) => {
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.begin_manage(
+                            preflight,
+                            source.source_id.alias().clone(),
+                            &source.project_allowlist,
+                            window,
+                            cx,
+                        );
+                    });
+                }
+                Err(error) => viewer.report_source_error(error.to_string(), cx),
+            });
+        })
+        .detach();
+    }
+
+    fn confirm_remove_project(
+        &mut self,
+        project: ProjectRef,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Remove Project?",
+            Some("This unimports the Project and removes its Workbench references."),
+            &["Remove", "Cancel"],
+            cx,
+        );
+        let configured = self
+            .source_configuration
+            .as_ref()
+            .and_then(|configuration| {
+                configuration
+                    .sources
+                    .iter()
+                    .find(|source| source.configured.alias == *project.source_id.alias())
+                    .map(|source| source.configured.clone())
+            });
+        cx.spawn_in(window, async move |this, cx| {
+            if !matches!(answer.await, Ok(0)) {
+                return;
+            }
+            let _ = this.update_in(cx, |viewer, _, cx| {
+                let Some(configured) = configured else {
+                    viewer
+                        .report_source_error("Source configuration is unavailable".to_owned(), cx);
+                    return;
+                };
+                let projects = configured
+                    .projects
+                    .into_iter()
+                    .filter(|project_id| project_id != &project.project_id)
+                    .collect();
+                viewer.save_confirmed_source(
+                    ConfirmedSource {
+                        manage: true,
+                        alias: configured.alias,
+                        root_path: configured.root_path,
+                        projects,
+                    },
+                    cx,
+                );
+            });
         })
         .detach();
     }

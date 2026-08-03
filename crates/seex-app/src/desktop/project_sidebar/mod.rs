@@ -60,6 +60,8 @@ pub(crate) struct ProjectSidebar {
 pub(crate) enum ProjectSidebarEvent {
     Command(WorkbenchCommand),
     ImportSource,
+    ManageSource(DataSourceId),
+    RemoveProject(ProjectRef),
     DismissOtherPopovers,
     HoveredRun {
         run: RunRef,
@@ -745,9 +747,13 @@ impl ProjectSidebar {
 
     fn remove_project(&mut self, project: ProjectRef, cx: &mut Context<Self>) {
         self.menu = None;
-        cx.emit(ProjectSidebarEvent::Command(
-            WorkbenchCommand::RemoveProject(project),
-        ));
+        cx.emit(ProjectSidebarEvent::RemoveProject(project));
+        cx.notify();
+    }
+
+    fn manage_source(&mut self, source_id: DataSourceId, cx: &mut Context<Self>) {
+        self.menu = None;
+        cx.emit(ProjectSidebarEvent::ManageSource(source_id));
         cx.notify();
     }
 
@@ -1001,6 +1007,12 @@ impl ViewerApp {
                 self.dispatch_workbench_command(command.clone(), cx);
             }
             ProjectSidebarEvent::ImportSource => self.choose_source_directory(window, cx),
+            ProjectSidebarEvent::ManageSource(source_id) => {
+                self.manage_source_projects(source_id.clone(), window, cx);
+            }
+            ProjectSidebarEvent::RemoveProject(project) => {
+                self.confirm_remove_project(project.clone(), window, cx);
+            }
             ProjectSidebarEvent::DismissOtherPopovers => {
                 self.analysis_view_bar.update(cx, |bar, cx| {
                     if bar.menu.take().is_some() {

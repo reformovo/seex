@@ -12,6 +12,7 @@ use super::theme::ViewerTheme;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConfirmedSource {
+    pub manage: bool,
     pub alias: SourceAlias,
     pub root_path: PathBuf,
     pub projects: Vec<ProjectId>,
@@ -30,10 +31,17 @@ pub(crate) struct SourceManagement {
 }
 
 struct SourceDraft {
+    mode: SourceMode,
     root_path: PathBuf,
     projects: Vec<Project>,
     selected: HashSet<ProjectId>,
     validation_error: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum SourceMode {
+    Import,
+    Manage,
 }
 
 impl EventEmitter<SourceManagementEvent> for SourceManagement {}
@@ -67,9 +75,33 @@ impl SourceManagement {
             .map(|project| project.project_id.clone())
             .collect();
         self.draft = Some(SourceDraft {
+            mode: SourceMode::Import,
             root_path: preflight.root_path,
             projects: preflight.projects,
             selected,
+            validation_error: None,
+        });
+        self.alias_focus.focus(window);
+        cx.notify();
+    }
+
+    pub(crate) fn begin_manage(
+        &mut self,
+        preflight: SourcePreflight,
+        alias: SourceAlias,
+        selected_projects: &[ProjectId],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.alias.update(cx, |input, cx| {
+            input.set_text(alias.as_str());
+            input.stop_blink(cx);
+        });
+        self.draft = Some(SourceDraft {
+            mode: SourceMode::Manage,
+            root_path: preflight.root_path,
+            projects: preflight.projects,
+            selected: selected_projects.iter().cloned().collect(),
             validation_error: None,
         });
         self.alias_focus.focus(window);
@@ -113,12 +145,13 @@ impl SourceManagement {
                 return;
             }
         };
-        if draft.selected.is_empty() {
+        if draft.selected.is_empty() && matches!(draft.mode, SourceMode::Import) {
             draft.validation_error = Some("Select at least one Project".to_owned());
             cx.notify();
             return;
         }
         let confirmed = ConfirmedSource {
+            manage: matches!(draft.mode, SourceMode::Manage),
             alias,
             root_path: draft.root_path.clone(),
             projects: draft
@@ -161,6 +194,7 @@ impl Render for SourceManagement {
         let theme = ViewerTheme::for_appearance(window.appearance());
         let alias = self.alias.read(cx).text().to_owned();
         let root_label = draft.root_path.to_string_lossy().into_owned();
+        let mode = draft.mode;
         let projects = draft.projects.clone();
         let selected = draft.selected.clone();
         let error = draft.validation_error.clone();
@@ -191,7 +225,10 @@ impl Render for SourceManagement {
                         div()
                             .text_lg()
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("Import Source"),
+                            .child(match mode {
+                                SourceMode::Import => "Import Source",
+                                SourceMode::Manage => "Manage Projects",
+                            }),
                     )
                     .child(
                         div()
@@ -211,7 +248,9 @@ impl Render for SourceManagement {
                             .border_1()
                             .border_color(theme.colors.border)
                             .rounded(theme.spacing.corner_radius)
-                            .on_key_down(cx.listener(Self::edit_alias))
+                            .when(matches!(mode, SourceMode::Import), |element| {
+                                element.on_key_down(cx.listener(Self::edit_alias))
+                            })
                             .child(alias),
                     )
                     .child(div().text_xs().child("Projects"))
@@ -257,8 +296,15 @@ impl Render for SourceManagement {
                                     .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                             )
                             .child(
-                                dialog_button("confirm-source", "Import", theme)
-                                    .on_click(cx.listener(|this, _, _, cx| this.confirm(cx))),
+                                dialog_button(
+                                    "confirm-source",
+                                    match mode {
+                                        SourceMode::Import => "Import",
+                                        SourceMode::Manage => "Save",
+                                    },
+                                    theme,
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| this.confirm(cx))),
                             ),
                     ),
             )
