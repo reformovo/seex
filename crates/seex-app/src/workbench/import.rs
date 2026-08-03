@@ -9,10 +9,6 @@ use super::toml_document::{
 };
 
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by the next U6 import UI slice")
-)]
 pub(crate) struct ImportSourceMapping {
     pub external_alias: SourceAlias,
     pub local_alias: SourceAlias,
@@ -21,10 +17,6 @@ pub(crate) struct ImportSourceMapping {
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by the next U6 import UI slice")
-)]
 pub(crate) struct WorkbenchImportPlan {
     pub document: TomlWorkbenchDocument,
     pub alias_rewrites: Vec<(SourceAlias, SourceAlias)>,
@@ -32,10 +24,6 @@ pub(crate) struct WorkbenchImportPlan {
 }
 
 /// Validates mappings and rewrites an imported workbench to local aliases.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired by the next U6 import UI slice")
-)]
 pub(crate) fn preflight_workbench_import(
     mut document: TomlWorkbenchDocument,
     mappings: &[ImportSourceMapping],
@@ -51,22 +39,24 @@ pub(crate) fn preflight_workbench_import(
             ));
         }
     }
-    let referenced = referenced_projects(&document);
+    let referenced = referenced_projects_by_alias(&document);
     let mut additions = HashMap::<SourceAlias, Vec<ProjectId>>::new();
-    for (external_alias, project_id) in referenced {
+    for (external_alias, project_ids) in referenced {
         let mapping = by_external
             .get(&external_alias)
             .ok_or_else(|| WorkbenchImportError::MissingAlias(external_alias.to_string()))?;
-        if !mapping.available_projects.contains(&project_id) {
-            return Err(WorkbenchImportError::MissingProject {
-                alias: mapping.local_alias.to_string(),
-                project_id: project_id.as_str().to_owned(),
-            });
-        }
-        if !mapping.imported_projects.contains(&project_id) {
-            let projects = additions.entry(mapping.local_alias.clone()).or_default();
-            if !projects.contains(&project_id) {
-                projects.push(project_id);
+        for project_id in project_ids {
+            if !mapping.available_projects.contains(&project_id) {
+                return Err(WorkbenchImportError::MissingProject {
+                    alias: mapping.local_alias.to_string(),
+                    project_id: project_id.as_str().to_owned(),
+                });
+            }
+            if !mapping.imported_projects.contains(&project_id) {
+                let projects = additions.entry(mapping.local_alias.clone()).or_default();
+                if !projects.contains(&project_id) {
+                    projects.push(project_id);
+                }
             }
         }
     }
@@ -88,7 +78,9 @@ pub(crate) fn preflight_workbench_import(
     })
 }
 
-fn referenced_projects(document: &TomlWorkbenchDocument) -> HashSet<(SourceAlias, ProjectId)> {
+pub(crate) fn referenced_projects_by_alias(
+    document: &TomlWorkbenchDocument,
+) -> HashMap<SourceAlias, Vec<ProjectId>> {
     let mut projects = document
         .expanded_projects
         .iter()
@@ -108,7 +100,14 @@ fn referenced_projects(document: &TomlWorkbenchDocument) -> HashSet<(SourceAlias
     {
         projects.insert((run.source_alias.clone(), run.project_id.clone()));
     }
-    projects
+    let mut by_alias = HashMap::<SourceAlias, Vec<ProjectId>>::new();
+    for (alias, project_id) in projects {
+        by_alias.entry(alias).or_default().push(project_id);
+    }
+    for project_ids in by_alias.values_mut() {
+        project_ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    }
+    by_alias
 }
 
 fn rewrite_document(

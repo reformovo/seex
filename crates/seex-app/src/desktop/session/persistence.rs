@@ -89,7 +89,6 @@ impl WorkbenchSession {
         self.schedule_autosave(Duration::from_millis(250), cx);
     }
 
-    #[expect(dead_code, reason = "used by the upcoming U6 import transaction")]
     pub(crate) fn flush_now(&mut self, cx: &mut Context<Self>) {
         self.flush_requested = true;
         self.schedule_autosave(Duration::ZERO, cx);

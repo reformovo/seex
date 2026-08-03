@@ -17,6 +17,7 @@ actions!(
         Refresh,
         ImportSource,
         ReloadSources,
+        ImportWorkbench,
         ExportWorkbench,
         ResetView,
         ToggleProjectSidebar,
@@ -88,6 +89,7 @@ fn menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action("Import Source…", ImportSource),
                 MenuItem::action("Reload Sources", ReloadSources),
+                MenuItem::action("Import Workbench…", ImportWorkbench),
                 MenuItem::action("Export Workbench…", ExportWorkbench),
                 MenuItem::separator(),
                 MenuItem::action("Refresh", Refresh),

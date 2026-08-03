@@ -10,6 +10,7 @@ use seex::ProjectId;
 use toml_edit::{Array, DocumentMut, value};
 
 use crate::domain::SourceAlias;
+use crate::workbench::toml_document::TomlWorkbenchDocument;
 
 const SCHEMA_VERSION: i64 = 1;
 static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
@@ -199,11 +200,47 @@ impl SourceConfiguration {
     /// every stale-read fingerprint.
     pub fn save(&mut self) -> Result<(), ConfigEditError> {
         save_documents(std::iter::once(&self.global).chain(self.project.as_ref()))?;
+        self.mark_saved();
+        Ok(())
+    }
+
+    /// Atomically replaces changed configuration documents and one workbench.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigEditError`] when validation, staging, stale-read checks,
+    /// promotion, or rollback fails.
+    pub fn save_with_workbench(
+        &mut self,
+        path: &Path,
+        original: Option<Vec<u8>>,
+        workbench: &TomlWorkbenchDocument,
+    ) -> Result<(), ConfigEditError> {
+        workbench
+            .validate()
+            .map_err(|error| ConfigEditError::InvalidWorkbench(error.to_string()))?;
+        let workbench = StagedFile {
+            path: path.to_owned(),
+            temporary: temporary_path(path),
+            original,
+            contents: workbench.encode().into_bytes(),
+            global: false,
+        };
+        save_files(
+            std::iter::once(&self.global)
+                .chain(self.project.as_ref())
+                .map(StagedFile::configuration)
+                .chain(std::iter::once(workbench)),
+        )?;
+        self.mark_saved();
+        Ok(())
+    }
+
+    fn mark_saved(&mut self) {
         self.global.mark_saved();
         if let Some(project) = self.project.as_mut() {
             project.mark_saved();
         }
-        Ok(())
     }
 
     fn document_mut(&mut self, scope: ConfigScope) -> Result<&mut EditableConfig, ConfigEditError> {
@@ -439,62 +476,72 @@ impl EditableConfig {
     }
 }
 
-struct StagedConfig<'a> {
-    document: &'a EditableConfig,
+struct StagedFile {
+    path: PathBuf,
     temporary: PathBuf,
+    original: Option<Vec<u8>>,
+    contents: Vec<u8>,
+    global: bool,
+}
+
+impl StagedFile {
+    fn configuration(document: &EditableConfig) -> Self {
+        Self {
+            path: document.path.clone(),
+            temporary: temporary_path(&document.path),
+            original: document.original.clone(),
+            contents: document.document.to_string().into_bytes(),
+            global: document.scope == ConfigScope::Global,
+        }
+    }
 }
 
 fn save_documents<'a>(
     documents: impl IntoIterator<Item = &'a EditableConfig>,
 ) -> Result<(), ConfigEditError> {
-    let mut staged = Vec::new();
-    for document in documents {
-        let parent = document
-            .path
-            .parent()
-            .ok_or(ConfigEditError::MissingParent)?;
+    save_files(documents.into_iter().map(StagedFile::configuration))
+}
+
+fn save_files(files: impl IntoIterator<Item = StagedFile>) -> Result<(), ConfigEditError> {
+    let staged = files.into_iter().collect::<Vec<_>>();
+    for file in &staged {
+        let parent = file.path.parent().ok_or(ConfigEditError::MissingParent)?;
         fs::create_dir_all(parent)?;
-        let temporary = temporary_path(&document.path);
-        let result = write_staged(document, &temporary);
-        if let Err(error) = result {
-            staged.iter().for_each(|item: &StagedConfig<'_>| {
-                let _ = fs::remove_file(&item.temporary);
-            });
+        if let Err(error) = write_staged(file) {
+            remove_temporaries(&staged);
             return Err(error);
         }
-        staged.push(StagedConfig {
-            document,
-            temporary,
-        });
     }
     for item in &staged {
-        if read_optional(&item.document.path)? != item.document.original {
-            staged.iter().for_each(|item| {
-                let _ = fs::remove_file(&item.temporary);
-            });
+        if read_optional(&item.path)? != item.original {
+            remove_temporaries(&staged);
             return Err(ConfigEditError::StaleRead);
         }
     }
-    let mut promoted = Vec::new();
+    let mut promoted = Vec::<&StagedFile>::new();
     for item in &staged {
-        if let Err(error) = fs::rename(&item.temporary, &item.document.path) {
+        if let Err(error) = fs::rename(&item.temporary, &item.path) {
             for previous in promoted.into_iter().rev() {
                 restore_original(previous)?;
             }
-            staged.iter().for_each(|item| {
-                let _ = fs::remove_file(&item.temporary);
-            });
+            remove_temporaries(&staged);
             return Err(ConfigEditError::Io(error));
         }
-        promoted.push(item.document);
+        promoted.push(item);
     }
     Ok(())
 }
 
-fn restore_original(document: &EditableConfig) -> Result<(), ConfigEditError> {
-    match &document.original {
-        Some(bytes) => fs::write(&document.path, bytes)?,
-        None => match fs::remove_file(&document.path) {
+fn remove_temporaries(staged: &[StagedFile]) {
+    staged.iter().for_each(|item| {
+        let _ = fs::remove_file(&item.temporary);
+    });
+}
+
+fn restore_original(file: &StagedFile) -> Result<(), ConfigEditError> {
+    match &file.original {
+        Some(bytes) => fs::write(&file.path, bytes)?,
+        None => match fs::remove_file(&file.path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(ConfigEditError::Io(error)),
@@ -503,17 +550,17 @@ fn restore_original(document: &EditableConfig) -> Result<(), ConfigEditError> {
     Ok(())
 }
 
-fn write_staged(document: &EditableConfig, temporary: &Path) -> Result<(), ConfigEditError> {
+fn write_staged(staged: &StagedFile) -> Result<(), ConfigEditError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(temporary)?;
+        .open(&staged.temporary)?;
     #[cfg(unix)]
-    if document.scope == ConfigScope::Global {
+    if staged.global {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
-    file.write_all(document.document.to_string().as_bytes())?;
+    file.write_all(&staged.contents)?;
     file.sync_all()?;
     Ok(())
 }
@@ -556,6 +603,8 @@ pub enum ConfigEditError {
     UnknownProject(String),
     #[error("configuration changed since it was read")]
     StaleRead,
+    #[error("invalid workbench document: {0}")]
+    InvalidWorkbench(String),
     #[error("invalid configuration TOML: {0}")]
     Parse(#[from] toml_edit::TomlError),
     #[error("configuration I/O failed: {0}")]
@@ -756,6 +805,57 @@ mod tests {
         for path in [&global_path, &project_path] {
             assert!(!fs::read_to_string(path)?.contains("[sources.research]"));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn workbench_and_configuration_commit_only_after_all_stale_checks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::workbench::toml_document::SavedLayout;
+
+        let root = tempfile::tempdir()?;
+        let config_path = root.path().join(".seex/config.toml");
+        let workbench_path = root.path().join(".seex/workbench.toml");
+        fs::create_dir_all(config_path.parent().ok_or("config parent")?)?;
+        fs::write(&config_path, "schema_version = 1\n# original\n")?;
+        fs::write(&workbench_path, "external edit")?;
+        let original_config = fs::read_to_string(&config_path)?;
+        let mut configuration = SourceConfiguration::load_for_scope_at(None, Some(root.path()))?;
+        configuration.set_source(
+            &SourceAlias::new("research")?,
+            root.path(),
+            &[ProjectId::from_string("project")],
+        )?;
+        let workbench = TomlWorkbenchDocument {
+            active_view: 0,
+            layout: SavedLayout::default(),
+            expanded_projects: Vec::new(),
+            pinned_projects: Vec::new(),
+            archived_projects: Vec::new(),
+            archived_runs: Vec::new(),
+            views: Vec::new(),
+        };
+
+        assert!(matches!(
+            configuration.save_with_workbench(&workbench_path, Some(b"stale".to_vec()), &workbench),
+            Err(ConfigEditError::StaleRead)
+        ));
+        assert_eq!(fs::read_to_string(&config_path)?, original_config);
+
+        configuration.save_with_workbench(
+            &workbench_path,
+            Some(fs::read(&workbench_path)?),
+            &workbench,
+        )?;
+        let saved = fs::read_to_string(config_path)?.parse::<DocumentMut>()?;
+        assert_eq!(
+            saved["sources"]["research"]["path"].as_str(),
+            root.path().to_str()
+        );
+        assert_eq!(
+            TomlWorkbenchDocument::load(&workbench_path)?,
+            Some(workbench)
+        );
         Ok(())
     }
 }
