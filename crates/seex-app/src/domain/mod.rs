@@ -5,6 +5,6 @@ mod navigation;
 
 pub use identity::{
     DataSourceId, MAX_SELECTED_RUNS, RunRef, SelectionError, SourceAlias, SourceAliasError,
-    run_matches_filter,
+    run_matches_filter, suggest_source_alias,
 };
 pub use navigation::ViewNavigation;

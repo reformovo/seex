@@ -1,17 +1,44 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use seex::{LocalReaderError, Reader, ReaderInterrupt};
+use seex::{LocalReaderError, Project, Reader, ReaderInterrupt};
 
 use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
 /// Failures while opening an existing viewer source.
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
+    #[error("Source directory does not exist: {0}")]
+    InvalidDirectory(PathBuf),
     #[error("S3 data paths are unsupported by seex-app")]
     UnsupportedS3,
     #[error(transparent)]
     Sdk(#[from] seex::Error),
+}
+
+/// Read-only result used before a Source can be confirmed or configured.
+#[derive(Clone, Debug)]
+pub struct SourcePreflight {
+    pub root_path: PathBuf,
+    pub projects: Vec<Project>,
+}
+
+impl SourcePreflight {
+    /// Opens a local Source and reads only its Project summaries.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceError`] when the directory or native Reader is invalid.
+    pub fn load(root_path: &Path) -> Result<Self, SourceError> {
+        if !root_path.is_dir() {
+            return Err(SourceError::InvalidDirectory(root_path.to_owned()));
+        }
+        let reader = open_local_reader(root_path)?;
+        Ok(Self {
+            root_path: root_path.to_owned(),
+            projects: reader.projects()?,
+        })
+    }
 }
 
 /// Read session for one existing local native Seex store.
@@ -151,7 +178,7 @@ mod tests {
     use seex::RunId;
     use seex::{Client, LogOptions, RunOptions};
 
-    use super::{DiscoveryRequest, ReadSession, SourceError};
+    use super::{DiscoveryRequest, ReadSession, SourceError, SourcePreflight};
 
     #[test]
     fn s3_is_rejected_before_missing_credentials_are_resolved()
@@ -223,6 +250,26 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["run-2", "run-1"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn preflight_reads_projects_and_rejects_missing_directories()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = Client::builder(root.path()).open()?;
+        let run = client.start_run(RunOptions::new("project").id("run").name("run"))?;
+        run.finish()?;
+        client.shutdown()?;
+
+        let preflight = SourcePreflight::load(root.path())?;
+
+        assert_eq!(preflight.projects.len(), 1);
+        assert_eq!(preflight.projects[0].project_id.as_str(), "project");
+        assert!(matches!(
+            SourcePreflight::load(&root.path().join("missing")),
+            Err(SourceError::InvalidDirectory(_))
+        ));
         Ok(())
     }
 }
