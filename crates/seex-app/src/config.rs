@@ -449,7 +449,8 @@ impl EditableConfig {
             Some(bytes) => {
                 let raw = std::str::from_utf8(bytes).map_err(|_| ConfigEditError::InvalidUtf8)?;
                 let document = raw.parse::<DocumentMut>()?;
-                if document["schema_version"].as_integer() != Some(SCHEMA_VERSION) {
+                if document.get("schema_version").and_then(Item::as_integer) != Some(SCHEMA_VERSION)
+                {
                     return Err(ConfigEditError::UnsupportedSchema);
                 }
                 document
@@ -923,6 +924,19 @@ mod tests {
         config.save()?;
 
         assert_eq!(fs::read_to_string(&path)?, "schema_version = 1\n");
+        Ok(())
+    }
+
+    #[test]
+    fn existing_document_without_schema_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("config.toml");
+        fs::write(&path, "# missing schema version\n")?;
+
+        assert!(matches!(
+            EditableConfig::load(&path, ConfigScope::Global),
+            Err(ConfigEditError::UnsupportedSchema)
+        ));
         Ok(())
     }
 
