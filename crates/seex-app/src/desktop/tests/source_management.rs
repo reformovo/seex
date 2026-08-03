@@ -407,12 +407,12 @@ fn workbench_import_confirms_rewrites_and_replaces_blocked_live_state(cx: &mut T
     std::fs::write(&workbench_path, "schema_version = 99\n")
         .expect("invalid local workbench should be written");
     window
-        .update(&mut cx, |viewer, _, cx| {
+        .update(&mut cx, |viewer, window, cx| {
             viewer.session.update(cx, |session, _| {
                 session.workbench_path = Some(workbench_path.clone());
                 session.autosave_blocked = true;
             });
-            viewer.preflight_workbench_path(external.clone(), cx);
+            viewer.preflight_workbench_path(external.clone(), window, cx);
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
@@ -453,6 +453,153 @@ fn workbench_import_confirms_rewrites_and_replaces_blocked_live_state(cx: &mut T
 }
 
 #[gpui::test]
+fn workbench_import_configures_a_new_source_only_after_confirmation(cx: &mut TestAppContext) {
+    let (source, _, project_id) = source_with_two_projects();
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let external = scope.path().join("external.toml");
+    let workbench_path = scope.path().join(".seex/workbench.toml");
+    let config_path = scope.path().join(".seex/config.toml");
+    let alias = SourceAlias::new("portable").expect("external alias should be valid");
+    let mut imported = saved_workbench(
+        alias.clone(),
+        project_id.clone(),
+        vec![RunId::from_string("missing")],
+        "loss",
+    );
+    imported.views[0].name = "New Source Import".to_owned();
+    imported
+        .save(&external)
+        .expect("external workbench should save");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    let configuration = window
+        .read_with(&cx, |viewer, _| {
+            viewer
+                .source_configuration
+                .clone()
+                .expect("Viewer configuration should load")
+        })
+        .expect("viewer should remain open");
+    let preparation = prepare_workbench_import(external, configuration)
+        .expect("external workbench should preflight");
+    assert_eq!(preparation.unresolved.len(), 1);
+    let pending = finish_workbench_import(
+        preparation,
+        vec![(
+            alias.clone(),
+            SourcePreflight::load(source.path()).expect("new Source should preflight"),
+        )],
+    )
+    .expect("new Source mapping should finish");
+    assert!(!config_path.exists());
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, _| {
+                session.workbench_path = Some(workbench_path.clone());
+            });
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_workbench(pending.plan.clone(), cx);
+            });
+            viewer.pending_workbench_import = Some(pending);
+        })
+        .expect("viewer should remain open");
+    cx.refresh().expect("confirmation should render");
+    let confirm = cx
+        .debug_bounds("confirm-workbench-import")
+        .expect("import confirmation should render");
+    cx.simulate_click(confirm.center(), Modifiers::default());
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.session_snapshot(cx).views.active().name == "New Source Import"
+            && viewer
+                .session_snapshot(cx)
+                .sources
+                .first()
+                .is_some_and(|source| {
+                    source.source_id.alias() == &alias
+                        && source.project_allowlist == [project_id.clone()]
+                })
+    });
+
+    let saved = std::fs::read_to_string(config_path).expect("new Source config should be saved");
+    let saved = saved
+        .parse::<toml_edit::DocumentMut>()
+        .expect("new Source config should remain valid TOML");
+    assert_eq!(
+        saved["sources"]["portable"]["projects"]
+            .as_array()
+            .and_then(|projects| projects.get(0))
+            .and_then(toml_edit::Value::as_str),
+        Some(project_id.as_str())
+    );
+}
+
+#[gpui::test]
+fn ambiguous_workbench_alias_uses_the_selected_existing_source(cx: &mut TestAppContext) {
+    let (first, one, two) = source_with_two_projects();
+    let (second, _, _) = source_with_two_projects();
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let external = scope.path().join("external.toml");
+    let external_alias = SourceAlias::new("portable").expect("external alias should be valid");
+    saved_workbench(
+        external_alias.clone(),
+        two.clone(),
+        vec![RunId::from_string("missing")],
+        "loss",
+    )
+    .save(&external)
+    .expect("external workbench should save");
+    let (window, cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    let mut configuration = window
+        .read_with(&cx, |viewer, _| {
+            viewer
+                .source_configuration
+                .clone()
+                .expect("Viewer configuration should load")
+        })
+        .expect("viewer should remain open");
+    let first_alias = SourceAlias::new("first").expect("first alias should be valid");
+    let second_alias = SourceAlias::new("second").expect("second alias should be valid");
+    configuration
+        .set_source(&first_alias, first.path(), std::slice::from_ref(&one))
+        .expect("first candidate should configure");
+    configuration
+        .set_source(&second_alias, second.path(), std::slice::from_ref(&one))
+        .expect("second candidate should configure");
+    let preparation = prepare_workbench_import(external, configuration)
+        .expect("ambiguous workbench should prepare");
+    assert_eq!(preparation.unresolved[0].0, external_alias);
+
+    let pending = finish_workbench_import(
+        preparation,
+        vec![(
+            external_alias.clone(),
+            SourcePreflight::load(second.path()).expect("selected Source should preflight"),
+        )],
+    )
+    .expect("explicit existing Source mapping should finish");
+
+    assert_eq!(
+        pending.plan.alias_rewrites,
+        [(external_alias, second_alias.clone())]
+    );
+    assert_eq!(
+        pending.plan.allowlist_additions,
+        [(second_alias.clone(), vec![two])]
+    );
+    assert_eq!(
+        pending
+            .configuration
+            .sources
+            .iter()
+            .find(|source| source.configured.alias == second_alias)
+            .expect("selected Source should remain configured")
+            .configured
+            .projects,
+        [one, ProjectId::from_string("two")]
+    );
+}
+
+#[gpui::test]
 fn invalid_or_unwritable_workbench_import_keeps_live_state(cx: &mut TestAppContext) {
     let (source, one, _) = source_with_two_projects();
     let scope = tempfile::tempdir().expect("test scope should be created");
@@ -461,8 +608,8 @@ fn invalid_or_unwritable_workbench_import_keeps_live_state(cx: &mut TestAppConte
         .expect("invalid external workbench should be written");
     let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
     window
-        .update(&mut cx, |viewer, _, cx| {
-            viewer.preflight_workbench_path(invalid, cx);
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.preflight_workbench_path(invalid, window, cx);
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
@@ -505,11 +652,11 @@ fn invalid_or_unwritable_workbench_import_keeps_live_state(cx: &mut TestAppConte
     let destination = scope.path().join("unwritable-workbench");
     std::fs::create_dir(&destination).expect("destination directory should be created");
     window
-        .update(&mut cx, |viewer, _, cx| {
+        .update(&mut cx, |viewer, window, cx| {
             viewer.session.update(cx, |session, _| {
                 session.workbench_path = Some(destination);
             });
-            viewer.preflight_workbench_path(external, cx);
+            viewer.preflight_workbench_path(external, window, cx);
         })
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {

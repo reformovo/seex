@@ -4,7 +4,7 @@ use crate::config::{ConfiguredSource, SourceConfiguration};
 use crate::data::SourcePreflight;
 #[cfg(all(test, feature = "test-support"))]
 use crate::data::registry::SourceStatus;
-use crate::domain::{DataSourceId, RunRef, suggest_source_alias};
+use crate::domain::{DataSourceId, RunRef, SourceAlias, suggest_source_alias};
 use crate::workbench::ProjectRef;
 use crate::workbench::import::{
     ImportSourceMapping, WorkbenchImportPlan, preflight_workbench_import,
@@ -15,6 +15,7 @@ use gpui::{
     Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, PathPromptOptions,
     PromptLevel, Render, SharedString, Window, div, prelude::*,
 };
+use seex::ProjectId;
 
 #[cfg(all(test, feature = "test-support"))]
 use super::{ActivateSelection, SELECTABLE_CONTEXT};
@@ -91,6 +92,16 @@ struct PendingWorkbenchImport {
     external_fingerprint: Vec<u8>,
     configuration: SourceConfiguration,
     plan: WorkbenchImportPlan,
+}
+
+struct WorkbenchImportPreparation {
+    external_path: PathBuf,
+    external_fingerprint: Vec<u8>,
+    configuration: SourceConfiguration,
+    document: TomlWorkbenchDocument,
+    local_sources: Vec<(ConfiguredSource, Vec<ProjectId>)>,
+    mappings: Vec<ImportSourceMapping>,
+    unresolved: Vec<(SourceAlias, Vec<ProjectId>)>,
 }
 
 impl ViewerApp {
@@ -475,33 +486,73 @@ impl ViewerApp {
                 }
             };
             if let Some(path) = paths.into_iter().next() {
-                let _ = this.update_in(cx, |viewer, _, cx| {
-                    viewer.preflight_workbench_path(path, cx);
+                let _ = this.update_in(cx, |viewer, window, cx| {
+                    viewer.preflight_workbench_path(path, window, cx);
                 });
             }
         })
         .detach();
     }
 
-    fn preflight_workbench_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+    fn preflight_workbench_path(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(configuration) = self.source_configuration.clone() else {
             self.report_source_error("Viewer configuration is unavailable".to_owned(), cx);
             return;
         };
-        let preflight =
+        let preparation =
             cx.background_spawn(async move { prepare_workbench_import(path, configuration) });
-        cx.spawn(async move |this, cx| match preflight.await {
-            Ok(pending) => {
-                let _ = this.update(cx, |viewer, cx| {
-                    viewer.source_management.update(cx, |management, cx| {
-                        management.begin_workbench(pending.plan.clone(), cx);
-                    });
-                    viewer.pending_workbench_import = Some(pending);
-                    cx.notify();
-                });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = async {
+                let preparation = preparation.await?;
+                let mut selections = Vec::with_capacity(preparation.unresolved.len());
+                for (external_alias, _) in &preparation.unresolved {
+                    let prompt = cx
+                        .update(|_, cx| {
+                            cx.prompt_for_paths(PathPromptOptions {
+                                files: false,
+                                directories: true,
+                                multiple: false,
+                                prompt: Some(format!("Map Source {external_alias}").into()),
+                            })
+                        })
+                        .map_err(|error| error.to_string())?;
+                    let paths = prompt
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .map_err(|error| error.to_string())?;
+                    let Some(path) = paths.and_then(|paths| paths.into_iter().next()) else {
+                        return Ok(None);
+                    };
+                    let preflight = cx
+                        .background_spawn(async move { SourcePreflight::load(&path) })
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    selections.push((external_alias.clone(), preflight));
+                }
+                finish_workbench_import(preparation, selections).map(Some)
             }
-            Err(error) => {
-                let _ = this.update(cx, |viewer, cx| viewer.report_source_error(error, cx));
+            .await;
+            match result {
+                Ok(Some(pending)) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.source_management.update(cx, |management, cx| {
+                            management.begin_workbench(pending.plan.clone(), cx);
+                        });
+                        viewer.pending_workbench_import = Some(pending);
+                        cx.notify();
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = this.update_in(cx, |viewer, _, cx| {
+                        viewer.report_source_error(error, cx);
+                    });
+                }
             }
         })
         .detach();
@@ -960,8 +1011,8 @@ fn load_and_preflight_sources(
 
 fn prepare_workbench_import(
     external_path: PathBuf,
-    mut configuration: SourceConfiguration,
-) -> Result<PendingWorkbenchImport, String> {
+    configuration: SourceConfiguration,
+) -> Result<WorkbenchImportPreparation, String> {
     let external_fingerprint = std::fs::read(&external_path).map_err(|error| error.to_string())?;
     let raw = std::str::from_utf8(&external_fingerprint)
         .map_err(|_| "Imported Workbench is not UTF-8".to_owned())?;
@@ -995,6 +1046,7 @@ fn prepare_workbench_import(
     }
 
     let mut mappings = Vec::new();
+    let mut unresolved = Vec::new();
     for (external_alias, required_projects) in referenced {
         let candidates = local_sources
             .iter()
@@ -1008,39 +1060,123 @@ fn prepare_workbench_import(
             .iter()
             .copied()
             .find(|(source, _)| source.alias == external_alias)
-            .or_else(|| (candidates.len() == 1).then(|| candidates[0]))
-            .ok_or_else(|| {
-                format!(
-                    "Source {} cannot be mapped uniquely to a local Source",
-                    external_alias
-                )
-            })?;
-        mappings.push(ImportSourceMapping {
-            external_alias,
-            local_alias: selected.0.alias.clone(),
-            available_projects: selected.1.clone(),
-            imported_projects: selected.0.projects.clone(),
-        });
+            .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
+        if let Some(selected) = selected {
+            mappings.push(ImportSourceMapping {
+                external_alias,
+                local_alias: selected.0.alias.clone(),
+                available_projects: selected.1.clone(),
+                imported_projects: selected.0.projects.clone(),
+            });
+        } else {
+            unresolved.push((external_alias, required_projects));
+        }
     }
-    let plan =
-        preflight_workbench_import(document, &mappings).map_err(|error| error.to_string())?;
-    for (alias, additions) in &plan.allowlist_additions {
-        let source = configuration
-            .sources
-            .iter()
-            .find(|source| &source.configured.alias == alias)
-            .map(|source| source.configured.clone())
-            .ok_or_else(|| format!("Source {alias} is unavailable"))?;
-        let mut projects = source.projects;
-        projects.extend(additions.iter().cloned());
-        configuration
-            .set_source(alias, &source.root_path, &projects)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(PendingWorkbenchImport {
+    Ok(WorkbenchImportPreparation {
         external_path,
         external_fingerprint,
         configuration,
+        document,
+        local_sources,
+        mappings,
+        unresolved,
+    })
+}
+
+fn finish_workbench_import(
+    mut preparation: WorkbenchImportPreparation,
+    selections: Vec<(SourceAlias, SourcePreflight)>,
+) -> Result<PendingWorkbenchImport, String> {
+    let mut new_sources = Vec::<(SourceAlias, PathBuf)>::new();
+    let mut used_aliases = preparation
+        .configuration
+        .sources
+        .iter()
+        .map(|source| source.configured.alias.clone())
+        .collect::<Vec<_>>();
+    for (external_alias, required_projects) in &preparation.unresolved {
+        let selected = selections
+            .iter()
+            .find(|(alias, _)| alias == external_alias)
+            .map(|(_, preflight)| preflight)
+            .ok_or_else(|| format!("Source {external_alias} is not mapped"))?;
+        let available_projects = selected
+            .projects
+            .iter()
+            .map(|project| project.project_id.clone())
+            .collect::<Vec<_>>();
+        if let Some(project_id) = required_projects
+            .iter()
+            .find(|project| !available_projects.contains(project))
+        {
+            return Err(format!(
+                "Source {} does not contain Project {}",
+                external_alias,
+                project_id.as_str()
+            ));
+        }
+        let existing = preparation
+            .local_sources
+            .iter()
+            .find(|(source, _)| source.root_path == selected.root_path);
+        let (local_alias, imported_projects) = if let Some((source, _)) = existing {
+            (source.alias.clone(), source.projects.clone())
+        } else if let Some((alias, _)) = new_sources
+            .iter()
+            .find(|(_, root_path)| root_path == &selected.root_path)
+        {
+            (alias.clone(), Vec::new())
+        } else {
+            let alias = if used_aliases.contains(external_alias) {
+                suggest_source_alias(&selected.root_path, &used_aliases)
+            } else {
+                external_alias.clone()
+            };
+            used_aliases.push(alias.clone());
+            new_sources.push((alias.clone(), selected.root_path.clone()));
+            (alias, Vec::new())
+        };
+        preparation.mappings.push(ImportSourceMapping {
+            external_alias: external_alias.clone(),
+            local_alias,
+            available_projects,
+            imported_projects,
+        });
+    }
+    preparation.mappings.sort_by(|left, right| {
+        left.external_alias
+            .as_str()
+            .cmp(right.external_alias.as_str())
+    });
+    let plan = preflight_workbench_import(preparation.document, &preparation.mappings)
+        .map_err(|error| error.to_string())?;
+    for (alias, additions) in &plan.allowlist_additions {
+        let existing = preparation
+            .configuration
+            .sources
+            .iter()
+            .find(|source| &source.configured.alias == alias)
+            .map(|source| source.configured.clone());
+        let (root_path, mut projects) = if let Some(source) = existing {
+            (source.root_path, source.projects)
+        } else {
+            let root_path = new_sources
+                .iter()
+                .find(|(new_alias, _)| new_alias == alias)
+                .map(|(_, root_path)| root_path.clone())
+                .ok_or_else(|| format!("Source {alias} is unavailable"))?;
+            (root_path, Vec::new())
+        };
+        projects.extend(additions.iter().cloned());
+        preparation
+            .configuration
+            .set_source(alias, &root_path, &projects)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(PendingWorkbenchImport {
+        external_path: preparation.external_path,
+        external_fingerprint: preparation.external_fingerprint,
+        configuration: preparation.configuration,
         plan,
     })
 }
