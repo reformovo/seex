@@ -11,6 +11,7 @@ pub mod reporting;
 mod time {
     pub use crate::storage::time::*;
 }
+#[cfg(test)]
 pub mod write {
     pub use crate::storage::write::*;
 }

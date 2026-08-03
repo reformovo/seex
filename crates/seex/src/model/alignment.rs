@@ -51,7 +51,7 @@ pub enum AlignmentReduction {
 /// Validated positive inputs for screen-budgeted extrema reduction.
 ///
 /// ```compile_fail
-/// use seex_model::alignment::AlignmentScreenBudget;
+/// use seex::model::alignment::AlignmentScreenBudget;
 /// let _invalid = AlignmentScreenBudget { pixel_width: 0, points_per_pixel: 1 };
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

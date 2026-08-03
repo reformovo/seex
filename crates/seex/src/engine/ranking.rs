@@ -1,15 +1,20 @@
 use std::cmp::Ordering;
+#[cfg(test)]
 use std::collections::HashSet;
 
 use chrono::{DateTime, Utc};
 
+#[cfg(test)]
 use crate::engine::EngineError;
+#[cfg(test)]
 use crate::engine::client::NativeClient;
 use crate::model::comparison::{
     EvidenceCompleteness, ObjectiveDirection, ObjectiveEvidence, ObjectiveMetric, RankingEntry,
     RankingResult,
 };
-use crate::model::run::{Run, RunId};
+use crate::model::run::Run;
+#[cfg(test)]
+use crate::model::run::RunId;
 
 struct RankingCandidate {
     evidence: ObjectiveEvidence,
@@ -17,6 +22,7 @@ struct RankingCandidate {
     ordinal: usize,
 }
 
+#[cfg(test)]
 impl NativeClient {
     /// Selects the direction-aware best eligible Run from an explicit pool.
     ///
@@ -24,6 +30,10 @@ impl NativeClient {
     ///
     /// Returns [`EngineError::DuplicateRunIdentity`] for repeated Run IDs or a
     /// lookup/storage error when pool evidence cannot be read.
+    #[allow(
+        dead_code,
+        reason = "retained for crate-local ranking acceptance tests"
+    )]
     pub fn best_eligible_run(
         &self,
         run_ids: &[RunId],

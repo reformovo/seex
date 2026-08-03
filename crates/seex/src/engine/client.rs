@@ -11,10 +11,13 @@ use crate::engine::bootstrap::{
     CatalogBackend, NativeStorageConfig, S3ConnectionConfig, catalog_lock_namespace,
     open_existing_native_connection_with_config, open_native_connection_with_config,
 };
+#[cfg(test)]
 use crate::engine::query::NativeQueryStore;
 use crate::engine::reporting::{MetricReporter, MetricReporterDiagnostics, MetricValue};
 use crate::engine::time::current_timestamp;
-use crate::model::metric::{MetricAggregate, MetricKey, MetricPoint, Step};
+#[cfg(test)]
+use crate::model::metric::{MetricAggregate, MetricPoint};
+use crate::model::metric::{MetricKey, Step};
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 
@@ -28,10 +31,12 @@ pub struct NativeClient {
 }
 
 impl NativeClient {
+    #[cfg(test)]
     pub fn open(path: impl AsRef<Path>) -> Result<Self, EngineError> {
         Self::open_with_metric_queue_capacity(path, 65_536)
     }
 
+    #[cfg(test)]
     pub fn open_with_metric_queue_capacity(
         path: impl AsRef<Path>,
         metric_queue_capacity: usize,
@@ -39,6 +44,7 @@ impl NativeClient {
         Self::open_with_storage_config(path, None, None, metric_queue_capacity)
     }
 
+    #[cfg(test)]
     pub fn open_with_storage_config(
         path: impl AsRef<Path>,
         catalog_path: Option<PathBuf>,
@@ -71,25 +77,6 @@ impl NativeClient {
             s3_connection,
             metric_queue_capacity,
             false,
-        )
-    }
-
-    pub fn open_existing_with_catalog_backend_storage_config(
-        path: impl AsRef<Path>,
-        catalog_backend: CatalogBackend,
-        catalog_path: Option<PathBuf>,
-        data_path: Option<PathBuf>,
-        s3_connection: Option<S3ConnectionConfig>,
-        metric_queue_capacity: usize,
-    ) -> Result<Self, EngineError> {
-        Self::open_with_catalog_backend_storage_config_mode(
-            path,
-            catalog_backend,
-            catalog_path,
-            data_path,
-            s3_connection,
-            metric_queue_capacity,
-            true,
         )
     }
 
@@ -163,6 +150,7 @@ impl NativeClient {
             })
     }
 
+    #[cfg(test)]
     pub fn list_projects(&self) -> Result<Vec<Project>, EngineError> {
         Ok(self.connection()?.list_projects()?)
     }
@@ -219,10 +207,7 @@ impl NativeClient {
         Ok(run)
     }
 
-    pub fn list_runs(&self, project_id: &ProjectId) -> Result<Vec<Run>, EngineError> {
-        self.list_runs_filtered(project_id, None, None, 0)
-    }
-
+    #[cfg(test)]
     pub fn list_runs_filtered(
         &self,
         project_id: &ProjectId,
@@ -239,21 +224,6 @@ impl NativeClient {
         Ok(self
             .connection()?
             .list_runs(project_id, status, limit, offset)?)
-    }
-
-    pub fn list_orphan_runs(
-        &self,
-        project_id: Option<&ProjectId>,
-    ) -> Result<Vec<Run>, EngineError> {
-        if let Some(project_id) = project_id
-            && !self.project_exists(project_id)?
-        {
-            return Err(EngineError::ProjectNotFound {
-                project_id: project_id.as_str().to_owned(),
-            });
-        }
-
-        Ok(self.connection()?.list_orphan_runs(project_id)?)
     }
 
     pub fn finish_run(&self, run_id: &RunId) -> Result<Run, EngineError> {
@@ -360,9 +330,6 @@ impl NativeClient {
             project_id: run.project_id,
             name: run.name,
             status: run.status,
-            created_at: run.created_at,
-            started_at: run.started_at,
-            finished_at: run.finished_at,
             reporter: self.reporter.clone(),
             active_run,
         }
@@ -388,6 +355,7 @@ impl NativeClient {
         Ok(value.map(Step::new))
     }
 
+    #[cfg(test)]
     pub fn query_metric(
         &self,
         run_id: &RunId,
@@ -401,28 +369,7 @@ impl NativeClient {
             .query_metric(run_id, metric_key, start_step, end_step, max_points)
     }
 
-    pub fn query_metric_with_metadata(
-        &self,
-        run_id: &RunId,
-        metric_key: &MetricKey,
-        start_step: Option<Step>,
-        end_step: Option<Step>,
-        max_points: Option<usize>,
-    ) -> Result<crate::engine::query::MetricQueryResult, EngineError> {
-        let connection = self.connection()?;
-        NativeQueryStore::new(&connection)
-            .query_metric_with_metadata(run_id, metric_key, start_step, end_step, max_points)
-    }
-
-    pub fn query_aligned_metric(
-        &self,
-        query: &crate::model::alignment::AlignmentQuery,
-    ) -> Result<crate::model::alignment::AlignedMetricResult, EngineError> {
-        let run = self.get_run(&query.run_id)?;
-        let connection = self.connection()?;
-        NativeQueryStore::new(&connection).query_aligned_metric(query, run.status)
-    }
-
+    #[cfg(test)]
     pub fn objective_evidence(
         &self,
         run_id: &RunId,
@@ -433,6 +380,7 @@ impl NativeClient {
         NativeQueryStore::new(&connection).objective_evidence(run_id, run.status, objective)
     }
 
+    #[cfg(test)]
     pub(crate) fn ranking_evidence(
         &self,
         run_ids: &[RunId],
@@ -445,15 +393,7 @@ impl NativeClient {
         Ok(runs.into_iter().zip(evidence).collect())
     }
 
-    pub fn query_metric_summaries(
-        &self,
-        run_ids: &[RunId],
-        metric_key: &MetricKey,
-    ) -> Result<Vec<MetricAggregate>, EngineError> {
-        let connection = self.connection()?;
-        NativeQueryStore::new(&connection).query_metric_summaries(run_ids, metric_key)
-    }
-
+    #[cfg(test)]
     pub fn list_metrics(&self, run_id: &RunId) -> Result<Vec<MetricAggregate>, EngineError> {
         let run = self.get_run(run_id)?;
         let connection = self.connection()?;
@@ -636,9 +576,6 @@ pub struct NativeRun {
     pub project_id: ProjectId,
     pub name: String,
     pub status: crate::model::run::RunStatus,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
     reporter: MetricReporter,
     active_run: Arc<ActiveRun>,
 }
@@ -654,6 +591,7 @@ impl NativeRun {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn log_metric_at_step(
         &self,
         metric_key: &str,
@@ -666,6 +604,7 @@ impl NativeRun {
         )
     }
 
+    #[cfg(test)]
     pub fn log_metrics_at_step(
         &self,
         metrics: Vec<(MetricKey, f64)>,
@@ -780,6 +719,7 @@ impl ActiveRun {
         })
     }
 
+    #[cfg(test)]
     fn with_open_admission(
         &self,
         run_id: &RunId,

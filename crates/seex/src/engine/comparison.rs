@@ -1,18 +1,26 @@
+#[cfg(test)]
 use crate::engine::EngineError;
+#[cfg(test)]
 use crate::engine::client::NativeClient;
 use crate::model::comparison::{
-    ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
-    EvidenceCompleteness, MetricComparisonResult, ObjectiveEvidence, ObjectiveMetric,
+    ComparisonOutcome, ComparisonPreference, ComparisonResult, EvidenceCompleteness,
+    ObjectiveEvidence, ObjectiveMetric,
 };
+#[cfg(test)]
+use crate::model::comparison::{ComparisonReport, MetricComparisonResult};
+#[cfg(test)]
 use crate::model::metric::MetricKey;
+#[cfg(test)]
 use crate::model::run::RunId;
 
+#[cfg(test)]
 struct SecondaryEvidenceSet {
     metric_key: MetricKey,
     reference: ObjectiveEvidence,
     candidates: Vec<ObjectiveEvidence>,
 }
 
+#[cfg(test)]
 impl NativeClient {
     /// Builds primary comparison reports in candidate request order.
     ///
@@ -21,6 +29,10 @@ impl NativeClient {
     /// Returns [`EngineError::DuplicateRunIdentity`] for repeated candidate
     /// IDs or when the reference is also a candidate. Unknown Run IDs and
     /// storage failures are returned from the shared evidence query.
+    #[allow(
+        dead_code,
+        reason = "retained for crate-local comparison acceptance tests"
+    )]
     pub fn comparison_reports(
         &self,
         candidate_run_ids: &[RunId],
@@ -93,6 +105,7 @@ impl NativeClient {
     }
 }
 
+#[cfg(test)]
 fn build_reports(
     objective: &ObjectiveMetric,
     reference: ObjectiveEvidence,
@@ -118,6 +131,7 @@ fn build_reports(
         .collect()
 }
 
+#[cfg(test)]
 fn compare_metric_evidence(
     metric_key: &MetricKey,
     candidate: ObjectiveEvidence,
@@ -144,6 +158,7 @@ fn compare_metric_evidence(
     }
 }
 
+#[cfg(test)]
 fn reject_duplicate_run_ids(run_ids: &[RunId]) -> Result<(), EngineError> {
     let mut seen = std::collections::HashSet::with_capacity(run_ids.len());
     for run_id in run_ids {

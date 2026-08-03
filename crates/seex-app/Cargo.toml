@@ -20,9 +20,6 @@ test-support = ["desktop", "gpui/test-support"]
 [dependencies]
 seex = { path = "../seex" }
 seex-plot = { path = "../seex-plot" }
-seex-core = { path = "../seex-core" }
-seex-model = { path = "../seex-model" }
-seex-storage = { path = "../seex-storage" }
 thiserror = "2"
 toml_edit = "0.25.12"
 

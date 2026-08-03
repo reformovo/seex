@@ -4,33 +4,30 @@
 //! their errors, and native connection types as implementation details.
 //!
 //! ```compile_fail
-//! use seex::ProjectConnection;
+//! use seex::storage::ProjectConnection;
 //! ```
 //!
 //! ```compile_fail
-//! use seex::ProjectMetricReader;
+//! use seex::storage::ProjectMetricReader;
 //! ```
 //!
 //! ```compile_fail
-//! use seex::StorageError;
+//! use seex::storage::StorageError;
 //! ```
 //!
 //! ```compile_fail
-//! use seex::NativeQueryStore;
+//! use seex::engine::query::NativeQueryStore;
 //! ```
 
 #![forbid(unsafe_code)]
 
 mod client;
 mod config;
-#[doc(hidden)]
-pub mod engine;
+mod engine;
 mod error;
-#[doc(hidden)]
-pub mod model;
+mod model;
 mod reader;
-#[doc(hidden)]
-pub mod storage;
+mod storage;
 
 #[cfg(test)]
 mod benchmark_datasets;
@@ -38,6 +35,8 @@ mod benchmark_datasets;
 mod ducklake_test_support;
 #[cfg(test)]
 mod native_engine_behavior;
+#[cfg(test)]
+mod reader_parity;
 
 #[doc(hidden)]
 pub use crate::model::alignment::{

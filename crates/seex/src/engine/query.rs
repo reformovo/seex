@@ -3,15 +3,16 @@ use std::collections::HashMap;
 use crate::storage::{ProjectConnection, ProjectMetricReader};
 
 use crate::engine::EngineError;
+#[cfg(test)]
 use crate::model::alignment::{
     AlignedMetricResult, AlignmentQuery, AlignmentQueryResult, AlignmentReason,
 };
 use crate::model::comparison::{
     EvidenceCompleteness, EvidenceReason, ObjectiveEvidence, ObjectiveMetric,
 };
-use crate::model::metric::{
-    MetricAggregate, MetricKey, MetricPoint, MetricQuery, ReductionPolicy, Step,
-};
+use crate::model::metric::{MetricAggregate, MetricKey};
+#[cfg(test)]
+use crate::model::metric::{MetricPoint, MetricQuery, ReductionPolicy, Step};
 use crate::model::run::{Run, RunId, RunStatus};
 
 pub struct NativeQueryStore<'connection> {
@@ -24,6 +25,7 @@ enum QuerySource<'connection> {
     DuckDb(&'connection duckdb::Connection),
 }
 
+#[cfg(test)]
 pub type MetricQueryResult = crate::model::metric::MetricQueryResult;
 
 impl<'connection> NativeQueryStore<'connection> {
@@ -40,6 +42,7 @@ impl<'connection> NativeQueryStore<'connection> {
         }
     }
 
+    #[cfg(test)]
     pub fn query_metric_effective(
         &self,
         run_id: &RunId,
@@ -48,6 +51,7 @@ impl<'connection> NativeQueryStore<'connection> {
         self.query_metric(run_id, metric_key, None, None, None)
     }
 
+    #[cfg(test)]
     pub fn query_metric(
         &self,
         run_id: &RunId,
@@ -60,6 +64,7 @@ impl<'connection> NativeQueryStore<'connection> {
             .map(|result| result.points)
     }
 
+    #[cfg(test)]
     pub fn query_metric_with_metadata(
         &self,
         run_id: &RunId,
@@ -84,6 +89,11 @@ impl<'connection> NativeQueryStore<'connection> {
         Ok(self.reader().query_metric(&query)?)
     }
 
+    #[cfg(test)]
+    #[allow(
+        dead_code,
+        reason = "retained for crate-local aligned query acceptance tests"
+    )]
     pub fn query_aligned_metric(
         &self,
         query: &AlignmentQuery,
@@ -93,6 +103,7 @@ impl<'connection> NativeQueryStore<'connection> {
         Ok(aligned_metric_result(result, run_status))
     }
 
+    #[cfg(test)]
     pub fn objective_evidence(
         &self,
         run_id: &RunId,
@@ -126,6 +137,7 @@ impl<'connection> NativeQueryStore<'connection> {
             .collect())
     }
 
+    #[cfg(test)]
     pub fn metric_aggregate(
         &self,
         run_id: &RunId,
@@ -142,6 +154,7 @@ impl<'connection> NativeQueryStore<'connection> {
         Ok(self.reader().query_metric_summaries(run_ids, metric_key)?)
     }
 
+    #[cfg(test)]
     pub fn list_metrics(
         &self,
         run_id: &RunId,
@@ -159,6 +172,7 @@ impl<'connection> NativeQueryStore<'connection> {
     }
 }
 
+#[cfg(test)]
 fn aligned_metric_result(
     result: AlignmentQueryResult,
     run_status: RunStatus,
