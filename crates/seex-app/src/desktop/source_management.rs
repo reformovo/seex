@@ -390,22 +390,25 @@ impl SourceManagement {
         match result {
             Ok(preflight) => {
                 if draft.items[index].is_new()
-                    && let Some(existing) = draft.items.iter().find(|item| {
+                    && let Some(existing_index) = draft.items.iter().position(|item| {
                         item.id != request.draft_id
                             && same_source_path(&item.root_path, &preflight.root_path)
                     })
                 {
-                    let existing_id = existing.id;
-                    draft.items.remove(index);
-                    if let Some(existing) =
-                        draft.items.iter_mut().find(|item| item.id == existing_id)
-                    {
-                        existing.removed = false;
+                    if existing_index < index {
+                        let existing_id = draft.items[existing_index].id;
+                        draft.items.remove(index);
+                        draft.items[existing_index].removed = false;
+                        draft.active = Some(existing_id);
+                        self.sync_active_alias(false, cx);
+                        cx.notify();
+                        return;
                     }
-                    draft.active = Some(existing_id);
-                    self.sync_active_alias(false, cx);
-                    cx.notify();
-                    return;
+                    let removed_id = draft.items[existing_index].id;
+                    draft.items.remove(existing_index);
+                    if draft.active == Some(removed_id) {
+                        draft.active = Some(request.draft_id);
+                    }
                 }
                 let item = &mut draft.items[index];
                 item.root_path = preflight.root_path;

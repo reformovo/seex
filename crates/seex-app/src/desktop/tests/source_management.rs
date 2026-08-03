@@ -365,6 +365,59 @@ fn multiple_source_drafts_finish_out_of_order_and_save_together(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn canonical_duplicate_preflight_keeps_the_earliest_draft(cx: &mut TestAppContext) {
+    use std::os::unix::fs::symlink;
+
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let roots = tempfile::tempdir().expect("Source roots should be created");
+    let first = roots.path().join("first");
+    let second = roots.path().join("second");
+    std::fs::create_dir(&first).expect("first Source should be created");
+    symlink(&first, &second).expect("second path should link to the first Source");
+    let timestamp = "2026-01-01T00:00:00Z"
+        .parse()
+        .expect("timestamp should parse");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_sources(Vec::new(), Vec::new(), window, cx);
+                let requests =
+                    management.queue_source_paths(vec![first.clone(), second.clone()], cx);
+                for request in requests.into_iter().rev() {
+                    management.finish_preflight(
+                        request.clone(),
+                        Ok(SourcePreflight {
+                            root_path: request.root_path,
+                            projects: vec![Project {
+                                project_id: ProjectId::from_string("project"),
+                                name: "Project".to_owned(),
+                                created_at: timestamp,
+                            }],
+                        }),
+                        window,
+                        cx,
+                    );
+                }
+            });
+        })
+        .expect("viewer should remain open");
+    cx.refresh().expect("Sources should render");
+
+    assert!(cx.debug_bounds("source-item:first").is_some());
+    assert!(cx.debug_bounds("source-item:second").is_none());
+    assert_eq!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .source_management
+                .read(cx)
+                .active_source_state())
+            .expect("viewer should remain open"),
+        Some(("first".to_owned(), 1, None))
+    );
+}
+
+#[gpui::test]
 fn sources_manager_reuses_existing_source_and_allows_new_projects(cx: &mut TestAppContext) {
     let (source, one, two) = source_with_two_projects();
     let scope = tempfile::tempdir().expect("test scope should be created");
