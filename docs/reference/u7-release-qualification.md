@@ -14,6 +14,12 @@ metadata, preserving the no-automatic-download policy. The qualification run
 below must therefore use an empty temporary `HOME` for Rust tests while
 preserving the configured Cargo and Rustup homes.
 
+Revision `2e6346c50c95268ef3cfd55df75959e034866a98` is also superseded. A
+later cross-process run exposed a scheduling window between releasing the
+same-Project creation guard and inserting the first Run into a SQLite catalog.
+Revision `8d7ed63` retains that existing per-Project guard through the initial
+Run insert without introducing general multi-client SQLite writer support.
+
 ## Release identity and authority boundary
 
 - Cargo packages identify as `0.1.0-beta.1`, Python distributions identify as
