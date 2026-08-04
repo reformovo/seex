@@ -66,12 +66,20 @@ seex --path runs --format json autoresearch best <project-id> --metric eval/loss
 
 Launch an independently installed desktop app with `seex app`, optionally
 opening one project path with `seex app <project-path>`. The SDK wheel does not
-bundle the `seex-app` binary.
+bundle the `seex-app` binary. On Apple Silicon macOS, install the Viewer and
+launch its app bundle with Homebrew:
 
-The `v0.1.0-beta.1` GitHub prerelease provides the unsigned macOS ARM64 files
-`seex-app-macos-aarch64` and `seex-app-macos-aarch64.sha256`. Verify the
-checksum, install the executable as `seex-app` on `PATH`, and then use
-`seex app`; the Python wheel and Viewer remain separate artifacts.
+```console
+brew install reformovo/tap/seex-app
+open "$(brew --prefix seex-app)/Seex.app"
+```
+
+GitHub prereleases provide the ad-hoc-signed macOS ARM64 files
+`Seex-macos-aarch64.zip` and `Seex-macos-aarch64.zip.sha256`. After verifying
+the checksum, extract the archive and open `Seex.app`. Direct downloads are not
+Apple-notarized and may require a one-time Gatekeeper approval. The Homebrew
+Formula builds the app bundle from source and also exposes `seex-app` on
+`PATH`; the Python wheel and Viewer remain separate artifacts.
 
 Machine-readable CLI success and error output uses JSON schema version 2.
 Autoresearch rankings may be limited to a repeated `--run <run-id>` subset;

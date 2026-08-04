@@ -10,7 +10,7 @@ publish = false
 [package.metadata.bundle]
 name = "Seex"
 identifier = "dev.seex.Seex"
-icon = ["resources/app-icon@2x.png", "resources/app-icon.png"]
+icon = ["resources/Seex.icns"]
 osx_minimum_system_version = "10.15.7"
 
 [features]

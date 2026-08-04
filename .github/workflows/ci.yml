@@ -262,21 +262,30 @@ jobs:
           xcrun --find metal
           xcrun --find metallib
           xcrun metal --version
-      - name: Build unsigned Viewer
-        run: cargo build -p seex-app --release
+      - name: Install cargo-bundle
+        run: cargo install cargo-bundle --version 0.11.0 --locked
+      - name: Build Viewer app bundle
+        working-directory: crates/seex-app
+        run: cargo bundle --release --format osx
+      - name: Ad-hoc sign and verify Viewer
+        run: |
+          codesign --force --deep --sign - target/release/bundle/osx/Seex.app
+          codesign --verify --deep --strict --verbose=4 target/release/bundle/osx/Seex.app
+          test "$(plutil -extract CFBundleIconFile raw target/release/bundle/osx/Seex.app/Contents/Info.plist)" = "Seex.icns"
+          test -s target/release/bundle/osx/Seex.app/Contents/Resources/Seex.icns
       - name: Prepare Viewer artifact and checksum
         run: |
           mkdir -p dist
-          cp target/release/seex-app dist/seex-app-macos-aarch64
+          ditto -c -k --keepParent target/release/bundle/osx/Seex.app dist/Seex-macos-aarch64.zip
           cd dist
-          shasum -a 256 seex-app-macos-aarch64 > seex-app-macos-aarch64.sha256
+          shasum -a 256 Seex-macos-aarch64.zip > Seex-macos-aarch64.zip.sha256
       - name: Upload Viewer artifact
         uses: actions/upload-artifact@v6
         with:
           name: viewer-macos-aarch64
           path: |
-            dist/seex-app-macos-aarch64
-            dist/seex-app-macos-aarch64.sha256
+            dist/Seex-macos-aarch64.zip
+            dist/Seex-macos-aarch64.zip.sha256
 
   sdist:
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
@@ -382,7 +391,7 @@ jobs:
           --viewer-artifacts release/viewer
       - name: Verify Viewer checksum
         working-directory: release/viewer
-        run: shasum -a 256 -c seex-app-macos-aarch64.sha256
+        run: shasum -a 256 -c Seex-macos-aarch64.zip.sha256
 
   publish-crates:
     name: Publish crates.io
