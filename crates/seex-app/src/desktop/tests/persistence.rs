@@ -263,6 +263,49 @@ fn autosave_coalesces_latest_revision_and_respects_blocked_documents(cx: &mut Te
 }
 
 #[gpui::test]
+fn window_close_flushes_the_latest_revision_before_removing_the_window(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().expect("test directory should be created");
+    let path = root.path().join("workbench.toml");
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.session.update(cx, |session, session_cx| {
+                session.workbench_path = Some(path.clone());
+                let view_id = session.views.active().view_id.clone();
+                assert!(session.views.rename(&view_id, "Before Close"));
+                session.persistence_dirty = true;
+                session.publish_semantic_snapshot();
+                session.sync_layout_and_persist(session.layout, session_cx);
+            });
+        })
+        .expect("viewer should remain open");
+    cx.executor().advance_clock(Duration::from_millis(249));
+    cx.run_until_parked();
+    assert!(!path.exists());
+
+    assert!(
+        !cx.simulate_close(),
+        "Seex should close its window after the Workbench flush finishes"
+    );
+    for _ in 0..100 {
+        cx.run_until_parked();
+        if path.exists() && window.read_with(&cx, |_, _| ()).is_err() {
+            break;
+        }
+    }
+
+    let saved = WorkbenchDocument::load(&path)
+        .expect("saved workbench should remain readable")
+        .expect("window close should flush the workbench");
+    assert_eq!(saved.views[0].name, "Before Close");
+    assert!(
+        window.read_with(&cx, |_, _| ()).is_err(),
+        "window should be removed without quitting the application"
+    );
+}
+
+#[gpui::test]
 fn quit_flushes_the_latest_revision_before_finishing(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     let path = root.path().join("workbench.toml");
@@ -290,7 +333,7 @@ fn quit_flushes_the_latest_revision_before_finishing(cx: &mut TestAppContext) {
         if path.exists()
             && window
                 .read_with(&cx, |viewer, _| {
-                    viewer.pending_quit_flush_revision.is_none()
+                    viewer.pending_close_flush_revision.is_none()
                 })
                 .unwrap_or(true)
         {
@@ -315,7 +358,7 @@ fn quit_flushes_the_latest_revision_before_finishing(cx: &mut TestAppContext) {
     assert!(
         window
             .read_with(&cx, |viewer, _| viewer
-                .pending_quit_flush_revision
+                .pending_close_flush_revision
                 .is_none())
             .expect("viewer should remain open")
     );
