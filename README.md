@@ -9,7 +9,7 @@ backed by Rust, PyO3, DuckDB, and DuckLake.
 > releases will not preserve compatibility, and compatibility and migration
 > commitments begin with the future 1.x line.
 
-Seex 0.1.0b1 beta surface:
+Seex 0.1.0b2 beta surface:
 
 - use the same typed Run, Reader, comparison, and ranking model from Rust or Python
 - discover projects, runs, metrics, and persisted metric points
@@ -20,13 +20,13 @@ Seex 0.1.0b1 beta surface:
 - inspect bounded multi-Run curves in the independently distributed macOS Viewer
 - keep the Parquet schema as the long-term compatibility boundary
 
-Install the Python beta with `pip install seex==0.1.0b1`, or add the Rust SDK
-with `cargo add seex@0.1.0-beta.1`.
+Install the Python beta with `pip install seex==0.1.0b2`, or add the Rust SDK
+with `cargo add seex@0.1.0-beta.2`.
 
 Known limit: with the default DuckDB catalog, an independent reader may not
 attach or refresh while a writer is active. Open `Api` after Run finalization
 for portable behavior across catalog backends. See the
-[0.1.0b1 release notes](docs/release-notes/0.1.0b1.md) for validation details
+[0.1.0b2 release notes](docs/release-notes/0.1.0b2.md) for validation details
 and other deferred capabilities.
 
 Quickstart:
