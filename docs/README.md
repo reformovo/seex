@@ -14,6 +14,8 @@ notes, and historical architecture snapshots.
   table schemas.
 - `docs/glossary.md` for product terms.
 - `docs/parquet-schema-contract.md` for the Parquet compatibility contract.
+- `docs/releasing.md` for the crates.io, PyPI, GitHub, macOS Viewer, and
+  Homebrew release runbook.
 - `docs/adr/` for accepted decisions.
 - `docs/release-notes/` for shipped release notes and completed roadmap
   history.
