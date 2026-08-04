@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use gpui::{App, AppContext, Context};
@@ -20,6 +21,8 @@ use crate::workbench::toml_document::{
 
 use super::ViewerApp;
 use super::command::WorkbenchCommand;
+
+static NEXT_TEST_HOME: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn fixture(metric_count: usize) -> (tempfile::TempDir, ProjectId, RunId) {
     fixture_with_runs(metric_count, 1)
@@ -191,6 +194,11 @@ fn open_viewer_with_optional_source(
     project_path: Option<PathBuf>,
     source: Option<ConfiguredSource>,
 ) -> (WindowHandle<ViewerApp>, VisualTestContext) {
+    let test_home = std::env::temp_dir().join(format!(
+        "seex-viewer-test-home-{}-{}",
+        std::process::id(),
+        NEXT_TEST_HOME.fetch_add(1, Ordering::Relaxed),
+    ));
     let window = cx.update(|cx| {
         cx.open_window(
             WindowOptions {
@@ -202,7 +210,7 @@ fn open_viewer_with_optional_source(
             },
             move |window, cx| {
                 cx.new(|cx| {
-                    let mut viewer = ViewerApp::new(project_path, window, cx);
+                    let mut viewer = ViewerApp::new_for_test(project_path, &test_home, window, cx);
                     if let Some(source) = source {
                         viewer.open_configured_sources(vec![source], cx);
                     }

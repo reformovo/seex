@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{ConfiguredSource, SourceConfiguration, same_source_path};
 use crate::data::SourcePreflight;
@@ -83,6 +83,7 @@ pub(super) struct ViewerApp {
     pending_workbench_import: Option<PendingWorkbenchImport>,
     pending_import_flush_revision: Option<u64>,
     pending_quit_flush_revision: Option<u64>,
+    source_reload_generation: u64,
     project_root: Option<PathBuf>,
     pending_commands: Vec<command::WorkbenchCommand>,
     command_dispatch_pending: bool,
@@ -102,14 +103,38 @@ struct WorkbenchImportPreparation {
     external_fingerprint: Vec<u8>,
     configuration: SourceConfiguration,
     document: TomlWorkbenchDocument,
-    local_sources: Vec<(ConfiguredSource, Vec<ProjectId>)>,
+    local_sources: Vec<LocalSourceCandidate>,
     mappings: Vec<ImportSourceMapping>,
     unresolved: Vec<(SourceAlias, Vec<ProjectId>)>,
+}
+
+struct LocalSourceCandidate {
+    source: ConfiguredSource,
+    available_projects: Result<Vec<ProjectId>, String>,
 }
 
 impl ViewerApp {
     pub(super) fn new(
         project_path: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_home(project_path, None, window, cx)
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    fn new_for_test(
+        project_path: Option<PathBuf>,
+        home: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_home(project_path, Some(home), window, cx)
+    }
+
+    fn new_with_home(
+        project_path: Option<PathBuf>,
+        home: Option<&Path>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -131,6 +156,7 @@ impl ViewerApp {
             pending_workbench_import: None,
             pending_import_flush_revision: None,
             pending_quit_flush_revision: None,
+            source_reload_generation: 0,
             project_root: project_path.clone(),
             pending_commands: Vec::new(),
             command_dispatch_pending: false,
@@ -262,7 +288,13 @@ impl ViewerApp {
                 }
             }
         }
-        match SourceConfiguration::load_for_scope(project_path.as_deref()) {
+        let configuration = match home {
+            Some(home) => {
+                SourceConfiguration::load_for_scope_at(project_path.as_deref(), Some(home))
+            }
+            None => SourceConfiguration::load_for_scope(project_path.as_deref()),
+        };
+        match configuration {
             Ok(configuration) => {
                 let sources = configuration.configured_sources();
                 app.source_configuration = Some(configuration);
@@ -613,24 +645,60 @@ impl ViewerApp {
     }
 
     fn reload_sources(&mut self, cx: &mut Context<Self>) {
+        let generation = self.begin_source_reload();
         let project_root = self.project_root.clone();
         let load = cx.background_spawn(async move { load_and_preflight_sources(project_root) });
-        cx.spawn(async move |this, cx| match load.await {
-            Ok((configuration, sources)) => {
-                let _ = this.update(cx, |viewer, cx| {
-                    viewer.source_configuration = Some(configuration);
-                    let visible_runs = viewer.active_visible_runs(cx);
-                    viewer.session.update(cx, |session, session_cx| {
-                        session.replace_sources(sources, &visible_runs, session_cx);
-                    });
-                    cx.notify();
-                });
-            }
-            Err(error) => {
-                let _ = this.update(cx, |viewer, cx| viewer.report_source_error(error, cx));
-            }
+        cx.spawn(async move |this, cx| {
+            let result = load.await;
+            let _ = this.update(cx, |viewer, cx| {
+                viewer.finish_source_reload(generation, result, cx);
+            });
         })
         .detach();
+    }
+
+    fn begin_source_reload(&mut self) -> u64 {
+        self.source_reload_generation = self.source_reload_generation.saturating_add(1);
+        self.source_reload_generation
+    }
+
+    fn finish_source_reload(
+        &mut self,
+        generation: u64,
+        result: Result<(SourceConfiguration, Vec<ConfiguredSource>), String>,
+        cx: &mut Context<Self>,
+    ) {
+        if generation != self.source_reload_generation {
+            return;
+        }
+        match result {
+            Ok((configuration, sources)) => {
+                self.source_configuration = Some(configuration);
+                let visible_runs = self.active_visible_runs(cx);
+                self.session.update(cx, |session, session_cx| {
+                    session.replace_sources(sources, &visible_runs, session_cx);
+                });
+                cx.notify();
+            }
+            Err(error) => {
+                self.report_source_error(error, cx);
+            }
+        }
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    fn begin_source_reload_for_test(&mut self) -> u64 {
+        self.begin_source_reload()
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    fn finish_source_reload_for_test(
+        &mut self,
+        generation: u64,
+        configuration: SourceConfiguration,
+        cx: &mut Context<Self>,
+    ) {
+        self.finish_source_reload(generation, Ok((configuration, Vec::new())), cx);
     }
 
     fn handle_source_management_event(
@@ -649,6 +717,7 @@ impl ViewerApp {
             SourceManagementEvent::ConfirmedWorkbench => self.confirm_workbench_import(cx),
             SourceManagementEvent::Cancelled => {
                 self.pending_workbench_import = None;
+                self.pending_import_flush_revision = None;
             }
         }
     }
@@ -802,7 +871,11 @@ impl ViewerApp {
 
     fn confirm_workbench_import(&mut self, cx: &mut Context<Self>) {
         if self.pending_workbench_import.is_none() {
-            self.report_source_error("Workbench import plan is unavailable".to_owned(), cx);
+            let error = "Workbench import plan is unavailable".to_owned();
+            self.source_management.update(cx, |management, cx| {
+                management.finish_workbench_save(error.clone(), cx);
+            });
+            self.report_source_error(error, cx);
             return;
         }
         let flush_revision = self
@@ -831,8 +904,11 @@ impl ViewerApp {
         };
         if !succeeded {
             self.pending_import_flush_revision = None;
-            self.pending_workbench_import = None;
-            self.report_source_error("Could not flush the current Workbench".to_owned(), cx);
+            let error = "Could not flush the current Workbench".to_owned();
+            self.source_management.update(cx, |management, cx| {
+                management.finish_workbench_save(error.clone(), cx);
+            });
+            self.report_source_error(error, cx);
             return;
         }
         if *revision < target {
@@ -900,29 +976,38 @@ impl ViewerApp {
     }
 
     fn persist_workbench_import(&mut self, cx: &mut Context<Self>) {
+        let Some(workbench_path) = self.session.read(cx).workbench_path.clone() else {
+            let error = "Current Workbench path is unavailable".to_owned();
+            self.source_management.update(cx, |management, cx| {
+                management.finish_workbench_save(error.clone(), cx);
+            });
+            self.report_source_error(error, cx);
+            return;
+        };
         let Some(mut pending) = self.pending_workbench_import.take() else {
             return;
         };
-        let Some(workbench_path) = self.session.read(cx).workbench_path.clone() else {
-            self.report_source_error("Current Workbench path is unavailable".to_owned(), cx);
-            return;
-        };
         let write = cx.background_spawn(async move {
-            if std::fs::read(&pending.external_path).map_err(|error| error.to_string())?
-                != pending.external_fingerprint
-            {
-                return Err("Imported Workbench changed after preflight".to_owned());
+            let result = (|| {
+                if std::fs::read(&pending.external_path).map_err(|error| error.to_string())?
+                    != pending.external_fingerprint
+                {
+                    return Err("Imported Workbench changed after preflight".to_owned());
+                }
+                let original = match std::fs::read(&workbench_path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.to_string()),
+                };
+                pending
+                    .configuration
+                    .save_with_workbench(&workbench_path, original, &pending.plan.document)
+                    .map_err(|error| error.to_string())
+            })();
+            match result {
+                Ok(()) => Ok(pending),
+                Err(error) => Err((pending, error)),
             }
-            let original = match std::fs::read(&workbench_path) {
-                Ok(bytes) => Some(bytes),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error.to_string()),
-            };
-            pending
-                .configuration
-                .save_with_workbench(&workbench_path, original, &pending.plan.document)
-                .map_err(|error| error.to_string())?;
-            Ok(pending)
         });
         cx.spawn(async move |this, cx| match write.await {
             Ok(pending) => {
@@ -934,11 +1019,20 @@ impl ViewerApp {
                         session.replace_sources(sources, &[], session_cx);
                     });
                     viewer.restore_toml_workbench(pending.plan.document, cx);
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.complete_workbench_save(cx);
+                    });
                     cx.notify();
                 });
             }
-            Err(error) => {
-                let _ = this.update(cx, |viewer, cx| viewer.report_source_error(error, cx));
+            Err((pending, error)) => {
+                let _ = this.update(cx, |viewer, cx| {
+                    viewer.pending_workbench_import = Some(pending);
+                    viewer.source_management.update(cx, |management, cx| {
+                        management.finish_workbench_save(error.clone(), cx);
+                    });
+                    viewer.report_source_error(error, cx);
+                });
             }
         })
         .detach();
@@ -1137,51 +1231,44 @@ fn prepare_workbench_import(
         .collect::<Vec<_>>();
     referenced.sort_by(|left, right| left.0.as_str().cmp(right.0.as_str()));
 
-    let mut local_sources = Vec::new();
-    for source in configuration.configured_sources() {
-        let preflight =
-            SourcePreflight::load(&source.root_path).map_err(|error| error.to_string())?;
-        let available = preflight
-            .projects
-            .into_iter()
-            .map(|project| project.project_id)
-            .collect::<Vec<_>>();
-        if let Some(project_id) = source
-            .projects
-            .iter()
-            .find(|project_id| !available.contains(project_id))
-        {
-            return Err(format!(
-                "Source {} does not contain Project {}",
-                source.alias,
-                project_id.as_str()
-            ));
-        }
-        local_sources.push((source, available));
-    }
+    let local_sources = configuration
+        .configured_sources()
+        .into_iter()
+        .map(|source| LocalSourceCandidate {
+            available_projects: preflight_import_candidate(&source),
+            source,
+        })
+        .collect::<Vec<_>>();
 
     let mut mappings = Vec::new();
     let mut unresolved = Vec::new();
     for (external_alias, required_projects) in referenced {
         let candidates = local_sources
             .iter()
-            .filter(|(_, available)| {
-                required_projects
-                    .iter()
-                    .all(|project| available.contains(project))
+            .filter_map(|candidate| {
+                candidate
+                    .available_projects
+                    .as_ref()
+                    .ok()
+                    .filter(|available| {
+                        required_projects
+                            .iter()
+                            .all(|project| available.contains(project))
+                    })
+                    .map(|available| (candidate, available))
             })
             .collect::<Vec<_>>();
         let selected = candidates
             .iter()
             .copied()
-            .find(|(source, _)| source.alias == external_alias)
+            .find(|(candidate, _)| candidate.source.alias == external_alias)
             .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
-        if let Some(selected) = selected {
+        if let Some((candidate, available_projects)) = selected {
             mappings.push(ImportSourceMapping {
                 external_alias,
-                local_alias: selected.0.alias.clone(),
-                available_projects: selected.1.clone(),
-                imported_projects: selected.0.projects.clone(),
+                local_alias: candidate.source.alias.clone(),
+                available_projects: available_projects.clone(),
+                imported_projects: candidate.source.projects.clone(),
             });
         } else {
             unresolved.push((external_alias, required_projects));
@@ -1196,6 +1283,27 @@ fn prepare_workbench_import(
         mappings,
         unresolved,
     })
+}
+
+fn preflight_import_candidate(source: &ConfiguredSource) -> Result<Vec<ProjectId>, String> {
+    let preflight = SourcePreflight::load(&source.root_path).map_err(|error| error.to_string())?;
+    let available = preflight
+        .projects
+        .into_iter()
+        .map(|project| project.project_id)
+        .collect::<Vec<_>>();
+    if let Some(project_id) = source
+        .projects
+        .iter()
+        .find(|project_id| !available.contains(project_id))
+    {
+        return Err(format!(
+            "Source {} does not contain Project {}",
+            source.alias,
+            project_id.as_str()
+        ));
+    }
+    Ok(available)
 }
 
 fn finish_workbench_import(
@@ -1233,9 +1341,12 @@ fn finish_workbench_import(
         let existing = preparation
             .local_sources
             .iter()
-            .find(|(source, _)| same_source_path(&source.root_path, &selected.root_path));
-        let (local_alias, imported_projects) = if let Some((source, _)) = existing {
-            (source.alias.clone(), source.projects.clone())
+            .find(|candidate| same_source_path(&candidate.source.root_path, &selected.root_path));
+        let (local_alias, imported_projects) = if let Some(candidate) = existing {
+            (
+                candidate.source.alias.clone(),
+                candidate.source.projects.clone(),
+            )
         } else if let Some((alias, _)) = new_sources
             .iter()
             .find(|(_, root_path)| same_source_path(root_path, &selected.root_path))

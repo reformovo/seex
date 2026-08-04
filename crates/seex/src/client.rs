@@ -145,7 +145,7 @@ impl Client {
         let name = options.name.unwrap_or_else(|| run_id.as_str().to_owned());
         let (run, next_step) = match options.resume {
             ResumePolicy::Never => {
-                let project = self.get_or_create_project(&options.project)?;
+                let (project, _project_guard) = self.get_or_create_project(&options.project)?;
                 (
                     self.inner
                         .create_run(&project.project_id, &name, Some(run_id))
@@ -156,7 +156,7 @@ impl Client {
             ResumePolicy::Allow => match self.inner.get_run(&run_id) {
                 Ok(existing) => self.resume_existing(existing, &project_id)?,
                 Err(crate::engine::EngineError::RunNotFound { .. }) => {
-                    let project = self.get_or_create_project(&options.project)?;
+                    let (project, _project_guard) = self.get_or_create_project(&options.project)?;
                     (
                         self.inner
                             .create_run(&project.project_id, &name, Some(run_id))
@@ -187,21 +187,22 @@ impl Client {
         })
     }
 
-    fn get_or_create_project(&self, raw_project: &str) -> Result<Project> {
+    fn get_or_create_project(&self, raw_project: &str) -> Result<(Project, ProjectCreateGuard)> {
         if raw_project.is_empty() {
             return Err(Error::InvalidRunOptions { field: "project" });
         }
         let project_id = ProjectId::from_string(raw_project);
-        let _guard = ProjectCreateGuard::acquire(self.inner.lock_namespace(), &project_id)
+        let guard = ProjectCreateGuard::acquire(self.inner.lock_namespace(), &project_id)
             .map_err(|_| Error::Storage)?;
-        match self.inner.get_project(&project_id) {
-            Ok(project) => Ok(project),
+        let project = match self.inner.get_project(&project_id) {
+            Ok(project) => project,
             Err(crate::engine::EngineError::ProjectNotFound { .. }) => self
                 .inner
                 .create_project(raw_project, Some(project_id))
-                .map_err(Error::from),
-            Err(error) => Err(error.into()),
-        }
+                .map_err(Error::from)?,
+            Err(error) => return Err(error.into()),
+        };
+        Ok((project, guard))
     }
 
     fn resume_existing(

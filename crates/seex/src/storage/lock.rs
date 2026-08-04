@@ -60,7 +60,7 @@ impl Drop for RunWriterGuard {
     }
 }
 
-/// Short-lived cross-process guard for Project get-or-create.
+/// Cross-process guard for Project get-or-create and its initial Run insert.
 pub(crate) struct ProjectCreateGuard {
     lock_file: File,
 }

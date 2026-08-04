@@ -548,6 +548,72 @@ fn restored_missing_sources_render_unavailable_references(cx: &mut TestAppContex
 }
 
 #[gpui::test]
+fn expanded_only_project_is_unavailable_until_its_source_recovers(cx: &mut TestAppContext) {
+    let (root, project_id, _) = fixture_with_complete_runs(1, 1);
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let project_ref = ProjectRef::new(DataSourceId::from_alias(&alias), project_id.clone());
+    let mut document = saved_workbench(alias.clone(), project_id.clone(), Vec::new(), "loss");
+    document.expanded_projects = vec![SavedProjectRef {
+        source_alias: alias.clone(),
+        project_id: project_id.clone(),
+    }];
+    document.layout.project_sidebar_visible = true;
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer(cx, None);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.restore_toml_workbench(document, cx);
+        })
+        .expect("viewer should remain open");
+    cx.run_until_parked();
+    cx.refresh().expect("missing Project should render");
+
+    assert!(
+        cx.debug_bounds("unavailable-project:research/project")
+            .is_some()
+    );
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.open_configured_sources(
+                vec![ConfiguredSource {
+                    alias,
+                    root_path: root.path().to_owned(),
+                    projects: vec![project_id],
+                }],
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer
+            .session_snapshot(cx)
+            .contains_catalog_project(&project_ref)
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("recovered Project should render");
+
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .views
+                .expanded_projects()
+                .contains(&project_ref))
+            .expect("viewer should remain open")
+    );
+    assert!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .session_snapshot(cx)
+                .unavailable_references()
+                .0
+                .is_empty())
+            .expect("viewer should remain open")
+    );
+    assert!(cx.debug_bounds("project-tree-run-0-0-0").is_some());
+}
+
+#[gpui::test]
 fn restored_organization_records_use_configured_sources(cx: &mut TestAppContext) {
     let root = tempfile::tempdir().expect("test directory should be created");
     let missing = root.path().join("archived-source");

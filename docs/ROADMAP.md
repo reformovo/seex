@@ -404,25 +404,25 @@ path. See
 U7 begins after U0–U6 pass. CI/release workflow changes remain a separate
 review slice and require explicit approval under the repository boundary.
 
-- [ ] Pass complete correctness and release Acceptance, then run only the
+- [x] Pass complete correctness and release Acceptance, then run only the
   reporting, Reader, Viewer CPU, and Viewer RSS comparisons affected since their
   rolling revisions.
 - [ ] After release Acceptance passes, create `v0.1.0-beta.1` from the exact
   source whose Cargo and Python packages identify as beta.1; do not retag a
   different source.
-- [ ] Use the compact dual-View workload for automated peak RSS: 4 Runs, 2
+- [x] Use the compact dual-View workload for automated peak RSS: 4 Runs, 2
   Metrics, 100,000 points per series, three zoom round-trips, and four-way reads.
-- [ ] Prove stale requests and cancellation retain no snapshot or query working
+- [x] Prove stale requests and cancellation retain no snapshot or query working
   set with ordinary small-fixture tests, not an RSS stress matrix.
-- [ ] Run Instruments, Metal, allocation, or display Profiles only when a
+- [x] Run Instruments, Metal, allocation, or display Profiles only when a
   comparison or Acceptance failure needs diagnosis. Record them as
   non-blocking evidence.
-- [ ] Only after every release Acceptance check passes, add a separately
+- [x] Only after every release Acceptance check passes, add a separately
   reviewed macOS ARM64 CI job that verifies the Xcode Metal Toolchain and builds
   the unsigned Viewer without changing the Python wheel matrix.
-- [ ] On matching tags, produce `seex-app-macos-aarch64`, SHA-256 checksum, and
+- [x] On matching tags, produce `seex-app-macos-aarch64`, SHA-256 checksum, and
   attestations, while proving Desktop artifacts cannot publish to PyPI.
-- [ ] Publish crates.io before PyPI. If the `seex` crate name cannot be claimed,
+- [x] Publish crates.io before PyPI. If the `seex` crate name cannot be claimed,
   stop and revisit the naming decision rather than silently choosing a fallback.
 
 ## Later Backlog

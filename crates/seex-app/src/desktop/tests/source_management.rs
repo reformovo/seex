@@ -1081,6 +1081,60 @@ fn reload_sources_rejects_invalid_candidates_before_switching_live_state(cx: &mu
     });
 }
 
+#[gpui::test]
+fn older_reload_result_cannot_replace_newer_configuration(cx: &mut TestAppContext) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let older_root = tempfile::tempdir().expect("older Source should be created");
+    let newer_root = tempfile::tempdir().expect("newer Source should be created");
+    let older_alias = SourceAlias::new("older").expect("older alias should be valid");
+    let newer_alias = SourceAlias::new("newer").expect("newer alias should be valid");
+    let project_id = ProjectId::from_string("project");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            let mut older = viewer
+                .source_configuration
+                .clone()
+                .expect("Viewer configuration should load");
+            older
+                .set_source(
+                    &older_alias,
+                    older_root.path(),
+                    std::slice::from_ref(&project_id),
+                )
+                .expect("older Source should configure");
+            let mut newer = viewer
+                .source_configuration
+                .clone()
+                .expect("Viewer configuration should load");
+            newer
+                .set_source(
+                    &newer_alias,
+                    newer_root.path(),
+                    std::slice::from_ref(&project_id),
+                )
+                .expect("newer Source should configure");
+            let older_generation = viewer.begin_source_reload_for_test();
+            let newer_generation = viewer.begin_source_reload_for_test();
+
+            viewer.finish_source_reload_for_test(newer_generation, newer, cx);
+            viewer.finish_source_reload_for_test(older_generation, older, cx);
+        })
+        .expect("viewer should remain open");
+
+    window
+        .read_with(&cx, |viewer, _| {
+            let configured = viewer
+                .source_configuration
+                .as_ref()
+                .expect("newer configuration should remain installed")
+                .configured_sources();
+            assert_eq!(configured.len(), 1);
+            assert_eq!(configured[0].alias, newer_alias);
+        })
+        .expect("viewer should remain open");
+}
+
 fn source_with_two_projects() -> (tempfile::TempDir, ProjectId, ProjectId) {
     let root = tempfile::tempdir().expect("test Source should be created");
     let client = Client::builder(root.path())
@@ -1176,10 +1230,21 @@ fn workbench_import_confirms_rewrites_and_replaces_blocked_live_state(cx: &mut T
             assert_eq!(plan.allowlist_additions.len(), 1);
         })
         .expect("viewer should remain open");
-    let confirm = cx
-        .debug_bounds("confirm-workbench-import")
-        .expect("import confirmation should render");
-    cx.simulate_click(confirm.center(), Modifiers::default());
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.confirm_workbench_for_test(cx);
+            });
+        })
+        .expect("viewer should remain open");
+    window
+        .read_with(&cx, |viewer, cx| {
+            assert!(viewer.source_management.read(cx).is_workbench_saving());
+        })
+        .expect("viewer should remain open");
+    cx.refresh()
+        .expect("saving import confirmation should render");
+    assert!(cx.debug_bounds("workbench-import-dialog").is_some());
     wait_for_viewer(window, &cx, |viewer, cx| {
         let session = viewer.session.read(cx);
         session.views.active().name == "Imported"
@@ -1278,6 +1343,49 @@ fn workbench_import_configures_a_new_source_only_after_confirmation(cx: &mut Tes
             .and_then(toml_edit::Value::as_str),
         Some(project_id.as_str())
     );
+}
+
+#[test]
+fn workbench_import_ignores_unreferenced_unavailable_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (available_root, project_id, _) = source_with_two_projects();
+    let scope = tempfile::tempdir()?;
+    let external = scope.path().join("external.toml");
+    let available_alias = SourceAlias::new("available")?;
+    let unavailable_alias = SourceAlias::new("unavailable")?;
+    saved_workbench(
+        available_alias.clone(),
+        project_id.clone(),
+        vec![RunId::from_string("missing")],
+        "loss",
+    )
+    .save(&external)?;
+    let mut configuration =
+        SourceConfiguration::load_for_scope_at(Some(scope.path()), Some(scope.path()))?;
+    configuration.set_source(
+        &available_alias,
+        available_root.path(),
+        std::slice::from_ref(&project_id),
+    )?;
+    configuration.set_source(
+        &unavailable_alias,
+        &scope.path().join("missing-source"),
+        &[ProjectId::from_string("unrelated")],
+    )?;
+
+    let preparation = prepare_workbench_import(external, configuration)?;
+
+    assert!(preparation.unresolved.is_empty());
+    assert_eq!(preparation.mappings.len(), 1);
+    assert_eq!(preparation.mappings[0].local_alias, available_alias);
+    assert!(
+        preparation
+            .local_sources
+            .iter()
+            .find(|candidate| candidate.source.alias == unavailable_alias)
+            .is_some_and(|candidate| candidate.available_projects.is_err())
+    );
+    Ok(())
 }
 
 #[gpui::test]
@@ -1426,6 +1534,15 @@ fn invalid_or_unwritable_workbench_import_keeps_live_state(cx: &mut TestAppConte
             .as_ref()
             .is_some_and(|error| error.contains("directory"))
     });
+    cx.refresh()
+        .expect("failed import confirmation should render");
+    assert!(cx.debug_bounds("workbench-import-dialog").is_some());
+    assert!(cx.debug_bounds("workbench-import-error").is_some());
+    window
+        .read_with(&cx, |viewer, cx| {
+            assert!(!viewer.source_management.read(cx).is_workbench_saving());
+        })
+        .expect("viewer should remain open");
     assert_ne!(
         window
             .read_with(&cx, |viewer, cx| viewer
