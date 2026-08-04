@@ -12,8 +12,8 @@ use crate::workbench::import::{
 };
 use crate::workbench::toml_document::TomlWorkbenchDocument;
 use gpui::{
-    Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent, PathPromptOptions,
-    PromptLevel, Render, SharedString, Window, div, prelude::*,
+    AnyWindowHandle, Context, FocusHandle, MouseButton, MouseMoveEvent, MouseUpEvent,
+    PathPromptOptions, PromptLevel, Render, SharedString, Window, div, prelude::*,
 };
 use seex::ProjectId;
 
@@ -82,7 +82,8 @@ pub(super) struct ViewerApp {
     source_configuration: Option<SourceConfiguration>,
     pending_workbench_import: Option<PendingWorkbenchImport>,
     pending_import_flush_revision: Option<u64>,
-    pending_quit_flush_revision: Option<u64>,
+    pending_close_flush_revision: Option<u64>,
+    pending_close_target: Option<CloseTarget>,
     source_reload_generation: u64,
     project_root: Option<PathBuf>,
     pending_commands: Vec<command::WorkbenchCommand>,
@@ -96,6 +97,12 @@ struct PendingWorkbenchImport {
     external_fingerprint: Vec<u8>,
     configuration: SourceConfiguration,
     plan: WorkbenchImportPlan,
+}
+
+#[derive(Clone, Copy)]
+enum CloseTarget {
+    Application,
+    Window(AnyWindowHandle),
 }
 
 struct WorkbenchImportPreparation {
@@ -138,6 +145,16 @@ impl ViewerApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let viewer = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let target = CloseTarget::Window(window.window_handle());
+            viewer
+                .update(cx, |viewer, cx| {
+                    viewer.request_close(target, cx);
+                    false
+                })
+                .unwrap_or(true)
+        });
         let focus = cx.focus_handle();
         focus.focus(window);
         let session =
@@ -155,7 +172,8 @@ impl ViewerApp {
             source_configuration: None,
             pending_workbench_import: None,
             pending_import_flush_revision: None,
-            pending_quit_flush_revision: None,
+            pending_close_flush_revision: None,
+            pending_close_target: None,
             source_reload_generation: 0,
             project_root: project_path.clone(),
             pending_commands: Vec::new(),
@@ -268,7 +286,7 @@ impl ViewerApp {
             cx.defer(move |cx| {
                 let _ = viewer.update(cx, |viewer, cx| {
                     viewer.handle_import_autosave_event(&event, cx);
-                    viewer.handle_quit_autosave_event(&event, cx);
+                    viewer.handle_close_autosave_event(&event, cx);
                     viewer.handle_session_event(event, cx);
                 });
             });
@@ -926,19 +944,28 @@ impl ViewerApp {
     }
 
     fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
-        if self.pending_quit_flush_revision.is_some() {
+        self.request_close(CloseTarget::Application, cx);
+    }
+
+    fn request_close(&mut self, target: CloseTarget, cx: &mut Context<Self>) {
+        if self.pending_close_flush_revision.is_some() {
+            if matches!(target, CloseTarget::Application) {
+                self.pending_close_target = Some(CloseTarget::Application);
+            }
             return;
         }
         let flush_revision = self
             .session
             .update(cx, |session, cx| session.flush_pending_revision(cx));
-        self.pending_quit_flush_revision = flush_revision;
-        if flush_revision.is_none() {
-            cx.quit();
+        if let Some(revision) = flush_revision {
+            self.pending_close_flush_revision = Some(revision);
+            self.pending_close_target = Some(target);
+        } else {
+            Self::finish_close(target, cx);
         }
     }
 
-    fn handle_quit_autosave_event(
+    fn handle_close_autosave_event(
         &mut self,
         event: &WorkbenchSessionEvent,
         cx: &mut Context<Self>,
@@ -950,28 +977,40 @@ impl ViewerApp {
         else {
             return;
         };
-        let Some(target) = self.pending_quit_flush_revision else {
+        let Some(target_revision) = self.pending_close_flush_revision else {
             return;
         };
         if !succeeded {
-            self.pending_quit_flush_revision = None;
+            self.pending_close_flush_revision = None;
+            self.pending_close_target = None;
             self.report_source_error(
-                "Could not flush the Workbench before quitting".to_owned(),
+                "Could not flush the Workbench before closing".to_owned(),
                 cx,
             );
             return;
         }
-        if *revision < target {
+        if *revision < target_revision {
             return;
         }
         let next_revision = self
             .session
             .update(cx, |session, cx| session.flush_pending_revision(cx));
         if let Some(revision) = next_revision {
-            self.pending_quit_flush_revision = Some(revision);
+            self.pending_close_flush_revision = Some(revision);
         } else {
-            self.pending_quit_flush_revision = None;
-            cx.quit();
+            self.pending_close_flush_revision = None;
+            if let Some(target) = self.pending_close_target.take() {
+                Self::finish_close(target, cx);
+            }
+        }
+    }
+
+    fn finish_close(target: CloseTarget, cx: &mut Context<Self>) {
+        match target {
+            CloseTarget::Application => cx.quit(),
+            CloseTarget::Window(window_handle) => cx.defer(move |cx| {
+                let _ = window_handle.update(cx, |_, window, _| window.remove_window());
+            }),
         }
     }
 
