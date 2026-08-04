@@ -1,6 +1,6 @@
 [package]
 name = "seex-app"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 edition = "2024"
 description = "Native desktop curve viewer for Seex."
 license = "MIT"
@@ -10,7 +10,7 @@ publish = false
 [package.metadata.bundle]
 name = "Seex"
 identifier = "dev.seex.Seex"
-icon = ["resources/app-icon@2x.png", "resources/app-icon.png"]
+icon = ["resources/Seex.icns"]
 osx_minimum_system_version = "10.15.7"
 
 [features]

@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 
 _CARGO_PACKAGES = ("seex", "seex-python", "seex-app", "seex-plot")
-_VIEWER_FILES = frozenset({"seex-app-macos-aarch64", "seex-app-macos-aarch64.sha256"})
+_VIEWER_FILES = frozenset({"Seex-macos-aarch64.zip", "Seex-macos-aarch64.zip.sha256"})
 
 
 def validate_release(

@@ -9,7 +9,7 @@ backed by Rust, PyO3, DuckDB, and DuckLake.
 > releases will not preserve compatibility, and compatibility and migration
 > commitments begin with the future 1.x line.
 
-Seex 0.1.0b1 beta surface:
+Seex 0.1.0b2 beta surface:
 
 - use the same typed Run, Reader, comparison, and ranking model from Rust or Python
 - discover projects, runs, metrics, and persisted metric points
@@ -20,13 +20,13 @@ Seex 0.1.0b1 beta surface:
 - inspect bounded multi-Run curves in the independently distributed macOS Viewer
 - keep the Parquet schema as the long-term compatibility boundary
 
-Install the Python beta with `pip install seex==0.1.0b1`, or add the Rust SDK
-with `cargo add seex@0.1.0-beta.1`.
+Install the Python beta with `pip install seex==0.1.0b2`, or add the Rust SDK
+with `cargo add seex@0.1.0-beta.2`.
 
 Known limit: with the default DuckDB catalog, an independent reader may not
 attach or refresh while a writer is active. Open `Api` after Run finalization
 for portable behavior across catalog backends. See the
-[0.1.0b1 release notes](docs/release-notes/0.1.0b1.md) for validation details
+[0.1.0b2 release notes](docs/release-notes/0.1.0b2.md) for validation details
 and other deferred capabilities.
 
 Quickstart:
@@ -66,12 +66,20 @@ seex --path runs --format json autoresearch best <project-id> --metric eval/loss
 
 Launch an independently installed desktop app with `seex app`, optionally
 opening one project path with `seex app <project-path>`. The SDK wheel does not
-bundle the `seex-app` binary.
+bundle the `seex-app` binary. On Apple Silicon macOS, install the Viewer and
+launch its app bundle with Homebrew:
 
-The `v0.1.0-beta.1` GitHub prerelease provides the unsigned macOS ARM64 files
-`seex-app-macos-aarch64` and `seex-app-macos-aarch64.sha256`. Verify the
-checksum, install the executable as `seex-app` on `PATH`, and then use
-`seex app`; the Python wheel and Viewer remain separate artifacts.
+```console
+brew install reformovo/tap/seex-app
+open "$(brew --prefix seex-app)/Seex.app"
+```
+
+GitHub prereleases provide the ad-hoc-signed macOS ARM64 files
+`Seex-macos-aarch64.zip` and `Seex-macos-aarch64.zip.sha256`. After verifying
+the checksum, extract the archive and open `Seex.app`. Direct downloads are not
+Apple-notarized and may require a one-time Gatekeeper approval. The Homebrew
+Formula builds the app bundle from source and also exposes `seex-app` on
+`PATH`; the Python wheel and Viewer remain separate artifacts.
 
 Machine-readable CLI success and error output uses JSON schema version 2.
 Autoresearch rankings may be limited to a repeated `--run <run-id>` subset;
