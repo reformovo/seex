@@ -446,7 +446,7 @@ is a separate reviewable commit within the routine five-file and 200-line scope.
   explicit `elapsed_time` axis. Read schema-v1 `timestamp` state as Elapsed time
   while discarding its incompatible epoch viewport; preserve schema-v1 Step
   viewports and cover migration plus current-schema round trips.
-- [ ] **V1.4 — Product language.** Define Run elapsed time and observation
+- [x] **V1.4 — Product language.** Define Run elapsed time and observation
   timestamp in the project context, and update the workbench draft so the
   Viewer consumes the Core comparison semantics rather than inventing an
   Absolute time alignment axis. No new ADR is required.
