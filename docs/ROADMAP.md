@@ -439,7 +439,7 @@ is a separate reviewable commit within the routine five-file and 200-line scope.
   `MetricCoordinate::RelativeTime`. Rename the Viewer curve axis and ruler to
   Elapsed time, format it as a non-wrapping duration, and prove overview,
   detail, and GPUI axis-picker behavior without changing Step behavior.
-- [ ] **V1.2 — Axis-switch interaction.** Rename the native application menu
+- [x] **V1.2 — Axis-switch interaction.** Rename the native application menu
   action to Elapsed Time and clear hover and locked cursors when the comparison
   axis changes so coordinates from one axis are never interpreted on another.
 - [ ] **V1.3 — Workbench migration.** Encode new workbench state with an

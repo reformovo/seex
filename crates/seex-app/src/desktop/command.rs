@@ -477,7 +477,20 @@ impl ViewerApp {
                         .splice(index..index + 1, 1);
                 }
             }
-            WorkbenchCommand::SelectAxis(_) => self.request_overview(cx),
+            WorkbenchCommand::SelectAxis(_) => {
+                self.interaction.update(cx, |interaction, cx| {
+                    if interaction.clear_cursors() {
+                        cx.notify();
+                    }
+                });
+                self.workspace.update(cx, |workspace, cx| {
+                    if !workspace.track_hovers.is_empty() {
+                        workspace.track_hovers.clear();
+                        cx.notify();
+                    }
+                });
+                self.request_overview(cx);
+            }
             WorkbenchCommand::ResetViewport => {
                 self.request_detail(cx);
             }

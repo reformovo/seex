@@ -460,6 +460,57 @@ fn hover_and_locked_cursors_coexist_on_the_shared_ruler(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn switching_axis_clears_transient_cursor_coordinates(cx: &mut TestAppContext) {
+    let (root, project_id, run_id) = fixture_with_extent(100);
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
+    wait_for_viewer(window, &cx, source_catalog_loaded);
+    select_fixture_run(window, &mut cx, project_id, run_id, 1);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.select_metric(MetricKey::from_string("loss"), cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            let panel_id = MetricPanelId::from_string("loss");
+            let hover = viewer
+                .workspace
+                .read(cx)
+                .track_charts
+                .get(&panel_id)
+                .and_then(|chart| chart.read(cx).points_at_axis(25.).into_iter().next())
+                .expect("detail chart should provide a stored hover point");
+            viewer.workspace.update(cx, |workspace, _| {
+                workspace.track_hovers.insert(panel_id.clone(), hover);
+            });
+            viewer
+                .interaction
+                .update(cx, |interaction, interaction_cx| {
+                    interaction.set_ruler_hover(Some(25.));
+                    interaction.set_track_pointer_hover(Some((panel_id, 25.)));
+                    interaction.set_locked_cursor(Some(25.));
+                    interaction_cx.notify();
+                });
+            viewer.dispatch_workbench_command(
+                WorkbenchCommand::SelectAxis(AlignmentAxis::ElapsedTime),
+                cx,
+            );
+        })
+        .expect("viewer should remain open");
+
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        let interaction = viewer.interaction_snapshot(cx);
+        viewer.active_navigation(cx).axis() == AlignmentAxis::ElapsedTime
+            && interaction.ruler_hover.is_none()
+            && interaction.track_pointer_hover.is_none()
+            && interaction.locked_cursor.is_none()
+            && viewer.workspace.read(cx).track_hovers.is_empty()
+    });
+}
+
+#[gpui::test]
 fn hover_frames_reuse_static_metric_chart_preparation(cx: &mut TestAppContext) {
     let (root, project_id, first_run_id) = fixture_with_complete_runs(3, 2);
     cx.executor().allow_parking();
