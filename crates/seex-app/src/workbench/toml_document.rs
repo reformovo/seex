@@ -14,8 +14,7 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::domain::SourceAlias;
 
-const LEGACY_WORKBENCH_SCHEMA_VERSION: i64 = 1;
-pub const WORKBENCH_SCHEMA_VERSION: i64 = 2;
+pub const WORKBENCH_SCHEMA_VERSION: i64 = 1;
 static TEMPORARY_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, PartialEq)]
@@ -50,7 +49,7 @@ impl TomlWorkbenchDocument {
         Self::decode(&raw).map(Some)
     }
 
-    /// Decodes a current or supported legacy TOML workbench document.
+    /// Decodes a current TOML workbench document.
     ///
     /// # Errors
     ///
@@ -61,10 +60,7 @@ impl TomlWorkbenchDocument {
         let Some(schema_version) = document["schema_version"].as_integer() else {
             return Err(TomlWorkbenchError::UnsupportedSchema);
         };
-        if !matches!(
-            schema_version,
-            LEGACY_WORKBENCH_SCHEMA_VERSION | WORKBENCH_SCHEMA_VERSION
-        ) {
+        if schema_version != WORKBENCH_SCHEMA_VERSION {
             return Err(TomlWorkbenchError::UnsupportedSchema);
         }
         for field in ["sources", "projects", "removed_projects", "path", "s3"] {
@@ -94,9 +90,7 @@ impl TomlWorkbenchDocument {
                 project_ref,
             )?,
             archived_runs: table_array(document.get("archived_runs"), "archived_runs", run_ref)?,
-            views: table_array(document.get("views"), "views", |table| {
-                view(table, schema_version)
-            })?,
+            views: table_array(document.get("views"), "views", view)?,
         };
         workbench.validate()?;
         Ok(workbench)
@@ -195,7 +189,7 @@ pub enum TomlWorkbenchError {
         #[source]
         source: io::Error,
     },
-    #[error("workbench schema_version must be 1 or 2")]
+    #[error("workbench schema_version must be 1")]
     UnsupportedSchema,
     #[error("invalid workbench field {0}")]
     InvalidField(&'static str),
@@ -238,13 +232,11 @@ fn table_array<T>(
     }
 }
 
-fn view(table: &Table, schema_version: i64) -> Result<SavedAnalysisView, TomlWorkbenchError> {
+fn view(table: &Table) -> Result<SavedAnalysisView, TomlWorkbenchError> {
     let metrics = strings(table.get("metrics"), "metrics")?;
-    let (axis, keep_viewport) = match (schema_version, string(table, "axis")?) {
-        (LEGACY_WORKBENCH_SCHEMA_VERSION, "step") => (AlignmentAxis::Step, true),
-        (LEGACY_WORKBENCH_SCHEMA_VERSION, "timestamp") => (AlignmentAxis::ElapsedTime, false),
-        (WORKBENCH_SCHEMA_VERSION, "step") => (AlignmentAxis::Step, true),
-        (WORKBENCH_SCHEMA_VERSION, "elapsed_time") => (AlignmentAxis::ElapsedTime, true),
+    let axis = match string(table, "axis")? {
+        "step" => AlignmentAxis::Step,
+        "elapsed_time" => AlignmentAxis::ElapsedTime,
         _ => return Err(TomlWorkbenchError::InvalidField("axis")),
     };
     Ok(SavedAnalysisView {
@@ -260,10 +252,7 @@ fn view(table: &Table, schema_version: i64) -> Result<SavedAnalysisView, TomlWor
             item.as_str().map(str::to_owned)
         })?,
         axis,
-        viewport: keep_viewport
-            .then(|| viewport(table.get("viewport")))
-            .transpose()?
-            .flatten(),
+        viewport: viewport(table.get("viewport"))?,
     })
 }
 
@@ -624,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v2_encoding_contains_aliases_without_machine_paths() {
+    fn schema_v1_encoding_contains_aliases_without_machine_paths() {
         let document = document();
 
         let encoded = document.encode();
@@ -635,7 +624,7 @@ mod tests {
             .expect("encoded workbench should be valid TOML");
 
         assert_eq!(decoded, document);
-        assert_eq!(parsed["schema_version"].as_integer(), Some(2));
+        assert_eq!(parsed["schema_version"].as_integer(), Some(1));
         assert_eq!(
             parsed["views"][0]["runs"][0]["source"].as_str(),
             Some("research")
@@ -654,36 +643,30 @@ mod tests {
     }
 
     #[test]
-    fn schema_v1_migrates_timestamp_without_reusing_its_epoch_viewport() {
+    fn schema_v1_elapsed_time_round_trips_with_its_viewport() {
         let mut elapsed = document();
         elapsed.views[0].axis = AlignmentAxis::ElapsedTime;
-        elapsed.views[0].viewport =
-            Some(AxisRange::new(1_700_000_000_000., 1_700_000_001_000.).expect("valid range"));
+        elapsed.views[0].viewport = Some(AxisRange::new(10., 20.).expect("valid range"));
         let encoded_elapsed = elapsed.encode();
+
         assert_eq!(
             TomlWorkbenchDocument::decode(&encoded_elapsed)
-                .expect("schema-v2 elapsed time should round-trip"),
+                .expect("schema-v1 elapsed time should round-trip"),
             elapsed
         );
-        let legacy_elapsed = encoded_elapsed
-            .replacen("schema_version = 2", "schema_version = 1", 1)
-            .replacen("elapsed_time", "timestamp", 1);
-        let migrated_elapsed = TomlWorkbenchDocument::decode(&legacy_elapsed)
-            .expect("schema-v1 timestamp should migrate");
+    }
 
-        let legacy_step =
+    #[test]
+    fn unsupported_schema_is_rejected() {
+        let unsupported =
             document()
                 .encode()
-                .replacen("schema_version = 2", "schema_version = 1", 1);
-        let migrated_step =
-            TomlWorkbenchDocument::decode(&legacy_step).expect("schema-v1 Step should migrate");
+                .replacen("schema_version = 1", "schema_version = 2", 1);
 
-        assert_eq!(migrated_elapsed.views[0].axis, AlignmentAxis::ElapsedTime);
-        assert!(migrated_elapsed.views[0].viewport.is_none());
-        assert_eq!(
-            migrated_step.views[0].viewport,
-            document().views[0].viewport
-        );
+        assert!(matches!(
+            TomlWorkbenchDocument::decode(&unsupported),
+            Err(TomlWorkbenchError::UnsupportedSchema)
+        ));
     }
 
     #[test]
@@ -699,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_v2_file_round_trips_without_temporary_residue()
+    fn schema_v1_file_round_trips_without_temporary_residue()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let path = root.path().join(".seex/workbench.toml");

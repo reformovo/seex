@@ -148,7 +148,7 @@ before retrying.
 following example is representative, not an exhaustive field specification:
 
 ```toml
-schema_version = 2
+schema_version = 1
 active_view = 0
 
 [layout]
@@ -179,10 +179,8 @@ Every Project reference uses `(source_alias, project_id)` and every Run
 reference uses `(source_alias, project_id, run_id)`. Paths and Project
 allowlists never appear in workbench state.
 
-Schema version 2 encodes each View axis as `step` or `elapsed_time`. The loader
-also accepts schema version 1: `step` retains its viewport, while the legacy
-`timestamp` axis becomes Elapsed time and discards its incompatible epoch
-viewport. New saves and exports always write schema version 2.
+Schema version 1 encodes each View axis as `step` or `elapsed_time`. The loader
+accepts only schema version 1, and saves and exports write that version.
 
 The workbench persists:
 
@@ -198,8 +196,7 @@ pending tasks, or other ephemeral interaction state.
 
 Autosave coalesces semantic changes, serializes off the GPUI thread, and
 atomically replaces the local file. Invalid or unsupported schema versions are
-reported without overwriting the offending document. Unsupported documents are
-not migrated beyond the explicit schema-version-1 path above.
+reported without overwriting the offending document.
 
 ## Export and Import
 
