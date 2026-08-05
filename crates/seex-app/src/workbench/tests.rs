@@ -287,7 +287,7 @@ fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
     };
 
     let decoded = TomlWorkbenchDocument::decode(&document.encode())
-        .expect("schema-v1 workbench document should round-trip");
+        .expect("current workbench document should round-trip");
     let (views, issues) = AnalysisViews::restore(&decoded);
 
     assert!(issues.is_empty());

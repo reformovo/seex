@@ -442,7 +442,7 @@ is a separate reviewable commit within the routine five-file and 200-line scope.
 - [x] **V1.2 — Axis-switch interaction.** Rename the native application menu
   action to Elapsed Time and clear hover and locked cursors when the comparison
   axis changes so coordinates from one axis are never interpreted on another.
-- [ ] **V1.3 — Workbench migration.** Encode new workbench state with an
+- [x] **V1.3 — Workbench migration.** Encode new workbench state with an
   explicit `elapsed_time` axis. Read schema-v1 `timestamp` state as Elapsed time
   while discarding its incompatible epoch viewport; preserve schema-v1 Step
   viewports and cover migration plus current-schema round trips.
