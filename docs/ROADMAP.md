@@ -427,9 +427,9 @@ review slice and require explicit approval under the repository boundary.
 
 ### V1: Viewer Run-Elapsed-Time Alignment
 
-The Viewer currently presents `AlignmentAxis::ElapsedTime` as an absolute
-observation timestamp. That makes sequential Runs occupy disjoint wall-clock
-ranges and conflicts with the renderer-independent comparison contract. V1
+Before V1, the Viewer presented `AlignmentAxis::ElapsedTime` as an absolute
+observation timestamp. That made sequential Runs occupy disjoint wall-clock
+ranges and conflicted with the renderer-independent comparison contract. V1
 restores Run-relative alignment while retaining the observation timestamp as a
 stored fact and typed Reader axis. The order is fixed, and every checklist item
 is a separate reviewable commit within the routine five-file and 200-line scope.
@@ -450,11 +450,17 @@ is a separate reviewable commit within the routine five-file and 200-line scope.
   timestamp in the project context, and update the workbench draft so the
   Viewer consumes the Core comparison semantics rather than inventing an
   Absolute time alignment axis. No new ADR is required.
-- [ ] **V1 exit.** Preserve the Parquet schema, native storage boundary, public
+- [x] **V1 exit.** Preserve the Parquet schema, native storage boundary, public
   Rust/Python timestamp query surface, four-way Viewer reads, point budgets,
   and missing-Run-start evidence. Pass Rust formatting, Clippy, check, and
   workspace tests. This changes no measured algorithm or hot path, so it does
   not require a performance comparison.
+
+V1 completed across revisions `d1d6c60`, `9e547d1`, `5167b28`, and `a563b6e`.
+Rust formatting, warning-denied workspace Clippy, check, and all-feature
+workspace tests passed. No performance comparison was run because the change
+selects the existing relative-time contract without changing storage, query
+reduction, point budgets, or chart algorithms.
 
 ## Later Backlog
 
