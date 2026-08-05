@@ -118,7 +118,7 @@ fn menus() -> Vec<Menu> {
                 MenuItem::action("Show Metric Inspector", ShowMetricInspector),
                 MenuItem::separator(),
                 MenuItem::action("Step", UseStep),
-                MenuItem::action("Absolute Time", UseElapsed),
+                MenuItem::action("Elapsed Time", UseElapsed),
             ],
         },
     ]

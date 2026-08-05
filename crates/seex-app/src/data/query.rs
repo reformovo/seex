@@ -4,13 +4,15 @@ use seex::Run;
 use seex::{AlignmentQueryError, AlignmentViewport};
 use seex::{EvidenceCompleteness, EvidenceReason, ObjectiveEvidence};
 use seex::{MetricAggregate, MetricKey};
-use seex::{MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, Timestamp};
+use seex::{
+    MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, RelativeTime,
+};
 use seex_plot::{DataPoint, Series, SeriesId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CurveAxis {
     Step,
-    AbsoluteTime,
+    ElapsedTime,
 }
 
 /// Shared series selection for overview and detail queries.
@@ -145,7 +147,7 @@ impl ReadSession {
     ) -> Result<Option<CurveSnapshot>, QueryError> {
         let viewport = match request.selection.axis {
             CurveAxis::Step => AlignmentViewport::new(0, i64::MAX)?,
-            CurveAxis::AbsoluteTime => AlignmentViewport::new(i64::MIN, i64::MAX)?,
+            CurveAxis::ElapsedTime => AlignmentViewport::new(i64::MIN, i64::MAX)?,
         };
         query_curves(
             self,
@@ -344,12 +346,12 @@ fn desktop_metric_range(axis: CurveAxis, viewport: AlignmentViewport) -> MetricR
             start: seex::Step::new(viewport.start()),
             end: seex::Step::new(end),
         },
-        CurveAxis::AbsoluteTime if viewport.start() == i64::MIN && viewport.end() == i64::MAX => {
-            MetricRange::All(MetricAxis::Timestamp)
+        CurveAxis::ElapsedTime if viewport.start() == i64::MIN && viewport.end() == i64::MAX => {
+            MetricRange::All(MetricAxis::RelativeTime)
         }
-        CurveAxis::AbsoluteTime => MetricRange::Timestamps {
-            start: Timestamp::from_millis(viewport.start()),
-            end: Timestamp::from_millis(end),
+        CurveAxis::ElapsedTime => MetricRange::RelativeTime {
+            start: RelativeTime::from_millis(viewport.start()),
+            end: RelativeTime::from_millis(end),
         },
     }
 }
@@ -357,7 +359,7 @@ fn desktop_metric_range(axis: CurveAxis, viewport: AlignmentViewport) -> MetricR
 fn desktop_axis_value(axis: CurveAxis, coordinate: MetricCoordinate) -> Result<i64, QueryError> {
     match (axis, coordinate) {
         (CurveAxis::Step, MetricCoordinate::Step(value)) => Ok(value.value()),
-        (CurveAxis::AbsoluteTime, MetricCoordinate::Timestamp(value)) => Ok(value.as_millis()),
+        (CurveAxis::ElapsedTime, MetricCoordinate::RelativeTime(value)) => Ok(value.as_millis()),
         _ => Err(QueryError::ReaderAxisMismatch),
     }
 }
@@ -426,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_time_uses_observation_timestamps_without_extending_alignment_axis()
+    fn elapsed_time_uses_run_relative_observation_timestamps()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let client = Client::builder(root.path()).open()?;
@@ -445,7 +447,7 @@ mod tests {
                 run.run_id().clone(),
             )],
             metric_key: MetricKey::from_string("loss"),
-            axis: CurveAxis::AbsoluteTime,
+            axis: CurveAxis::ElapsedTime,
         };
 
         let overview = session.query_overview(&OverviewRequest {
@@ -460,7 +462,12 @@ mod tests {
             .as_ref()
             .expect("complete evidence should draw")
             .points();
-        assert!(points.iter().all(|point| point.x > 1_000_000_000_000.));
+        assert!(
+            points
+                .iter()
+                .all(|point| point.x >= 0. && point.x < 60_000.),
+            "fixture points should be elapsed milliseconds near the Run start"
+        );
         let first = points.first().expect("fixture should have points").x as i64;
         let last = points.last().expect("fixture should have points").x as i64;
         let detail = session.query_detail(&DetailRequest {

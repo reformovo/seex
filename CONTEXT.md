@@ -25,6 +25,15 @@ _Avoid_: Source path, Data source path
 A named analysis workspace with its own selected Runs, metric panels, alignment,
 and horizontal viewport.
 
+**Observation timestamp**:
+The UTC instant attached to a Metric point when the observation enters Seex
+reporting. It is a stored fact, not the default origin for comparing Runs.
+_Avoid_: Absolute time
+
+**Run elapsed time**:
+The duration from a Run's start to a Metric point's Observation timestamp. Each
+Run keeps its own origin, without rebasing to its first Metric point.
+
 **View baseline**:
 An optional single Run chosen as the comparison reference for an Analysis View.
 Choosing it does not change the Run's native data or lifecycle.

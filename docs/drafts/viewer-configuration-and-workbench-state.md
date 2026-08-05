@@ -164,7 +164,7 @@ project_id = "vision-baseline"
 
 [[views]]
 name = "Training"
-axis = "step"
+axis = "elapsed_time"
 selected_metric = "loss"
 metrics = ["loss", "accuracy"]
 viewport = [1000.0, 5000.0]
@@ -178,6 +178,9 @@ run_id = "run-2026-07-31"
 Every Project reference uses `(source_alias, project_id)` and every Run
 reference uses `(source_alias, project_id, run_id)`. Paths and Project
 allowlists never appear in workbench state.
+
+Schema version 1 encodes each View axis as `step` or `elapsed_time`. The loader
+accepts only schema version 1, and saves and exports write that version.
 
 The workbench persists:
 
@@ -193,8 +196,7 @@ pending tasks, or other ephemeral interaction state.
 
 Autosave coalesces semantic changes, serializes off the GPUI thread, and
 atomically replaces the local file. Invalid or unsupported schema versions are
-reported without overwriting the offending document. Unsupported documents are
-not migrated.
+reported without overwriting the offending document.
 
 ## Export and Import
 

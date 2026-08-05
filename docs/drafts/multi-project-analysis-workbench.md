@@ -59,7 +59,7 @@ Application shell
     View tab bar and toolbar
     Track workspace
       selected-metric global brush
-      shared Step or Absolute time viewport ruler
+      shared Step or Elapsed time viewport ruler
       fixed metric-label column and linked chart tracks
     Bottom inspector
 ```
@@ -274,21 +274,21 @@ The brush, ruler, and chart tracks have distinct roles and one shared viewport:
 - The brush selection window is the active viewport. Dragging either edge
   resizes it; dragging its interior pans it. The viewport ruler and all visible
   chart tracks update together.
-- The **viewport ruler** uses exactly one axis mode: Step or Absolute time. It
+- The **viewport ruler** uses exactly one axis mode: Step or Elapsed time. It
   spans the entire Analysis workspace, including the fixed metric-label width,
   while its data origin begins at the chart-column boundary.
-- At the left pan limit, step zero or the first timestamp aligns with the right
-  edge of the metric-label column. At the right pan limit, the final step or
-  timestamp aligns with the right edge of the Analysis workspace. No blank
-  overscroll is permitted at either boundary.
+- At the left pan limit, step zero or the first elapsed coordinate aligns with
+  the right edge of the metric-label column. At the right pan limit, the final
+  step or elapsed coordinate aligns with the right edge of the Analysis
+  workspace. No blank overscroll is permitted at either boundary.
 - Scrolling or dragging the ruler pans the viewport. Wheel/pinch and
   `Command-+`/`Command--` zoom it around the pointer when available and the
   midpoint otherwise. Every change updates the brush window and reprojects all
   visible chart tracks immediately.
-- The Step/Absolute time selector is an icon-only popover trigger at the left
+- The Step/Elapsed time selector is an icon-only popover trigger at the left
   edge of the brush-row label cell. Its compact opaque menu contains `Step` and
-  `Absolute time`; the selected mode is explicit. Use an upward-arrow icon for
-  Step and a clock for Absolute time, with accessible labels and tooltips.
+  `Elapsed time`; the selected mode is explicit. Use an upward-arrow icon for
+  Step and a clock for Elapsed time, with accessible labels and tooltips.
 - Axis selection belongs on the left because it establishes how the whole
   workspace interprets horizontal position. Add Metric belongs on the right
   because it changes the content adjacent to the chart column. The two popovers
@@ -309,22 +309,22 @@ The brush, ruler, and chart tracks have distinct roles and one shared viewport:
   own value. The difference is `candidate − baseline`, independent of objective
   direction. Keep the visible callout numeric-only; its accessible label retains
   the Run identity and explains the delta.
-- Hovering the Step/Absolute time ruler moves the same dashed cursor and shows
+- Hovering the Step/Elapsed time ruler moves the same dashed cursor and shows
   the nearest available point for every drawable Run in every visible Metric
   track. Each value tag identifies the Run and value; when its actual point
   coordinate differs from the shared hover coordinate, the full tooltip also
-  reports that point's Step or time.
+  reports that point's Step or elapsed coordinate.
 - The blue capsule belongs only to the dashed hover cursor and contains only the
-  coordinate formatted in the active axis mode, such as `496k` or `09:42`. Do
+  coordinate formatted in the active axis mode, such as `496k` or `00:09:42`. Do
   not prefix a Step coordinate with the word `Step` and do not attach this
   capsule to the locked cursor.
 - Clicking either a curve or the ruler places or moves a separate solid locked
   cursor at that coordinate. The solid cursor has a small downward triangle at
   the ruler edge and never displays a value tooltip or coordinate capsule. It
-  remains anchored to its Step or timestamp during pan/zoom while pointer hover
-  continues to move the dashed cursor independently. `Escape` removes only the
-  locked cursor. Either cursor is hidden while its coordinate is outside the
-  viewport and reappears when that coordinate is visible again.
+  remains anchored to its Step or elapsed coordinate during pan/zoom while
+  pointer hover continues to move the dashed cursor independently. `Escape`
+  removes only the locked cursor. Either cursor is hidden while its coordinate
+  is outside the viewport and reappears when that coordinate is visible again.
 - Pointer movement performs nearest-point lookup only against renderer-owned
   snapshots and indexes. It must not issue storage, reduction, or geometry
   preparation requests, and locking the cursor must not change the viewport.
@@ -517,7 +517,7 @@ enter source paths, modules, functions, tests, environment variables, or comment
   snapshots, and pending generations.
 - Open Add Metric; only unselected metrics appear as compact single-line
   candidates, and choosing one removes it from the popover immediately.
-- Switch the axis popover between Step and Absolute time; the ruler, cursor
+- Switch the axis popover between Step and Elapsed time; the ruler, cursor
   label, and chart projection change together without showing both axes.
 - Rapidly zoom with wheel, `Command-+`, or `Command--`; the shared viewport and
   visible tracks respond immediately while queries stay debounced and coalesced.

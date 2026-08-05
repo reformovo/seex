@@ -1,4 +1,4 @@
-//! Schema-v1 TOML workbench model.
+//! Versioned TOML workbench model.
 
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -49,7 +49,7 @@ impl TomlWorkbenchDocument {
         Self::decode(&raw).map(Some)
     }
 
-    /// Decodes a schema-v1 TOML workbench document.
+    /// Decodes a current TOML workbench document.
     ///
     /// # Errors
     ///
@@ -57,7 +57,10 @@ impl TomlWorkbenchDocument {
     /// workbench field is invalid.
     pub fn decode(raw: &str) -> Result<Self, TomlWorkbenchError> {
         let document = raw.parse::<DocumentMut>()?;
-        if document["schema_version"].as_integer() != Some(WORKBENCH_SCHEMA_VERSION) {
+        let Some(schema_version) = document["schema_version"].as_integer() else {
+            return Err(TomlWorkbenchError::UnsupportedSchema);
+        };
+        if schema_version != WORKBENCH_SCHEMA_VERSION {
             return Err(TomlWorkbenchError::UnsupportedSchema);
         }
         for field in ["sources", "projects", "removed_projects", "path", "s3"] {
@@ -93,7 +96,7 @@ impl TomlWorkbenchDocument {
         Ok(workbench)
     }
 
-    /// Validates semantic schema-v1 workbench invariants.
+    /// Validates semantic workbench invariants.
     ///
     /// # Errors
     ///
@@ -216,7 +219,7 @@ fn layout(item: Option<&Item>) -> Result<SavedLayout, TomlWorkbenchError> {
 fn table_array<T>(
     item: Option<&Item>,
     field: &'static str,
-    parse: fn(&Table) -> Result<T, TomlWorkbenchError>,
+    parse: impl Fn(&Table) -> Result<T, TomlWorkbenchError>,
 ) -> Result<Vec<T>, TomlWorkbenchError> {
     match item {
         None => Ok(Vec::new()),
@@ -231,6 +234,11 @@ fn table_array<T>(
 
 fn view(table: &Table) -> Result<SavedAnalysisView, TomlWorkbenchError> {
     let metrics = strings(table.get("metrics"), "metrics")?;
+    let axis = match string(table, "axis")? {
+        "step" => AlignmentAxis::Step,
+        "elapsed_time" => AlignmentAxis::ElapsedTime,
+        _ => return Err(TomlWorkbenchError::InvalidField("axis")),
+    };
     Ok(SavedAnalysisView {
         name: string(table, "name")?.to_owned(),
         runs: table_array(table.get("runs"), "runs", run_ref)?,
@@ -243,11 +251,7 @@ fn view(table: &Table) -> Result<SavedAnalysisView, TomlWorkbenchError> {
         selected_metric: optional(table.get("selected_metric"), "selected_metric", |item| {
             item.as_str().map(str::to_owned)
         })?,
-        axis: match string(table, "axis")? {
-            "step" => AlignmentAxis::Step,
-            "timestamp" => AlignmentAxis::ElapsedTime,
-            _ => return Err(TomlWorkbenchError::InvalidField("axis")),
-        },
+        axis,
         viewport: viewport(table.get("viewport"))?,
     })
 }
@@ -475,7 +479,7 @@ fn view_table(view: &SavedAnalysisView) -> Table {
     table["name"] = value(&view.name);
     table["axis"] = value(match view.axis {
         AlignmentAxis::Step => "step",
-        AlignmentAxis::ElapsedTime => "timestamp",
+        AlignmentAxis::ElapsedTime => "elapsed_time",
     });
     if let Some(selected_metric) = &view.selected_metric {
         table["selected_metric"] = value(selected_metric);
@@ -636,6 +640,33 @@ mod tests {
                 .lines()
                 .any(|line| line.trim_start().starts_with("path ="))
         );
+    }
+
+    #[test]
+    fn schema_v1_elapsed_time_round_trips_with_its_viewport() {
+        let mut elapsed = document();
+        elapsed.views[0].axis = AlignmentAxis::ElapsedTime;
+        elapsed.views[0].viewport = Some(AxisRange::new(10., 20.).expect("valid range"));
+        let encoded_elapsed = elapsed.encode();
+
+        assert_eq!(
+            TomlWorkbenchDocument::decode(&encoded_elapsed)
+                .expect("schema-v1 elapsed time should round-trip"),
+            elapsed
+        );
+    }
+
+    #[test]
+    fn unsupported_schema_is_rejected() {
+        let unsupported =
+            document()
+                .encode()
+                .replacen("schema_version = 1", "schema_version = 2", 1);
+
+        assert!(matches!(
+            TomlWorkbenchDocument::decode(&unsupported),
+            Err(TomlWorkbenchError::UnsupportedSchema)
+        ));
     }
 
     #[test]

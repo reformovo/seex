@@ -181,7 +181,7 @@ impl AnalysisWorkspace {
             .unwrap_or(AlignmentAxis::Step)
         {
             AlignmentAxis::Step => CurveAxis::Step,
-            AlignmentAxis::ElapsedTime => CurveAxis::AbsoluteTime,
+            AlignmentAxis::ElapsedTime => CurveAxis::ElapsedTime,
         }
     }
 
@@ -211,7 +211,7 @@ impl ViewerApp {
     pub(super) fn curve_axis(&self, cx: &App) -> CurveAxis {
         match self.active_navigation(cx).axis() {
             AlignmentAxis::Step => CurveAxis::Step,
-            AlignmentAxis::ElapsedTime => CurveAxis::AbsoluteTime,
+            AlignmentAxis::ElapsedTime => CurveAxis::ElapsedTime,
         }
     }
     pub(super) fn interaction_snapshot(&self, cx: &App) -> InteractionSnapshot {

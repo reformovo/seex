@@ -1883,7 +1883,7 @@ html&gt;body{padding:0}&lt;/style&gt;
                 &lt;i data-lucide=&quot;arrow-up&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;span&gt;Step&lt;/span&gt;&lt;span data-axis-status&gt;Selected&lt;/span&gt;
               &lt;/button&gt;
               &lt;button type=&quot;button&quot; class=&quot;btn btn-ghost axis-option&quot; data-axis-mode=&quot;time&quot; aria-pressed=&quot;false&quot;&gt;
-                &lt;i data-lucide=&quot;clock&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;span&gt;Absolute time&lt;/span&gt;&lt;span data-axis-status&gt;&lt;/span&gt;
+                &lt;i data-lucide=&quot;clock&quot; aria-hidden=&quot;true&quot;&gt;&lt;/i&gt;&lt;span&gt;Elapsed time&lt;/span&gt;&lt;span data-axis-status&gt;&lt;/span&gt;
               &lt;/button&gt;
             &lt;/div&gt;
           &lt;/div&gt;
@@ -2528,22 +2528,22 @@ html&gt;body{padding:0}&lt;/style&gt;
       detailsToggle.addEventListener(&#x27;click&#x27;, () =&gt; setInspectorVisible(inspector.hidden));
       closeInspector.addEventListener(&#x27;click&#x27;, () =&gt; setInspectorVisible(false));
 
-      const absoluteTimeAt = (ratio) =&gt; {
-        const totalMinutes = 9 * 60 + Math.round(ratio * 240);
+      const elapsedTimeAt = (ratio) =&gt; {
+        const totalMinutes = Math.round(ratio * 240);
         const hours = Math.floor(totalMinutes / 60);
         const minutes = totalMinutes % 60;
         return `${String(hours).padStart(2, &#x27;0&#x27;)}:${String(minutes).padStart(2, &#x27;0&#x27;)}`;
       };
 
       const updateAxis = () =&gt; {
-        const absolute = root.querySelector(&#x27;[data-axis-mode].is-selected&#x27;).dataset.axisMode === &#x27;time&#x27;;
-        const labels = absolute
-          ? [&#x27;09:00&#x27;, &#x27;10:00&#x27;, &#x27;11:00&#x27;, &#x27;12:00&#x27;, &#x27;13:00&#x27;]
+        const elapsed = root.querySelector(&#x27;[data-axis-mode].is-selected&#x27;).dataset.axisMode === &#x27;time&#x27;;
+        const labels = elapsed
+          ? [&#x27;00:00&#x27;, &#x27;01:00&#x27;, &#x27;02:00&#x27;, &#x27;03:00&#x27;, &#x27;04:00&#x27;]
           : [&#x27;0&#x27;, &#x27;200k&#x27;, &#x27;400k&#x27;, &#x27;600k&#x27;, &#x27;800k&#x27;];
         axisTicks.querySelectorAll(&#x27;span&#x27;).forEach((tick, index) =&gt; {
           tick.textContent = labels[index];
         });
-        const formatCoordinate = (ratio) =&gt; absolute ? absoluteTimeAt(ratio) : `${Math.round(ratio * 800)}k`;
+        const formatCoordinate = (ratio) =&gt; elapsed ? elapsedTimeAt(ratio) : `${Math.round(ratio * 800)}k`;
         cursorLabel.textContent = formatCoordinate(hoverCursorRatio);
         selectedStep.textContent = formatCoordinate(lockedCursorRatio ?? hoverCursorRatio);
       };
@@ -2559,7 +2559,7 @@ html&gt;body{padding:0}&lt;/style&gt;
             candidate.querySelector(&#x27;[data-axis-status]&#x27;).textContent = selected ? &#x27;Selected&#x27; : &#x27;&#x27;;
           });
           setButtonIcon(axisModeButton, mode === &#x27;time&#x27; ? &#x27;clock&#x27; : &#x27;arrow-up&#x27;);
-          const label = mode === &#x27;time&#x27; ? &#x27;Axis: Absolute time&#x27; : &#x27;Axis: Step&#x27;;
+          const label = mode === &#x27;time&#x27; ? &#x27;Axis: Elapsed time&#x27; : &#x27;Axis: Step&#x27;;
           axisModeButton.setAttribute(&#x27;aria-label&#x27;, label);
           axisModeButton.setAttribute(&#x27;data-tooltip&#x27;, label);
           setExpanded(axisModeButton, axisPopover, false);

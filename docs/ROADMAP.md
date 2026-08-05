@@ -425,6 +425,43 @@ review slice and require explicit approval under the repository boundary.
 - [x] Publish crates.io before PyPI. If the `seex` crate name cannot be claimed,
   stop and revisit the naming decision rather than silently choosing a fallback.
 
+### V1: Viewer Run-Elapsed-Time Alignment
+
+Before V1, the Viewer presented `AlignmentAxis::ElapsedTime` as an absolute
+observation timestamp. That made sequential Runs occupy disjoint wall-clock
+ranges and conflicted with the renderer-independent comparison contract. V1
+restores Run-relative alignment while retaining the observation timestamp as a
+stored fact and typed Reader axis. The order is fixed, and every checklist item
+is a separate reviewable commit within the routine five-file and 200-line scope.
+
+- [x] **V1.1 — Curve semantics and ruler.** Map the Viewer time axis to
+  `MetricAxis::RelativeTime`, query half-open relative-time ranges, and project
+  `MetricCoordinate::RelativeTime`. Rename the Viewer curve axis and ruler to
+  Elapsed time, format it as a non-wrapping duration, and prove overview,
+  detail, and GPUI axis-picker behavior without changing Step behavior.
+- [x] **V1.2 — Axis-switch interaction.** Rename the native application menu
+  action to Elapsed Time and clear hover and locked cursors when the comparison
+  axis changes so coordinates from one axis are never interpreted on another.
+- [x] **V1.3 — Workbench migration.** Encode new workbench state with an
+  explicit `elapsed_time` axis. Read schema-v1 `timestamp` state as Elapsed time
+  while discarding its incompatible epoch viewport; preserve schema-v1 Step
+  viewports and cover migration plus current-schema round trips.
+- [x] **V1.4 — Product language.** Define Run elapsed time and observation
+  timestamp in the project context, and update the workbench draft so the
+  Viewer consumes the Core comparison semantics rather than inventing an
+  Absolute time alignment axis. No new ADR is required.
+- [x] **V1 exit.** Preserve the Parquet schema, native storage boundary, public
+  Rust/Python timestamp query surface, four-way Viewer reads, point budgets,
+  and missing-Run-start evidence. Pass Rust formatting, Clippy, check, and
+  workspace tests. This changes no measured algorithm or hot path, so it does
+  not require a performance comparison.
+
+V1 completed across revisions `d1d6c60`, `9e547d1`, `5167b28`, and `a563b6e`.
+Rust formatting, warning-denied workspace Clippy, check, and all-feature
+workspace tests passed. No performance comparison was run because the change
+selects the existing relative-time contract without changing storage, query
+reduction, point budgets, or chart algorithms.
+
 ## Later Backlog
 
 ### Local Coordination
