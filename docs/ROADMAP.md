@@ -434,7 +434,7 @@ restores Run-relative alignment while retaining the observation timestamp as a
 stored fact and typed Reader axis. The order is fixed, and every checklist item
 is a separate reviewable commit within the routine five-file and 200-line scope.
 
-- [ ] **V1.1 — Curve semantics and ruler.** Map the Viewer time axis to
+- [x] **V1.1 — Curve semantics and ruler.** Map the Viewer time axis to
   `MetricAxis::RelativeTime`, query half-open relative-time ranges, and project
   `MetricCoordinate::RelativeTime`. Rename the Viewer curve axis and ruler to
   Elapsed time, format it as a non-wrapping duration, and prove overview,

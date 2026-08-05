@@ -100,7 +100,7 @@ pub(crate) fn format_tick(value: f64) -> String {
 pub(crate) fn format_axis_tick(axis: CurveAxis, value: f64) -> String {
     match axis {
         CurveAxis::Step => format_tick(value),
-        CurveAxis::AbsoluteTime => format_utc_clock(value),
+        CurveAxis::ElapsedTime => format_elapsed_duration(value),
     }
 }
 
@@ -108,20 +108,19 @@ pub(crate) fn format_ruler_coordinate(axis: CurveAxis, value: f64) -> String {
     match axis {
         CurveAxis::Step if value.is_finite() => format!("{value:.0}"),
         CurveAxis::Step => "—".to_owned(),
-        CurveAxis::AbsoluteTime => format_utc_clock(value),
+        CurveAxis::ElapsedTime => format_elapsed_duration(value),
     }
 }
 
-pub(crate) fn format_utc_clock(value: f64) -> String {
-    if !value.is_finite() || value < i64::MIN as f64 || value > i64::MAX as f64 {
+pub(crate) fn format_elapsed_duration(value: f64) -> String {
+    if !value.is_finite() || value < 0. || value > i64::MAX as f64 {
         return "—".to_owned();
     }
     let millis = value.round() as i64;
-    let within_day = millis.rem_euclid(86_400_000);
-    let hour = within_day / 3_600_000;
-    let minute = within_day / 60_000 % 60;
-    let second = within_day / 1_000 % 60;
-    let millisecond = within_day % 1_000;
+    let hour = millis / 3_600_000;
+    let minute = millis / 60_000 % 60;
+    let second = millis / 1_000 % 60;
+    let millisecond = millis % 1_000;
     if second == 0 && millisecond == 0 {
         format!("{hour:02}:{minute:02}")
     } else if millisecond == 0 {
@@ -143,7 +142,7 @@ pub(crate) fn hover_value_label(
     );
     let coordinate = match axis {
         CurveAxis::Step => hover.axis_value.to_string(),
-        CurveAxis::AbsoluteTime => format_utc_clock(hover.axis_value as f64),
+        CurveAxis::ElapsedTime => format_elapsed_duration(hover.axis_value as f64),
     };
     format!("{coordinate}: {value} {run_name}")
 }
@@ -213,14 +212,14 @@ impl AnalysisWorkspace {
         theme: ViewerTheme,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
-        let absolute = self.curve_axis() == CurveAxis::AbsoluteTime;
+        let elapsed = self.curve_axis() == CurveAxis::ElapsedTime;
         let picker_open = self.axis_picker_open;
         let mut picker = div().relative().flex().items_center().child(
             components::top_bar_icon_button("axis-picker", theme, picker_open, false)
                 .size(theme.spacing.control_height)
                 .debug_selector(|| "axis-picker".to_owned())
                 .tooltip(components::label_tooltip(
-                    if absolute { "Absolute time" } else { "Step" },
+                    if elapsed { "Elapsed time" } else { "Step" },
                     theme,
                 ))
                 .cursor_pointer()
@@ -237,7 +236,7 @@ impl AnalysisWorkspace {
                     }
                 }))
                 .child(components::icon(
-                    if absolute {
+                    if elapsed {
                         IconName::Clock
                     } else {
                         IconName::ArrowUp
@@ -274,7 +273,7 @@ impl AnalysisWorkspace {
                                         "axis-step",
                                         IconName::ArrowUp,
                                         "Step",
-                                        !absolute,
+                                        !elapsed,
                                         theme,
                                     )
                                     .debug_selector(|| "axis-step".to_owned())
@@ -292,8 +291,8 @@ impl AnalysisWorkspace {
                                     axis_menu_item(
                                         "axis-time",
                                         IconName::Clock,
-                                        "Absolute time",
-                                        absolute,
+                                        "Elapsed time",
+                                        elapsed,
                                         theme,
                                     )
                                     .debug_selector(|| "axis-time".to_owned())
@@ -713,5 +712,24 @@ impl AnalysisWorkspace {
             ));
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_elapsed_duration;
+
+    #[test]
+    fn elapsed_duration_preserves_millisecond_precision() {
+        assert_eq!(format_elapsed_duration(0.), "00:00");
+        assert_eq!(format_elapsed_duration(65_000.), "00:01:05");
+        assert_eq!(format_elapsed_duration(3_665_123.), "01:01:05.123");
+    }
+
+    #[test]
+    fn elapsed_duration_does_not_wrap_at_day_boundaries() {
+        assert_eq!(format_elapsed_duration(90_000_000.), "25:00");
+        assert_eq!(format_elapsed_duration(-1.), "—");
+        assert_eq!(format_elapsed_duration(f64::NAN), "—");
     }
 }

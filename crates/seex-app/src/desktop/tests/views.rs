@@ -400,7 +400,7 @@ fn empty_view_keeps_the_converged_shell_and_opens_metric_picker(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn axis_picker_switches_the_view_to_observation_time(cx: &mut TestAppContext) {
+fn axis_picker_switches_the_view_to_elapsed_time(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(1);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
@@ -417,7 +417,7 @@ fn axis_picker_switches_the_view_to_observation_time(cx: &mut TestAppContext) {
     cx.simulate_click(picker.center(), Modifiers::default());
     let time = cx
         .debug_bounds("axis-time")
-        .expect("axis menu should offer Absolute time");
+        .expect("axis menu should offer Elapsed time");
     cx.simulate_click(time.center(), Modifiers::default());
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer.active_navigation(cx).axis() == AlignmentAxis::ElapsedTime
@@ -429,7 +429,7 @@ fn axis_picker_switches_the_view_to_observation_time(cx: &mut TestAppContext) {
                 .first()
                 .and_then(|panel| panel.overview.as_ref())
                 .and_then(|snapshot| snapshot.real_range)
-                .is_some_and(|range| range.start() > 1_000_000_000_000)
+                .is_some_and(|range| range.start() >= 0 && range.end() < 60_000)
     });
     assert!(cx.debug_bounds("viewport-ruler").is_some());
 }
