@@ -98,7 +98,8 @@ The refactor removed the root-owned navigation/error swap, chart adapter maps,
 root chart caches, root repaint flags, `TrackDensity`, receiver convenience
 polling, duplicate visible-Run filtering, and the permanent local-error banner.
 It also moved shared GPUI fixtures out of production modules. Workbench state
-uses only the current schema-v1 TOML document.
+writes the current schema-v2 TOML document and reads the supported schema-v1
+document through its explicit axis migration.
 
 At the refactor baseline the Viewer contained 16,932 Rust source lines, with
 tests embedded in the 8,905-line `desktop.rs`. The resulting source tree has
