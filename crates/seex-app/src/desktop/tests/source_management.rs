@@ -1,4 +1,4 @@
-use gpui::{Modifiers, TestAppContext, point, px, size};
+use gpui::{Modifiers, TestAppContext, px, size};
 use seex::{Client, Project, RunId, RunOptions};
 
 use super::super::test_support::{
@@ -33,6 +33,69 @@ fn sources_control_opens_confirmation_before_path_prompt(cx: &mut TestAppContext
         .expect("empty Sources message should render");
     assert!(f32::from(empty.center().x - list.center().x).abs() <= 1.);
     assert!(f32::from(empty.center().y - list.center().y).abs() <= 1.);
+}
+
+#[gpui::test]
+fn source_removal_requires_explicit_selection_and_never_retargets_an_existing_source(
+    cx: &mut TestAppContext,
+) {
+    let scope = tempfile::tempdir().expect("test scope should be created");
+    let source = tempfile::tempdir().expect("test Source should be created");
+    let alias = SourceAlias::new("research").expect("test alias should be valid");
+    let (window, mut cx) = open_viewer(cx, Some(scope.path().to_owned()));
+    window
+        .update(&mut cx, |viewer, window, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.begin_sources(
+                    vec![ConfiguredSource {
+                        alias: alias.clone(),
+                        root_path: source.path().to_owned(),
+                        projects: vec![ProjectId::from_string("one")],
+                    }],
+                    vec![alias.clone()],
+                    window,
+                    cx,
+                );
+            });
+        })
+        .expect("viewer should remain open");
+    cx.refresh().expect("Sources should render");
+    assert!(cx.debug_bounds("source-detail-empty").is_some());
+    assert!(cx.debug_bounds("remove-source").is_none());
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.queue_source_paths(vec![scope.path().join("new-source")], cx);
+            });
+        })
+        .expect("viewer should remain open");
+    cx.refresh().expect("new Source draft should render");
+    let remove = cx
+        .debug_bounds("remove-source")
+        .expect("new Source draft should be removable");
+    cx.simulate_click(remove.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.refresh().expect("Sources should refresh");
+    assert!(cx.debug_bounds("source-detail-empty").is_some());
+    cx.simulate_click(remove.center(), Modifiers::default());
+    cx.refresh().expect("Sources should refresh");
+    assert!(cx.debug_bounds("source-item:research").is_some());
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.source_management.update(cx, |management, cx| {
+                management.select_source_alias("new-source", cx);
+            });
+        })
+        .expect("viewer should remain open");
+    assert_eq!(
+        window
+            .read_with(&cx, |viewer, cx| viewer
+                .source_management
+                .read(cx)
+                .active_source_state())
+            .expect("viewer should remain open"),
+        None
+    );
 }
 
 #[gpui::test]
@@ -192,8 +255,10 @@ fn manage_and_workbench_dialogs_share_responsive_geometry(cx: &mut TestAppContex
 }
 
 #[gpui::test]
-fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppContext) {
-    let root = tempfile::tempdir().expect("test directory should be created");
+fn source_confirmation_generates_a_unique_id_and_requires_projects(cx: &mut TestAppContext) {
+    let roots = tempfile::tempdir().expect("test directory should be created");
+    let root = roots.path().join("research");
+    std::fs::create_dir(&root).expect("test Source should be created");
     let scope = tempfile::tempdir().expect("test scope should be created");
     let timestamp = "2026-01-01T00:00:00Z"
         .parse()
@@ -216,18 +281,16 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
                     window,
                     cx,
                 );
-                let generation = management
-                    .begin_source_preflight(root.path().to_owned(), cx)
-                    .expect("import confirmation should accept a Source preflight");
-                management.finish_source_preflight(
-                    generation,
-                    Ok((
-                        SourcePreflight {
-                            root_path: root.path().to_owned(),
-                            projects,
-                        },
-                        SourceAlias::new("research").expect("test alias should be valid"),
-                    )),
+                let request = management
+                    .queue_source_paths(vec![root.clone()], cx)
+                    .pop()
+                    .expect("Source should queue for preflight");
+                management.finish_preflight(
+                    request,
+                    Ok(SourcePreflight {
+                        root_path: root,
+                        projects,
+                    }),
                     window,
                     cx,
                 );
@@ -241,18 +304,16 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
             .read_with(&cx, |viewer, cx| viewer
                 .source_management
                 .read(cx)
-                .active_alias_state(cx))
+                .active_source_state())
             .expect("viewer should remain open"),
-        (Some("research".to_owned()), true)
+        Some(("research-2".to_owned(), 2, None))
     );
     assert!(cx.debug_bounds("sources-dialog").is_some());
     assert!(cx.debug_bounds("sources-body").is_some());
-    assert!(cx.debug_bounds("source-item:research").is_some());
+    assert!(cx.debug_bounds("source-item:research-2").is_some());
     assert!(cx.debug_bounds("source-detail").is_some());
-    assert!(cx.debug_bounds("source-alias-input").is_some());
-    assert!(cx.debug_bounds("source-alias-selection").is_some());
-    assert!(cx.debug_bounds("source-alias-caret").is_some());
-    assert!(cx.debug_bounds("source-alias-error").is_some());
+    assert!(cx.debug_bounds("source-alias-input").is_none());
+    assert!(cx.debug_bounds("source-alias-readonly").is_none());
     assert!(cx.debug_bounds("source-project-id:one").is_some());
     assert!(cx.debug_bounds("source-project-id:two").is_some());
     let project_id = cx
@@ -273,20 +334,6 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
             .width,
         px(640.)
     );
-    for selector in ["source-alias-input", "save-sources"] {
-        assert_eq!(
-            cx.debug_bounds(selector)
-                .expect("dialog control should render")
-                .size
-                .height,
-            px(28.)
-        );
-    }
-
-    let select_all = cx
-        .debug_bounds("select-all-projects")
-        .expect("Select all control should render");
-    cx.simulate_click(select_all.center(), Modifiers::default());
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     assert!(
@@ -298,21 +345,16 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
             .expect("viewer should remain open")
     );
     cx.refresh().expect("test window should refresh");
+    let select_all = cx
+        .debug_bounds("select-all-projects")
+        .expect("Select all control should render");
+    cx.simulate_click(select_all.center(), Modifiers::default());
     let clear = cx
         .debug_bounds("clear-projects")
         .expect("Clear control should render");
     cx.simulate_click(clear.center(), Modifiers::default());
     cx.run_until_parked();
     cx.refresh().expect("test window should refresh");
-    let alias = cx
-        .debug_bounds("source-alias-input")
-        .expect("Alias input should render");
-    cx.simulate_click(
-        point(alias.origin.x + px(9.), alias.center().y),
-        Modifiers::default(),
-    );
-    cx.simulate_keystrokes("local");
-
     let confirm = cx
         .debug_bounds("save-sources")
         .expect("confirm control should render");
@@ -320,6 +362,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     cx.run_until_parked();
     cx.refresh().expect("test window should refresh");
     assert!(cx.debug_bounds("sources-dialog").is_some());
+    assert!(!scope.path().join(".seex/config.toml").exists());
 
     let row = cx
         .debug_bounds("source-project:one")
@@ -327,11 +370,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     cx.simulate_click(row.center(), Modifiers::default());
     cx.run_until_parked();
     cx.refresh().expect("test window should refresh");
-    let alias = cx
-        .debug_bounds("source-alias-input")
-        .expect("Alias input should remain rendered");
-    cx.simulate_click(alias.center(), Modifiers::default());
-    cx.simulate_keystrokes("enter");
+    cx.simulate_click(confirm.center(), Modifiers::default());
     let config_path = scope.path().join(".seex/config.toml");
     for _ in 0..100 {
         cx.run_until_parked();
@@ -351,7 +390,7 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
     let saved = saved
         .parse::<toml_edit::DocumentMut>()
         .expect("Source config should remain valid TOML");
-    let projects = saved["sources"]["localresearch"]["projects"]
+    let projects = saved["sources"]["research-2"]["projects"]
         .as_array()
         .expect("Source Project allowlist should be an array");
     assert_eq!(projects.len(), 1);
@@ -362,11 +401,11 @@ fn source_confirmation_requires_a_valid_non_empty_selection(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn multiple_source_drafts_finish_out_of_order_and_save_together(cx: &mut TestAppContext) {
+fn same_named_source_drafts_finish_out_of_order_and_save_together(cx: &mut TestAppContext) {
     let scope = tempfile::tempdir().expect("test scope should be created");
     let roots = tempfile::tempdir().expect("Source roots should be created");
-    let first = roots.path().join("first");
-    let second = roots.path().join("second");
+    let first = roots.path().join("first/research");
+    let second = roots.path().join("second/research");
     std::fs::create_dir_all(&first).expect("first Source should be created");
     std::fs::create_dir_all(&second).expect("second Source should be created");
     let timestamp = "2026-01-01T00:00:00Z"
@@ -383,7 +422,8 @@ fn multiple_source_drafts_finish_out_of_order_and_save_together(cx: &mut TestApp
                     let project_id = ProjectId::from_string(
                         request
                             .root_path
-                            .file_name()
+                            .parent()
+                            .and_then(std::path::Path::file_name)
                             .and_then(std::ffi::OsStr::to_str)
                             .expect("Source name should be UTF-8"),
                     );
@@ -407,8 +447,8 @@ fn multiple_source_drafts_finish_out_of_order_and_save_together(cx: &mut TestApp
     cx.refresh().expect("Sources should render");
 
     for (source_selector, project_selector) in [
-        ("source-item:first", "source-project:first"),
-        ("source-item:second", "source-project:second"),
+        ("source-item:research", "source-project:first"),
+        ("source-item:research-2", "source-project:second"),
     ] {
         let source = cx
             .debug_bounds(source_selector)
@@ -439,8 +479,8 @@ fn multiple_source_drafts_finish_out_of_order_and_save_together(cx: &mut TestApp
         .expect("Source configuration should remain valid");
     assert_eq!(
         (
-            saved["sources"]["first"]["projects"][0].as_str(),
-            saved["sources"]["second"]["projects"][0].as_str(),
+            saved["sources"]["research"]["projects"][0].as_str(),
+            saved["sources"]["research-2"]["projects"][0].as_str(),
         ),
         (Some("first"), Some("second"))
     );
@@ -555,7 +595,7 @@ fn sources_manager_reuses_existing_source_and_allows_new_projects(cx: &mut TestA
         Some(("research".to_owned(), 2, None))
     );
     assert!(cx.debug_bounds("source-alias-input").is_none());
-    assert!(cx.debug_bounds("source-alias-readonly").is_some());
+    assert!(cx.debug_bounds("source-alias-readonly").is_none());
 
     let save = cx
         .debug_bounds("save-sources")
@@ -793,7 +833,7 @@ fn managing_projects_updates_allowlist_and_clears_unimported_references(cx: &mut
         }
     }
     assert!(cx.debug_bounds("source-detail").is_some());
-    assert!(cx.debug_bounds("source-alias-readonly").is_some());
+    assert!(cx.debug_bounds("source-alias-readonly").is_none());
     assert!(cx.debug_bounds("source-alias-input").is_none());
     let one_row = cx
         .debug_bounds("source-project:one")
