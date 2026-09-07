@@ -102,6 +102,7 @@ impl PanelReadRequest {
         }
     }
 
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     fn metric_key(&self) -> &MetricKey {
         match self {
             Self::Overview { metric_key, .. }
@@ -159,6 +160,7 @@ pub struct PlannedSourceRead {
     pub request: ReadRequest,
 }
 
+#[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PlannedReadCancellation {
     pub source_id: DataSourceId,
@@ -219,6 +221,7 @@ struct PanelReadKey {
 
 struct PendingPanelRead {
     tag: PanelReadTag,
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     metric_key: MetricKey,
     run_order: Vec<RunRef>,
     source_order: Vec<DataSourceId>,
@@ -295,6 +298,7 @@ impl PanelReadCoordinator {
             key,
             PendingPanelRead {
                 tag,
+                #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
                 metric_key: request.metric_key().clone(),
                 run_order: request.runs().to_vec(),
                 expected: source_order.iter().cloned().collect(),
@@ -352,6 +356,7 @@ impl PanelReadCoordinator {
         PanelReadOutcome::Completed(Box::new(merge_panel_read(pending)))
     }
 
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     pub(crate) fn cancel_except(
         &mut self,
         view_id: &AnalysisViewId,
@@ -363,6 +368,7 @@ impl PanelReadCoordinator {
         })
     }
 
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
     pub(crate) fn cancel_missing_panels(
         &mut self,
         view_id: &AnalysisViewId,
@@ -371,6 +377,7 @@ impl PanelReadCoordinator {
         self.cancel_where(|key| &key.view_id == view_id && !retained_panels.contains(&key.panel_id))
     }
 
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     pub(crate) fn deactivate_view(
         &mut self,
         view_id: &AnalysisViewId,
@@ -378,6 +385,7 @@ impl PanelReadCoordinator {
         self.cancel_where(|key| &key.view_id == view_id)
     }
 
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     fn cancel_where(
         &mut self,
         mut should_cancel: impl FnMut(&PanelReadKey) -> bool,

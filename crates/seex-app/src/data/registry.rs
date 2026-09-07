@@ -4,12 +4,16 @@ use std::sync::Arc;
 
 use crate::config::ConfiguredSource;
 use crate::data::CatalogSnapshot;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+use crate::data::worker::ReadKind;
 use crate::data::worker::{
-    Generation, ReadConcurrencyGate, ReadEvent, ReadEventReceiver, ReadKind, ReadRequest,
-    ReadWorker, WorkerClosed,
+    Generation, ReadConcurrencyGate, ReadEvent, ReadEventReceiver, ReadRequest, ReadWorker,
+    WorkerClosed,
 };
 use crate::domain::DataSourceId;
-use seex::{MetricKey, ProjectId};
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+use seex::MetricKey;
+use seex::ProjectId;
 
 const MAX_CONCURRENT_SOURCE_READS: usize = 4;
 
@@ -54,7 +58,7 @@ impl Default for SourceRegistry {
 }
 
 impl SourceRegistry {
-    #[cfg(feature = "test-support")]
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
     pub(crate) fn shutdown_for_tests(&mut self) {
         for worker in self
             .entries
@@ -216,6 +220,7 @@ impl SourceRegistry {
             })
     }
 
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
     pub(crate) fn cancel(
         &self,
         source_id: &DataSourceId,

@@ -6,13 +6,15 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
 use std::thread::{self, JoinHandle};
-#[cfg(any(
-    feature = "test-support",
-    all(test, feature = "desktop", target_os = "macos")
+#[cfg(all(
+    target_os = "macos",
+    any(feature = "test-support", all(test, feature = "desktop"))
 ))]
 use std::time::{Duration, Instant};
 
-use seex::{MetricKey, ReaderInterrupt};
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+use seex::MetricKey;
+use seex::ReaderInterrupt;
 
 use crate::data::query::{
     CurveSnapshot, DetailRequest, InspectorRequest, InspectorSnapshot, OverviewRequest, QueryError,
@@ -244,6 +246,7 @@ struct RequestKey {
     metric_key: Option<String>,
 }
 
+#[cfg(all(feature = "desktop", target_os = "macos"))]
 impl RequestKey {
     fn metric(source_id: DataSourceId, kind: ReadKind, metric_key: &MetricKey) -> Self {
         Self {
@@ -330,6 +333,7 @@ impl RequestRegistry {
         true
     }
 
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     fn cancel(&mut self, identity: &RequestIdentity) -> Vec<ReaderInterrupt> {
         let value = (identity.generation, identity.token);
         if self
@@ -430,7 +434,7 @@ impl ReadSessionPool {
 }
 
 impl ReadWorker {
-    #[cfg(feature = "test-support")]
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
     pub(crate) fn shutdown_for_tests(&mut self) {
         let interrupts = self
             .registry
@@ -546,6 +550,7 @@ impl ReadWorker {
             .map_err(|_| WorkerClosed)
     }
 
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
     pub(crate) fn cancel(
         &self,
         source_id: DataSourceId,
