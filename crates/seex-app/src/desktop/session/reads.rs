@@ -10,11 +10,13 @@ use crate::data::registry::SourceStatus;
 use crate::data::worker::{ReadKind, ReadRequest};
 use crate::domain::{DataSourceId, RunRef};
 use crate::workbench::panel_reads::{
-    MetricPanelId, PanelReadMode, PanelReadRequest, PanelReadTag, PlannedSourceRead,
+    MetricPanelId, PanelReadMode, PanelReadRequest, PanelReadTag, PlannedReadCancellation,
+    PlannedSourceRead,
 };
 use crate::workbench::toml_document::TomlWorkbenchDocument;
 
 use super::super::ViewerApp;
+use super::super::workspace::ScheduledPanelRead;
 use super::persistence::RestoredWorkbench;
 use super::{WorkbenchSession, WorkbenchSessionEvent};
 
@@ -28,6 +30,78 @@ struct PanelDetailQuery {
 }
 
 impl WorkbenchSession {
+    pub(crate) fn retain_active_panel_curves(
+        &mut self,
+        details: &[MetricPanelId],
+        overviews: &[MetricPanelId],
+        cx: &mut Context<Self>,
+    ) {
+        let view_id = self.views.active().view_id.clone();
+        let detail_cancellations =
+            self.panel_reads
+                .cancel_except(&view_id, ReadKind::Detail, details);
+        let overview_cancellations =
+            self.panel_reads
+                .cancel_except(&view_id, ReadKind::Overview, overviews);
+        self.cancel_planned_reads(detail_cancellations);
+        self.cancel_planned_reads(overview_cancellations);
+        let changed = self.views.evict_hidden_panel_details(details)
+            | self.views.evict_unretained_panel_overviews(overviews);
+        if changed {
+            self.publish_snapshot();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn reconcile_active_detail_viewport(
+        &mut self,
+        viewport: AlignmentViewport,
+        cx: &mut Context<Self>,
+    ) {
+        let view_id = self.views.active().view_id.clone();
+        let cancellations = self
+            .panel_reads
+            .cancel_except(&view_id, ReadKind::Detail, &[]);
+        self.cancel_planned_reads(cancellations);
+        if self.views.retain_active_detail_coverage(viewport) {
+            self.publish_snapshot();
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn cancel_unselected_inspectors(&mut self) {
+        let view = self.views.active();
+        let view_id = view.view_id.clone();
+        let retained = view.selected_panel_id.iter().cloned().collect::<Vec<_>>();
+        let cancellations =
+            self.panel_reads
+                .cancel_except(&view_id, ReadKind::Inspector, &retained);
+        self.cancel_planned_reads(cancellations);
+    }
+
+    pub(crate) fn cancel_removed_panel_reads(&mut self) {
+        let view = self.views.active();
+        let view_id = view.view_id.clone();
+        let retained = view
+            .panels
+            .iter()
+            .map(|panel| panel.panel_id.clone())
+            .collect::<Vec<_>>();
+        let cancellations = self.panel_reads.cancel_missing_panels(&view_id, &retained);
+        self.cancel_planned_reads(cancellations);
+    }
+
+    pub(crate) fn cancel_planned_reads(&mut self, cancellations: Vec<PlannedReadCancellation>) {
+        for cancellation in cancellations {
+            self.sources.cancel(
+                &cancellation.source_id,
+                cancellation.generation,
+                cancellation.kind,
+                &cancellation.metric_key,
+            );
+        }
+    }
+
     pub(crate) fn replace_sources(
         &mut self,
         sources: Vec<ConfiguredSource>,
@@ -194,6 +268,10 @@ impl WorkbenchSession {
             PanelReadRequest::Detail { .. } => ReadKind::Detail,
             PanelReadRequest::Inspector { .. } => ReadKind::Inspector,
         };
+        let overview_logical_width = match &request {
+            PanelReadRequest::Overview { logical_width, .. } => Some(*logical_width),
+            PanelReadRequest::Detail { .. } | PanelReadRequest::Inspector { .. } => None,
+        };
         let generation = self.allocate_generation();
         let tag = PanelReadTag {
             view_id: self.views.active().view_id.clone(),
@@ -213,6 +291,9 @@ impl WorkbenchSession {
         if let Some((viewport, logical_width)) = detail {
             self.views
                 .begin_active_panel_detail(panel_id, generation, viewport, logical_width);
+        } else if let Some(logical_width) = overview_logical_width {
+            self.views
+                .begin_active_panel_overview(panel_id, generation, logical_width);
         } else {
             self.views
                 .begin_active_panel_read(panel_id, kind, generation);
@@ -229,6 +310,47 @@ impl WorkbenchSession {
 }
 
 impl ViewerApp {
+    pub(in crate::desktop::app) fn retain_active_panel_curves(
+        &mut self,
+        details: &[MetricPanelId],
+        overviews: &[MetricPanelId],
+        cx: &mut Context<Self>,
+    ) {
+        self.session.update(cx, |session, cx| {
+            session.retain_active_panel_curves(details, overviews, cx);
+        });
+    }
+
+    pub(in crate::desktop::app) fn cancel_unselected_inspectors(&mut self, cx: &mut Context<Self>) {
+        self.session.update(cx, |session, _| {
+            session.cancel_unselected_inspectors();
+        });
+    }
+
+    pub(in crate::desktop::app) fn cancel_removed_panel_reads(&mut self, cx: &mut Context<Self>) {
+        self.session.update(cx, |session, _| {
+            session.cancel_removed_panel_reads();
+        });
+    }
+
+    pub(in crate::desktop::app) fn reconcile_active_detail_viewport(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(viewport) = self
+            .session_snapshot(cx)
+            .views
+            .active()
+            .navigation
+            .selected_viewport()
+        else {
+            return;
+        };
+        self.session.update(cx, |session, cx| {
+            session.reconcile_active_detail_viewport(viewport, cx);
+        });
+    }
+
     pub(in crate::desktop::app) fn open_configured_sources(
         &mut self,
         sources: Vec<ConfiguredSource>,
@@ -348,30 +470,7 @@ impl ViewerApp {
     }
 
     pub(in crate::desktop::app) fn request_overview(&mut self, cx: &mut Context<Self>) {
-        let panel_ids = self
-            .session_snapshot(cx)
-            .views
-            .active()
-            .panels
-            .iter()
-            .map(|panel| panel.panel_id.clone())
-            .collect::<Vec<_>>();
-        for panel_id in panel_ids {
-            self.request_panel_overview(&panel_id, cx);
-        }
-    }
-
-    pub(in crate::desktop::app) fn request_panel_overview(
-        &mut self,
-        panel_id: &MetricPanelId,
-        cx: &mut Context<Self>,
-    ) {
-        self.request_panel_overview_for_runs(
-            panel_id,
-            self.active_visible_runs(cx),
-            PanelReadMode::Replace,
-            cx,
-        );
+        self.request_detail(cx);
     }
 
     pub(in crate::desktop::app) fn request_panel_overview_for_runs(
@@ -397,27 +496,30 @@ impl ViewerApp {
     }
 
     pub(in crate::desktop::app) fn request_detail(&mut self, cx: &mut Context<Self>) {
-        let session = self.session_snapshot(cx);
-        let Some(viewport) = session.views.active().navigation.selected_viewport() else {
-            return;
-        };
-        let viewport_state = self.workspace.read(cx).track_viewport.borrow().clone();
-        let panel_count = session.views.active().panels.len();
-        let scheduled = viewport_state.overscan.start.min(panel_count)
-            ..viewport_state.overscan.end.min(panel_count);
-        let panel_ids = session.views.active().panels[scheduled]
-            .iter()
-            .map(|panel| panel.panel_id.clone())
-            .collect::<Vec<_>>();
-        for panel_id in panel_ids {
-            self.request_panel_detail(
-                &panel_id,
-                viewport,
-                f32::from_bits(viewport_state.logical_width_bits)
-                    .ceil()
-                    .max(1.) as u32,
-                cx,
-            );
+        let scheduled = self
+            .workspace
+            .update(cx, |workspace, cx| workspace.reconcile_track_schedule(cx));
+        self.submit_scheduled_panel_reads(&scheduled, cx);
+    }
+
+    pub(in crate::desktop::app) fn submit_scheduled_panel_reads(
+        &mut self,
+        scheduled: &[ScheduledPanelRead],
+        cx: &mut Context<Self>,
+    ) {
+        for request in scheduled {
+            match request {
+                ScheduledPanelRead::Overview {
+                    panel_id,
+                    runs,
+                    mode,
+                } => self.request_panel_overview_for_runs(panel_id, runs.clone(), *mode, cx),
+                ScheduledPanelRead::Detail {
+                    panel_id,
+                    viewport,
+                    logical_width,
+                } => self.request_panel_detail(panel_id, *viewport, *logical_width, cx),
+            }
         }
     }
 
@@ -486,56 +588,6 @@ impl ViewerApp {
     }
 
     pub(in crate::desktop::app) fn request_missing_panel_curves(&mut self, cx: &mut Context<Self>) {
-        let runs = self.active_visible_runs(cx);
-        let session = self.session_snapshot(cx);
-        let viewport = session.views.active().navigation.selected_viewport();
-        let viewport_state = self.workspace.read(cx).track_viewport.borrow().clone();
-        let panels = session.views.active().panels.clone();
-        for (index, panel) in panels.into_iter().enumerate() {
-            let missing_overview = runs
-                .iter()
-                .filter(|run| {
-                    panel.overview.as_ref().is_none_or(|snapshot| {
-                        !snapshot.series.iter().any(|curve| &curve.run_ref == *run)
-                    })
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if !missing_overview.is_empty() {
-                self.request_panel_overview_for_runs(
-                    &panel.panel_id,
-                    missing_overview,
-                    PanelReadMode::Merge,
-                    cx,
-                );
-            }
-            let Some(viewport) = viewport else {
-                continue;
-            };
-            if !viewport_state.overscan.contains(&index) {
-                continue;
-            }
-            let missing_detail = runs
-                .iter()
-                .filter(|run| {
-                    panel.detail.as_ref().is_none_or(|snapshot| {
-                        !snapshot.series.iter().any(|curve| &curve.run_ref == *run)
-                    })
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if !missing_detail.is_empty() {
-                self.request_panel_detail_for_runs(
-                    &panel.panel_id,
-                    viewport,
-                    f32::from_bits(viewport_state.logical_width_bits)
-                        .ceil()
-                        .max(1.) as u32,
-                    missing_detail,
-                    PanelReadMode::Merge,
-                    cx,
-                );
-            }
-        }
+        self.request_detail(cx);
     }
 }

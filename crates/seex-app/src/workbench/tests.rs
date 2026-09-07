@@ -2,11 +2,34 @@ use seex::AlignmentAxis;
 use seex_plot::AxisRange;
 
 use crate::domain::SourceAlias;
+use crate::workbench::panel_reads::PanelReadTag;
 use crate::workbench::toml_document::{
     SavedAnalysisView, SavedLayout, SavedProjectRef, SavedRunRef, TomlWorkbenchDocument,
 };
 
 use super::*;
+
+fn panel_completion(
+    panel_id: &MetricPanelId,
+    generation: Generation,
+    mode: PanelReadMode,
+    requested_runs: Vec<RunRef>,
+    curves: Option<CurveSnapshot>,
+    source_errors: Vec<SourceReadFailure>,
+) -> PanelReadSnapshot {
+    PanelReadSnapshot {
+        tag: PanelReadTag {
+            view_id: AnalysisViewId::from_string("view-1"),
+            panel_id: panel_id.clone(),
+            generation,
+            mode,
+        },
+        requested_runs,
+        curves,
+        inspector: None,
+        source_errors,
+    }
+}
 
 #[test]
 fn closing_the_last_view_creates_a_new_empty_view() {
@@ -407,7 +430,7 @@ fn unimported_projects_clear_every_view_without_touching_other_projects() {
 }
 
 #[test]
-fn timeline_home_is_the_union_of_loaded_metric_extents() {
+fn timeline_home_follows_the_latest_selected_metric_extent() {
     let mut views = AnalysisViews::default();
     views.record_active_metric_extent(
         MetricKey::from_string("loss"),
@@ -421,7 +444,115 @@ fn timeline_home_is_the_union_of_loaded_metric_extents() {
         )
         .expect("metric extents should produce a timeline home");
 
-    assert_eq!((home.start(), home.end()), (5, 20));
+    assert_eq!((home.start(), home.end()), (5, 15));
+    assert_eq!(views.active().timeline_extents.len(), 1);
+}
+
+#[test]
+fn selecting_a_cached_metric_reuses_its_overview_and_extent() {
+    let mut views = AnalysisViews::default();
+    let loss = views.select_active_metric(MetricKey::from_string("loss"));
+    let extent = AlignmentViewport::new(10, 20).expect("test extent should be valid");
+    views.begin_active_panel_overview(&loss, Generation(1), 800);
+
+    let accuracy = views.select_active_metric(MetricKey::from_string("accuracy"));
+
+    assert!(views.complete_active_panel_read(
+        ReadKind::Overview,
+        panel_completion(
+            &loss,
+            Generation(1),
+            PanelReadMode::Replace,
+            Vec::new(),
+            Some(CurveSnapshot {
+                viewport: AlignmentViewport::new(0, i64::MAX).expect("overview viewport"),
+                point_budget: crate::data::query::overview_budget(800),
+                real_range: Some(extent),
+                series: Vec::new(),
+            }),
+            Vec::new(),
+        ),
+    ));
+    assert_eq!(views.active().selected_panel_id.as_ref(), Some(&accuracy));
+    assert!(
+        views
+            .active_panel(&loss)
+            .expect("loss panel should remain")
+            .overview
+            .is_some()
+    );
+
+    assert!(views.select_active_panel(&loss));
+    let brush = views
+        .active()
+        .navigation
+        .brush()
+        .expect("cached extent should initialize the brush");
+    assert_eq!((brush.home().start(), brush.home().end()), (10., 20.));
+}
+
+#[test]
+fn progressive_overview_merge_unions_ranges_and_tracks_run_budgets() {
+    let mut views = AnalysisViews::default();
+    let run = |id| {
+        RunRef::new(
+            DataSourceId::new("source").expect("test alias should be valid"),
+            ProjectId::from_string("project"),
+            RunId::from_string(id),
+        )
+    };
+    let first = run("first");
+    let second = run("second");
+    views.active_mut().runs = vec![first.clone(), second.clone()];
+    let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
+    let snapshot = |start, end, point_budget| CurveSnapshot {
+        viewport: AlignmentViewport::new(start, end).expect("test viewport should be valid"),
+        point_budget,
+        real_range: None,
+        series: Vec::new(),
+    };
+
+    views.begin_active_panel_overview(&panel_id, Generation(1), 800);
+    assert!(views.complete_active_panel_read(
+        ReadKind::Overview,
+        panel_completion(
+            &panel_id,
+            Generation(1),
+            PanelReadMode::Replace,
+            vec![first.clone()],
+            Some(snapshot(0, 10, 400)),
+            Vec::new(),
+        ),
+    ));
+    assert_eq!(
+        views
+            .active_panel(&panel_id)
+            .expect("panel should remain")
+            .overview_revision,
+        1,
+    );
+    views.begin_active_panel_overview(&panel_id, Generation(2), 1_200);
+    assert!(views.complete_active_panel_read(
+        ReadKind::Overview,
+        panel_completion(
+            &panel_id,
+            Generation(2),
+            PanelReadMode::Merge,
+            vec![second.clone()],
+            Some(snapshot(20, 30, 600)),
+            Vec::new(),
+        ),
+    ));
+
+    let panel = views.active_panel(&panel_id).expect("panel should remain");
+    assert_eq!(panel.overview_revision, 2);
+    let overview = panel.overview.as_ref().expect("overview should merge");
+    assert_eq!(
+        (overview.viewport.start(), overview.viewport.end()),
+        (0, 30)
+    );
+    assert!(panel.overview_run_resolved(&first, 400));
+    assert!(panel.overview_run_resolved(&second, 600));
 }
 
 #[test]
@@ -433,23 +564,29 @@ fn metric_panels_keep_independent_generations_and_source_errors() {
     views.begin_active_panel_read(&second, ReadKind::Detail, Generation(2));
 
     assert!(!views.complete_active_panel_read(
-        &first,
         ReadKind::Detail,
-        Generation(2),
-        PanelReadMode::Replace,
-        None,
-        Vec::new(),
+        panel_completion(
+            &first,
+            Generation(2),
+            PanelReadMode::Replace,
+            Vec::new(),
+            None,
+            Vec::new(),
+        ),
     ));
     assert!(views.complete_active_panel_read(
-        &second,
         ReadKind::Detail,
-        Generation(2),
-        PanelReadMode::Replace,
-        None,
-        vec![SourceReadFailure {
-            source_id: DataSourceId::new("source-b").expect("test alias should be valid"),
-            message: "unavailable".to_owned(),
-        }],
+        panel_completion(
+            &second,
+            Generation(2),
+            PanelReadMode::Replace,
+            Vec::new(),
+            None,
+            vec![SourceReadFailure {
+                source_id: DataSourceId::new("source-b").expect("test alias should be valid"),
+                message: "unavailable".to_owned(),
+            }],
+        ),
     ));
 
     assert!(
@@ -476,15 +613,97 @@ fn deactivating_a_view_cancels_every_panel_generation() {
     let mut views = AnalysisViews::default();
     let panel = views.select_active_metric(MetricKey::from_string("loss"));
     let viewport = AlignmentViewport::new(10, 20).expect("viewport should be valid");
+    let snapshot = CurveSnapshot {
+        viewport,
+        point_budget: 500,
+        real_range: Some(viewport),
+        series: Vec::new(),
+    };
     views.begin_active_panel_read(&panel, ReadKind::Overview, Generation(1));
     views.begin_active_panel_detail(&panel, Generation(2), viewport, 800);
     views.begin_active_panel_read(&panel, ReadKind::Inspector, Generation(3));
+    {
+        let panel = views.active_panel_mut(&panel).expect("panel should exist");
+        panel.overview = Some(Arc::new(snapshot.clone()));
+        panel.detail = Some(Arc::new(snapshot));
+        panel.inspector = Some(Arc::new(InspectorSnapshot { runs: Vec::new() }));
+        panel.source_errors.push(SourceReadFailure {
+            source_id: DataSourceId::new("source").expect("test alias should be valid"),
+            message: "detail failed".to_owned(),
+        });
+        panel.inspector_errors.push(SourceReadFailure {
+            source_id: DataSourceId::new("source").expect("test alias should be valid"),
+            message: "inspector failed".to_owned(),
+        });
+    }
+    views.record_active_metric_extent(MetricKey::from_string("loss"), Some(viewport));
 
-    views.cancel_active_panel_reads();
+    views.release_active_query_state();
 
     let panel = views.active_panel(&panel).expect("panel should remain");
+    assert!(panel.overview.is_none());
+    assert!(panel.detail.is_none());
+    assert!(panel.inspector.is_none());
     assert!(!panel.is_pending(ReadKind::Overview));
     assert!(!panel.is_pending(ReadKind::Detail));
     assert!(!panel.is_pending(ReadKind::Inspector));
     assert!(panel.requested_detail_viewport.is_none());
+    assert!(panel.source_errors.is_empty());
+    assert!(panel.inspector_errors.is_empty());
+    assert!(views.active().timeline_extents.is_empty());
+}
+
+#[test]
+fn hidden_panel_details_are_evicted() {
+    let mut views = AnalysisViews::default();
+    let first_panel = views.select_active_metric(MetricKey::from_string("loss"));
+    let second_panel = views.select_active_metric(MetricKey::from_string("accuracy"));
+    let viewport = AlignmentViewport::new(0, 100).expect("viewport should be valid");
+    let snapshot = |viewport| CurveSnapshot {
+        viewport,
+        point_budget: 500,
+        real_range: Some(viewport),
+        series: Vec::new(),
+    };
+
+    views.begin_active_panel_detail(&first_panel, Generation(1), viewport, 800);
+    assert!(views.complete_active_panel_read(
+        ReadKind::Detail,
+        panel_completion(
+            &first_panel,
+            Generation(1),
+            PanelReadMode::Replace,
+            Vec::new(),
+            Some(snapshot(viewport)),
+            Vec::new(),
+        ),
+    ));
+    views.begin_active_panel_detail(&second_panel, Generation(2), viewport, 800);
+    assert!(views.complete_active_panel_read(
+        ReadKind::Detail,
+        panel_completion(
+            &second_panel,
+            Generation(2),
+            PanelReadMode::Replace,
+            Vec::new(),
+            Some(snapshot(viewport)),
+            Vec::new(),
+        ),
+    ));
+
+    assert!(views.evict_hidden_panel_details(std::slice::from_ref(&second_panel)));
+    assert!(
+        views
+            .active_panel(&first_panel)
+            .expect("first panel should remain")
+            .detail
+            .is_none()
+    );
+    assert!(
+        views
+            .active_panel(&second_panel)
+            .expect("second panel should remain")
+            .detail
+            .is_some()
+    );
 }

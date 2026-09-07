@@ -288,21 +288,17 @@ pub(super) fn wait_for_viewer_with_app(
 }
 
 pub(super) fn first_panel_detail_is_settled(viewer: &ViewerApp, cx: &App) -> bool {
-    let Some(viewport) = viewer.active_navigation(cx).selected_viewport() else {
+    let snapshot = viewer.session_snapshot(cx);
+    let Some(panel) = snapshot.views.active().panels.first() else {
         return false;
     };
-    viewer
-        .session_snapshot(cx)
-        .views
-        .active()
-        .panels
-        .first()
-        .is_some_and(|panel| {
-            panel.detail.is_some()
-                && !panel.is_pending(ReadKind::Detail)
-                && panel.requested_detail_viewport == Some(viewport)
-                && panel.logical_width > 0
-        })
+    panel.overview.is_some()
+        && !panel.is_pending(ReadKind::Overview)
+        && viewer
+            .workspace
+            .read(cx)
+            .track_charts
+            .contains_key(&panel.panel_id)
 }
 
 pub(super) fn source_catalog_loaded(viewer: &ViewerApp, cx: &App) -> bool {

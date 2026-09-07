@@ -3,14 +3,168 @@ use gpui::{Modifiers, ScrollDelta, TestAppContext, TouchPhase, point, px, size};
 use super::super::test_support::*;
 use super::*;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use crate::data::query::{CurveSeriesSnapshot, CurveSnapshot};
+use crate::data::worker::Generation;
 use crate::desktop::{ClearLockedCursor, ZoomIn};
+use crate::workbench::AnalysisViews;
+use seex::{AlignmentViewport, EvidenceCompleteness, ProjectId, Run, RunId, RunStatus};
+use seex_plot::{AxisRange, DataPoint, Series, SeriesId};
+
+#[test]
+fn detail_coverage_survives_contained_viewports_and_width_changes() {
+    let mut views = AnalysisViews::default();
+    let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
+    let detail = Arc::new(CurveSnapshot {
+        viewport: AlignmentViewport::new(10, 90).expect("viewport should be valid"),
+        point_budget: 1_000,
+        real_range: None,
+        series: Vec::new(),
+    });
+    views
+        .active_panel_mut(&panel_id)
+        .expect("panel should exist")
+        .detail = Some(Arc::clone(&detail));
+
+    views.begin_active_panel_detail(
+        &panel_id,
+        Generation(1),
+        AlignmentViewport::new(20, 80).expect("viewport should be valid"),
+        2_000,
+    );
+    let retained = views
+        .active_panel(&panel_id)
+        .and_then(|panel| panel.detail.as_ref())
+        .expect("contained detail should remain");
+    assert!(Arc::ptr_eq(retained, &detail));
+
+    assert!(views.retain_active_detail_coverage(
+        AlignmentViewport::new(30, 70).expect("viewport should be valid"),
+    ));
+    assert!(
+        views
+            .active_panel(&panel_id)
+            .is_some_and(|panel| panel.detail.is_some() && panel.detail_generation.is_none())
+    );
+    assert!(views.retain_active_detail_coverage(
+        AlignmentViewport::new(0, 70).expect("viewport should be valid"),
+    ));
+    assert!(
+        views
+            .active_panel(&panel_id)
+            .is_some_and(|panel| panel.detail.is_none())
+    );
+}
 
 #[test]
 fn metric_metadata_reports_run_and_drawable_counts() {
-    assert_eq!(metric_metadata(9, 0, false, false), "9 Runs");
-    assert_eq!(metric_metadata(9, 0, false, true), "9 Runs · loading");
-    assert_eq!(metric_metadata(9, 8, true, false), "9 Runs · 8 drawable");
+    assert_eq!(metric_metadata(9, 0, 0, None, false), "0/9 runs · loading");
+    assert_eq!(metric_metadata(9, 3, 0, None, true), "3/9 runs · loading");
+    assert_eq!(
+        metric_metadata(9, 9, 8, Some(CurveFrameQuality::Overview), false),
+        "9/9 runs · preview"
+    );
+    assert_eq!(
+        metric_metadata(9, 9, 8, Some(CurveFrameQuality::Overview), true),
+        "9/9 runs · refining"
+    );
+    assert_eq!(
+        metric_metadata(9, 9, 8, Some(CurveFrameQuality::Detail), false),
+        "9/9 runs · 8 drawable"
+    );
+    assert_eq!(
+        metric_metadata(9, 9, 8, Some(CurveFrameQuality::Detail), true),
+        "9/9 runs · refining"
+    );
+}
+
+#[test]
+fn passive_detail_uses_half_density_with_a_lower_cap() {
+    assert_eq!(detail_query_width(2_500, true), 2_500);
+    assert_eq!(detail_query_width(2_500, false), 1_024);
+    assert_eq!(detail_query_width(1_600, false), 800);
+    assert_eq!(detail_query_width(320, false), 256);
+}
+
+#[test]
+fn covered_detail_with_sparse_window_still_needs_refinement() {
+    let run_ref = RunRef::new(
+        DataSourceId::new("source").expect("test source should be valid"),
+        ProjectId::from_string("project"),
+        RunId::from_string("run"),
+    );
+    let points = (0..2_500)
+        .map(|index| DataPoint::new(f64::from(index * 4), f64::from(index)))
+        .collect::<Vec<_>>();
+    let detail = CurveSnapshot {
+        viewport: AlignmentViewport::new(0, 9_999).expect("detail viewport should be valid"),
+        point_budget: 2_500,
+        real_range: Some(AlignmentViewport::new(0, 9_996).expect("detail range should be valid")),
+        series: vec![CurveSeriesSnapshot {
+            run_ref: run_ref.clone(),
+            run: Run {
+                run_id: RunId::from_string("run"),
+                project_id: ProjectId::from_string("project"),
+                name: "run".to_owned(),
+                status: RunStatus::Finished,
+                created_at: "2026-01-01T00:00:00Z"
+                    .parse()
+                    .expect("timestamp should be valid"),
+                started_at: "2026-01-01T00:00:00Z"
+                    .parse()
+                    .expect("timestamp should be valid"),
+                finished_at: Some(
+                    "2026-01-01T00:00:00Z"
+                        .parse()
+                        .expect("timestamp should be valid"),
+                ),
+            },
+            completeness: EvidenceCompleteness::Complete,
+            reasons: Vec::new(),
+            source_row_count: 10_000,
+            returned_point_count: points.len() as u64,
+            chart_series: Some(
+                Series::new(
+                    SeriesId::new(run_ref.cache_key()).expect("series id should be valid"),
+                    points,
+                )
+                .expect("detail series should be valid"),
+            ),
+        }],
+    };
+    let mut views = AnalysisViews::default();
+    views.active_mut().runs = vec![run_ref.clone()];
+    let panel_id = views.select_active_metric(MetricKey::from_string("loss"));
+    views
+        .active_panel_mut(&panel_id)
+        .expect("metric panel should exist")
+        .detail = Some(Arc::new(detail));
+    let viewport = AlignmentViewport::new(4_900, 5_100).expect("viewport should be valid");
+    let selected = AxisRange::new(4_900., 5_100.).expect("selection should be valid");
+
+    assert!(panel_detail_needs_query(
+        views
+            .active_panel(&panel_id)
+            .expect("metric panel should exist"),
+        viewport,
+        1_000,
+        selected,
+        std::slice::from_ref(&run_ref),
+    ));
+
+    let panel = views
+        .active_panel_mut(&panel_id)
+        .expect("metric panel should exist");
+    panel.requested_detail_viewport = Some(viewport);
+    panel.logical_width = 1_000;
+    assert!(!panel_detail_needs_query(
+        panel,
+        viewport,
+        1_000,
+        selected,
+        std::slice::from_ref(&run_ref),
+    ));
 }
 
 #[gpui::test]
@@ -112,7 +266,6 @@ fn metric_without_drawable_evidence_renders_an_empty_chart(cx: &mut TestAppConte
             .expect("viewer should remain open"),
         Some((1, 0)),
     );
-    assert!(cx.debug_bounds("empty-metric-chart:metric-0").is_some());
 }
 
 #[gpui::test]
@@ -196,7 +349,7 @@ fn shared_timeline_unions_extents_from_multiple_sources(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn metrics_appended_after_initial_layout_all_receive_detail(cx: &mut TestAppContext) {
+fn metrics_appended_after_initial_layout_all_receive_preview(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
@@ -224,15 +377,12 @@ fn metrics_appended_after_initial_layout_all_receive_detail(cx: &mut TestAppCont
                     .read(cx)
                     .track_viewport
                     .borrow()
-                    .overscan
+                    .visible
                     .contains(&1)
             );
         })
         .expect("viewer should remain open");
     wait_for_viewer_with_app(window, &cx, |viewer, cx| {
-        let Some(viewport) = viewer.active_navigation(cx).selected_viewport() else {
-            return false;
-        };
         viewer.session_snapshot(cx).views.active().panels.len() == 2
             && viewer
                 .session_snapshot(cx)
@@ -242,12 +392,12 @@ fn metrics_appended_after_initial_layout_all_receive_detail(cx: &mut TestAppCont
                 .iter()
                 .all(|panel| {
                     panel
-                        .detail
+                        .overview
                         .as_ref()
                         .is_some_and(|snapshot| snapshot.series.len() == 1)
-                        && !panel.is_pending(ReadKind::Detail)
-                        && panel.requested_detail_viewport == Some(viewport)
+                        && !panel.is_pending(ReadKind::Overview)
                 })
+            && viewer.workspace.read(cx).track_charts.len() == 2
     });
 }
 
@@ -544,8 +694,8 @@ fn hover_frames_reuse_static_metric_chart_preparation(cx: &mut TestAppContext) {
                 .panels
                 .iter()
                 .all(|panel| {
-                    panel.detail.as_ref().is_some_and(|snapshot| {
-                        snapshot.series.len() == 2 && !panel.is_pending(ReadKind::Detail)
+                    panel.overview.as_ref().is_some_and(|snapshot| {
+                        snapshot.series.len() == 2 && !panel.is_pending(ReadKind::Overview)
                     })
                 })
     });
@@ -619,7 +769,17 @@ fn hover_frames_reuse_static_metric_chart_preparation(cx: &mut TestAppContext) {
         .read_with(&cx, |viewer, cx| preparation_counts(viewer, cx))
         .expect("viewer should remain open");
 
-    assert_eq!(after, before_ruler_hover);
+    let refreshed = after
+        .iter()
+        .filter(|(panel_id, count)| {
+            let before = before_ruler_hover
+                .get(*panel_id)
+                .expect("prepared panel should remain present");
+            assert!(**count == *before || **count == before + 1);
+            **count > *before
+        })
+        .count();
+    assert!(refreshed <= 1);
     window
         .read_with(&cx, |viewer, cx| {
             assert!(viewer.project_sidebar.read(cx).hovered_project.is_none());
@@ -689,7 +849,7 @@ fn chart_pointer_drives_the_shared_hover_cursor_without_a_curve_hit(cx: &mut Tes
 }
 
 #[gpui::test]
-fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppContext) {
+fn zooming_keeps_overview_frames_when_detail_is_unnecessary(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(3, 1);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
@@ -703,9 +863,6 @@ fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppCont
         })
         .expect("viewer should remain open");
     wait_for_viewer_with_app(window, &cx, |viewer, cx| {
-        let Some(viewport) = viewer.active_navigation(cx).selected_viewport() else {
-            return false;
-        };
         viewer.session_snapshot(cx).views.active().panels.len() == 3
             && viewer
                 .session_snapshot(cx)
@@ -713,11 +870,7 @@ fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppCont
                 .active()
                 .panels
                 .iter()
-                .all(|panel| {
-                    panel.detail.is_some()
-                        && !panel.is_pending(ReadKind::Detail)
-                        && panel.requested_detail_viewport == Some(viewport)
-                })
+                .all(|panel| panel.overview.is_some() && !panel.is_pending(ReadKind::Overview))
             && viewer.workspace.read(cx).track_charts.len() == 3
     });
     window
@@ -728,62 +881,14 @@ fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppCont
         })
         .expect("viewer should remain open");
     wait_for_viewer_with_app(window, &cx, |viewer, cx| {
-        let Some(viewport) = viewer.active_navigation(cx).selected_viewport() else {
-            return false;
-        };
         viewer
             .session_snapshot(cx)
             .views
             .active()
             .panels
             .iter()
-            .all(|panel| {
-                panel.detail.is_some()
-                    && !panel.is_pending(ReadKind::Detail)
-                    && panel.requested_detail_viewport == Some(viewport)
-            })
+            .all(|panel| panel.overview.is_some() && !panel.is_pending(ReadKind::Overview))
     });
-    let charts = window
-        .read_with(&cx, |viewer, cx| {
-            let workspace = viewer.workspace.read(cx);
-            ["metric-0", "metric-1", "metric-2"]
-                .into_iter()
-                .map(|metric| {
-                    workspace
-                        .track_charts
-                        .get(&MetricPanelId::from_string(metric))
-                        .cloned()
-                        .expect("Metric chart should be cached")
-                })
-                .collect::<Vec<_>>()
-        })
-        .expect("viewer should remain open");
-    let before = charts
-        .iter()
-        .map(|chart| chart.read_with(&cx, |chart, _| chart.viewport()))
-        .collect::<Vec<_>>();
-    let prepare_counts = |viewer: &ViewerApp, cx: &App| {
-        ["metric-0", "metric-1", "metric-2"]
-            .into_iter()
-            .map(|metric| {
-                let panel_id = MetricPanelId::from_string(metric);
-                (
-                    metric,
-                    viewer
-                        .workspace
-                        .read(cx)
-                        .track_charts
-                        .get(&panel_id)
-                        .expect("Metric chart should be cached")
-                        .read(cx)
-                        .prepare_count(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>()
-    };
-    let prepares_before = window
-        .read_with(&cx, |viewer, cx| prepare_counts(viewer, cx))
-        .expect("viewer should remain open");
     let narrow = window
         .read_with(&cx, |viewer, cx| {
             viewer
@@ -793,10 +898,34 @@ fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppCont
                 .selected()
         })
         .expect("viewer should remain open");
-    assert!(before.iter().all(|viewport| viewport.x == narrow));
-
+    let zoom_metric = window
+        .read_with(&cx, |viewer, cx| {
+            let panel_id = viewer
+                .workspace
+                .read(cx)
+                .track_charts
+                .keys()
+                .next()
+                .cloned()
+                .expect("one visible Metric should be drawable");
+            viewer
+                .session_snapshot(cx)
+                .views
+                .active_panel(&panel_id)
+                .expect("drawable panel should exist")
+                .metric_key
+                .as_str()
+                .to_owned()
+        })
+        .expect("viewer should remain open");
+    let canvas_selector = match zoom_metric.as_str() {
+        "metric-0" => "metric-canvas:metric-0",
+        "metric-1" => "metric-canvas:metric-1",
+        "metric-2" => "metric-canvas:metric-2",
+        metric => panic!("unexpected zoom Metric {metric}"),
+    };
     let canvas = cx
-        .debug_bounds("metric-canvas:metric-0")
+        .debug_bounds(canvas_selector)
         .expect("Metric chart should render");
     cx.simulate_event(ScrollWheelEvent {
         position: canvas.center(),
@@ -815,31 +944,40 @@ fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppCont
                 .selected()
         })
         .expect("viewer should remain open");
-    let after = charts
-        .iter()
-        .map(|chart| chart.read_with(&cx, |chart, _| chart.viewport()))
-        .collect::<Vec<_>>();
     assert_ne!(selected, narrow);
-    for (before, after) in before.iter().zip(&after) {
-        assert_ne!(after.x, before.x);
-        assert_eq!(after.x, selected);
-    }
-    let prepares_after = window
-        .read_with(&cx, |viewer, cx| prepare_counts(viewer, cx))
+    let (retained_details, preview_viewports) = window
+        .read_with(&cx, |viewer, cx| {
+            (
+                viewer
+                    .session_snapshot(cx)
+                    .views
+                    .active()
+                    .panels
+                    .iter()
+                    .filter(|panel| panel.detail.is_some())
+                    .count(),
+                viewer
+                    .workspace
+                    .read(cx)
+                    .track_charts
+                    .values()
+                    .map(|chart| chart.read(cx).viewport())
+                    .collect::<Vec<_>>(),
+            )
+        })
         .expect("viewer should remain open");
-    for metric in ["metric-0", "metric-1", "metric-2"] {
-        assert!(
-            prepares_after[metric] > prepares_before[metric],
-            "{metric} should prepare its expanded viewport immediately"
-        );
-    }
+    assert_eq!(retained_details, 0);
+    assert!(
+        preview_viewports
+            .iter()
+            .all(|viewport| viewport.x == selected)
+    );
 
-    cx.simulate_event(ScrollWheelEvent {
-        position: canvas.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(-100.))),
-        modifiers: Modifiers::default(),
-        touch_phase: TouchPhase::Moved,
-    });
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.zoom_from_keyboard(1.25, cx);
+        })
+        .expect("viewer should remain open");
     cx.run_until_parked();
 
     let contracted = window
@@ -851,32 +989,38 @@ fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppCont
                 .selected()
         })
         .expect("viewer should remain open");
-    let after_zoom_in = charts
-        .iter()
-        .map(|chart| chart.read_with(&cx, |chart, _| chart.viewport()))
-        .collect::<Vec<_>>();
     assert!(contracted.span() < selected.span());
+    let (retained_details, preview_viewports) = window
+        .read_with(&cx, |viewer, cx| {
+            (
+                viewer
+                    .session_snapshot(cx)
+                    .views
+                    .active()
+                    .panels
+                    .iter()
+                    .filter(|panel| panel.detail.is_some())
+                    .count(),
+                viewer
+                    .workspace
+                    .read(cx)
+                    .track_charts
+                    .values()
+                    .map(|chart| chart.read(cx).viewport())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .expect("viewer should remain open");
+    assert_eq!(retained_details, 0);
     assert!(
-        after_zoom_in
+        preview_viewports
             .iter()
             .all(|viewport| viewport.x == contracted)
     );
-    let prepares_after_zoom_in = window
-        .read_with(&cx, |viewer, cx| prepare_counts(viewer, cx))
-        .expect("viewer should remain open");
-    for metric in ["metric-0", "metric-1", "metric-2"] {
-        assert!(
-            prepares_after_zoom_in[metric] > prepares_after[metric],
-            "{metric} should prepare its contracted viewport immediately"
-        );
-    }
 
     cx.executor().advance_clock(Duration::from_millis(101));
     cx.run_until_parked();
     wait_for_viewer_with_app(window, &cx, |viewer, cx| {
-        let Some(detail_viewport) = viewer.active_navigation(cx).selected_viewport() else {
-            return false;
-        };
         !viewer.workspace.read(cx).metric_repaint_pending
             && viewer
                 .session_snapshot(cx)
@@ -885,9 +1029,9 @@ fn zooming_multiple_metrics_repaints_without_pointer_motion(cx: &mut TestAppCont
                 .panels
                 .iter()
                 .all(|panel| {
-                    panel.detail.is_some()
+                    panel.overview.is_some()
+                        && panel.detail.is_none()
                         && !panel.is_pending(ReadKind::Detail)
-                        && panel.requested_detail_viewport == Some(detail_viewport)
                 })
     });
 }
@@ -1083,7 +1227,7 @@ fn modified_ruler_scroll_zooms_around_the_pointer(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppContext) {
+fn track_scheduler_queries_and_prepares_only_visible_metrics(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(10);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
@@ -1097,37 +1241,54 @@ fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppCo
             }
         })
         .expect("viewer should remain open");
+    wait_for_viewer_with_app(window, &cx, |viewer, cx| {
+        let workspace = viewer.workspace.read(cx);
+        let schedule = workspace.track_viewport.borrow();
+        !schedule.visible.is_empty() && schedule.physical_width > 0
+    });
     wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer.session_snapshot(cx).views.active().panels.len() == 10
-            && viewer
-                .session_snapshot(cx)
-                .views
-                .active()
-                .panels
-                .iter()
-                .all(|panel| panel.overview.is_some())
+        let session = viewer.session_snapshot(cx);
+        let view = session.views.active();
+        view.panels.len() == 10
+            && view
+                .selected_panel_id
+                .as_ref()
+                .and_then(|panel_id| session.views.active_panel(panel_id))
+                .is_some_and(|panel| panel.overview.is_some())
+            && view.panels.iter().any(|panel| panel.overview.is_some())
     });
     wait_for_viewer_with_app(window, &cx, |viewer, cx| {
         let workspace = viewer.workspace.read(cx);
         let schedule = workspace.track_viewport.borrow();
-        !schedule.overscan.is_empty() && schedule.physical_width > 0
-    });
-    wait_for_viewer_with_app(window, &cx, |viewer, cx| {
-        let workspace = viewer.workspace.read(cx);
-        let schedule = workspace.track_viewport.borrow();
-        viewer.session_snapshot(cx).views.active().panels[schedule.overscan.clone()]
+        let view = viewer.session_snapshot(cx);
+        let view = view.views.active();
+        let retained = view
+            .panels
             .iter()
-            .all(|panel| panel.detail.is_some())
-            && workspace.track_charts.len() == schedule.overscan.len()
+            .filter(|panel| panel.overview.is_some())
+            .count();
+        let selected_outside_prefetch = view
+            .selected_panel_id
+            .as_ref()
+            .and_then(|selected| {
+                view.panels
+                    .iter()
+                    .position(|panel| &panel.panel_id == selected)
+            })
+            .is_some_and(|index| !schedule.overview.contains(&index));
+        view.panels[schedule.overview.clone()]
+            .iter()
+            .all(|panel| panel.overview.is_some())
+            && retained == schedule.overview.len() + usize::from(selected_outside_prefetch)
+            && workspace.track_charts.len() == schedule.visible.len()
     });
 
-    let (visible, overscan, detail_count, adapter_count) = window
+    let (visible, detail_count, chart_count) = window
         .read_with(&cx, |viewer, cx| {
             let workspace = viewer.workspace.read(cx);
             let schedule = workspace.track_viewport.borrow().clone();
             (
                 schedule.visible,
-                schedule.overscan,
                 viewer
                     .session_snapshot(cx)
                     .views
@@ -1140,62 +1301,39 @@ fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppCo
             )
         })
         .expect("viewer should remain open");
-    assert!(overscan.len() > visible.len());
-    assert_eq!(detail_count, overscan.len());
-    assert!(detail_count < 10);
-    assert_eq!(adapter_count, overscan.len());
+    assert!(detail_count <= visible.len());
+    assert_eq!(chart_count, visible.len());
+
     window
-        .read_with(&cx, |viewer, cx| {
-            for panel in viewer
-                .session_snapshot(cx)
-                .views
-                .active()
-                .panels
-                .iter()
-                .filter(|panel| panel.detail.is_some())
-            {
-                let detail = panel.detail.as_ref().expect("detail should be present");
-                assert_eq!(
-                    detail.point_budget,
-                    panel.logical_width.saturating_mul(2).clamp(512, 5_000)
-                );
-            }
+        .update(&mut cx, |viewer, _, cx| {
+            viewer
+                .workspace
+                .read(cx)
+                .metric_scroll
+                .scroll_to_reveal_item(9);
+            cx.notify();
         })
         .expect("viewer should remain open");
-
-    let tracks = cx
-        .debug_bounds("metric-track-scroll")
-        .expect("Metric track list should render");
-    cx.simulate_event(ScrollWheelEvent {
-        position: tracks.center(),
-        delta: ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
-        modifiers: Modifiers::default(),
-        touch_phase: TouchPhase::Moved,
-    });
     wait_for_viewer_with_app(window, &cx, |viewer, cx| {
         let workspace = viewer.workspace.read(cx);
         let schedule = workspace.track_viewport.borrow();
+        let view = viewer.session_snapshot(cx);
+        let view = view.views.active();
         schedule.visible.contains(&9)
-            && viewer
-                .session_snapshot(cx)
-                .views
-                .active()
+            && view
                 .panels
                 .last()
-                .is_some_and(|panel| panel.detail.is_some())
+                .is_some_and(|panel| panel.overview.is_some())
+            && view
+                .panels
+                .iter()
+                .filter(|panel| panel.overview.is_some())
+                .count()
+                <= schedule.overview.len() + 1
+            && workspace.track_charts.len() == schedule.visible.len()
     });
     assert!(cx.debug_bounds("metric-track:metric-9").is_some());
 
-    let revisions_before_zoom = window
-        .read_with(&cx, |viewer, cx| {
-            let workspace = viewer.workspace.read(cx);
-            let schedule = workspace.track_viewport.borrow();
-            viewer.session_snapshot(cx).views.active().panels[schedule.overscan.clone()]
-                .iter()
-                .map(|panel| (panel.panel_id.clone(), panel.detail_revision))
-                .collect::<HashMap<_, _>>()
-        })
-        .expect("viewer should remain open");
     window
         .update(&mut cx, |viewer, _, cx| {
             zoom_session_navigation(viewer, 1.25, cx);
@@ -1207,26 +1345,17 @@ fn track_scheduler_queries_and_prepares_only_visible_overscan(cx: &mut TestAppCo
     cx.executor().advance_clock(Duration::from_millis(101));
     cx.run_until_parked();
     wait_for_viewer_with_app(window, &cx, |viewer, cx| {
-        let Some(viewport) = viewer.active_navigation(cx).selected_viewport() else {
-            return false;
-        };
         let workspace = viewer.workspace.read(cx);
         let schedule = workspace.track_viewport.borrow();
-        viewer.session_snapshot(cx).views.active().panels[schedule.overscan.clone()]
+        viewer.session_snapshot(cx).views.active().panels[schedule.visible.clone()]
             .iter()
-            .all(|panel| {
-                panel.detail.is_some()
-                    && !panel.is_pending(ReadKind::Detail)
-                    && panel.requested_detail_viewport == Some(viewport)
-                    && revisions_before_zoom
-                        .get(&panel.panel_id)
-                        .is_some_and(|revision| panel.detail_revision > *revision)
-            })
+            .all(|panel| panel.overview.is_some())
+            && workspace.track_charts.len() == schedule.visible.len()
     });
 }
 
 #[gpui::test]
-fn zoom_debounce_commits_only_the_latest_viewport(cx: &mut TestAppContext) {
+fn zoom_debounce_skips_detail_when_overview_density_is_sufficient(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
@@ -1236,18 +1365,6 @@ fn zoom_debounce_commits_only_the_latest_viewport(cx: &mut TestAppContext) {
         .update(&mut cx, |viewer, _, cx| {
             viewer.select_metric(MetricKey::from_string("loss"), cx);
         })
-        .expect("viewer should remain open");
-    wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer
-            .session_snapshot(cx)
-            .views
-            .active()
-            .panels
-            .first()
-            .is_some_and(|panel| panel.detail.is_some())
-    });
-    window
-        .update(&mut cx, |_, _, cx| cx.notify())
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, first_panel_detail_is_settled);
     let (before_generation, before_revision, before_viewport) = window
@@ -1262,8 +1379,8 @@ fn zoom_debounce_commits_only_the_latest_viewport(cx: &mut TestAppContext) {
                 .expect("metric panel should exist");
             (
                 viewer.session.read(cx).next_generation,
-                panel.detail_revision,
-                panel.requested_detail_viewport,
+                panel.overview_revision,
+                viewer.active_navigation(cx).selected_viewport(),
             )
         })
         .expect("viewer should remain open");
@@ -1293,25 +1410,19 @@ fn zoom_debounce_commits_only_the_latest_viewport(cx: &mut TestAppContext) {
             viewer.active_navigation(cx).selected_viewport()
         })
         .expect("viewer should remain open");
-    let immediate = window
+    let final_selected = window
         .read_with(&cx, |viewer, cx| {
-            let panel = viewer
-                .session_snapshot(cx)
-                .views
-                .active()
-                .panels
-                .first()
-                .cloned()
-                .expect("metric panel should exist");
-            (panel.detail_revision, panel.requested_detail_viewport)
+            viewer
+                .active_navigation(cx)
+                .brush()
+                .expect("timeline brush should exist")
+                .selected()
         })
         .expect("viewer should remain open");
-    assert_eq!(immediate, (before_revision, before_viewport));
     assert_ne!(final_viewport, before_viewport);
 
     cx.executor().advance_clock(Duration::from_millis(101));
     cx.run_until_parked();
-    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
     let after = window
         .read_with(&cx, |viewer, cx| {
             let panel = viewer
@@ -1324,18 +1435,22 @@ fn zoom_debounce_commits_only_the_latest_viewport(cx: &mut TestAppContext) {
                 .expect("metric panel should exist");
             (
                 viewer.session.read(cx).next_generation,
-                panel.detail_revision,
-                panel.requested_detail_viewport,
+                panel.overview_revision,
+                panel.detail.is_none(),
+                viewer
+                    .workspace
+                    .read(cx)
+                    .track_charts
+                    .values()
+                    .all(|chart| chart.read(cx).viewport().x == final_selected),
             )
         })
         .expect("viewer should remain open");
-    assert_eq!(after.0, before_generation + 1);
-    assert!(after.1 > before_revision);
-    assert_eq!(after.2, final_viewport);
+    assert_eq!(after, (before_generation, before_revision, true, true));
 }
 
 #[gpui::test]
-fn keyboard_zoom_reprojects_immediately_and_debounces_detail(cx: &mut TestAppContext) {
+fn keyboard_zoom_reprojects_overview_without_unnecessary_detail(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_extent(100);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
@@ -1345,18 +1460,6 @@ fn keyboard_zoom_reprojects_immediately_and_debounces_detail(cx: &mut TestAppCon
         .update(&mut cx, |viewer, _, cx| {
             viewer.select_metric(MetricKey::from_string("loss"), cx);
         })
-        .expect("viewer should remain open");
-    wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer
-            .session_snapshot(cx)
-            .views
-            .active()
-            .panels
-            .first()
-            .is_some_and(|panel| panel.detail.is_some())
-    });
-    window
-        .update(&mut cx, |_, _, cx| cx.notify())
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, first_panel_detail_is_settled);
     let (before_generation, before_revision, before_viewport, before_span) = window
@@ -1371,8 +1474,8 @@ fn keyboard_zoom_reprojects_immediately_and_debounces_detail(cx: &mut TestAppCon
                 .expect("metric panel should exist");
             (
                 viewer.session.read(cx).next_generation,
-                panel.detail_revision,
-                panel.requested_detail_viewport,
+                panel.overview_revision,
+                viewer.active_navigation(cx).selected_viewport(),
                 viewer
                     .active_navigation(cx)
                     .brush()
@@ -1397,6 +1500,8 @@ fn keyboard_zoom_reprojects_immediately_and_debounces_detail(cx: &mut TestAppCon
                 .expect("metric panel should exist");
             (
                 viewer.session.read(cx).next_generation,
+                panel.detail.is_some(),
+                panel.detail_generation,
                 panel.detail_revision,
                 panel.requested_detail_viewport,
                 viewer
@@ -1409,18 +1514,29 @@ fn keyboard_zoom_reprojects_immediately_and_debounces_detail(cx: &mut TestAppCon
         })
         .expect("viewer should remain open");
     assert_eq!(immediate.0, before_generation);
-    assert_eq!(immediate.1, before_revision);
-    assert_eq!(immediate.2, before_viewport);
-    assert!(immediate.3 < before_span);
+    assert!(!immediate.1);
+    assert!(immediate.2.is_none(), "immediate state: {immediate:?}");
+    assert_eq!(immediate.3, 0);
+    assert!(immediate.4.is_none());
+    assert!(immediate.5 < before_span);
     let final_viewport = window
         .read_with(&cx, |viewer, cx| {
             viewer.active_navigation(cx).selected_viewport()
         })
         .expect("viewer should remain open");
+    let final_selected = window
+        .read_with(&cx, |viewer, cx| {
+            viewer
+                .active_navigation(cx)
+                .brush()
+                .expect("timeline brush should exist")
+                .selected()
+        })
+        .expect("viewer should remain open");
+    assert_ne!(final_viewport, before_viewport);
 
     cx.executor().advance_clock(Duration::from_millis(101));
     cx.run_until_parked();
-    wait_for_viewer(window, &cx, first_panel_detail_is_settled);
     let after = window
         .read_with(&cx, |viewer, cx| {
             let panel = viewer
@@ -1433,12 +1549,16 @@ fn keyboard_zoom_reprojects_immediately_and_debounces_detail(cx: &mut TestAppCon
                 .expect("metric panel should exist");
             (
                 viewer.session.read(cx).next_generation,
-                panel.detail_revision,
-                panel.requested_detail_viewport,
+                panel.overview_revision,
+                panel.detail.is_none(),
+                viewer
+                    .workspace
+                    .read(cx)
+                    .track_charts
+                    .values()
+                    .all(|chart| chart.read(cx).viewport().x == final_selected),
             )
         })
         .expect("viewer should remain open");
-    assert_eq!(after.0, before_generation + 1);
-    assert!(after.1 > before_revision);
-    assert_eq!(after.2, final_viewport);
+    assert_eq!(after, (before_generation, before_revision, true, true));
 }

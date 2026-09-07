@@ -172,11 +172,50 @@ fn prepare_reader_benchmark_dataset() -> Result<(), Box<dyn Error>> {
     ensure_reader_benchmark_dataset(&root, backend()?)
 }
 
-const VIEWER_MANIFEST: &str = "schema=v3\nruns=4\nmetrics=2\npoints_per_series=100000\n";
+#[derive(Clone, Copy)]
+struct ViewerScale {
+    runs: usize,
+    metrics: usize,
+    points_per_series: i64,
+}
 
-fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
+impl Default for ViewerScale {
+    fn default() -> Self {
+        Self {
+            runs: 4,
+            metrics: 2,
+            points_per_series: 100_000,
+        }
+    }
+}
+
+fn viewer_manifest(scale: ViewerScale) -> String {
+    format!(
+        "schema=v3\nruns={}\nmetrics={}\npoints_per_series={}\n",
+        scale.runs, scale.metrics, scale.points_per_series
+    )
+}
+
+fn viewer_scale() -> Result<ViewerScale, Box<dyn Error>> {
+    fn selected(name: &str, default: i64) -> Result<i64, Box<dyn Error>> {
+        let value = env::var(name).map_or(Ok(default), |value| value.parse::<i64>())?;
+        if value <= 0 {
+            return Err(format!("{name} must be a positive integer").into());
+        }
+        Ok(value)
+    }
+
+    Ok(ViewerScale {
+        runs: usize::try_from(selected("SEEX_VIEWER_BENCH_RUNS", 4)?)?,
+        metrics: usize::try_from(selected("SEEX_VIEWER_BENCH_METRICS", 2)?)?,
+        points_per_series: selected("SEEX_VIEWER_BENCH_POINTS", 100_000)?,
+    })
+}
+
+fn ensure_viewer_benchmark_dataset(root: &Path, scale: ViewerScale) -> Result<(), Box<dyn Error>> {
+    let manifest = viewer_manifest(scale);
     if root.join(".seex/config.toml").is_file() {
-        return if fs::read_to_string(root.join(".seex/viewer-benchmark.txt"))? == VIEWER_MANIFEST {
+        return if fs::read_to_string(root.join(".seex/viewer-benchmark.txt"))? == manifest {
             Ok(())
         } else {
             Err("Viewer benchmark dataset manifest does not match".into())
@@ -191,7 +230,7 @@ fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
         "viewer performance",
         Some(ProjectId::from_string("viewer-performance")),
     )?;
-    let run_ids = (0..4)
+    let run_ids = (0..scale.runs)
         .map(|index| RunId::from_string(format!("run-{index}")))
         .collect::<Vec<_>>();
     for run_id in &run_ids {
@@ -203,7 +242,7 @@ fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
         NativeStorageConfig::duckdb(root, None, None),
     )?);
     for (run_index, run_id) in run_ids.iter().enumerate() {
-        for metric_index in 0..2 {
+        for metric_index in 0..scale.metrics {
             let metric = format!("metric-{metric_index}");
             connection.execute(
                 "INSERT INTO dl.metric_points
@@ -211,12 +250,13 @@ fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
                  SELECT ?, ?, ?, step, epoch_ms(1700000000000 + step),
                         ((step % 1000) + ?)::DOUBLE / 1000,
                         epoch_ms(1700000000000 + step)
-                 FROM range(100000) AS points(step)",
+                 FROM range(?) AS points(step)",
                 (
                     run_id.as_str(),
                     &metric,
                     &metric,
                     (run_index + metric_index) as i64,
+                    scale.points_per_series,
                 ),
             )?;
         }
@@ -228,7 +268,7 @@ fn ensure_viewer_benchmark_dataset(root: &Path) -> Result<(), Box<dyn Error>> {
         )?;
     }
     connection.flush_metric_points()?;
-    fs::write(root.join(".seex/viewer-benchmark.txt"), VIEWER_MANIFEST)?;
+    fs::write(root.join(".seex/viewer-benchmark.txt"), manifest)?;
     Ok(())
 }
 
@@ -237,7 +277,7 @@ fn compact_benchmark_dataset_refuses_unrelated_data() -> Result<(), Box<dyn Erro
     let root = tempfile::tempdir()?;
     fs::write(root.path().join("keep"), "user data")?;
 
-    let error = ensure_viewer_benchmark_dataset(root.path())
+    let error = ensure_viewer_benchmark_dataset(root.path(), ViewerScale::default())
         .expect_err("benchmark dataset must not replace data");
 
     assert!(error.to_string().contains("non-empty"));
@@ -254,5 +294,5 @@ fn prepare_compact_viewer_benchmark_dataset() -> Result<(), Box<dyn Error>> {
     let root = env::var_os("SEEX_VIEWER_BENCH_ROOT")
         .map(PathBuf::from)
         .ok_or("SEEX_VIEWER_BENCH_ROOT must name the prepared compact fixture")?;
-    ensure_viewer_benchmark_dataset(&root)
+    ensure_viewer_benchmark_dataset(&root, viewer_scale()?)
 }

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -55,7 +55,11 @@ pub(crate) enum AnalysisWorkspaceEvent {
     ShowInspector(MetricPanelId),
     RequestDetail,
     RequestOverview,
-    ScheduleDetails(Vec<ScheduledPanelDetail>),
+    VisibleCurvesChanged {
+        details: Vec<MetricPanelId>,
+        overviews: Vec<MetricPanelId>,
+    },
+    ScheduleReads(Vec<ScheduledPanelRead>),
     Interaction(WorkspaceInteractionEvent),
 }
 
@@ -73,13 +77,11 @@ impl AnalysisWorkspace {
         let overview_chart = cx.new(|_| chart::OverviewChart::default());
         let metric_scroll = ListState::new(0, ListAlignment::Top, px(480.));
         let workspace = cx.entity().downgrade();
-        let scroll = metric_scroll.clone();
         metric_scroll.set_scroll_handler(move |event, _, cx| {
-            let visible_len = event.visible_range.len().max(1);
-            let scroll = scroll.clone();
+            let start = event.visible_range.start;
+            let visible_len = event.visible_range.len();
             let workspace = workspace.clone();
             cx.defer(move |cx| {
-                let start = scroll.logical_scroll_top().item_ix;
                 let _ = workspace.update(cx, |workspace, cx| {
                     workspace.update_track_viewport(start, visible_len, cx);
                 });
@@ -158,14 +160,6 @@ impl AnalysisWorkspace {
         if self.metric_scroll.item_count() != panel_count {
             self.metric_scroll.reset(panel_count);
         }
-        if self.track_viewport.borrow().overscan.is_empty() && panel_count > 0 {
-            *self.track_viewport.borrow_mut() = TrackViewport {
-                visible: 0..panel_count.min(INITIAL_VISIBLE_TRACKS),
-                overscan: 0..panel_count.min(INITIAL_OVERSCAN_TRACKS),
-                logical_width_bits: self.overview_logical_width.max(1.).to_bits(),
-                physical_width: self.overview_width.max(1),
-            };
-        }
     }
 
     fn active_navigation(&self) -> Option<&crate::domain::ViewNavigation> {
@@ -242,35 +236,54 @@ impl ViewerApp {
                 self.show_metric_inspector(panel_id, cx);
             }
             AnalysisWorkspaceEvent::RequestDetail => self.request_detail(cx),
-            AnalysisWorkspaceEvent::RequestOverview => self.request_overview(cx),
-            AnalysisWorkspaceEvent::ScheduleDetails(requests) => {
-                for request in requests {
-                    self.request_panel_detail(
-                        &request.panel_id,
-                        request.viewport,
-                        request.logical_width,
-                        cx,
-                    );
-                }
+            AnalysisWorkspaceEvent::RequestOverview => {
+                self.request_overview(cx);
+                self.request_detail(cx);
+            }
+            AnalysisWorkspaceEvent::VisibleCurvesChanged { details, overviews } => {
+                self.retain_active_panel_curves(details, overviews, cx);
+            }
+            AnalysisWorkspaceEvent::ScheduleReads(requests) => {
+                self.submit_scheduled_panel_reads(requests, cx);
             }
             AnalysisWorkspaceEvent::Interaction(interaction_event) => {
-                self.interaction.update(cx, |interaction, interaction_cx| {
-                    let changed = match interaction_event {
-                        WorkspaceInteractionEvent::RulerHover(axis) => {
-                            interaction.set_ruler_hover(*axis)
+                let (changed, hovered_panel_changed) =
+                    self.interaction.update(cx, |interaction, interaction_cx| {
+                        let hovered_panel_changed = match interaction_event {
+                            WorkspaceInteractionEvent::TrackPointerHover(hover) => {
+                                interaction.track_pointer_panel()
+                                    != hover.as_ref().map(|(panel_id, _)| panel_id)
+                            }
+                            WorkspaceInteractionEvent::RulerHover(_)
+                            | WorkspaceInteractionEvent::LockedCursor(_) => false,
+                        };
+                        let changed = match interaction_event {
+                            WorkspaceInteractionEvent::RulerHover(axis) => {
+                                interaction.set_ruler_hover(*axis)
+                            }
+                            WorkspaceInteractionEvent::TrackPointerHover(hover) => {
+                                interaction.set_track_pointer_hover(hover.clone())
+                            }
+                            WorkspaceInteractionEvent::LockedCursor(axis) => {
+                                interaction.set_locked_cursor(*axis)
+                            }
+                        };
+                        if changed {
+                            interaction_cx.notify();
                         }
-                        WorkspaceInteractionEvent::TrackPointerHover(hover) => {
-                            interaction.set_track_pointer_hover(hover.clone())
-                        }
-                        WorkspaceInteractionEvent::LockedCursor(axis) => {
-                            interaction.set_locked_cursor(*axis)
-                        }
-                    };
-                    if changed {
-                        interaction_cx.notify();
-                    }
-                });
-                cx.notify();
+                        (changed, hovered_panel_changed)
+                    });
+                if hovered_panel_changed
+                    && matches!(
+                        interaction_event,
+                        WorkspaceInteractionEvent::TrackPointerHover(Some(_))
+                    )
+                {
+                    self.request_detail(cx);
+                }
+                if changed {
+                    cx.notify();
+                }
             }
         }
     }
@@ -320,6 +333,7 @@ impl AnalysisWorkspace {
             });
         let scroll = self.metric_scroll.clone();
         let workspace = cx.entity().downgrade();
+        let viewport_sync_pending = Rc::new(Cell::new(false));
         let track_rows: Rc<[MetricTrackRowSnapshot]> = self.track_rows.clone().into();
         div()
             .flex_1()
@@ -375,6 +389,14 @@ impl AnalysisWorkspace {
                     .overflow_hidden()
                     .child(
                         list(scroll, move |index, _, cx| {
+                            if !viewport_sync_pending.replace(true) {
+                                let workspace = workspace.clone();
+                                cx.defer(move |cx| {
+                                    let _ = workspace.update(cx, |workspace, cx| {
+                                        workspace.sync_track_viewport_from_layout(cx);
+                                    });
+                                });
+                            }
                             track_rows.get(index).map_or_else(
                                 || div().into_any_element(),
                                 |row| {

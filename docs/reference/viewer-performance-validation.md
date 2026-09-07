@@ -25,6 +25,202 @@ The existing 2026-07-27 active-display trace remains the original Metal
 baseline: it recorded ten presentations spanning two 280 Hz refresh periods,
 so the final display gate was already open before resource optimization.
 
+### 2026-08-06 full-span and repeated-viewport follow-up
+
+The 10-Run, six-Metric, one-million-point, dual-View workload confirmed the
+remaining peak was DuckDB operator memory rather than retained chart data. A
+frozen pre-change process reached 2,753,871,872 bytes maximum RSS. Restoring
+four worker connections to one shared local DuckDB database handle reduced it
+to 2,511,224,832 bytes. Replacing full-span screen bucket windows with a
+bounded Rust reducer, and retaining the two most recent reduced detail
+viewports, reduced the sampled peak to 1,902,182,400 bytes, warm RSS to
+1,576,386,560 bytes, and final RSS to 1,838,088,192 bytes. The peak improved
+30.9%, and the workload duration fell from 57.6 to 21.8 seconds.
+
+The final one-million-point Reader samples kept Step narrow on its accepted
+SQL plan at about 37.1 ms median. The bounded full plan measured about 87.6 ms
+for Step and 132.2 ms for relative time. It streams effective ordered rows and
+retains first, last, minimum, and maximum real samples per bucket without the
+four bucket-ranking windows. Invalid evidence, partial elapsed-time ranges,
+and diagnostics failures retain the incumbent SQL plan.
+
+One compact A-B-B-A RSS comparison observed candidate peaks of 385,122,304
+and 292,388,864 bytes versus baseline peaks of 510,230,528 and 415,449,088
+bytes. Both ordered observations improved, but peak and final RSS exceeded the
+fixed 2% cross-process noise limit, so the comparison is Inconclusive. The
+artifact is `/private/tmp/seex-memory-final-result.json`. A narrow streaming
+candidate was rejected before RSS measurement after regressing from about
+36.6 ms to 314.6 ms; disabling DuckDB insertion-order preservation was also
+rejected after raising the large-workload peak from about 2.046 to 2.147 GB.
+
+### 2026-08-06 visible-data loading follow-up
+
+Viewer snapshot ownership is now bounded by what can be rendered. Each View
+retains Overview only for its selected Metric, and Detail only for the GPUI
+list's actual visible range. Entering rows load on demand without overscan;
+leaving rows cancel their reads and release Detail, chart, hover, and projection
+state. Navigation releases the old viewport immediately and submits only the
+last viewport after its debounce interval. Worker request tokens also interrupt
+active superseded reads and discard queued or late results.
+
+The release 10-Run, six-Metric, one-million-point, dual-View workload completed
+in 34.79 seconds with a 1,917,911,040 byte peak RSS and a 1,091,667,744 byte
+peak footprint. The peak is 0.83% above the preceding 1,902,182,400 byte
+incumbent observation, while remaining 30.36% below the frozen 2,753,871,872
+byte pre-change process baseline. This is classified No-change against the
+incumbent rather than attributed to retained chart data.
+
+The 1-Run, 64-Metric, 100,000-point vertical workload completed three top-to-
+bottom round trips and three zoom round trips in 4.67 seconds. Its assertions
+kept exactly one Overview and constrained retained Detail count to the current
+`visible_range` at every settled phase; the blocking scheduler test applies the
+same bound to DetailChart entities. Scroll-phase RSS samples
+were 411,440, 419,280, 430,832, 435,296, 440,736, 446,192, and 448,928 KiB;
+the zoom cycles and final phase reached 594,864 KiB, with a 609,173,504 byte
+process peak. The monotonic scroll samples mean the settled-RSS observation did
+not pass even though snapshot counts stayed bounded. The remaining growth is
+therefore tracked separately as native query or allocator working memory; the
+non-blocking performance observation does not justify restoring off-screen
+prefetch or old viewport caches.
+
+### 2026-08-06 active-View progressive loading candidate
+
+The next candidate makes curve ownership exclusive to the active View. A View
+deactivation cancels Overview, Detail, and Inspector reads, releases their
+snapshots and timeline extents, and rebuilds both chart entity maps before the
+new active View is scheduled. Inactive Views retain only semantic navigation,
+selection, Run, Metric-order, and layout state. Duplicate View follows the same
+rule and therefore never clones curve snapshots.
+
+Within the active View, the GPUI list's exact visible range owns Detail. The
+selected Metric, visible rows, and two rows ahead of the current scroll
+direction own Overview. Overview budgets are half a logical point per pixel,
+clamped to 128–1,024 points per Run; Detail budgets are one point per logical
+pixel, clamped to 256–2,500. A natural short series or an Overview already dense
+enough for the current window suppresses the Detail read. During zoom, pan, and
+resize, the chart renders the current-window projection of Overview until a
+necessary Detail result replaces it; hover and baseline delta use whichever
+real-sample frame is displayed.
+
+The retained baseline for this phase is
+`/private/tmp/seex-active-view-baseline-8942816716036af9`, SHA-256
+`b139357476118c87fd0ac846b2560f3e35662b7da9690be96c09d5268f7db9e7`.
+Its dirty-tree diff SHA-256 is
+`8942816716036af901846184a46666b7e39d88404354df2fc55837bbba0dff4b`;
+the preceding 10×6×1M workload peaked at 1,917,911,040 bytes RSS.
+
+The ignored release workload now alternates both Views, asserts every inactive
+panel has zero query-derived state, reports activation-to-first-curve and
+all-visible-preview p95, and keeps retained Overview, Detail, and chart counts
+bounded by the active demand ranges during vertical scrolling. Acceptance is a
+hard conjunction: first curve p95 at most 1 second, all visible Overview p95 at
+most 2 seconds, and the 50 ms external RSS sampler's `viewer.rss.peak` at most
+the decimal limit 2,000,000,000 bytes. A peak of 2,000,000,001 bytes rejects the
+candidate regardless of relative improvement; RSS and physical footprint remain
+separate measurements.
+
+The accepted 10×6×1M candidate first exposed one real trade-off: submitting all
+six full-Run Overview merges at once reached 2,017,607,680 bytes peak/final RSS,
+17,607,680 bytes above the hard limit, so it was rejected. The final scheduler
+keeps the four workers and global concurrency limit unchanged, but admits only
+two non-interactive full-Run merges at a time after the visible one-Run previews
+and interactive Detail. This lowered allocator pressure without delaying the
+first drawable frame.
+
+The final single-process 50 ms sample completed in 67.90 seconds. Four View
+activations measured 139–157 ms to first curve and 297–366 ms to all visible
+Metric previews; their p95 values were 157 ms and 366 ms. Warm RSS was
+1,706,115,072 bytes and peak/final RSS was 1,820,196,864 bytes, leaving
+179,803,136 bytes below the decimal 2 GB rejection line. The result is stored
+at `/private/tmp/seex-active-view-progressive-candidate-rss-final.json`. The
+four-process A-B-B-A wrapper was not classified because its aggregate 120
+second timeout expired after the 35.4 second baseline and 65.1 second first
+candidate run; both independent workloads stayed within their per-workload
+limit, and the absolute candidate gate was sampled separately.
+
+### 2026-08-06 fair per-Run loading and Detail coverage reuse candidate
+
+The next scheduler no longer submits one full-Run Overview merge per Metric.
+Every Overview request contains exactly one Run, and its accepted result is
+merged and published immediately in stable View Run order. Visible Metrics are
+chosen by the smallest resolved-Run count; selected or hovered Metrics retain
+one priority opportunity but may lead the slowest visible Metric by at most two
+Runs. At most four single-Run Overview reads are admitted, with one pending read
+per panel. Detail waits until all visible Overview Runs are resolved.
+
+Viewport reuse is now based on coverage rather than gesture direction. A Detail
+whose closed viewport contains the next selected viewport remains the drawable
+frame during zoom-in, contained pan, and width-only refinement. A viewport that
+crosses either stored boundary releases that sole Detail and falls back to the
+Overview. Every navigation mutation cancels the old pending Detail generation;
+the 100 ms debounce can therefore submit only the latest viewport without
+adding a second Detail cache.
+
+The release workload reports four activation intervals separately:
+activation-to-first-curve, all visible Metrics receiving their first Run, full
+visible Run coverage, and Detail settled. Their hard targets are respectively
+1 second, 1 second, 3.5 seconds, and 5 seconds at p95. External 50 ms sampling
+continues to reject any candidate whose process RSS exceeds decimal
+2,000,000,000 bytes; inactive Views must have zero query-derived state.
+
+The final single-candidate 10×6×1M run completed in 42.85 seconds. Four View
+activations measured a 193 ms first-curve p95, 391 ms p95 for every visible
+Metric to receive its first Run, 3.245 second full-Overview-coverage p95, and
+4.223 second selected-Detail-settled p95. All four latency limits passed. The
+50 ms external sampler observed a 1,795,932,160 byte process peak, leaving
+204,067,840 bytes below the decimal 2 GB rejection line. Its temporary
+file-redirection wrapper did not observe the short warm/final phase markers
+before process exit, so this run makes no separate warm or final RSS claim. The
+raw output is
+`/var/folders/y0/jsk3pg956wv5k1f3fk90x58w0000gn/T/seex-fair-run-candidate.27zThUXmUP`.
+The release interactive-chart CPU workload also passed; its slowest uncached
+path-preparation sample was 2.640 ms, below both frame-time thresholds.
+
+### 2026-08-06 repeated-zoom cache and interaction candidate
+
+A repeated-zoom process that had grown beyond 4 GB RSS retained about 1.07 GB
+of live `MALLOC_SMALL` allocations. Symbolized heap inspection attributed
+49,383 objects to DuckDB `ExternalFileCache::CachedFile` and 189,066 objects to
+`CachedFileRange`; the corresponding malloc arenas held more than 2.5 GB of
+reclaimable address space. Metal accounted for about 402 MB and was measured
+separately. This distinguishes the native Parquet file cache from bounded
+CurveSnapshot, projection, GPUI path, and chart ownership.
+
+The local shared read-only database used by Viewer workers now sets
+`enable_external_file_cache=false` before cloning worker connections. The
+setting is database-global, clears existing entries, and keeps
+`duckdb_external_file_cache()` empty across repeated Parquet queries. Ordinary
+Reader and writer databases retain DuckDB's default. A bounded command-line
+A-B-B-A probe measured cache-disabled runs at 0.17 and 0.16 seconds versus
+cache-enabled runs at 0.18 and 0.17 seconds, with a lower observed peak RSS;
+the difference is diagnostic rather than a blocking performance result.
+
+Visible non-interactive Metrics now request Detail at half logical-pixel
+density, clamped to 256–1,024 points per Run. Selected and hovered Metrics keep
+one point per logical pixel and the 2,500-point cap. A retained Detail with an
+active replacement query is reported as `refining`, not `drawable`; completion
+returns it to `drawable`. No additional Detail generation or viewport cache is
+introduced.
+
+Pointer interaction no longer runs full child snapshot synchronization. Track
+and ruler hover are updated atomically, same-panel coordinate movement updates
+only rows, tooltip, and Inspector, and only an emphasized-Run identity change
+rebuilds chart paths. Zoom command dispatch remains the single viewport chart
+sync; the extra input-handler repaint was removed while the read-completion
+repaint remains. Final acceptance still requires 30 zoom round trips to stay at
+or below decimal 2,000,000,000 bytes peak RSS, non-monotonic settled RSS, zero
+external-file-cache entries, and chart CPU p95/max at or below 8.33/16.7 ms.
+
+The first full 10×6×1M, dual-View, 30-zoom validation rejected the always-off
+cache candidate: it exceeded the 120-second workload limit and reached
+2,093,875,200 bytes peak RSS. Limiting progressive Overview admission to three
+while retaining all four workers reduced the observed peak to 1,973,747,712
+bytes, but still timed out and was therefore also rejected. The scheduler was
+restored to four-way admission. These observations show that a zero-entry
+cache trades away too much View-reactivation locality; a later candidate must
+bound or clear the cache at an idle batch boundary rather than reduce Viewer
+query concurrency.
+
 ### Stage 1 Result
 
 Stage 1 was accepted against the frozen original baseline. Detail budgets now

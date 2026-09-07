@@ -213,6 +213,148 @@ fn spawn_project_race_child(
         .spawn()?)
 }
 
+const CONCURRENT_METRICS: [&str; 6] = [
+    "train/loss",
+    "train/accuracy",
+    "validation/loss",
+    "validation/accuracy",
+    "optimizer/learning_rate",
+    "system/throughput",
+];
+
+#[test]
+fn sqlite_reader_child_process() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(root) = std::env::var_os("SEEX_SQLITE_READER_ROOT") else {
+        return Ok(());
+    };
+    let ready = std::env::var_os("SEEX_SQLITE_READER_READY").ok_or("missing ready path")?;
+    let go = std::env::var_os("SEEX_SQLITE_READER_GO").ok_or("missing go path")?;
+    let reader = Reader::builder(&root)
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()?;
+    fs::write(ready, b"ready")?;
+    wait_for_path(Path::new(&go), Duration::from_secs(30))?;
+    let project_id = seex::ProjectId::from_string("concurrent");
+    let run_id = seex::RunId::from_string("running");
+    let query = seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), Some(256))?;
+    let mut observed = false;
+    for _ in 0..20 {
+        let runs = reader.runs(&project_id)?;
+        let Some(run) = runs.iter().find(|run| run.run_id == run_id) else {
+            std::thread::sleep(Duration::from_millis(5));
+            continue;
+        };
+        let _ = reader.metrics(run)?;
+        for metric in CONCURRENT_METRICS {
+            let _ = reader.query_metric(&run_id, &seex::MetricKey::from_string(metric), &query)?;
+        }
+        observed = true;
+    }
+    assert!(observed, "reader never observed the running Run");
+    Ok(())
+}
+
+struct ChildProcesses(Vec<Child>);
+
+impl Drop for ChildProcesses {
+    fn drop(&mut self) {
+        for child in &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn wait_for_children(
+    children: &mut [Child],
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + timeout;
+    for child in children {
+        loop {
+            if let Some(status) = child.try_wait()? {
+                if !status.success() {
+                    return Err(format!("reader child failed with {status}").into());
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("reader child timed out".into());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn sqlite_writer_survives_four_preopened_readers() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let open_client = || {
+        Client::builder(root.path())
+            .catalog_backend(CatalogBackend::Sqlite)
+            .metric_queue_capacity(262_144)
+            .open()
+    };
+    let seed = open_client()?;
+    seed.start_run(RunOptions::new("concurrent").id("seed"))?
+        .finish()?;
+    seed.shutdown()?;
+
+    let go = root.path().join("readers.go");
+    let mut readers = ChildProcesses(Vec::new());
+    for index in 0..4 {
+        let ready = root.path().join(format!("reader-{index}.ready"));
+        let child = Command::new(std::env::current_exe()?)
+            .args(["--exact", "sqlite_reader_child_process", "--nocapture"])
+            .env("SEEX_SQLITE_READER_ROOT", root.path())
+            .env("SEEX_SQLITE_READER_READY", &ready)
+            .env("SEEX_SQLITE_READER_GO", &go)
+            .spawn()?;
+        readers.0.push(child);
+        wait_for_path(&ready, Duration::from_secs(30))?;
+    }
+
+    let client = open_client()?;
+    let run = client.start_run(RunOptions::new("concurrent").id("running"))?;
+    fs::write(&go, b"go")?;
+    const STEPS: i64 = 10_000;
+    for step in 0..STEPS {
+        run.log_with(
+            CONCURRENT_METRICS.map(|metric| (metric, step as f64)),
+            LogOptions::new().step(step),
+        )?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while client.diagnostics().pending_reports != 0 {
+        if Instant::now() >= deadline {
+            return Err("metric writer did not drain".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_ne!(client.diagnostics().writer_state, WriterState::Failed);
+    wait_for_children(&mut readers.0, Duration::from_secs(30))?;
+    run.finish()?;
+    client.shutdown()?;
+
+    let reader = Reader::builder(root.path())
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()?;
+    let stored = reader
+        .runs(&seex::ProjectId::from_string("concurrent"))?
+        .into_iter()
+        .find(|candidate| candidate.run_id == seex::RunId::from_string("running"))
+        .ok_or("finished Run was not found")?;
+    let summaries = reader.metrics(&stored)?;
+    assert_eq!(summaries.len(), CONCURRENT_METRICS.len());
+    assert!(
+        summaries
+            .iter()
+            .all(|summary| summary.effective_count == STEPS as u64)
+    );
+    Ok(())
+}
+
 #[test]
 fn subprocess_clients_get_or_create_one_project() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;

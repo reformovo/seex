@@ -222,7 +222,6 @@ impl ViewerApp {
         )
         .detach();
         cx.observe_in(&app.workspace, window, |this, _, window, cx| {
-            this.sync_child_snapshots(cx);
             this.sync_workspace_width(window, cx);
             cx.notify();
         })
@@ -257,7 +256,7 @@ impl ViewerApp {
         })
         .detach();
         cx.observe(&app.interaction, |this, _, cx| {
-            this.sync_child_snapshots(cx);
+            this.sync_interaction_snapshots(cx);
             cx.notify();
         })
         .detach();
@@ -364,14 +363,7 @@ impl ViewerApp {
             workspace.sync_track_charts(cx);
             workspace.reconcile_track_schedule(cx)
         });
-        for request in scheduled {
-            self.request_panel_detail(
-                &request.panel_id,
-                request.viewport,
-                request.logical_width,
-                cx,
-            );
-        }
+        self.submit_scheduled_panel_reads(&scheduled, cx);
         let layout = ViewerLayoutState {
             project_sidebar_visible: sidebar_visible,
             project_sidebar_width: f32::from(sidebar_width),
@@ -384,6 +376,23 @@ impl ViewerApp {
                 session.sync_layout_and_persist(layout, cx);
             });
         }
+    }
+
+    fn sync_interaction_snapshots(&mut self, cx: &mut Context<Self>) {
+        let interaction = self.interaction_snapshot(cx);
+        let emphasized_changed = self.workspace.update(cx, |workspace, workspace_cx| {
+            workspace.sync_interaction(interaction.clone(), workspace_cx)
+        });
+        let session = self.session_snapshot(cx);
+        if emphasized_changed {
+            self.project_sidebar.update(cx, |sidebar, _| {
+                sidebar.sync(session.clone(), interaction.clone());
+            });
+        }
+        let visible_runs = self.active_visible_runs(cx);
+        self.bottom_inspector.update(cx, |inspector, _| {
+            inspector.sync(session, interaction, visible_runs);
+        });
     }
 
     fn sync_workspace_width(&mut self, window: &Window, cx: &mut Context<Self>) {

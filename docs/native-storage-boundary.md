@@ -83,6 +83,20 @@ This keeps control-plane and query-index state from becoming coupled to
 DuckLake internal catalog naming. The tables live in the same catalog database
 file as DuckLake metadata for both DuckDB and SQLite local backends.
 
+### SQLite Reader/Writer Concurrency
+
+SQLite catalogs use WAL journal mode for the supported local concurrency shape:
+one writer process with multiple read-only Readers. Writer connections enable
+WAL and use a 30-second metadata busy timeout. Native Reader connections attach
+DuckLake in read-only mode and use the same busy timeout without changing the
+catalog journal mode.
+
+Opening an existing DELETE-journal catalog through a writer migrates it to WAL.
+Migration failure is a storage error; Seex does not silently fall back to DELETE
+mode. Read-only clients may inspect an older catalog before migration. SQLite
+`-wal` and `-shm` files are runtime sidecars, not catalog schema or Parquet
+compatibility boundaries. This contract does not add multi-writer coordination.
+
 ## Data Area Responsibilities
 
 - Store large Parquet data files for metric facts.

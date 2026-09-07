@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use crate::storage::StorageError;
 use crate::storage::sql::string_literal as sql_string_literal;
@@ -6,8 +8,22 @@ use crate::storage::sql::string_literal as sql_string_literal;
 const DUCKLAKE_ALIAS: &str = "dl";
 const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
 const S3_SECRET_NAME: &str = "seex_s3";
+const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
+const SQLITE_JOURNAL_MODE: &str = "WAL";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeConnectionMode {
+    ReadWrite,
+    ReadOnly,
+}
+
+impl NativeConnectionMode {
+    const fn must_exist(self) -> bool {
+        matches!(self, Self::ReadOnly)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum CatalogBackend {
     DuckDb,
     Sqlite,
@@ -36,6 +52,19 @@ pub struct NativeStorageConfig {
     data_path: PathBuf,
     s3_connection: Option<S3ConnectionConfig>,
 }
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct NativeReadIdentity {
+    catalog_backend: CatalogBackend,
+    catalog_path: PathBuf,
+    data_path: PathBuf,
+}
+
+pub(crate) struct NativeReadDatabase(Arc<Mutex<duckdb::Connection>>);
+
+type NativeReadRegistry = HashMap<NativeReadIdentity, Weak<Mutex<duckdb::Connection>>>;
+
+static NATIVE_READ_DATABASES: OnceLock<Mutex<NativeReadRegistry>> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct S3ConnectionConfig {
@@ -71,6 +100,7 @@ impl S3ConnectionConfig {
 }
 
 struct CatalogAdapter {
+    backend: CatalogBackend,
     default_catalog_filename: &'static str,
     ducklake_alias: &'static str,
     catalog_application_database: &'static str,
@@ -81,6 +111,7 @@ struct CatalogAdapter {
 impl CatalogAdapter {
     const fn duckdb() -> Self {
         Self {
+            backend: CatalogBackend::DuckDb,
             default_catalog_filename: "catalog.ducklake",
             ducklake_alias: DUCKLAKE_ALIAS,
             catalog_application_database: DUCKDB_CATALOG_ALIAS,
@@ -91,6 +122,7 @@ impl CatalogAdapter {
 
     const fn sqlite() -> Self {
         Self {
+            backend: CatalogBackend::Sqlite,
             default_catalog_filename: "catalog.sqlite",
             ducklake_alias: DUCKLAKE_ALIAS,
             catalog_application_database: DUCKDB_CATALOG_ALIAS,
@@ -99,7 +131,12 @@ impl CatalogAdapter {
         }
     }
 
-    fn attach_ducklake_statement(&self, catalog_path: &Path, data_path: &Path) -> String {
+    fn attach_ducklake_statement(
+        &self,
+        catalog_path: &Path,
+        data_path: &Path,
+        mode: NativeConnectionMode,
+    ) -> String {
         let catalog_uri = format!(
             "{}{}",
             self.ducklake_path_prefix,
@@ -111,9 +148,24 @@ impl CatalogAdapter {
             .attach_type_clause
             .map(|clause| format!("                 {clause},\n"))
             .unwrap_or_default();
+        let read_only_clause = match mode {
+            NativeConnectionMode::ReadWrite => String::new(),
+            NativeConnectionMode::ReadOnly => "                 READ_ONLY,\n".to_owned(),
+        };
+        let metadata_parameters = match (self.backend, mode) {
+            (CatalogBackend::DuckDb, _) => String::new(),
+            (CatalogBackend::Sqlite, NativeConnectionMode::ReadWrite) => format!(
+                "                 METADATA_PARAMETERS MAP {{'busy_timeout': \
+                 '{SQLITE_BUSY_TIMEOUT_MS}', 'journal_mode': '{SQLITE_JOURNAL_MODE}'}},\n"
+            ),
+            (CatalogBackend::Sqlite, NativeConnectionMode::ReadOnly) => format!(
+                "                 METADATA_PARAMETERS MAP {{'busy_timeout': \
+                 '{SQLITE_BUSY_TIMEOUT_MS}'}},\n"
+            ),
+        };
         format!(
             "ATTACH {catalog_uri} AS {} (
-{attach_type_clause}                 DATA_PATH {data_path},
+{attach_type_clause}{read_only_clause}{metadata_parameters}                 DATA_PATH {data_path},
                  OVERRIDE_DATA_PATH true,
                  METADATA_CATALOG '{}'
              );",
@@ -211,19 +263,51 @@ pub fn open_native_connection(root_path: &Path) -> Result<duckdb::Connection, St
 pub fn open_native_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<duckdb::Connection, StorageError> {
-    open_native_connection_with_mode(config, false)
+    open_native_connection_with_mode(config, NativeConnectionMode::ReadWrite)
 }
 
 pub fn open_existing_native_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<duckdb::Connection, StorageError> {
-    open_native_connection_with_mode(config, true)
+    open_native_connection_with_mode(config, NativeConnectionMode::ReadOnly)
+}
+
+pub(crate) fn open_shared_existing_local_connection_with_config(
+    config: NativeStorageConfig,
+) -> Result<(duckdb::Connection, NativeReadDatabase), StorageError> {
+    debug_assert!(!is_s3_data_path(&config.data_path));
+    let identity = NativeReadIdentity {
+        catalog_backend: config.catalog_backend,
+        catalog_path: config.catalog_path.clone(),
+        data_path: config.data_path.clone(),
+    };
+    let databases = NATIVE_READ_DATABASES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut databases = databases.lock().unwrap_or_else(|error| error.into_inner());
+    let owner = match databases.get(&identity).and_then(Weak::upgrade) {
+        Some(owner) => owner,
+        None => {
+            let connection =
+                open_native_connection_with_mode(config, NativeConnectionMode::ReadOnly)?;
+            connection.execute_batch("SET enable_external_file_cache=false;")?;
+            let owner = Arc::new(Mutex::new(connection));
+            databases.insert(identity, Arc::downgrade(&owner));
+            owner
+        }
+    };
+    drop(databases);
+    let connection = owner
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .try_clone()?;
+    connection.execute_batch("USE seex_catalog;")?;
+    Ok((connection, NativeReadDatabase(owner)))
 }
 
 fn open_native_connection_with_mode(
     config: NativeStorageConfig,
-    must_exist: bool,
+    mode: NativeConnectionMode,
 ) -> Result<duckdb::Connection, StorageError> {
+    let must_exist = mode.must_exist();
     if must_exist {
         verify_catalog_exists(&config.catalog_path)?;
     } else if let Some(catalog_parent) = config.catalog_path.parent() {
@@ -246,11 +330,12 @@ fn open_native_connection_with_mode(
     {
         configure_s3_connection(&connection, s3_connection)?;
     }
-    attach_ducklake_with_backend(
+    attach_ducklake_with_backend_and_mode(
         &connection,
         config.catalog_backend,
         &config.catalog_path,
         &config.data_path,
+        mode,
     )?;
     setup_catalog_adapter(&connection, config.catalog_backend, &config.catalog_path)?;
     if !must_exist {
@@ -289,6 +374,22 @@ pub fn attach_ducklake_with_backend(
     catalog_path: &Path,
     data_path: &Path,
 ) -> Result<(), StorageError> {
+    attach_ducklake_with_backend_and_mode(
+        connection,
+        catalog_backend,
+        catalog_path,
+        data_path,
+        NativeConnectionMode::ReadWrite,
+    )
+}
+
+fn attach_ducklake_with_backend_and_mode(
+    connection: &duckdb::Connection,
+    catalog_backend: CatalogBackend,
+    catalog_path: &Path,
+    data_path: &Path,
+    mode: NativeConnectionMode,
+) -> Result<(), StorageError> {
     let storage_name = format!(
         "{}, {}",
         path_basename(catalog_path),
@@ -300,7 +401,7 @@ pub fn attach_ducklake_with_backend(
             "INSTALL ducklake;
          LOAD ducklake;
          {}",
-            adapter.attach_ducklake_statement(catalog_path, data_path)
+            adapter.attach_ducklake_statement(catalog_path, data_path, mode)
         ))
         .map_err(|source| StorageError::StorageDuckDb {
             operation: "attaching DuckLake catalog",
@@ -468,6 +569,83 @@ mod tests {
     }
 
     #[test]
+    fn local_readers_share_only_live_matching_database_handles()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = || NativeStorageConfig::duckdb(root.path(), None, None);
+        drop(open_native_connection_with_config(config())?);
+
+        let (first, first_owner) = open_shared_existing_local_connection_with_config(config())?;
+        first.execute_batch(
+            "CREATE TABLE memory.shared_reader_probe(value INTEGER);\
+             INSERT INTO memory.shared_reader_probe VALUES (1);",
+        )?;
+        let (second, second_owner) = open_shared_existing_local_connection_with_config(config())?;
+        let shared_count: i64 = second.query_row(
+            "SELECT count(*) FROM memory.shared_reader_probe",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(shared_count, 1);
+
+        drop((first, first_owner, second, second_owner));
+        let (fresh, _fresh_owner) = open_shared_existing_local_connection_with_config(config())?;
+        let fresh_query = fresh.query_row(
+            "SELECT count(*) FROM memory.shared_reader_probe",
+            [],
+            |row| row.get::<_, i64>(0),
+        );
+        assert!(
+            fresh_query.is_err(),
+            "expired host database must not be reused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn local_shared_readers_disable_external_file_cache_without_changing_normal_connections()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = || NativeStorageConfig::duckdb(root.path(), None, None);
+        let writer = open_native_connection_with_config(config())?;
+        let writer_cache_enabled: bool = writer.query_row(
+            "SELECT current_setting('enable_external_file_cache')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(writer_cache_enabled);
+        writer.execute_batch(
+            "INSERT INTO dl.metric_points
+                 SELECT 'run', 'metric', 'metric', range, now(), range::DOUBLE, now()
+                 FROM range(9000);",
+        )?;
+        drop(writer);
+
+        let (reader, _owner) = open_shared_existing_local_connection_with_config(config())?;
+        let reader_cache_enabled: bool = reader.query_row(
+            "SELECT current_setting('enable_external_file_cache')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(!reader_cache_enabled);
+        for _ in 0..2 {
+            let point_count: i64 = reader.query_row(
+                "SELECT count(*) FROM dl.metric_points WHERE metric_key = 'metric'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(point_count, 9000);
+            let cached_files: i64 = reader.query_row(
+                "SELECT count(*) FROM duckdb_external_file_cache()",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(cached_files, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn attach_ducklake_sanitizes_storage_error_paths() -> Result<(), Box<dyn std::error::Error>> {
         let root_path =
             std::env::temp_dir().join(format!("seex-bootstrap-{}", uuid::Uuid::new_v4()));
@@ -510,14 +688,137 @@ mod tests {
     #[test]
     fn catalog_adapter_builds_ducklake_attach_statement() {
         let adapter = CatalogAdapter::duckdb();
-        let statement =
-            adapter.attach_ducklake_statement(Path::new("catalog.ducklake"), Path::new("data"));
+        let statement = adapter.attach_ducklake_statement(
+            Path::new("catalog.ducklake"),
+            Path::new("data"),
+            NativeConnectionMode::ReadWrite,
+        );
+        let read_only = adapter.attach_ducklake_statement(
+            Path::new("catalog.ducklake"),
+            Path::new("data"),
+            NativeConnectionMode::ReadOnly,
+        );
 
         assert!(statement.contains("ATTACH 'catalog.ducklake' AS dl"));
         assert!(statement.contains("TYPE ducklake"));
         assert!(statement.contains("DATA_PATH 'data'"));
         assert!(statement.contains("OVERRIDE_DATA_PATH true"));
         assert!(statement.contains("METADATA_CATALOG 'seex_catalog'"));
+        assert!(!statement.contains("READ_ONLY"));
+        assert!(read_only.contains("READ_ONLY"));
+        assert!(!read_only.contains("METADATA_PARAMETERS"));
+    }
+
+    #[test]
+    fn sqlite_attach_options_separate_writer_and_reader_capabilities() {
+        let adapter = CatalogAdapter::sqlite();
+        let writer = adapter.attach_ducklake_statement(
+            Path::new("catalog.sqlite"),
+            Path::new("data"),
+            NativeConnectionMode::ReadWrite,
+        );
+        let reader = adapter.attach_ducklake_statement(
+            Path::new("catalog.sqlite"),
+            Path::new("data"),
+            NativeConnectionMode::ReadOnly,
+        );
+
+        assert!(writer.contains("'busy_timeout': '30000'"));
+        assert!(writer.contains("'journal_mode': 'WAL'"));
+        assert!(!writer.contains("READ_ONLY"));
+        assert!(reader.contains("READ_ONLY"));
+        assert!(reader.contains("'busy_timeout': '30000'"));
+        assert!(!reader.contains("journal_mode"));
+    }
+
+    fn sqlite_journal_mode(catalog_path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+        let header = std::fs::read(catalog_path)?;
+        match header.get(18..20) {
+            Some([2, 2]) => Ok("wal".to_owned()),
+            Some([1, 1]) => Ok("delete".to_owned()),
+            value => Err(format!("unexpected SQLite journal header: {value:?}").into()),
+        }
+    }
+
+    fn create_legacy_sqlite_catalog(root_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let seex_path = root_path.join(".seex");
+        let catalog_path = seex_path.join("catalog.sqlite");
+        let data_path = seex_path.join("data");
+        std::fs::create_dir_all(&data_path)?;
+        let connection = open_duckdb_connection()?;
+        let catalog_uri = format!("ducklake:sqlite:{}", catalog_path.to_string_lossy());
+        connection.execute_batch(&format!(
+            "INSTALL ducklake; LOAD ducklake;
+             ATTACH {} AS dl (
+                 DATA_PATH {},
+                 OVERRIDE_DATA_PATH true,
+                 METADATA_CATALOG 'seex_catalog'
+             );",
+            sql_string_literal(&catalog_uri),
+            sql_string_literal(data_path.to_string_lossy().as_ref()),
+        ))?;
+        setup_catalog_adapter(&connection, CatalogBackend::Sqlite, &catalog_path)?;
+        initialize_storage_tables(&connection)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_writer_migrates_wal_and_existing_connection_is_read_only()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let new_root = tempfile::tempdir()?;
+        let new_catalog_path = new_root.path().join(".seex/catalog.sqlite");
+        let new_config = || {
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                new_root.path(),
+                None,
+                None,
+                None,
+            )
+        };
+
+        drop(open_native_connection_with_config(new_config())?);
+        assert_eq!(sqlite_journal_mode(&new_catalog_path)?, "wal");
+
+        let reader = open_existing_native_connection_with_config(new_config())?;
+        let read_only: bool = reader.query_row(
+            "SELECT readonly FROM duckdb_databases() WHERE database_name = 'dl'",
+            [],
+            |row| row.get(0),
+        )?;
+        let write_error = reader
+            .execute_batch("CREATE TABLE dl.reader_must_not_write(value INTEGER)")
+            .expect_err("native Reader connection should reject writes");
+
+        assert!(read_only);
+        assert!(write_error.to_string().contains("read-only"));
+
+        let legacy_root = tempfile::tempdir()?;
+        let legacy_catalog_path = legacy_root.path().join(".seex/catalog.sqlite");
+        create_legacy_sqlite_catalog(legacy_root.path())?;
+        assert_eq!(sqlite_journal_mode(&legacy_catalog_path)?, "delete");
+        let legacy_config = || {
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                legacy_root.path(),
+                None,
+                None,
+                None,
+            )
+        };
+        let legacy_reader = open_existing_native_connection_with_config(legacy_config())?;
+        let project_count: i64 = legacy_reader.query_row(
+            "SELECT count(*) FROM seex_catalog.seex_projects",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(project_count, 0);
+        drop(legacy_reader);
+        assert_eq!(sqlite_journal_mode(&legacy_catalog_path)?, "delete");
+
+        drop(open_native_connection_with_config(legacy_config())?);
+        assert_eq!(sqlite_journal_mode(&legacy_catalog_path)?, "wal");
+        Ok(())
     }
 
     #[test]
@@ -561,6 +862,7 @@ mod tests {
             let statement = adapter.attach_ducklake_statement(
                 Path::new("catalog.ducklake"),
                 Path::new("s3://bucket/prefix"),
+                NativeConnectionMode::ReadWrite,
             );
 
             assert!(statement.contains("DATA_PATH 's3://bucket/prefix'"));

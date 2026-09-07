@@ -1,6 +1,4 @@
 #[cfg(feature = "test-support")]
-use std::collections::HashMap;
-#[cfg(feature = "test-support")]
 use std::sync::Arc;
 #[cfg(feature = "test-support")]
 use std::time::Duration;

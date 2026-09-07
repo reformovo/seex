@@ -27,6 +27,19 @@ pub(crate) enum BrushMutation {
     Pan(f64),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CurveFrameQuality {
+    Overview,
+    Detail,
+}
+
+pub(crate) struct TrackChartFrame {
+    pub snapshot: Arc<CurveSnapshot>,
+    pub revision: u64,
+    pub viewport: Viewport,
+    pub quality: CurveFrameQuality,
+}
+
 pub(crate) fn update_brush_drag(
     brush: BrushState,
     gesture: &mut DragGesture,
@@ -52,27 +65,32 @@ pub(crate) fn track_chart_frame(
     panel: &MetricPanel,
     selected: Option<AxisRange>,
     visible_runs: &[RunRef],
-) -> Option<(Arc<CurveSnapshot>, u64, Viewport)> {
-    let detail = panel.detail.as_ref()?;
-    let detail_viewport = chart::detail_viewport(detail, selected, Some(visible_runs));
+) -> Option<TrackChartFrame> {
+    let detail_viewport = panel
+        .detail
+        .as_ref()
+        .and_then(|detail| chart::detail_viewport(detail, selected, Some(visible_runs)));
     if detail_viewport
         .is_none_or(|viewport| selected.is_some_and(|selected| viewport.x != selected))
         && let Some(overview) = panel.overview.as_ref()
         && let Some(viewport) = chart::detail_viewport(overview, selected, Some(visible_runs))
         && selected.is_none_or(|selected| viewport.x == selected)
     {
-        return Some((
-            Arc::clone(overview),
-            panel.overview_revision.saturating_mul(2).saturating_add(1),
+        return Some(TrackChartFrame {
+            snapshot: Arc::clone(overview),
+            revision: panel.overview_revision.saturating_mul(2).saturating_add(1),
             viewport,
-        ));
+            quality: CurveFrameQuality::Overview,
+        });
     }
+    let detail = panel.detail.as_ref()?;
     let detail_viewport = detail_viewport?;
-    Some((
-        Arc::clone(detail),
-        panel.detail_revision.saturating_mul(2),
-        detail_viewport,
-    ))
+    Some(TrackChartFrame {
+        snapshot: Arc::clone(detail),
+        revision: panel.detail_revision.saturating_mul(2),
+        viewport: detail_viewport,
+        quality: CurveFrameQuality::Detail,
+    })
 }
 
 pub(crate) fn axis_menu_item(
@@ -162,16 +180,14 @@ pub(crate) fn format_signed_delta(delta: f64, precision: usize) -> String {
 }
 
 pub(crate) fn baseline_delta(
-    panel: &MetricPanel,
+    snapshot: &CurveSnapshot,
     baseline: &RunRef,
     hover: &HoverPoint,
 ) -> Option<f64> {
     if &hover.run_ref == baseline {
         return None;
     }
-    let curve = panel
-        .detail
-        .as_ref()?
+    let curve = snapshot
         .series
         .iter()
         .find(|curve| &curve.run_ref == baseline)?;
@@ -478,9 +494,6 @@ impl AnalysisWorkspace {
                             ))
                             .on_mouse_move(cx.listener(
                                 move |this, event: &MouseMoveEvent, window, cx| {
-                                    cx.emit(AnalysisWorkspaceEvent::Interaction(
-                                        WorkspaceInteractionEvent::TrackPointerHover(None),
-                                    ));
                                     this.track_hovers.clear();
                                     let hover = this.ruler_axis_at(event.position, window, cx);
                                     cx.emit(AnalysisWorkspaceEvent::Interaction(
@@ -640,9 +653,6 @@ impl AnalysisWorkspace {
             }
         };
         if transformed {
-            if zooming {
-                self.defer_metric_repaint(cx);
-            }
             self.schedule_detail_refresh(cx);
             cx.stop_propagation();
         }

@@ -1,13 +1,40 @@
 use std::ops::Range;
 
-use crate::workbench::panel_reads::MetricPanelId;
+use crate::workbench::panel_reads::{MetricPanelId, PanelReadMode};
 
 pub(crate) const METRIC_TRACK_VERTICAL_PADDING: f32 = 4.;
 pub(crate) const METRIC_TRACK_SEPARATOR_WIDTH: f32 = 1.;
 pub(crate) const BRUSH_ROW_HEIGHT: f32 = 40.;
 pub(crate) const BRUSH_CONTENT_TOP_PADDING: f32 = 6.;
-pub(crate) const INITIAL_VISIBLE_TRACKS: usize = 4;
-pub(crate) const INITIAL_OVERSCAN_TRACKS: usize = 8;
+const MAX_PROGRESSIVE_OVERVIEWS: usize = 4;
+
+pub(crate) fn detail_query_width(logical_width: u32, interactive: bool) -> u32 {
+    if interactive {
+        logical_width
+    } else {
+        logical_width.div_ceil(2).clamp(256, 1_024)
+    }
+}
+
+fn prioritized_runs(
+    baseline: Option<&RunRef>,
+    emphasized: Option<&RunRef>,
+    pinned: &[RunRef],
+    visible: &[RunRef],
+) -> Vec<RunRef> {
+    let mut ordered = Vec::with_capacity(visible.len());
+    for run in baseline
+        .into_iter()
+        .chain(emphasized)
+        .chain(pinned)
+        .chain(visible)
+    {
+        if visible.contains(run) && !ordered.contains(run) {
+            ordered.push(run.clone());
+        }
+    }
+    ordered
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum DragGesture {
@@ -39,16 +66,23 @@ pub(crate) struct MetricResize {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TrackViewport {
     pub visible: Range<usize>,
-    pub overscan: Range<usize>,
+    pub overview: Range<usize>,
     pub logical_width_bits: u32,
     pub physical_width: u32,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ScheduledPanelDetail {
-    pub panel_id: MetricPanelId,
-    pub viewport: AlignmentViewport,
-    pub logical_width: u32,
+pub(crate) enum ScheduledPanelRead {
+    Overview {
+        panel_id: MetricPanelId,
+        runs: Vec<RunRef>,
+        mode: PanelReadMode,
+    },
+    Detail {
+        panel_id: MetricPanelId,
+        viewport: AlignmentViewport,
+        logical_width: u32,
+    },
 }
 
 #[derive(Clone)]
@@ -60,7 +94,9 @@ pub(crate) struct MetricTrackRowSnapshot {
     resizing: bool,
     metric_sidebar_compact: bool,
     visible_run_count: usize,
+    resolved_run_count: usize,
     drawable_run_count: usize,
+    frame_quality: Option<CurveFrameQuality>,
 }
 
 #[derive(Clone)]
@@ -72,9 +108,70 @@ struct MetricTrackTooltip {
     label: String,
 }
 
+fn snapshot_has_density(
+    snapshot: &CurveSnapshot,
+    selected: seex_plot::AxisRange,
+    visible_runs: &[RunRef],
+    target: u32,
+) -> bool {
+    if visible_runs
+        .iter()
+        .any(|run| !snapshot.series.iter().any(|curve| &curve.run_ref == run))
+    {
+        return false;
+    }
+    snapshot
+        .series
+        .iter()
+        .filter(|curve| visible_runs.contains(&curve.run_ref))
+        .filter_map(|curve| curve.chart_series.as_ref().map(|series| (curve, series)))
+        .all(|(curve, series)| {
+            !curve.downsampled()
+                || series
+                    .points()
+                    .iter()
+                    .filter(|point| point.x >= selected.start() && point.x <= selected.end())
+                    .take(target as usize)
+                    .count()
+                    >= target as usize
+        })
+}
+
+pub(crate) fn panel_detail_needs_query(
+    panel: &MetricPanel,
+    viewport: AlignmentViewport,
+    query_width: u32,
+    selected: seex_plot::AxisRange,
+    visible_runs: &[RunRef],
+) -> bool {
+    if panel.is_pending(ReadKind::Detail) {
+        return false;
+    }
+    let target = detail_budget(query_width);
+    if panel.detail_covers(viewport)
+        && panel
+            .detail
+            .as_ref()
+            .is_some_and(|detail| snapshot_has_density(detail, selected, visible_runs, target))
+    {
+        return false;
+    }
+    if panel.requested_detail_viewport == Some(viewport) && panel.logical_width == query_width {
+        return false;
+    }
+    if panel.detail.is_none() && !panel.needs_detail(viewport, query_width) {
+        return false;
+    }
+    !panel
+        .overview
+        .as_ref()
+        .is_some_and(|overview| snapshot_has_density(overview, selected, visible_runs, target))
+}
+
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use crate::data::query::{CurveSnapshot, detail_budget, overview_budget};
 use crate::data::worker::ReadKind;
 use crate::domain::RunRef;
 use crate::workbench::MetricPanel;
@@ -90,7 +187,9 @@ use seex_plot::CanvasSize;
 use super::super::chart;
 use super::super::command::WorkbenchCommand;
 use super::super::components::{self, IconName, ResizeEdge, TextInput, resize_handle};
-use super::{baseline_delta, hover_value_label, track_chart_frame, track_tooltip_width};
+use super::{
+    CurveFrameQuality, baseline_delta, hover_value_label, track_chart_frame, track_tooltip_width,
+};
 
 impl super::AnalysisWorkspace {
     #[cfg(all(test, feature = "test-support"))]
@@ -107,16 +206,7 @@ impl super::AnalysisWorkspace {
             .as_ref()
             .map_or(0, |snapshot| snapshot.views.active().panels.len());
         self.metric_scroll.reset(panel_count);
-        *self.track_viewport.borrow_mut() = if panel_count == 0 {
-            TrackViewport::default()
-        } else {
-            TrackViewport {
-                visible: 0..panel_count.min(INITIAL_VISIBLE_TRACKS),
-                overscan: 0..panel_count.min(INITIAL_OVERSCAN_TRACKS),
-                logical_width_bits: self.overview_logical_width.max(1.).to_bits(),
-                physical_width: self.overview_width.max(1),
-            }
-        };
+        *self.track_viewport.borrow_mut() = TrackViewport::default();
         cx.notify();
     }
 
@@ -132,22 +222,90 @@ impl super::AnalysisWorkspace {
             .map_or(0, |snapshot| snapshot.views.active().panels.len());
         let start = start.min(panel_count);
         let visible = start..start.saturating_add(visible_len).min(panel_count);
+        let current = self.track_viewport.borrow();
+        let scrolls_down = current.visible.is_empty()
+            || visible.start > current.visible.start
+            || (visible.start == current.visible.start
+                && current.overview.start >= current.visible.start);
+        let overview = if visible.is_empty() {
+            Range::default()
+        } else if scrolls_down {
+            visible.start..visible.end.saturating_add(2).min(panel_count)
+        } else {
+            visible.start.saturating_sub(2)..visible.end
+        };
+        drop(current);
         let next = TrackViewport {
-            overscan: visible.start.saturating_sub(visible_len)
-                ..visible.end.saturating_add(visible_len).min(panel_count),
             visible,
+            overview,
             logical_width_bits: self.overview_logical_width.max(1.).to_bits(),
             physical_width: self.overview_width.max(1),
         };
         if *self.track_viewport.borrow() == next {
             return;
         }
+        let (visible_panel_ids, mut overview_panel_ids) = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| {
+                let view = snapshot.views.active();
+                let visible = view.panels[next.visible.clone()]
+                    .iter()
+                    .map(|panel| panel.panel_id.clone())
+                    .collect::<Vec<_>>();
+                let overview = view.panels[next.overview.clone()]
+                    .iter()
+                    .map(|panel| panel.panel_id.clone())
+                    .collect::<Vec<_>>();
+                (visible, overview)
+            })
+            .unwrap_or_default();
+        if let Some(selected) = self
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.views.active().selected_panel_id.clone())
+            && !overview_panel_ids.contains(&selected)
+        {
+            overview_panel_ids.push(selected);
+        }
         *self.track_viewport.borrow_mut() = next;
+        cx.emit(super::AnalysisWorkspaceEvent::VisibleCurvesChanged {
+            details: visible_panel_ids,
+            overviews: overview_panel_ids,
+        });
         let requests = self.reconcile_track_schedule(cx);
         if !requests.is_empty() {
-            cx.emit(super::AnalysisWorkspaceEvent::ScheduleDetails(requests));
+            cx.emit(super::AnalysisWorkspaceEvent::ScheduleReads(requests));
         }
         cx.notify();
+    }
+
+    pub(crate) fn sync_track_viewport_from_layout(&mut self, cx: &mut Context<Self>) {
+        let panel_count = self
+            .snapshot
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.views.active().panels.len());
+        let viewport = self.metric_scroll.viewport_bounds();
+        if panel_count == 0 || viewport.size.height <= gpui::Pixels::ZERO {
+            return;
+        }
+        let mut visible: Option<Range<usize>> = None;
+        for index in self.metric_scroll.logical_scroll_top().item_ix..panel_count {
+            let Some(bounds) = self.metric_scroll.bounds_for_item(index) else {
+                break;
+            };
+            if bounds.top() >= viewport.bottom() {
+                break;
+            }
+            if bounds.bottom() > viewport.top() {
+                visible = Some(match visible {
+                    Some(range) => range.start..index + 1,
+                    None => index..index + 1,
+                });
+            }
+        }
+        let visible = visible.unwrap_or_default();
+        self.update_track_viewport(visible.start, visible.len(), cx);
     }
 
     pub(crate) fn metric_sidebar_width(
@@ -420,42 +578,70 @@ impl super::AnalysisWorkspace {
 }
 
 impl super::AnalysisWorkspace {
-    pub(crate) fn should_schedule_panel_detail(
+    pub(crate) fn sync_interaction(
+        &mut self,
+        interaction: super::InteractionSnapshot,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.interaction == interaction {
+            return false;
+        }
+        let emphasized_changed = self.interaction.emphasized_run != interaction.emphasized_run;
+        self.interaction = interaction;
+        if emphasized_changed {
+            self.sync_track_charts(cx);
+        } else {
+            self.rebuild_track_rows(cx);
+        }
+        cx.notify();
+        emphasized_changed
+    }
+
+    fn should_schedule_panel_detail(
         &self,
-        panel_id: &MetricPanelId,
+        panel: &MetricPanel,
         viewport: AlignmentViewport,
         logical_width: u32,
+        interactive: bool,
+        selected: seex_plot::AxisRange,
+        visible_runs: &[RunRef],
     ) -> bool {
-        self.snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.views.active_panel(panel_id))
-            .is_some_and(|panel| {
-                panel.needs_detail(viewport, logical_width)
-                    && (!self.detail_refresh_pending
-                        || panel.detail.is_none()
-                        || panel.logical_width != logical_width)
-            })
+        if self.detail_refresh_pending {
+            return false;
+        }
+        panel_detail_needs_query(
+            panel,
+            viewport,
+            detail_query_width(logical_width, interactive),
+            selected,
+            visible_runs,
+        )
     }
+
     pub(crate) fn reconcile_track_schedule(
         &mut self,
         cx: &mut Context<Self>,
-    ) -> Vec<ScheduledPanelDetail> {
+    ) -> Vec<ScheduledPanelRead> {
         let state = self.track_viewport.borrow().clone();
-        if state.overscan.is_empty() || state.logical_width_bits == 0 {
+        if state.visible.is_empty() || state.logical_width_bits == 0 {
             return Vec::new();
         }
-        let Some(detail_viewport) = self
-            .active_navigation()
-            .and_then(crate::domain::ViewNavigation::selected_viewport)
-        else {
-            return Vec::new();
-        };
         let Some(session) = self.snapshot.clone() else {
             return Vec::new();
         };
         let panel_count = session.views.active().panels.len();
-        let scheduled = state.overscan.start.min(panel_count)..state.overscan.end.min(panel_count);
+        let scheduled = state.visible.start.min(panel_count)..state.visible.end.min(panel_count);
         let panels = session.views.active().panels[scheduled].to_vec();
+        let mut prefetched = session.views.active().panels
+            [state.overview.start.min(panel_count)..state.overview.end.min(panel_count)]
+            .iter()
+            .filter(|panel| {
+                !panels
+                    .iter()
+                    .any(|visible| visible.panel_id == panel.panel_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let visible_runs = self.visible_runs.clone();
         let scheduled_ids = panels
             .iter()
@@ -473,20 +659,52 @@ impl super::AnalysisWorkspace {
             .emphasized_run
             .clone()
             .filter(|run| visible_runs.contains(run));
+        let ordered_runs = prioritized_runs(
+            baseline.as_ref(),
+            emphasized_run.as_ref(),
+            &session.views.active().pinned_runs,
+            &visible_runs,
+        );
+        if ordered_runs.is_empty() {
+            return Vec::new();
+        }
+        let selected_panel = session.views.active().selected_panel_id.clone();
+        let hovered_panel = self
+            .interaction
+            .track_pointer_hover
+            .as_ref()
+            .map(|(panel_id, _)| panel_id.clone());
+        let interactive_panel = hovered_panel.as_ref().or(selected_panel.as_ref());
+        let mut coverage_panels = panels.clone();
+        if let Some(selected) = selected_panel.as_ref()
+            && !coverage_panels
+                .iter()
+                .any(|panel| &panel.panel_id == selected)
+            && let Some(panel) = session.views.active_panel(selected)
+        {
+            coverage_panels.push(panel.clone());
+        }
+        prefetched.retain(|panel| {
+            !coverage_panels
+                .iter()
+                .any(|retained| retained.panel_id == panel.panel_id)
+        });
         let visible_runs: Rc<[RunRef]> = visible_runs.into();
-        let mut requests = Vec::new();
-        for panel in panels {
+        for panel in &panels {
             let canvas_height = f64::from(panel.row_height)
                 - f64::from(METRIC_TRACK_VERTICAL_PADDING * 2. + METRIC_TRACK_SEPARATOR_WIDTH);
             let canvas = CanvasSize::new(logical_width, canvas_height.max(1.)).ok();
-            if let Some((snapshot, revision, viewport)) = track_chart_frame(
-                &panel,
+            if let Some(frame) = track_chart_frame(
+                panel,
                 self.active_navigation()
                     .and_then(|navigation| navigation.brush())
                     .map(|brush| brush.selected()),
                 &visible_runs,
             ) && let Some(canvas) = canvas
             {
+                let snapshot = frame.snapshot;
+                let revision = frame.revision;
+                let viewport = frame.viewport;
                 let cached_chart = self.track_charts.get(&panel.panel_id).cloned();
                 let chart = if let Some(chart) = cached_chart {
                     chart.update(cx, |chart, cx| {
@@ -518,17 +736,194 @@ impl super::AnalysisWorkspace {
                     chart
                 };
                 chart.read(cx).warm_projection(canvas);
-            }
-            if self.should_schedule_panel_detail(&panel.panel_id, detail_viewport, query_width) {
-                requests.push(ScheduledPanelDetail {
-                    panel_id: panel.panel_id.clone(),
-                    viewport: detail_viewport,
-                    logical_width: query_width,
-                });
+            } else {
+                self.track_charts.remove(&panel.panel_id);
+                self.track_hovers.remove(&panel.panel_id);
             }
         }
         self.rebuild_track_rows(cx);
-        requests
+        let target_budget = overview_budget(query_width);
+        let resolved_count = |panel: &MetricPanel| {
+            ordered_runs
+                .iter()
+                .filter(|run| panel.overview_run_resolved(run, target_budget))
+                .count()
+        };
+        let next_run = |panel: &MetricPanel| {
+            ordered_runs
+                .iter()
+                .find(|run| !panel.overview_run_resolved(run, target_budget))
+                .cloned()
+        };
+        let pending_overviews = coverage_panels
+            .iter()
+            .chain(&prefetched)
+            .filter(|panel| panel.is_pending(ReadKind::Overview))
+            .count();
+        let available_slots = MAX_PROGRESSIVE_OVERVIEWS.saturating_sub(pending_overviews);
+        let schedule_overview = |panel: &MetricPanel| {
+            next_run(panel).map(|run| ScheduledPanelRead::Overview {
+                panel_id: panel.panel_id.clone(),
+                runs: vec![run],
+                mode: if panel.overview.is_some() {
+                    PanelReadMode::Merge
+                } else {
+                    PanelReadMode::Replace
+                },
+            })
+        };
+        if coverage_panels
+            .iter()
+            .any(|panel| resolved_count(panel) == 0)
+        {
+            let mut candidates = coverage_panels
+                .iter()
+                .filter(|panel| resolved_count(panel) == 0 && !panel.is_pending(ReadKind::Overview))
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|panel| interactive_panel != Some(&panel.panel_id));
+            return candidates
+                .into_iter()
+                .take(available_slots)
+                .filter_map(schedule_overview)
+                .collect();
+        }
+        if prefetched.iter().any(|panel| resolved_count(panel) == 0) {
+            return prefetched
+                .iter()
+                .filter(|panel| resolved_count(panel) == 0 && !panel.is_pending(ReadKind::Overview))
+                .take(available_slots)
+                .filter_map(schedule_overview)
+                .collect();
+        }
+        let coverage_incomplete = coverage_panels
+            .iter()
+            .any(|panel| resolved_count(panel) < ordered_runs.len());
+        if coverage_incomplete {
+            let minimum = coverage_panels
+                .iter()
+                .map(&resolved_count)
+                .min()
+                .unwrap_or(0);
+            let mut scheduled_ids = HashSet::new();
+            let mut requests = Vec::new();
+            if let Some(interactive) = interactive_panel
+                .and_then(|panel_id| {
+                    coverage_panels
+                        .iter()
+                        .find(|panel| &panel.panel_id == panel_id)
+                })
+                .filter(|panel| {
+                    available_slots > 0
+                        && !panel.is_pending(ReadKind::Overview)
+                        && resolved_count(panel) < ordered_runs.len()
+                        && resolved_count(panel) <= minimum.saturating_add(1)
+                })
+                && let Some(request) = schedule_overview(interactive)
+            {
+                scheduled_ids.insert(interactive.panel_id.clone());
+                requests.push(request);
+            }
+            let mut candidates = coverage_panels
+                .iter()
+                .filter(|panel| {
+                    !panel.is_pending(ReadKind::Overview)
+                        && !scheduled_ids.contains(&panel.panel_id)
+                        && resolved_count(panel) < ordered_runs.len()
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|panel| resolved_count(panel));
+            requests.extend(
+                candidates
+                    .into_iter()
+                    .take(available_slots.saturating_sub(requests.len()))
+                    .filter_map(schedule_overview),
+            );
+            return requests;
+        }
+        let Some(detail_viewport) = self
+            .active_navigation()
+            .and_then(crate::domain::ViewNavigation::selected_viewport)
+        else {
+            return Vec::new();
+        };
+        let selected = self
+            .active_navigation()
+            .and_then(|navigation| navigation.brush())
+            .map(|brush| brush.selected())
+            .expect("detail scheduling requires an active brush");
+        let is_interactive = |panel: &MetricPanel| {
+            selected_panel.as_ref() == Some(&panel.panel_id)
+                || hovered_panel.as_ref() == Some(&panel.panel_id)
+        };
+        let interactive = panels
+            .iter()
+            .filter(|panel| is_interactive(panel))
+            .collect::<Vec<_>>();
+        if interactive.iter().any(|panel| {
+            panel.is_pending(ReadKind::Detail)
+                || self.should_schedule_panel_detail(
+                    panel,
+                    detail_viewport,
+                    query_width,
+                    true,
+                    selected,
+                    &visible_runs,
+                )
+        }) {
+            return interactive
+                .into_iter()
+                .filter(|panel| {
+                    self.should_schedule_panel_detail(
+                        panel,
+                        detail_viewport,
+                        query_width,
+                        true,
+                        selected,
+                        &visible_runs,
+                    )
+                })
+                .map(|panel| ScheduledPanelRead::Detail {
+                    panel_id: panel.panel_id.clone(),
+                    viewport: detail_viewport,
+                    logical_width: detail_query_width(query_width, true),
+                })
+                .collect();
+        }
+        let passive = panels
+            .iter()
+            .filter(|panel| !is_interactive(panel))
+            .collect::<Vec<_>>();
+        if passive.iter().any(|panel| {
+            panel.is_pending(ReadKind::Detail)
+                || self.should_schedule_panel_detail(
+                    panel,
+                    detail_viewport,
+                    query_width,
+                    false,
+                    selected,
+                    &visible_runs,
+                )
+        }) {
+            return passive
+                .into_iter()
+                .filter(|panel| {
+                    self.should_schedule_panel_detail(
+                        panel,
+                        detail_viewport,
+                        query_width,
+                        false,
+                        selected,
+                        &visible_runs,
+                    )
+                })
+                .map(|panel| ScheduledPanelRead::Detail {
+                    panel_id: panel.panel_id.clone(),
+                    viewport: detail_viewport,
+                    logical_width: detail_query_width(query_width, false),
+                })
+                .collect();
+        }
+        Vec::new()
     }
 
     fn rebuild_track_rows(&mut self, cx: &App) {
@@ -544,16 +939,24 @@ impl super::AnalysisWorkspace {
             .cloned()
             .collect::<Vec<_>>();
         let visible_run_count = catalog_backed_runs.len();
+        let selected = self
+            .active_navigation()
+            .and_then(|navigation| navigation.brush())
+            .map(|brush| brush.selected());
         self.track_rows = session
             .views
             .active()
             .panels
             .iter()
             .map(|panel| {
+                let frame = track_chart_frame(panel, selected, &catalog_backed_runs);
                 let chart = self.track_charts.get(&panel.panel_id).cloned();
                 let tooltip = chart
                     .as_ref()
-                    .and_then(|chart| self.track_tooltip(panel, chart, cx));
+                    .zip(frame.as_ref())
+                    .and_then(|(chart, frame)| {
+                        self.track_tooltip(&panel.panel_id, frame.snapshot.as_ref(), chart, cx)
+                    });
                 MetricTrackRowSnapshot {
                     panel: panel.clone(),
                     chart,
@@ -565,7 +968,15 @@ impl super::AnalysisWorkspace {
                         .is_some_and(|resize| resize.panel_id == panel.panel_id),
                     metric_sidebar_compact: self.metric_sidebar_compact,
                     visible_run_count,
-                    drawable_run_count: drawable_run_count(panel, &catalog_backed_runs),
+                    resolved_run_count: catalog_backed_runs
+                        .iter()
+                        .filter(|run| panel.overview_coverage.contains_key(run))
+                        .count(),
+                    drawable_run_count: drawable_run_count(
+                        frame.as_ref().map(|frame| frame.snapshot.as_ref()),
+                        &catalog_backed_runs,
+                    ),
+                    frame_quality: frame.map(|frame| frame.quality),
                 }
             })
             .collect();
@@ -573,7 +984,8 @@ impl super::AnalysisWorkspace {
 
     fn track_tooltip(
         &self,
-        panel: &MetricPanel,
+        panel_id: &MetricPanelId,
+        snapshot: &CurveSnapshot,
         chart: &gpui::Entity<chart::DetailChart>,
         cx: &App,
     ) -> Option<MetricTrackTooltip> {
@@ -595,7 +1007,7 @@ impl super::AnalysisWorkspace {
                         .find(|hover| &hover.run_ref == run)
                 });
         let sidebar_locked = locked_sidebar_callout.is_some();
-        let hover = self.track_hovers.get(&panel.panel_id).cloned();
+        let hover = self.track_hovers.get(panel_id).cloned();
         let mut callouts = locked_sidebar_callout
             .map_or_else(
                 || {
@@ -616,7 +1028,8 @@ impl super::AnalysisWorkspace {
             )
             .into_iter()
             .map(|hover| {
-                let delta = baseline.and_then(|baseline| baseline_delta(panel, baseline, &hover));
+                let delta =
+                    baseline.and_then(|baseline| baseline_delta(snapshot, baseline, &hover));
                 (hover, delta)
             })
             .collect::<Vec<_>>();
@@ -633,9 +1046,7 @@ impl super::AnalysisWorkspace {
             });
         }
         let (hover, delta) = callouts.into_iter().next()?;
-        let run_name = panel
-            .detail
-            .as_ref()?
+        let run_name = snapshot
             .series
             .iter()
             .find(|curve| curve.run_ref == hover.run_ref)?
@@ -652,8 +1063,11 @@ impl super::AnalysisWorkspace {
     }
 }
 
-pub(crate) fn drawable_run_count(panel: &MetricPanel, visible_runs: &[RunRef]) -> usize {
-    panel.detail.as_ref().map_or(0, |snapshot| {
+pub(crate) fn drawable_run_count(
+    snapshot: Option<&CurveSnapshot>,
+    visible_runs: &[RunRef],
+) -> usize {
+    snapshot.map_or(0, |snapshot| {
         snapshot
             .series
             .iter()
@@ -666,16 +1080,29 @@ pub(crate) fn drawable_run_count(panel: &MetricPanel, visible_runs: &[RunRef]) -
 
 pub(crate) fn metric_metadata(
     visible_run_count: usize,
+    resolved_run_count: usize,
     drawable_count: usize,
-    has_detail: bool,
+    quality: Option<CurveFrameQuality>,
     pending: bool,
 ) -> String {
-    if has_detail {
-        format!("{visible_run_count} Runs · {drawable_count} drawable")
-    } else if pending {
-        format!("{visible_run_count} Runs · loading")
-    } else {
-        format!("{visible_run_count} Runs")
+    if resolved_run_count < visible_run_count {
+        return format!("{resolved_run_count}/{visible_run_count} runs · loading");
+    }
+    match (quality, pending) {
+        (Some(CurveFrameQuality::Detail), true) => {
+            format!("{resolved_run_count}/{visible_run_count} runs · refining")
+        }
+        (Some(CurveFrameQuality::Detail), false) => {
+            format!("{resolved_run_count}/{visible_run_count} runs · {drawable_count} drawable")
+        }
+        (Some(CurveFrameQuality::Overview), true) => {
+            format!("{resolved_run_count}/{visible_run_count} runs · refining")
+        }
+        (Some(CurveFrameQuality::Overview), false) => {
+            format!("{resolved_run_count}/{visible_run_count} runs · preview")
+        }
+        (None, true) => format!("{resolved_run_count}/{visible_run_count} runs · loading"),
+        (None, false) => format!("{resolved_run_count}/{visible_run_count} runs"),
     }
 }
 
@@ -707,8 +1134,9 @@ impl super::AnalysisWorkspace {
         let drawable_count = row.drawable_run_count;
         let metadata = metric_metadata(
             visible_run_count,
+            row.resolved_run_count,
             drawable_count,
-            panel.detail.is_some(),
+            row.frame_quality,
             panel.is_pending(ReadKind::Overview) || panel.is_pending(ReadKind::Detail),
         );
         let track = Self::render_metric_track(&row, workspace.clone(), theme, cx);
@@ -893,7 +1321,7 @@ impl super::AnalysisWorkspace {
         if row.visible_run_count == 0 {
             return empty_metric_chart(&panel_id);
         }
-        if panel.detail.is_none() {
+        if row.chart.is_none() {
             let message = if panel.is_pending(ReadKind::Detail) {
                 Some("Loading viewport…")
             } else if panel.is_pending(ReadKind::Overview) {
@@ -1095,16 +1523,14 @@ impl super::AnalysisWorkspace {
             let Some(chart) = self.track_charts.get(&panel.panel_id).cloned() else {
                 continue;
             };
-            let Some((snapshot, revision, viewport)) =
-                track_chart_frame(&panel, selected, &visible_runs)
-            else {
+            let Some(frame) = track_chart_frame(&panel, selected, &visible_runs) else {
                 continue;
             };
             chart.update(cx, |chart, cx| {
                 let changed = chart.update(
-                    snapshot,
-                    revision,
-                    viewport,
+                    frame.snapshot,
+                    frame.revision,
+                    frame.viewport,
                     baseline.clone(),
                     emphasized_run.clone(),
                     Rc::clone(&visible_runs),

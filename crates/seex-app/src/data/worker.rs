@@ -6,10 +6,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
 use std::thread::{self, JoinHandle};
-#[cfg(all(test, feature = "desktop", target_os = "macos"))]
+#[cfg(any(
+    feature = "test-support",
+    all(test, feature = "desktop", target_os = "macos")
+))]
 use std::time::{Duration, Instant};
 
-use seex::ReaderInterrupt;
+use seex::{MetricKey, ReaderInterrupt};
 
 use crate::data::query::{
     CurveSnapshot, DetailRequest, InspectorRequest, InspectorSnapshot, OverviewRequest, QueryError,
@@ -241,6 +244,16 @@ struct RequestKey {
     metric_key: Option<String>,
 }
 
+impl RequestKey {
+    fn metric(source_id: DataSourceId, kind: ReadKind, metric_key: &MetricKey) -> Self {
+        Self {
+            source_id,
+            kind,
+            metric_key: Some(metric_key.as_str().to_owned()),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct RequestToken(u64);
 
@@ -315,6 +328,30 @@ impl RequestRegistry {
             },
         );
         true
+    }
+
+    fn cancel(&mut self, identity: &RequestIdentity) -> Vec<ReaderInterrupt> {
+        let value = (identity.generation, identity.token);
+        if self
+            .latest
+            .get(&identity.key)
+            .is_some_and(|latest| value <= *latest)
+        {
+            return Vec::new();
+        }
+        self.latest.insert(identity.key.clone(), value);
+        self.active
+            .remove(&identity.key)
+            .filter(|active| (active.generation, active.token) < value)
+            .map_or_else(Vec::new, |active| active.interrupts)
+    }
+
+    fn cancel_all(&mut self) -> Vec<ReaderInterrupt> {
+        self.latest.clear();
+        self.active
+            .drain()
+            .flat_map(|(_, active)| active.interrupts)
+            .collect()
     }
 
     fn finish(&mut self, identity: &RequestIdentity) {
@@ -393,6 +430,28 @@ impl ReadSessionPool {
 }
 
 impl ReadWorker {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn shutdown_for_tests(&mut self) {
+        let interrupts = self
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancel_all();
+        for interrupt in interrupts {
+            interrupt.interrupt();
+        }
+        self.requests.take();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.outstanding.load(Ordering::Acquire) != 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        if self.outstanding.load(Ordering::Acquire) == 0 {
+            for thread in self.threads.drain(..) {
+                let _ = thread.join();
+            }
+        }
+    }
+
     /// Starts a worker for one local native source.
     ///
     /// # Errors
@@ -487,6 +546,28 @@ impl ReadWorker {
             .map_err(|_| WorkerClosed)
     }
 
+    pub(crate) fn cancel(
+        &self,
+        source_id: DataSourceId,
+        generation: Generation,
+        kind: ReadKind,
+        metric_key: &MetricKey,
+    ) {
+        let identity = RequestIdentity {
+            key: RequestKey::metric(source_id, kind, metric_key),
+            generation,
+            token: RequestToken(self.next_token.fetch_add(1, Ordering::Relaxed)),
+        };
+        let interrupts = self
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancel(&identity);
+        for interrupt in interrupts {
+            interrupt.interrupt();
+        }
+    }
+
     /// Transfers the event stream to an event-driven integration.
     pub fn take_event_receiver(&mut self) -> Option<ReadEventReceiver> {
         self.events.take()
@@ -564,6 +645,14 @@ impl Drop for ReadPermit<'_> {
 
 impl Drop for ReadWorker {
     fn drop(&mut self) {
+        let interrupts = self
+            .registry
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancel_all();
+        for interrupt in interrupts {
+            interrupt.interrupt();
+        }
         self.requests.take();
         // Dropping Viewer state must not block the UI thread on any request
         // that was not superseded before the sender closed.
@@ -755,43 +844,40 @@ fn execute(
     let kind = request.kind();
     let mut registered = false;
     let result = (|| {
-        if session.is_none() {
-            *session = Some(sessions.open()?);
+        let mut retried_storage_error = false;
+        loop {
+            if session.is_none() {
+                *session = Some(sessions.open()?);
+            }
+            let active_session = session.as_ref().ok_or(WorkerError::SessionUnavailable)?;
+            if !registry
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .begin(identity, active_session.interrupt_handles())
+            {
+                return Ok(None);
+            }
+            registered = true;
+            active_session.reader().refresh_diagnostics(generation.0);
+            let result = execute_read(active_session, &request, &mut is_superseded);
+            if !retried_storage_error
+                && result.as_ref().is_err_and(is_retryable_storage_error)
+                && !is_superseded()
+            {
+                registry
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .finish(identity);
+                registered = false;
+                // DuckLake inline-data flushes can invalidate a connection's
+                // catalog snapshot. Reopen only this thread's session and retry
+                // once instead of restarting the source worker.
+                *session = None;
+                retried_storage_error = true;
+                continue;
+            }
+            return result;
         }
-        let session = session.as_ref().ok_or(WorkerError::SessionUnavailable)?;
-        if !registry
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .begin(identity, session.interrupt_handles())
-        {
-            return Ok(None);
-        }
-        registered = true;
-        session.reader().refresh_diagnostics(generation.0);
-        Ok(Some(match request {
-            ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(&request)?),
-            ReadRequest::Overview(request) => {
-                let Some(snapshot) = session.query_overview_until(&request, &mut is_superseded)?
-                else {
-                    return Ok(None);
-                };
-                ReadSnapshot::Overview(snapshot)
-            }
-            ReadRequest::Detail(request) => {
-                let Some(snapshot) = session.query_detail_until(&request, &mut is_superseded)?
-                else {
-                    return Ok(None);
-                };
-                ReadSnapshot::Detail(snapshot)
-            }
-            ReadRequest::Inspector(request) => {
-                let Some(snapshot) = session.query_inspector_until(&request, &mut is_superseded)?
-                else {
-                    return Ok(None);
-                };
-                ReadSnapshot::Inspector(snapshot)
-            }
-        }))
     })();
     let current = request_is_current(registry, identity);
     if registered {
@@ -814,6 +900,44 @@ fn execute(
         kind,
         result,
     })
+}
+
+fn execute_read(
+    session: &ReadSession,
+    request: &ReadRequest,
+    is_superseded: &mut impl FnMut() -> bool,
+) -> Result<Option<ReadSnapshot>, WorkerError> {
+    Ok(Some(match request {
+        ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(request)?),
+        ReadRequest::Overview(request) => {
+            let Some(snapshot) = session.query_overview_until(request, is_superseded)? else {
+                return Ok(None);
+            };
+            ReadSnapshot::Overview(snapshot)
+        }
+        ReadRequest::Detail(request) => {
+            let Some(snapshot) = session.query_detail_until(request, is_superseded)? else {
+                return Ok(None);
+            };
+            ReadSnapshot::Detail(snapshot)
+        }
+        ReadRequest::Inspector(request) => {
+            let Some(snapshot) = session.query_inspector_until(request, is_superseded)? else {
+                return Ok(None);
+            };
+            ReadSnapshot::Inspector(snapshot)
+        }
+    }))
+}
+
+fn is_retryable_storage_error(error: &WorkerError) -> bool {
+    match error {
+        WorkerError::Query(error) => {
+            matches!(error.as_ref(), QueryError::Sdk(seex::Error::Storage))
+        }
+        WorkerError::Source(SourceError::Sdk(seex::Error::Storage)) => true,
+        WorkerError::Source(_) | WorkerError::SessionUnavailable => false,
+    }
 }
 
 #[cfg(test)]
@@ -1021,6 +1145,30 @@ mod tests {
             next_request(&queue).map(|request| request.generation),
             Some(Generation(2))
         );
+    }
+
+    #[test]
+    fn cancellation_invalidates_queued_and_active_request_identity() {
+        let request = TaggedRequest {
+            source_id: DataSourceId::new("source").expect("test alias should be valid"),
+            generation: Generation(1),
+            token: RequestToken(1),
+            request: overview_request("loss"),
+            _ticket: RequestTicket::default(),
+        };
+        let identity = RequestIdentity::new(&request);
+        let cancellation = RequestIdentity {
+            key: identity.key.clone(),
+            generation: identity.generation,
+            token: RequestToken(2),
+        };
+        let mut registry = RequestRegistry::default();
+        let _ = registry.mark_latest(&identity);
+        assert!(registry.begin(&identity, Vec::new()));
+
+        assert!(registry.cancel(&cancellation).is_empty());
+        assert!(!registry.is_current(&identity));
+        assert!(registry.active.is_empty());
     }
 
     #[test]

@@ -175,7 +175,6 @@ impl AnalysisWorkspace {
         cx.emit(AnalysisWorkspaceEvent::Command(
             WorkbenchCommand::ZoomViewport { anchor, factor },
         ));
-        self.defer_metric_repaint(cx);
         self.schedule_detail_refresh(cx);
         cx.stop_propagation();
     }
@@ -185,13 +184,10 @@ impl AnalysisWorkspace {
         event: &MouseMoveEvent,
         cx: &mut Context<Self>,
     ) {
-        cx.emit(AnalysisWorkspaceEvent::Interaction(
-            WorkspaceInteractionEvent::RulerHover(None),
-        ));
-        cx.emit(AnalysisWorkspaceEvent::Interaction(
-            WorkspaceInteractionEvent::TrackPointerHover(None),
-        ));
         let Some(chart) = self.track_charts.get(panel_id).cloned() else {
+            cx.emit(AnalysisWorkspaceEvent::Interaction(
+                WorkspaceInteractionEvent::TrackPointerHover(None),
+            ));
             return;
         };
         let (pointer_axis, hover) = chart.read(cx).hit_test(event.position);

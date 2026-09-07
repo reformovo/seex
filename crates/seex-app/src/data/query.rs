@@ -239,12 +239,12 @@ impl ReadSession {
     }
 }
 
-fn overview_budget(logical_width: u32) -> u32 {
-    logical_width.clamp(256, 2_000)
+pub(crate) fn overview_budget(logical_width: u32) -> u32 {
+    logical_width.div_ceil(2).clamp(128, 1_024)
 }
 
-fn detail_budget(logical_width: u32) -> u32 {
-    logical_width.saturating_mul(2).clamp(512, 5_000)
+pub(crate) fn detail_budget(logical_width: u32) -> u32 {
+    logical_width.clamp(256, 2_500)
 }
 
 fn query_curves(
@@ -407,7 +407,7 @@ mod tests {
                 detail_budget(2_500),
                 detail_budget(u32::MAX)
             ],
-            [256, 900, 2_000, 512, 5_000, 5_000]
+            [128, 450, 1_024, 256, 2_500, 2_500]
         );
     }
 
