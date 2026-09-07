@@ -237,21 +237,34 @@ fn sqlite_reader_child_process() -> Result<(), Box<dyn std::error::Error>> {
     let project_id = seex::ProjectId::from_string("concurrent");
     let run_id = seex::RunId::from_string("running");
     let query = seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), Some(256))?;
-    let mut observed = false;
-    for _ in 0..20 {
-        let runs = reader.runs(&project_id)?;
-        let Some(run) = runs.iter().find(|run| run.run_id == run_id) else {
-            std::thread::sleep(Duration::from_millis(5));
-            continue;
-        };
-        let _ = reader.metrics(run)?;
-        for metric in CONCURRENT_METRICS {
-            let _ = reader.query_metric(&run_id, &seex::MetricKey::from_string(metric), &query)?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if Instant::now() >= deadline {
+            return Err("reader never observed persisted metrics for the running Run".into());
         }
-        observed = true;
+        let runs = reader.runs(&project_id)?;
+        if let Some(run) = runs.iter().find(|run| run.run_id == run_id) {
+            let metrics = reader.metrics(run)?;
+            if metrics.len() == CONCURRENT_METRICS.len()
+                && metrics.iter().all(|metric| metric.effective_count > 0)
+            {
+                assert_eq!(run.status, seex::RunStatus::Running);
+                for metric in CONCURRENT_METRICS {
+                    let series = reader.query_metric(
+                        &run_id,
+                        &seex::MetricKey::from_string(metric),
+                        &query,
+                    )?;
+                    assert!(
+                        !series.samples().is_empty(),
+                        "reader saw no samples for {metric}"
+                    );
+                }
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(observed, "reader never observed the running Run");
-    Ok(())
 }
 
 struct ChildProcesses(Vec<Child>);
