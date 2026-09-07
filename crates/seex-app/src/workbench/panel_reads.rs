@@ -102,6 +102,15 @@ impl PanelReadRequest {
         }
     }
 
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    fn metric_key(&self) -> &MetricKey {
+        match self {
+            Self::Overview { metric_key, .. }
+            | Self::Detail { metric_key, .. }
+            | Self::Inspector { metric_key, .. } => metric_key,
+        }
+    }
+
     fn for_source(&self, source_id: DataSourceId, runs: Vec<RunRef>) -> ReadRequest {
         match self {
             Self::Overview {
@@ -151,6 +160,15 @@ pub struct PlannedSourceRead {
     pub request: ReadRequest,
 }
 
+#[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PlannedReadCancellation {
+    pub source_id: DataSourceId,
+    pub generation: Generation,
+    pub kind: ReadKind,
+    pub metric_key: MetricKey,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceReadFailure {
     pub source_id: DataSourceId,
@@ -160,6 +178,7 @@ pub struct SourceReadFailure {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PanelReadSnapshot {
     pub tag: PanelReadTag,
+    pub requested_runs: Vec<RunRef>,
     pub curves: Option<CurveSnapshot>,
     pub inspector: Option<InspectorSnapshot>,
     pub source_errors: Vec<SourceReadFailure>,
@@ -189,7 +208,7 @@ impl PanelReadSnapshot {
 #[derive(Clone, Debug, PartialEq)]
 pub enum PanelReadOutcome {
     AcceptedPending,
-    Completed(PanelReadSnapshot),
+    Completed(Box<PanelReadSnapshot>),
     IgnoredStale,
 }
 
@@ -202,6 +221,8 @@ struct PanelReadKey {
 
 struct PendingPanelRead {
     tag: PanelReadTag,
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    metric_key: MetricKey,
     run_order: Vec<RunRef>,
     source_order: Vec<DataSourceId>,
     expected: HashSet<DataSourceId>,
@@ -277,6 +298,8 @@ impl PanelReadCoordinator {
             key,
             PendingPanelRead {
                 tag,
+                #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+                metric_key: request.metric_key().clone(),
                 run_order: request.runs().to_vec(),
                 expected: source_order.iter().cloned().collect(),
                 source_order,
@@ -330,14 +353,56 @@ impl PanelReadCoordinator {
             .pending
             .remove(&key)
             .expect("completed panel read must remain registered");
-        PanelReadOutcome::Completed(merge_panel_read(pending))
+        PanelReadOutcome::Completed(Box::new(merge_panel_read(pending)))
     }
 
-    pub fn deactivate_view(&mut self, view_id: &AnalysisViewId) {
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    pub(crate) fn cancel_except(
+        &mut self,
+        view_id: &AnalysisViewId,
+        kind: ReadKind,
+        retained_panels: &[MetricPanelId],
+    ) -> Vec<PlannedReadCancellation> {
+        self.cancel_where(|key| {
+            &key.view_id == view_id && key.kind == kind && !retained_panels.contains(&key.panel_id)
+        })
+    }
+
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    pub(crate) fn cancel_missing_panels(
+        &mut self,
+        view_id: &AnalysisViewId,
+        retained_panels: &[MetricPanelId],
+    ) -> Vec<PlannedReadCancellation> {
+        self.cancel_where(|key| &key.view_id == view_id && !retained_panels.contains(&key.panel_id))
+    }
+
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    pub(crate) fn deactivate_view(
+        &mut self,
+        view_id: &AnalysisViewId,
+    ) -> Vec<PlannedReadCancellation> {
+        self.cancel_where(|key| &key.view_id == view_id)
+    }
+
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    fn cancel_where(
+        &mut self,
+        mut should_cancel: impl FnMut(&PanelReadKey) -> bool,
+    ) -> Vec<PlannedReadCancellation> {
         let mut removed = Vec::new();
+        let mut cancellations = Vec::new();
         self.pending.retain(|key, pending| {
-            if &key.view_id == view_id {
+            if should_cancel(key) {
                 removed.push((pending.tag.generation, key.kind));
+                cancellations.extend(pending.source_order.iter().cloned().map(|source_id| {
+                    PlannedReadCancellation {
+                        source_id,
+                        generation: pending.tag.generation,
+                        kind: key.kind,
+                        metric_key: pending.metric_key.clone(),
+                    }
+                }));
                 false
             } else {
                 true
@@ -346,6 +411,7 @@ impl PanelReadCoordinator {
         for (generation, kind) in removed {
             self.inflight.remove(&(generation, kind));
         }
+        cancellations
     }
 
     #[cfg(feature = "test-support")]
@@ -412,6 +478,7 @@ fn merge_panel_read(mut pending: PendingPanelRead) -> PanelReadSnapshot {
     });
     PanelReadSnapshot {
         tag: pending.tag,
+        requested_runs: pending.run_order,
         curves,
         inspector,
         source_errors,
@@ -614,7 +681,8 @@ mod tests {
             )),
             PanelReadOutcome::IgnoredStale
         );
-        coordinator.deactivate_view(&AnalysisViewId::from_string("view"));
+        let cancellations = coordinator.deactivate_view(&AnalysisViewId::from_string("view"));
+        assert_eq!(cancellations.len(), 1);
         assert_eq!(
             coordinator.apply(detail_event(run.source_id.clone(), 2, Ok(snapshot(run)))),
             PanelReadOutcome::IgnoredStale
@@ -627,6 +695,30 @@ mod tests {
                 stale_retained_snapshots: 0,
                 ..crate::performance::ReadSchedulingSnapshot::default()
             }
+        );
+    }
+
+    #[test]
+    fn cancelled_panels_return_worker_cancellations_and_ignore_results() {
+        let run = run_ref("source", "run");
+        let mut coordinator = PanelReadCoordinator::default();
+        coordinator
+            .begin(tag(1), request(vec![run.clone()]))
+            .expect("detail request should plan");
+
+        let cancellations =
+            coordinator.cancel_except(&AnalysisViewId::from_string("view"), ReadKind::Detail, &[]);
+
+        assert_eq!(cancellations.len(), 1);
+        assert_eq!(cancellations[0].source_id, run.source_id);
+        assert_eq!(cancellations[0].metric_key.as_str(), "loss");
+        assert_eq!(
+            coordinator.apply(detail_event(
+                cancellations[0].source_id.clone(),
+                1,
+                Ok(snapshot(run)),
+            )),
+            PanelReadOutcome::IgnoredStale
         );
     }
 

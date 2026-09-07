@@ -27,7 +27,8 @@ use crate::model::metric::{
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 use crate::storage::bootstrap::{
-    NativeStorageConfig, is_s3_data_path, open_existing_native_connection_with_config,
+    NativeReadDatabase, NativeStorageConfig, is_s3_data_path,
+    open_existing_native_connection_with_config, open_shared_existing_local_connection_with_config,
 };
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config, resolve_storage_config};
 use crate::storage::{
@@ -168,6 +169,7 @@ impl ReaderBuilder {
                 .map_err(|_| Error::Storage)?;
                 return Ok(Reader {
                     connection: None,
+                    _native_database: None,
                     standalone: Some(standalone),
                     run_metadata: RefCell::new(HashMap::new()),
                     diagnostics: RefCell::new(DiagnosticsCache::default()),
@@ -212,10 +214,20 @@ impl ReaderBuilder {
             resolved.data_path,
             resolved.s3_connection,
         );
-        let connection =
-            open_existing_native_connection_with_config(config).map_err(public_storage_error)?;
+        let (connection, native_database) = if local_only {
+            let (connection, database) = open_shared_existing_local_connection_with_config(config)
+                .map_err(public_storage_error)?;
+            (connection, Some(database))
+        } else {
+            (
+                open_existing_native_connection_with_config(config)
+                    .map_err(public_storage_error)?,
+                None,
+            )
+        };
         Ok(Reader {
             connection: Some(ProjectConnection::new(connection)),
+            _native_database: native_database,
             standalone: None,
             run_metadata: RefCell::new(HashMap::new()),
             diagnostics: RefCell::new(DiagnosticsCache::default()),
@@ -228,6 +240,7 @@ impl ReaderBuilder {
 /// Read-only discovery and metric-query entry point.
 pub struct Reader {
     connection: Option<ProjectConnection>,
+    _native_database: Option<NativeReadDatabase>,
     standalone: Option<StandaloneMetricReader>,
     run_metadata: RefCell<HashMap<RunId, RunMetadata>>,
     diagnostics: RefCell<DiagnosticsCache>,
@@ -655,18 +668,33 @@ impl Reader {
             reduction,
         };
         let narrow_step = use_narrow_step_plan(axis, bounds, diagnostics, force_full_step);
-        let result = match (&self.connection, &self.standalone, narrow_step) {
-            (Some(connection), None, true) => {
+        let bounded_full_count = self
+            .connection
+            .is_some()
+            .then(|| use_bounded_full_plan(axis, bounds, diagnostics, narrow_step))
+            .filter(|bounded| *bounded)
+            .and(diagnostics.map(|diagnostics| diagnostics.effective_count));
+        let result = match (
+            &self.connection,
+            &self.standalone,
+            narrow_step,
+            bounded_full_count,
+        ) {
+            (Some(connection), None, true, None) => {
                 ProjectMetricReader::new(connection).query_narrow_step_metric(&storage_query)
             }
-            (None, Some(reader), true) => reader.query_narrow_step_metric(&storage_query),
-            (Some(connection), None, false) => {
+            (None, Some(reader), true, None) => reader.query_narrow_step_metric(&storage_query),
+            (Some(connection), None, false, Some(source_count)) => {
+                ProjectMetricReader::new(connection)
+                    .query_bounded_full_aligned_metric(&storage_query, source_count)
+            }
+            (Some(connection), None, false, None) => {
                 ProjectMetricReader::new(connection).query_aligned_metric(&storage_query)
             }
-            (None, Some(reader), false) if axis == MetricAxis::Timestamp => {
+            (None, Some(reader), false, None) if axis == MetricAxis::Timestamp => {
                 reader.query_timestamp_metric(&storage_query)
             }
-            (None, Some(reader), false) => reader.query_aligned_metric(&storage_query),
+            (None, Some(reader), false, None) => reader.query_aligned_metric(&storage_query),
             _ => return Err(Error::Storage),
         }
         .map_err(public_storage_error)?;
@@ -867,6 +895,34 @@ fn use_narrow_step_plan(
         }
         _ => false,
     }
+}
+
+fn use_bounded_full_plan(
+    axis: MetricAxis,
+    bounds: Option<AxisBounds>,
+    diagnostics: Option<SeriesDiagnostics>,
+    narrow_step: bool,
+) -> bool {
+    let Some(diagnostics) = diagnostics else {
+        return false;
+    };
+    if narrow_step || !bounded_reduction_is_safe(diagnostics) {
+        return false;
+    }
+    match (axis, bounds, diagnostics.min_step, diagnostics.max_step) {
+        (_, None, _, _) => true,
+        (MetricAxis::Step, Some(bounds), Some(minimum), Some(maximum)) => {
+            bounds.start.is_none_or(|start| start <= minimum)
+                && bounds.end.is_none_or(|end| maximum < end)
+        }
+        _ => false,
+    }
+}
+
+fn bounded_reduction_is_safe(diagnostics: SeriesDiagnostics) -> bool {
+    !diagnostics.has_negative_step
+        && !diagnostics.has_decreasing_timestamp
+        && !diagnostics.has_non_finite_value
 }
 
 fn public_storage_error(error: StorageError) -> Error {
@@ -1346,6 +1402,37 @@ mod tests {
             Some(AxisBounds::new(Some(2), Some(8))),
             Some(diagnostics),
             true
+        ));
+    }
+
+    #[test]
+    fn bounded_full_plan_requires_complete_valid_diagnostics() {
+        let diagnostics = SeriesDiagnostics {
+            effective_count: 10,
+            min_step: Some(0),
+            max_step: Some(9),
+            has_negative_step: false,
+            has_decreasing_timestamp: false,
+            has_non_finite_value: false,
+        };
+
+        assert!(use_bounded_full_plan(
+            MetricAxis::Step,
+            Some(AxisBounds::new(Some(0), Some(10))),
+            Some(diagnostics),
+            false
+        ));
+        assert!(!use_bounded_full_plan(
+            MetricAxis::Step,
+            Some(AxisBounds::new(Some(2), Some(8))),
+            Some(diagnostics),
+            true
+        ));
+        assert!(!use_bounded_full_plan(
+            MetricAxis::RelativeTime,
+            Some(AxisBounds::new(Some(0), Some(10))),
+            Some(diagnostics),
+            false
         ));
     }
 

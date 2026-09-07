@@ -1,7 +1,15 @@
+use std::fs;
+use std::sync::Arc;
+
 use gpui::{Modifiers, TestAppContext, point, px, size};
+use seex::{
+    AlignmentViewport, CatalogBackend, Client, EvidenceCompleteness, EvidenceReason, LogOptions,
+    ResumePolicy, RunOptions,
+};
 
 use super::super::test_support::*;
 use super::*;
+use crate::data::query::CurveSnapshot;
 use crate::desktop::UseElapsed;
 use crate::desktop::app::command::{CommandEffect, WorkbenchCommand};
 
@@ -9,6 +17,20 @@ use crate::desktop::app::command::{CommandEffect, WorkbenchCommand};
 fn typed_view_commands_own_the_view_lifecycle() {
     let mut session = WorkbenchSession::new(None);
     let original = session.views.active().view_id.clone();
+    let panel_id = session
+        .views
+        .select_active_metric(MetricKey::from_string("loss"));
+    let viewport = AlignmentViewport::new(0, 10).expect("viewport should be valid");
+    session
+        .views
+        .active_panel_mut(&panel_id)
+        .expect("test panel should exist")
+        .overview = Some(Arc::new(CurveSnapshot {
+        viewport,
+        point_budget: 10,
+        real_range: Some(viewport),
+        series: Vec::new(),
+    }));
 
     assert_eq!(
         session.apply_command(WorkbenchCommand::CreateView),
@@ -20,6 +42,14 @@ fn typed_view_commands_own_the_view_lifecycle() {
     );
     let created = session.views.active().view_id.clone();
     assert_ne!(created, original);
+    assert!(
+        session
+            .views
+            .views()
+            .iter()
+            .flat_map(|view| &view.panels)
+            .all(|panel| panel.overview.is_none())
+    );
     assert!(
         session
             .apply_command(WorkbenchCommand::RenameView {
@@ -275,6 +305,199 @@ fn top_refresh_requests_every_source_from_an_empty_view(cx: &mut TestAppContext)
     );
 }
 
+#[derive(Clone)]
+struct PanelCurveState {
+    overview: Arc<crate::data::query::CurveSnapshot>,
+    detail: Arc<crate::data::query::CurveSnapshot>,
+    overview_source_count: u64,
+    detail_source_count: u64,
+    overview_revision: u64,
+    detail_revision: u64,
+    catalog_run_status: RunStatus,
+    run_status: RunStatus,
+    completeness: EvidenceCompleteness,
+    reasons: Vec<EvidenceReason>,
+}
+
+fn first_panel_curve_state(viewer: &ViewerApp, cx: &App) -> Option<PanelCurveState> {
+    let snapshot = viewer.session_snapshot(cx);
+    let panel = snapshot.views.active().panels.first()?;
+    if panel.is_pending(ReadKind::Overview) {
+        return None;
+    }
+    let overview = panel.overview.clone()?;
+    let overview_source_count = overview.series.first()?.source_row_count;
+    let curve = overview.series.first()?;
+    let detail_source_count = curve.source_row_count;
+    let catalog_run_status = snapshot.sources.first()?.catalog.runs.first()?.status;
+    let run_status = curve.run.status;
+    let completeness = curve.completeness;
+    let reasons = curve.reasons.clone();
+    Some(PanelCurveState {
+        detail: Arc::clone(&overview),
+        overview,
+        overview_source_count,
+        detail_source_count,
+        overview_revision: panel.overview_revision,
+        detail_revision: panel.overview_revision,
+        catalog_run_status,
+        run_status,
+        completeness,
+        reasons,
+    })
+}
+
+fn append_loss_points(root_path: &std::path::Path, points: &[(i64, f64)]) {
+    let client = Client::builder(root_path)
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()
+        .expect("test client should open");
+    let run = client
+        .start_run(
+            RunOptions::new("project")
+                .id("run")
+                .name("running")
+                .resume(ResumePolicy::Allow),
+        )
+        .expect("test Run should start or resume");
+    for &(step, value) in points {
+        run.log_with([("loss", value)], LogOptions::new().step(step))
+            .expect("test metric should be admitted");
+    }
+    client
+        .shutdown()
+        .expect("test client should persist admitted metrics");
+}
+
+fn finish_loss_run(root_path: &std::path::Path) {
+    let client = Client::builder(root_path)
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()
+        .expect("test client should reopen");
+    let run = client
+        .start_run(
+            RunOptions::new("project")
+                .id("run")
+                .resume(ResumePolicy::Must),
+        )
+        .expect("test Run should resume");
+    run.finish().expect("test Run should finish and flush");
+    client.shutdown().expect("test client should shut down");
+}
+
+#[gpui::test]
+fn refresh_and_resize_replace_snapshots_after_sqlite_appends(cx: &mut TestAppContext) {
+    let root = tempfile::tempdir().expect("test directory should be created");
+    let config_dir = root.path().join(".seex");
+    fs::create_dir_all(&config_dir).expect("test config directory should be created");
+    fs::write(
+        config_dir.join("config.toml"),
+        "schema_version = 1\ncatalog_backend = \"sqlite\"\n",
+    )
+    .expect("test config should be written");
+    append_loss_points(root.path(), &[(0, 1.), (25, 0.5)]);
+    let project_id = ProjectId::from_string("project");
+    let run_id = RunId::from_string("run");
+
+    cx.executor().allow_parking();
+    let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
+    wait_for_viewer(window, &cx, source_catalog_loaded);
+    select_fixture_run(window, &mut cx, project_id, run_id, 1);
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.select_metric(MetricKey::from_string("loss"), cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        first_panel_curve_state(viewer, cx)
+            .is_some_and(|state| state.overview_source_count == 2 && state.detail_source_count == 2)
+    });
+    let viewport = AlignmentViewport::new(0, 100).expect("test viewport should be valid");
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.dispatch_workbench_command(WorkbenchCommand::ClearTimeline, cx);
+            viewer.dispatch_workbench_command(WorkbenchCommand::SetTimelineHome(viewport), cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.active_navigation(cx).selected_viewport() == Some(viewport)
+    });
+    let initial = window
+        .read_with(&cx, first_panel_curve_state)
+        .expect("viewer should remain open")
+        .expect("expanded viewport curves should load");
+
+    append_loss_points(root.path(), &[(50, 0.7)]);
+    let refresh = cx
+        .debug_bounds("refresh-view")
+        .expect("Refresh should render");
+    cx.simulate_click(refresh.center(), Modifiers::default());
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        first_panel_curve_state(viewer, cx).is_some_and(|state| {
+            state.overview_source_count == 3
+                && state.detail_source_count == 3
+                && state.overview_revision > initial.overview_revision
+                && state.detail_revision > initial.detail_revision
+        })
+    });
+    let refreshed = window
+        .read_with(&cx, first_panel_curve_state)
+        .expect("viewer should remain open");
+    let refreshed = refreshed.expect("refreshed curves should load");
+    assert!(!Arc::ptr_eq(&initial.overview, &refreshed.overview));
+    assert!(!Arc::ptr_eq(&initial.detail, &refreshed.detail));
+
+    window
+        .update(&mut cx, |viewer, _, cx| {
+            viewer.dispatch_workbench_command(WorkbenchCommand::ClearTimeline, cx);
+            viewer.dispatch_workbench_command(WorkbenchCommand::SetTimelineHome(viewport), cx);
+        })
+        .expect("viewer should remain open");
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        viewer.active_navigation(cx).selected_viewport() == Some(viewport)
+    });
+    append_loss_points(root.path(), &[(75, 0.6)]);
+    cx.simulate_resize(size(px(1_000.), px(700.)));
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        first_panel_curve_state(viewer, cx).is_some_and(|state| state.overview_source_count == 4)
+    });
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        first_panel_curve_state(viewer, cx).is_some_and(|state| state.detail_source_count == 4)
+    });
+    let resized = window
+        .read_with(&cx, first_panel_curve_state)
+        .expect("viewer should remain open")
+        .expect("resized curves should load");
+    assert!(resized.overview_revision > refreshed.overview_revision);
+    assert!(resized.detail_revision > refreshed.detail_revision);
+    assert!(!Arc::ptr_eq(&refreshed.overview, &resized.overview));
+    assert!(!Arc::ptr_eq(&refreshed.detail, &resized.detail));
+    cx.refresh().expect("updated curves should render");
+    assert!(cx.debug_bounds("metric-canvas:loss").is_some());
+
+    finish_loss_run(root.path());
+    let refresh = cx
+        .debug_bounds("refresh-view")
+        .expect("Refresh should remain available");
+    cx.simulate_click(refresh.center(), Modifiers::default());
+    wait_for_viewer(window, &cx, |viewer, cx| {
+        first_panel_curve_state(viewer, cx).is_some_and(|state| {
+            state.catalog_run_status == RunStatus::Finished
+                && state.run_status == RunStatus::Finished
+                && state.completeness == EvidenceCompleteness::Complete
+                && state.reasons.is_empty()
+                && state.overview_revision > resized.overview_revision
+                && state.detail_revision > resized.detail_revision
+        })
+    });
+    let finished = window
+        .read_with(&cx, first_panel_curve_state)
+        .expect("viewer should remain open")
+        .expect("finished curves should load");
+    assert!(!Arc::ptr_eq(&resized.overview, &finished.overview));
+    assert!(!Arc::ptr_eq(&resized.detail, &finished.detail));
+}
+
 #[gpui::test]
 fn switching_metric_tracks_preserves_the_shared_brush(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(2);
@@ -297,7 +520,7 @@ fn switching_metric_tracks_preserves_the_shared_brush(cx: &mut TestAppContext) {
                 .active()
                 .panels
                 .iter()
-                .all(|panel| panel.detail.is_some())
+                .all(|panel| panel.overview.is_some())
     });
     let brush = window
         .read_with(&cx, |viewer, cx| viewer.active_navigation(cx).brush())

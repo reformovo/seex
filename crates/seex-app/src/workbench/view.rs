@@ -11,7 +11,7 @@ use crate::data::query::{CurveSnapshot, InspectorSnapshot};
 use crate::data::worker::{Generation, ReadKind};
 use crate::domain::{DataSourceId, RunRef, SelectionError, ViewNavigation};
 use crate::workbench::panel_reads::{
-    AnalysisViewId, MetricPanelId, PanelReadMode, SourceReadFailure,
+    AnalysisViewId, MetricPanelId, PanelReadMode, PanelReadSnapshot, SourceReadFailure,
 };
 use crate::workbench::toml_document::{SavedRunRef, TomlWorkbenchDocument};
 
@@ -47,6 +47,8 @@ pub struct MetricPanel {
     pub detail: Option<Arc<CurveSnapshot>>,
     pub source_errors: Vec<SourceReadFailure>,
     pub overview_generation: Option<Generation>,
+    pub requested_overview_budget: Option<u32>,
+    pub overview_coverage: HashMap<RunRef, OverviewRunCoverage>,
     pub detail_generation: Option<Generation>,
     pub overview_revision: u64,
     pub detail_revision: u64,
@@ -55,6 +57,12 @@ pub struct MetricPanel {
     pub inspector: Option<Arc<InspectorSnapshot>>,
     pub inspector_generation: Option<Generation>,
     pub inspector_errors: Vec<SourceReadFailure>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OverviewRunCoverage {
+    pub budget: u32,
+    pub failed: bool,
 }
 
 impl MetricPanel {
@@ -67,6 +75,8 @@ impl MetricPanel {
             detail: None,
             source_errors: Vec::new(),
             overview_generation: None,
+            requested_overview_budget: None,
+            overview_coverage: HashMap::new(),
             detail_generation: None,
             overview_revision: 0,
             detail_revision: 0,
@@ -88,9 +98,42 @@ impl MetricPanel {
     }
 
     pub fn needs_detail(&self, viewport: AlignmentViewport, logical_width: u32) -> bool {
-        !self.is_pending(ReadKind::Detail)
-            && (self.requested_detail_viewport != Some(viewport)
-                || self.logical_width != logical_width)
+        if self.is_pending(ReadKind::Detail) {
+            return false;
+        }
+        self.detail.as_ref().map_or_else(
+            || {
+                self.requested_detail_viewport != Some(viewport)
+                    || self.logical_width != logical_width
+            },
+            |snapshot| {
+                !contains_viewport(snapshot.viewport, viewport)
+                    || snapshot.point_budget < crate::data::query::detail_budget(logical_width)
+            },
+        )
+    }
+
+    pub fn detail_covers(&self, viewport: AlignmentViewport) -> bool {
+        self.detail
+            .as_ref()
+            .is_some_and(|snapshot| contains_viewport(snapshot.viewport, viewport))
+    }
+
+    pub fn needs_overview(&self, logical_width: u32) -> bool {
+        if self.is_pending(ReadKind::Overview) {
+            return false;
+        }
+        let budget = crate::data::query::overview_budget(logical_width);
+        self.overview.as_ref().map_or_else(
+            || self.requested_overview_budget != Some(budget),
+            |snapshot| snapshot.point_budget < budget,
+        )
+    }
+
+    pub fn overview_run_resolved(&self, run: &RunRef, budget: u32) -> bool {
+        self.overview_coverage
+            .get(run)
+            .is_some_and(|coverage| coverage.budget >= budget)
     }
 }
 
@@ -533,20 +576,20 @@ impl AnalysisViews {
     }
 
     pub fn select_active_metric(&mut self, metric_key: MetricKey) -> MetricPanelId {
-        if let Some(panel) = self
+        let existing = self
             .active()
             .panels
             .iter()
             .find(|panel| panel.metric_key == metric_key)
-        {
-            let panel_id = panel.panel_id.clone();
-            self.active_mut().selected_panel_id = Some(panel_id.clone());
+            .map(|panel| panel.panel_id.clone());
+        if let Some(panel_id) = existing {
+            select_panel(self.active_mut(), &panel_id);
             return panel_id;
         }
         let panel = MetricPanel::new(metric_key);
         let panel_id = panel.panel_id.clone();
         self.active_mut().panels.push(panel);
-        self.active_mut().selected_panel_id = Some(panel_id.clone());
+        select_panel(self.active_mut(), &panel_id);
         panel_id
     }
 
@@ -566,6 +609,7 @@ impl AnalysisViews {
                 .panels
                 .get(index.min(view.panels.len().saturating_sub(1)))
                 .map(|panel| panel.panel_id.clone());
+            reset_selected_extent(view);
         }
         true
     }
@@ -588,7 +632,7 @@ impl AnalysisViews {
         if self.active_panel(panel_id).is_none() {
             return false;
         }
-        self.active_mut().selected_panel_id = Some(panel_id.clone());
+        select_panel(self.active_mut(), panel_id);
         true
     }
 
@@ -603,10 +647,15 @@ impl AnalysisViews {
     pub fn cancel_active_panel_reads(&mut self) {
         for panel in &mut self.active_mut().panels {
             panel.overview_generation = None;
+            panel.requested_overview_budget = None;
             panel.detail_generation = None;
             panel.inspector_generation = None;
             panel.requested_detail_viewport = None;
         }
+    }
+
+    pub fn release_active_query_state(&mut self) {
+        invalidate_view_panels(self.active_mut());
     }
 
     pub fn begin_active_panel_read(
@@ -626,6 +675,19 @@ impl AnalysisViews {
         }
     }
 
+    pub fn begin_active_panel_overview(
+        &mut self,
+        panel_id: &MetricPanelId,
+        generation: Generation,
+        logical_width: u32,
+    ) {
+        let Some(panel) = self.active_panel_mut(panel_id) else {
+            return;
+        };
+        panel.overview_generation = Some(generation);
+        panel.requested_overview_budget = Some(crate::data::query::overview_budget(logical_width));
+    }
+
     pub fn begin_active_panel_detail(
         &mut self,
         panel_id: &MetricPanelId,
@@ -636,20 +698,78 @@ impl AnalysisViews {
         let Some(panel) = self.active_panel_mut(panel_id) else {
             return;
         };
+        if !panel.detail_covers(viewport) {
+            panel.detail = None;
+        }
         panel.detail_generation = Some(generation);
         panel.requested_detail_viewport = Some(viewport);
         panel.logical_width = logical_width;
     }
 
+    pub fn retain_active_detail_coverage(&mut self, viewport: AlignmentViewport) -> bool {
+        let mut changed = false;
+        for panel in &mut self.active_mut().panels {
+            let had_generation = panel.detail_generation.take().is_some();
+            let had_request = panel.requested_detail_viewport.take().is_some();
+            let dropped_detail = if panel.detail_covers(viewport) {
+                false
+            } else {
+                panel.detail.take().is_some()
+            };
+            changed |= had_generation || had_request || dropped_detail;
+        }
+        changed
+    }
+
+    pub fn evict_hidden_panel_details(&mut self, visible: &[MetricPanelId]) -> bool {
+        let selected = self.active().selected_panel_id.clone();
+        let mut changed = false;
+        for panel in &mut self.active_mut().panels {
+            if visible.contains(&panel.panel_id) {
+                continue;
+            }
+            let had_detail = panel.detail.take().is_some();
+            let had_generation = panel.detail_generation.take().is_some();
+            let had_viewport = panel.requested_detail_viewport.take().is_some();
+            changed |= had_detail || had_generation || had_viewport;
+            if selected.as_ref() != Some(&panel.panel_id) {
+                panel.source_errors.clear();
+            }
+        }
+        changed
+    }
+
+    pub fn evict_unretained_panel_overviews(&mut self, retained: &[MetricPanelId]) -> bool {
+        let mut changed = false;
+        for panel in &mut self.active_mut().panels {
+            if retained.contains(&panel.panel_id) {
+                continue;
+            }
+            let had_overview = panel.overview.take().is_some();
+            let had_coverage = !panel.overview_coverage.is_empty();
+            panel.overview_coverage.clear();
+            let had_generation = panel.overview_generation.take().is_some();
+            let had_budget = panel.requested_overview_budget.take().is_some();
+            changed |= had_overview || had_coverage || had_generation || had_budget;
+        }
+        changed
+    }
+
     pub fn complete_active_panel_read(
         &mut self,
-        panel_id: &MetricPanelId,
         kind: ReadKind,
-        generation: Generation,
-        mode: PanelReadMode,
-        snapshot: Option<CurveSnapshot>,
-        source_errors: Vec<SourceReadFailure>,
+        completed: PanelReadSnapshot,
     ) -> bool {
+        let PanelReadSnapshot {
+            tag,
+            requested_runs,
+            curves: snapshot,
+            inspector: _,
+            source_errors,
+        } = completed;
+        let panel_id = &tag.panel_id;
+        let generation = tag.generation;
+        let mode = tag.mode;
         let run_order = self.active().runs.clone();
         let Some(panel) = self.active_panel_mut(panel_id) else {
             return false;
@@ -664,30 +784,56 @@ impl AnalysisViews {
             return false;
         }
         *expected = None;
-        panel.source_errors = source_errors;
+        if mode == PanelReadMode::Merge {
+            for failure in &source_errors {
+                if !panel.source_errors.contains(failure) {
+                    panel.source_errors.push(failure.clone());
+                }
+            }
+        } else {
+            panel.source_errors = source_errors.clone();
+            if kind == ReadKind::Overview {
+                panel.overview_coverage.clear();
+            }
+        }
+        if kind == ReadKind::Overview {
+            let budget = panel.requested_overview_budget.unwrap_or(0);
+            for run in requested_runs {
+                let failed = source_errors
+                    .iter()
+                    .any(|failure| failure.source_id == run.source_id);
+                panel
+                    .overview_coverage
+                    .insert(run, OverviewRunCoverage { budget, failed });
+            }
+        }
         if let Some(snapshot) = snapshot {
             match kind {
                 ReadKind::Overview => {
-                    let replacing = mode == PanelReadMode::Replace || panel.overview.is_none();
                     if mode == PanelReadMode::Merge {
-                        merge_curve_snapshot(&mut panel.overview, snapshot, &run_order);
+                        merge_overview_snapshot(&mut panel.overview, snapshot, &run_order);
                     } else {
                         panel.overview = Some(Arc::new(snapshot));
                     }
-                    if replacing {
-                        panel.overview_revision = generation.0;
+                    panel.overview_revision = generation.0;
+                    if let Some(overview) = panel.overview.as_mut()
+                        && let Some(minimum_budget) = overview
+                            .series
+                            .iter()
+                            .filter_map(|curve| panel.overview_coverage.get(&curve.run_ref))
+                            .map(|coverage| coverage.budget)
+                            .min()
+                    {
+                        Arc::make_mut(overview).point_budget = minimum_budget;
                     }
                 }
                 ReadKind::Detail => {
-                    let replacing = mode == PanelReadMode::Replace || panel.detail.is_none();
                     if mode == PanelReadMode::Merge {
                         merge_curve_snapshot(&mut panel.detail, snapshot, &run_order);
                     } else {
                         panel.detail = Some(Arc::new(snapshot));
                     }
-                    if replacing {
-                        panel.detail_revision = generation.0;
-                    }
+                    panel.detail_revision = generation.0;
                 }
                 ReadKind::Inspector => {}
                 ReadKind::Catalog => {}
@@ -722,21 +868,13 @@ impl AnalysisViews {
         metric_key: MetricKey,
         extent: Option<AlignmentViewport>,
     ) -> Option<AlignmentViewport> {
+        self.active_mut().timeline_extents.clear();
         if let Some(extent) = extent {
             self.active_mut()
                 .timeline_extents
                 .insert(metric_key, extent);
-        } else {
-            self.active_mut().timeline_extents.remove(&metric_key);
         }
-        self.active()
-            .timeline_extents
-            .values()
-            .copied()
-            .reduce(|left, right| {
-                AlignmentViewport::new(left.start().min(right.start()), left.end().max(right.end()))
-                    .expect("valid timeline extents must have a valid union")
-            })
+        extent
     }
 
     pub fn clear_active_timeline_extents(&mut self) {
@@ -766,6 +904,8 @@ impl AnalysisViews {
                     panel.detail = None;
                     panel.source_errors.clear();
                     panel.overview_generation = None;
+                    panel.requested_overview_budget = None;
+                    panel.overview_coverage.clear();
                     panel.detail_generation = None;
                     panel.requested_detail_viewport = None;
                     panel.inspector = None;
@@ -791,6 +931,8 @@ impl AnalysisViews {
             panel.detail = None;
             panel.source_errors.clear();
             panel.overview_generation = None;
+            panel.requested_overview_budget = None;
+            panel.overview_coverage.clear();
             panel.detail_generation = None;
             panel.requested_detail_viewport = None;
             panel.inspector = None;
@@ -845,6 +987,46 @@ fn merge_curve_snapshot(
     };
 }
 
+fn merge_overview_snapshot(
+    current: &mut Option<Arc<CurveSnapshot>>,
+    incoming: CurveSnapshot,
+    run_order: &[RunRef],
+) {
+    let Some(current_snapshot) = current.as_mut() else {
+        *current = Some(Arc::new(incoming));
+        return;
+    };
+    let snapshot = Arc::make_mut(current_snapshot);
+    if let Ok(viewport) = AlignmentViewport::new(
+        snapshot.viewport.start().min(incoming.viewport.start()),
+        snapshot.viewport.end().max(incoming.viewport.end()),
+    ) {
+        snapshot.viewport = viewport;
+    }
+    snapshot.point_budget = snapshot.point_budget.min(incoming.point_budget);
+    for curve in incoming.series {
+        snapshot
+            .series
+            .retain(|existing| existing.run_ref != curve.run_ref);
+        snapshot.series.push(curve);
+    }
+    snapshot.series.sort_by_key(|curve| {
+        run_order
+            .iter()
+            .position(|run| run == &curve.run_ref)
+            .unwrap_or(usize::MAX)
+    });
+    snapshot.real_range = match (snapshot.real_range, incoming.real_range) {
+        (Some(current), Some(incoming)) => AlignmentViewport::new(
+            current.start().min(incoming.start()),
+            current.end().max(incoming.end()),
+        )
+        .ok(),
+        (current @ Some(_), None) => current,
+        (None, incoming) => incoming,
+    };
+}
+
 fn invalidate_view_panels(view: &mut AnalysisView) {
     view.timeline_extents.clear();
     for panel in &mut view.panels {
@@ -852,12 +1034,47 @@ fn invalidate_view_panels(view: &mut AnalysisView) {
         panel.detail = None;
         panel.source_errors.clear();
         panel.overview_generation = None;
+        panel.requested_overview_budget = None;
+        panel.overview_coverage.clear();
         panel.detail_generation = None;
         panel.requested_detail_viewport = None;
         panel.inspector = None;
         panel.inspector_generation = None;
         panel.inspector_errors.clear();
     }
+}
+
+fn contains_viewport(outer: AlignmentViewport, inner: AlignmentViewport) -> bool {
+    outer.start() <= inner.start() && outer.end() >= inner.end()
+}
+
+fn select_panel(view: &mut AnalysisView, panel_id: &MetricPanelId) {
+    if view.selected_panel_id.as_ref() == Some(panel_id) {
+        return;
+    }
+    view.selected_panel_id = Some(panel_id.clone());
+    reset_selected_extent(view);
+}
+
+fn reset_selected_extent(view: &mut AnalysisView) {
+    view.timeline_extents.clear();
+    let Some(panel) = view
+        .panels
+        .iter()
+        .find(|panel| view.selected_panel_id.as_ref() == Some(&panel.panel_id))
+    else {
+        return;
+    };
+    let Some(extent) = panel
+        .overview
+        .as_ref()
+        .and_then(|snapshot| snapshot.real_range)
+    else {
+        return;
+    };
+    view.timeline_extents
+        .insert(panel.metric_key.clone(), extent);
+    view.navigation.set_timeline_home(extent);
 }
 
 fn metric_row_height(height: f32) -> f32 {

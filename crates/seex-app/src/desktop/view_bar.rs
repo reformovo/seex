@@ -520,6 +520,7 @@ impl ViewerApp {
     pub(super) fn sync_active_view_workspace(&mut self, cx: &mut Context<Self>) {
         let panel_count = self.session_snapshot(cx).views.active().panels.len();
         self.workspace.update(cx, |workspace, cx| {
+            workspace.overview_chart = cx.new(|_| super::chart::OverviewChart::default());
             workspace.track_charts.clear();
             workspace.track_hovers.clear();
             workspace.metric_scroll = ListState::new(panel_count, ListAlignment::Top, px(480.));
@@ -582,13 +583,7 @@ impl ViewerApp {
                 self.on_toggle_bottom_inspector(&crate::desktop::ToggleBottomInspector, window, cx);
             }
             AnalysisViewBarEvent::RefreshSources => {
-                self.session.update(cx, |session, session_cx| {
-                    session.transient_error = None;
-                    session.publish_snapshot();
-                    session_cx.notify();
-                });
-                self.refresh_all_sources(cx);
-                cx.notify();
+                self.on_refresh(&crate::desktop::Refresh, window, cx);
             }
         }
     }

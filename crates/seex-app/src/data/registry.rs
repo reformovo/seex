@@ -4,11 +4,15 @@ use std::sync::Arc;
 
 use crate::config::ConfiguredSource;
 use crate::data::CatalogSnapshot;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+use crate::data::worker::ReadKind;
 use crate::data::worker::{
     Generation, ReadConcurrencyGate, ReadEvent, ReadEventReceiver, ReadRequest, ReadWorker,
     WorkerClosed,
 };
 use crate::domain::DataSourceId;
+#[cfg(all(feature = "desktop", target_os = "macos"))]
+use seex::MetricKey;
 use seex::ProjectId;
 
 const MAX_CONCURRENT_SOURCE_READS: usize = 4;
@@ -54,6 +58,17 @@ impl Default for SourceRegistry {
 }
 
 impl SourceRegistry {
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn shutdown_for_tests(&mut self) {
+        for worker in self
+            .entries
+            .iter_mut()
+            .filter_map(|entry| entry.worker.as_mut())
+        {
+            worker.shutdown_for_tests();
+        }
+    }
+
     #[cfg(all(feature = "desktop", target_os = "macos"))]
     pub(crate) fn snapshot(&self) -> Arc<[ImportedSource]> {
         self.entries
@@ -203,6 +218,23 @@ impl SourceRegistry {
                     error,
                 }
             })
+    }
+
+    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    pub(crate) fn cancel(
+        &self,
+        source_id: &DataSourceId,
+        generation: Generation,
+        kind: ReadKind,
+        metric_key: &MetricKey,
+    ) {
+        let Some(worker) = self
+            .entry(source_id)
+            .and_then(|entry| entry.worker.as_ref())
+        else {
+            return;
+        };
+        worker.cancel(source_id.clone(), generation, kind, metric_key);
     }
 
     /// Reconciles one worker event into its source-specific health state.

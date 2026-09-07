@@ -49,6 +49,45 @@ pub(crate) fn query_narrow_step_metric(
     execute_aligned_metric(connection, source, query, None, AlignmentPlan::NarrowStep)
 }
 
+pub(crate) fn query_bounded_full_aligned_metric(
+    connection: &Connection,
+    source: AlignmentSource<'_>,
+    query: &AlignmentQuery,
+    run_start_millis: Option<i64>,
+    source_row_count: u64,
+) -> Result<AlignmentQueryResult, StorageError> {
+    validate_alignment_identity(query)?;
+    let max_points = query
+        .reduction
+        .max_points()
+        .ok_or(StorageError::InvalidIdentity)?;
+    let sql = bounded_full_sql(source, query.axis);
+    let mut values = base_values(source, query, run_start_millis);
+    values.extend([
+        Box::new(query.viewport.start()) as Box<dyn duckdb::ToSql>,
+        Box::new(query.viewport.end()),
+    ]);
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(
+        duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
+        stored_bounded_alignment_row,
+    )?;
+    let mut reducer = ScreenReducer::new(max_points, source_row_count);
+    for row in rows {
+        reducer.push(row?);
+    }
+    let points = reducer
+        .finish()
+        .into_iter()
+        .map(|point| point.into_aligned_metric_point(&query.run_id, &query.metric_key))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(AlignmentQueryResult {
+        points,
+        source_row_count,
+        reasons: Vec::new(),
+    })
+}
+
 fn execute_aligned_metric(
     connection: &Connection,
     source: AlignmentSource<'_>,
@@ -170,7 +209,31 @@ fn aligned_points_sql(
     )
 }
 
+fn bounded_full_sql(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
+    format!(
+        "{},
+         selected AS (
+             SELECT * FROM derived WHERE axis_value >= ? AND axis_value <= ?
+         )
+         SELECT step, epoch_ms(timestamp), value_f64, epoch_ms(ingested_at),
+                axis_value
+         FROM selected ORDER BY step",
+        derived_ctes(source, axis)
+    )
+}
+
 fn ordered_ctes(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
+    format!(
+        "{},
+         ordered AS MATERIALIZED (
+             SELECT *, lag(axis_value) OVER (ORDER BY step) AS previous_axis_value
+             FROM derived
+         )",
+        derived_ctes(source, axis)
+    )
+}
+
+fn derived_ctes(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
     let (relation, tie_breaker) = match source {
         AlignmentSource::Project => ("dl.metric_points", "rowid DESC"),
         AlignmentSource::Parquet(_) => (
@@ -199,10 +262,6 @@ fn ordered_ctes(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
          ),
          derived AS (
              SELECT *, {axis_expression} AS axis_value FROM effective
-         ),
-         ordered AS MATERIALIZED (
-             SELECT *, lag(axis_value) OVER (ORDER BY step) AS previous_axis_value
-             FROM derived
          )"
     )
 }
@@ -340,12 +399,98 @@ fn narrow_step_values(
     values
 }
 
+#[derive(Clone)]
 struct StoredAlignedPoint {
     step: i64,
     timestamp_millis: i64,
     value_f64: f64,
     ingested_at_millis: i64,
     axis_value: i64,
+}
+
+#[derive(Default)]
+struct BucketCandidates {
+    first: Option<StoredAlignedPoint>,
+    last: Option<StoredAlignedPoint>,
+    min: Option<StoredAlignedPoint>,
+    max: Option<StoredAlignedPoint>,
+}
+
+impl BucketCandidates {
+    fn push(&mut self, point: StoredAlignedPoint) {
+        self.first.get_or_insert_with(|| point.clone());
+        self.last = Some(point.clone());
+        if self
+            .min
+            .as_ref()
+            .is_none_or(|current| point_cmp(&point, current).is_lt())
+        {
+            self.min = Some(point.clone());
+        }
+        if self
+            .max
+            .as_ref()
+            .is_none_or(|current| point_cmp(&point, current).is_gt())
+        {
+            self.max = Some(point);
+        }
+    }
+
+    fn append_to(self, points: &mut Vec<StoredAlignedPoint>) {
+        points.extend(
+            [self.first, self.last, self.min, self.max]
+                .into_iter()
+                .flatten(),
+        );
+    }
+}
+
+struct ScreenReducer {
+    bucket_count: u64,
+    source_count: u64,
+    ordinal: u64,
+    current_bucket: Option<u64>,
+    candidates: BucketCandidates,
+    points: Vec<StoredAlignedPoint>,
+}
+
+impl ScreenReducer {
+    fn new(max_points: usize, source_count: u64) -> Self {
+        Self {
+            bucket_count: u64::try_from((max_points / EXTREMA_PER_BUCKET).max(1))
+                .unwrap_or(u64::MAX),
+            source_count,
+            ordinal: 0,
+            current_bucket: None,
+            candidates: BucketCandidates::default(),
+            points: Vec::with_capacity(max_points),
+        }
+    }
+
+    fn push(&mut self, point: StoredAlignedPoint) {
+        let bucket = ((u128::from(self.ordinal) * u128::from(self.bucket_count))
+            / u128::from(self.source_count)) as u64;
+        if self.current_bucket.is_some_and(|current| current != bucket) {
+            std::mem::take(&mut self.candidates).append_to(&mut self.points);
+        }
+        self.current_bucket = Some(bucket);
+        self.candidates.push(point);
+        self.ordinal += 1;
+    }
+
+    fn finish(mut self) -> Vec<StoredAlignedPoint> {
+        self.candidates.append_to(&mut self.points);
+        self.points.sort_by_key(|point| point.step);
+        self.points.dedup_by_key(|point| point.step);
+        self.points
+    }
+}
+
+fn point_cmp(left: &StoredAlignedPoint, right: &StoredAlignedPoint) -> std::cmp::Ordering {
+    left.value_f64
+        .total_cmp(&right.value_f64)
+        .then_with(|| left.axis_value.cmp(&right.axis_value))
+        .then_with(|| left.step.cmp(&right.step))
 }
 
 impl StoredAlignedPoint {
@@ -383,6 +528,16 @@ fn stored_alignment_row(
         None => None,
     };
     Ok((point, row.get(5)?))
+}
+
+fn stored_bounded_alignment_row(row: &duckdb::Row<'_>) -> duckdb::Result<StoredAlignedPoint> {
+    Ok(StoredAlignedPoint {
+        step: row.get(0)?,
+        timestamp_millis: row.get(1)?,
+        value_f64: row.get(2)?,
+        ingested_at_millis: row.get(3)?,
+        axis_value: row.get(4)?,
+    })
 }
 
 #[cfg(test)]
@@ -545,6 +700,28 @@ mod tests {
 
         assert!(result.points.iter().any(|point| point.axis_value == 2));
         assert!(!result.points.iter().any(|point| point.axis_value == 4));
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_full_reducer_matches_window_extrema() -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        let mut screen = query(
+            AlignmentAxis::Step,
+            AlignmentReduction::screen_budget(1, 1)?,
+        );
+        screen.viewport = AlignmentViewport::new(0, 6)?;
+
+        let windowed = query_aligned_metric(&connection, AlignmentSource::Project, &screen, None)?;
+        let bounded = query_bounded_full_aligned_metric(
+            &connection,
+            AlignmentSource::Project,
+            &screen,
+            None,
+            7,
+        )?;
+
+        assert_eq!(bounded, windowed);
         Ok(())
     }
 

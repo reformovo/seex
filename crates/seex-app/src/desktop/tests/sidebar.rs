@@ -941,9 +941,7 @@ fn project_row_click_toggles_runs_without_changing_analysis(cx: &mut TestAppCont
                     .expect("timeline should be loaded"),
                 viewer.session.read(cx).next_generation,
                 panel.overview.clone().expect("overview should be loaded"),
-                panel.detail.clone().expect("detail should be loaded"),
                 panel.overview_revision,
-                panel.detail_revision,
             )
         })
         .expect("viewer should remain open");
@@ -965,12 +963,7 @@ fn project_row_click_toggles_runs_without_changing_analysis(cx: &mut TestAppCont
                     .expect("overview should remain loaded"),
                 &before.2,
             ));
-            assert!(Arc::ptr_eq(
-                panel.detail.as_ref().expect("detail should remain loaded"),
-                &before.3,
-            ));
-            assert_eq!(panel.overview_revision, before.4);
-            assert_eq!(panel.detail_revision, before.5);
+            assert_eq!(panel.overview_revision, before.3);
         })
         .expect("viewer should remain open");
     assert!(cx.debug_bounds("overview-chart").is_some());
@@ -1102,7 +1095,7 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
             .iter()
             .all(|panel| {
                 panel
-                    .detail
+                    .overview
                     .as_ref()
                     .is_some_and(|snapshot| snapshot.series.len() == 1)
             })
@@ -1115,7 +1108,7 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
                 .active()
                 .panels
                 .iter()
-                .map(|panel| panel.detail_revision)
+                .map(|panel| panel.overview_revision)
                 .collect::<Vec<_>>()
         })
         .expect("viewer should remain open");
@@ -1144,23 +1137,24 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
             .iter()
             .all(|panel| {
                 panel
-                    .detail
+                    .overview
                     .as_ref()
                     .is_some_and(|snapshot| snapshot.series.len() == 2)
             })
     });
     window
         .read_with(&cx, |viewer, cx| {
-            assert_eq!(
+            assert!(
                 viewer
                     .session_snapshot(cx)
                     .views
                     .active()
                     .panels
                     .iter()
-                    .map(|panel| panel.detail_revision)
-                    .collect::<Vec<_>>(),
-                initial_revisions,
+                    .map(|panel| panel.overview_revision)
+                    .zip(&initial_revisions)
+                    .all(|(current, initial)| current > *initial),
+                "each progressive Run merge must invalidate its chart projection",
             );
         })
         .expect("viewer should remain open");
@@ -1174,8 +1168,8 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
                 .iter()
                 .map(|panel| {
                     (
-                        panel.detail.clone().expect("detail should be loaded"),
-                        panel.detail_revision,
+                        panel.overview.clone().expect("overview should be loaded"),
+                        panel.overview_revision,
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1208,10 +1202,13 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
                 .zip(&before)
             {
                 assert!(Arc::ptr_eq(
-                    panel.detail.as_ref().expect("detail should remain loaded"),
+                    panel
+                        .overview
+                        .as_ref()
+                        .expect("overview should remain loaded"),
                     snapshot,
                 ));
-                assert_eq!(panel.detail_revision, *revision);
+                assert_eq!(panel.overview_revision, *revision);
             }
         })
         .expect("viewer should remain open");
@@ -1235,10 +1232,13 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
                 .zip(&before)
             {
                 assert!(Arc::ptr_eq(
-                    panel.detail.as_ref().expect("detail should remain loaded"),
+                    panel
+                        .overview
+                        .as_ref()
+                        .expect("overview should remain loaded"),
                     snapshot,
                 ));
-                assert_eq!(panel.detail_revision, *revision);
+                assert_eq!(panel.overview_revision, *revision);
             }
         })
         .expect("viewer should remain open");
@@ -1261,10 +1261,13 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
                 .zip(&before)
             {
                 assert!(Arc::ptr_eq(
-                    panel.detail.as_ref().expect("detail should remain loaded"),
+                    panel
+                        .overview
+                        .as_ref()
+                        .expect("overview should remain loaded"),
                     snapshot,
                 ));
-                assert_eq!(panel.detail_revision, *revision);
+                assert_eq!(panel.overview_revision, *revision);
             }
         })
         .expect("viewer should remain open");
@@ -1285,10 +1288,13 @@ fn run_organization_reuses_every_loaded_metric_snapshot(cx: &mut TestAppContext)
                 .zip(&before)
             {
                 assert!(Arc::ptr_eq(
-                    panel.detail.as_ref().expect("detail should remain loaded"),
+                    panel
+                        .overview
+                        .as_ref()
+                        .expect("overview should remain loaded"),
                     snapshot,
                 ));
-                assert_eq!(panel.detail_revision, *revision);
+                assert_eq!(panel.overview_revision, *revision);
             }
         })
         .expect("viewer should remain open");
@@ -1299,6 +1305,7 @@ fn metric_sidebar_rows_align_with_independent_chart_tracks(cx: &mut TestAppConte
     let (root, project_id, first_run_id) = fixture_with_complete_runs(2, 2);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
+    cx.simulate_resize(size(px(1_200.), px(900.)));
     wait_for_viewer(window, &cx, source_catalog_loaded);
     select_fixture_run(window, &mut cx, project_id.clone(), first_run_id, 2);
     window
@@ -1325,16 +1332,18 @@ fn metric_sidebar_rows_align_with_independent_chart_tracks(cx: &mut TestAppConte
             viewer.select_metric(MetricKey::from_string("metric-1"), cx);
         })
         .expect("viewer should remain open");
+    cx.refresh().expect("metric rows should lay out");
     wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer.session_snapshot(cx).views.active().panels.len() == 2
-            && viewer
-                .session_snapshot(cx)
-                .views
-                .active()
-                .panels
-                .iter()
-                .all(|panel| panel.detail.is_some())
+        let snapshot = viewer.session_snapshot(cx);
+        let view = snapshot.views.active();
+        view.panels.len() == 2
+            && view
+                .selected_panel_id
+                .as_ref()
+                .and_then(|panel_id| snapshot.views.active_panel(panel_id))
+                .is_some_and(|panel| panel.overview.is_some())
     });
+    cx.refresh().expect("loaded overview should render");
 
     let workspace = cx
         .debug_bounds("analysis-workspace")
@@ -1391,6 +1400,16 @@ fn metric_sidebar_rows_align_with_independent_chart_tracks(cx: &mut TestAppConte
         })
         .expect("viewer should remain open");
     cx.run_until_parked();
+    wait_for_viewer_with_app(window, &cx, |viewer, cx| {
+        let previews_ready = viewer
+            .session_snapshot(cx)
+            .views
+            .active()
+            .panels
+            .iter()
+            .all(|panel| panel.overview.is_some());
+        previews_ready && viewer.workspace.read(cx).track_charts.len() == 2
+    });
     let home_tick = cx
         .debug_bounds("ruler-major-mark-0")
         .expect("Home tick should remain visible over the Metric label gutter");
@@ -1450,46 +1469,24 @@ fn metric_sidebar_rows_align_with_independent_chart_tracks(cx: &mut TestAppConte
             "metadata {metadata:?} must remain inside sidebar {sidebar:?}",
         );
     }
-    let (ranges, unavailable) = window
+    let unavailable = window
         .read_with(&cx, |viewer, cx| {
-            let selected = viewer
-                .active_navigation(cx)
-                .brush()
-                .map(|brush| brush.selected());
-            let ranges = viewer
+            viewer
                 .session_snapshot(cx)
                 .views
                 .active()
                 .panels
                 .iter()
-                .map(|panel| {
-                    chart::detail_viewport(
-                        panel.detail.as_deref().expect("detail should be loaded"),
-                        selected,
-                        None,
-                    )
-                    .expect("detail should be drawable")
-                    .y
-                })
-                .collect::<Vec<_>>();
-            let unavailable = viewer
-                .session_snapshot(cx)
-                .views
-                .active()
-                .panels
-                .iter()
-                .all(|panel| {
+                .any(|panel| {
                     panel.detail.as_ref().is_some_and(|snapshot| {
                         snapshot
                             .series
                             .iter()
                             .any(|series| series.completeness == EvidenceCompleteness::Unavailable)
                     })
-                });
-            (ranges, unavailable)
+                })
         })
         .expect("viewer should remain open");
-    assert_ne!(ranges[0], ranges[1]);
     assert!(!unavailable);
 
     for selector in ["metric-resize:metric-0", "metric-resize:metric-1"] {

@@ -6,10 +6,10 @@ use crate::data::query::{
 };
 use crate::data::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker, recv_event_for_test};
 use crate::domain::DataSourceId;
-use seex::EvidenceCompleteness;
 use seex::ProjectId;
 use seex::{AlignedMetricPoint, AlignmentViewport};
 use seex::{Client, LogOptions, RunOptions};
+use seex::{EvidenceCompleteness, EvidenceReason};
 use seex::{MetricKey, MetricPoint, Step};
 use seex::{Run, RunId, RunStatus};
 use seex_plot::{DataPoint, Series, SeriesId};
@@ -133,6 +133,38 @@ fn render_resource_snapshot_counts_retained_geometry() {
     assert!(first.compacted_points <= 5_008);
     assert_eq!(first.path_entries, 2);
     assert!(first.path_vertices > first.compacted_points);
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn partial_evidence_uses_solid_curve_geometry() {
+    let mut snapshot = synthetic_snapshot(1, 100);
+    snapshot.series[0].completeness = EvidenceCompleteness::Partial;
+    snapshot.series[0].reasons = vec![EvidenceReason::RunRunning];
+    let viewport = detail_viewport(&snapshot, None, None).expect("snapshot should draw");
+    let bounds = Bounds::new(point(px(0.), px(0.)), size(px(500.), px(200.)));
+    let mut adapter = ChartAdapter::default();
+
+    adapter.prepare(
+        &snapshot,
+        1,
+        viewport,
+        bounds,
+        WindowAppearance::Light,
+        RenderRuns {
+            baseline: None,
+            emphasized: None,
+            visible: None,
+        },
+    );
+
+    let resources = adapter.resource_snapshot();
+    assert!(resources.path_vertices > resources.compacted_points);
+    assert_eq!(
+        snapshot.series[0].completeness,
+        EvidenceCompleteness::Partial
+    );
+    assert_eq!(snapshot.series[0].reasons, [EvidenceReason::RunRunning]);
 }
 
 #[cfg(feature = "test-support")]

@@ -1,6 +1,6 @@
 [package]
 name = "seex-python"
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 edition = "2024"
 description = "Python extension bindings for Seex."
 license = "MIT"

@@ -541,7 +541,7 @@ fn inspector_table_contains_only_visible_runs(cx: &mut TestAppContext) {
         .expect("viewer should remain open");
     wait_for_viewer(window, &cx, |viewer, cx| {
         viewer.session_snapshot(cx).views.active().panels[0]
-            .detail
+            .overview
             .as_ref()
             .is_some_and(|snapshot| snapshot.series.len() == 4)
     });

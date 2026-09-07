@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use crate::data::query::CurveSnapshot;
 use crate::domain::RunRef;
-use gpui::{Bounds, Path, PathBuilder, Pixels, Point, Rgba, WindowAppearance, point, px};
-use seex::EvidenceCompleteness;
+use gpui::{Bounds, Path, Pixels, Point, Rgba, WindowAppearance, point, px};
 use seex_plot::{
     AxisRange, BrushState, CanvasSize, LinearScale, PathCache, ScreenPoint, Viewport,
     hit_test_point,
@@ -21,9 +20,9 @@ pub(in crate::desktop::app) use canvas::{
 pub(in crate::desktop::app) use detail::{
     BrushDragTarget, DetailChart, HoverPoint, OverviewChart, cached_detail_chart,
 };
-use projection::{
-    axis_at, compact_render_points, overview_viewport, projected_point, solid_polyline_path,
-};
+#[cfg(feature = "test-support")]
+use projection::projected_point;
+use projection::{axis_at, compact_render_points, overview_viewport, solid_polyline_path};
 pub(in crate::desktop::app) use projection::{detail_viewport, series_color_index};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -32,7 +31,6 @@ struct GpuiPathKey {
     viewport: [u64; 4],
     bounds: [u32; 4],
     dark: bool,
-    partial: bool,
     highlighted: bool,
 }
 
@@ -152,7 +150,6 @@ impl ChartAdapter {
             let Some(series) = curve.chart_series.as_ref() else {
                 continue;
             };
-            let partial = curve.completeness == EvidenceCompleteness::Partial;
             let baseline = runs.baseline == Some(&curve.run_ref);
             let emphasized = runs.emphasized == Some(&curve.run_ref);
             let highlighted = baseline || emphasized;
@@ -171,7 +168,6 @@ impl ChartAdapter {
                     f32::from(bounds.size.height).to_bits(),
                 ],
                 dark: theme.dark,
-                partial,
                 highlighted,
             };
             let projection_cache = &mut self.detail_projection_cache;
@@ -198,32 +194,11 @@ impl ChartAdapter {
                 } else {
                     CURVE_STROKE_WIDTH
                 });
-                let path = if partial {
-                    let mut builder = PathBuilder::stroke(width).dash_array(&[px(7.), px(4.)]);
-                    for (point_index, projected) in points.iter().enumerate() {
-                        let position = projected_point(bounds, *projected);
-                        if point_index == 0 {
-                            builder.move_to(position);
-                        } else {
-                            builder.line_to(position);
-                        }
-                    }
-                    let Ok(path) = builder.build() else {
-                        continue;
-                    };
-                    path
-                } else {
-                    let Some(path) = solid_polyline_path(&points, bounds, width) else {
-                        continue;
-                    };
-                    path
+                let Some(path) = solid_polyline_path(&points, bounds, width) else {
+                    continue;
                 };
                 #[cfg(feature = "test-support")]
-                let path_vertices = if partial {
-                    compacted_points
-                } else {
-                    solid_path_vertices(&points, bounds)
-                };
+                let path_vertices = solid_path_vertices(&points, bounds);
                 gpui_paths.insert(
                     cache_id.to_owned(),
                     CachedGpuiPath {

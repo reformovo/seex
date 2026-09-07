@@ -66,6 +66,7 @@ pub(crate) enum WorkbenchCommand {
 pub(crate) struct CommandEffect {
     pub changed: bool,
     pub active_view_changed: bool,
+    pub selected_panel_changed: bool,
     pub selected: Option<bool>,
     pub panel_id: Option<MetricPanelId>,
 }
@@ -256,23 +257,38 @@ impl WorkbenchSession {
                 }
             }
             WorkbenchCommand::SelectMetric(metric_key) => {
+                let previous = self.views.active().selected_panel_id.clone();
                 let panel_id = self.views.select_active_metric(metric_key);
+                let selected_panel_changed = previous.as_ref() != Some(&panel_id);
                 CommandEffect {
-                    changed: true,
+                    changed: selected_panel_changed,
+                    selected_panel_changed,
                     panel_id: Some(panel_id),
                     ..CommandEffect::default()
                 }
             }
-            WorkbenchCommand::SelectPanel(panel_id) => CommandEffect {
-                changed: self.views.select_active_panel(&panel_id),
-                panel_id: Some(panel_id),
-                ..CommandEffect::default()
-            },
-            WorkbenchCommand::RemoveMetric(panel_id) => CommandEffect {
-                changed: self.views.remove_active_panel(&panel_id),
-                panel_id: Some(panel_id),
-                ..CommandEffect::default()
-            },
+            WorkbenchCommand::SelectPanel(panel_id) => {
+                let previous = self.views.active().selected_panel_id.clone();
+                let changed = self.views.select_active_panel(&panel_id);
+                CommandEffect {
+                    changed,
+                    selected_panel_changed: changed
+                        && self.views.active().selected_panel_id.as_ref() != previous.as_ref(),
+                    panel_id: Some(panel_id),
+                    ..CommandEffect::default()
+                }
+            }
+            WorkbenchCommand::RemoveMetric(panel_id) => {
+                let previous = self.views.active().selected_panel_id.clone();
+                let changed = self.views.remove_active_panel(&panel_id);
+                CommandEffect {
+                    changed,
+                    selected_panel_changed: changed
+                        && self.views.active().selected_panel_id != previous,
+                    panel_id: Some(panel_id),
+                    ..CommandEffect::default()
+                }
+            }
             WorkbenchCommand::ResizeMetric { panel_id, height } => CommandEffect {
                 changed: self.views.set_active_panel_height(&panel_id, height),
                 panel_id: Some(panel_id),
@@ -337,8 +353,9 @@ impl WorkbenchSession {
 
     fn deactivate_active_view(&mut self) {
         let view_id = self.views.active().view_id.clone();
-        self.panel_reads.deactivate_view(&view_id);
-        self.views.cancel_active_panel_reads();
+        let cancellations = self.panel_reads.deactivate_view(&view_id);
+        self.cancel_planned_reads(cancellations);
+        self.views.release_active_query_state();
     }
 }
 
@@ -417,18 +434,25 @@ impl ViewerApp {
                 }
             }
             WorkbenchCommand::SelectMetric(_) => {
-                let Some(panel_id) = effect.panel_id else {
+                let Some(_) = effect.panel_id else {
                     return;
                 };
+                self.cancel_unselected_inspectors(cx);
                 self.workspace.update(cx, |workspace, cx| {
                     workspace.reset_metric_track_schedule(cx);
                 });
-                self.request_panel_overview(&panel_id, cx);
                 if self.inspector_visible(cx) {
                     self.request_inspector(cx);
                 }
             }
             WorkbenchCommand::SelectPanel(_) => {
+                let Some(_) = effect.panel_id.as_ref() else {
+                    return;
+                };
+                if effect.selected_panel_changed {
+                    self.cancel_unselected_inspectors(cx);
+                    self.request_overview(cx);
+                }
                 self.bottom_inspector.update(cx, |inspector, cx| {
                     inspector.visible = true;
                     cx.notify();
@@ -436,12 +460,16 @@ impl ViewerApp {
                 self.request_inspector(cx);
             }
             WorkbenchCommand::RemoveMetric(panel_id) => {
+                self.cancel_removed_panel_reads(cx);
                 self.workspace.update(cx, |workspace, cx| {
                     workspace.reset_metric_track_schedule(cx);
                     workspace.track_charts.remove(panel_id);
                     workspace.track_hovers.remove(panel_id);
                     cx.notify();
                 });
+                if effect.selected_panel_changed {
+                    self.cancel_unselected_inspectors(cx);
+                }
                 let session = self.session_snapshot(cx);
                 if let Some(home) = session
                     .views
@@ -492,7 +520,14 @@ impl ViewerApp {
                 self.request_overview(cx);
             }
             WorkbenchCommand::ResetViewport => {
+                self.reconcile_active_detail_viewport(cx);
                 self.request_detail(cx);
+            }
+            WorkbenchCommand::ZoomViewport { .. }
+            | WorkbenchCommand::PanViewport(_)
+            | WorkbenchCommand::ResizeBrushStart(_)
+            | WorkbenchCommand::ResizeBrushEnd(_) => {
+                self.reconcile_active_detail_viewport(cx);
             }
             WorkbenchCommand::CreateView
             | WorkbenchCommand::DuplicateActiveView
@@ -501,10 +536,6 @@ impl ViewerApp {
             | WorkbenchCommand::RenameView { .. }
             | WorkbenchCommand::SetProjectPlacement { .. }
             | WorkbenchCommand::ToggleProjectExpanded(_)
-            | WorkbenchCommand::ZoomViewport { .. }
-            | WorkbenchCommand::PanViewport(_)
-            | WorkbenchCommand::ResizeBrushStart(_)
-            | WorkbenchCommand::ResizeBrushEnd(_)
             | WorkbenchCommand::SetTimelineHome(_)
             | WorkbenchCommand::ClearTimeline => {}
         }
@@ -513,11 +544,13 @@ impl ViewerApp {
     pub(super) fn on_refresh(&mut self, _: &Refresh, _: &mut Window, cx: &mut Context<Self>) {
         self.session.update(cx, |session, session_cx| {
             session.transient_error = None;
+            session.views.clear_active_timeline_extents();
             session.publish_snapshot();
             session_cx.notify();
         });
         self.refresh_all_sources(cx);
         self.request_overview(cx);
+        self.request_detail(cx);
         if self.inspector_visible(cx) {
             self.request_inspector(cx);
         }
@@ -661,7 +694,6 @@ impl ViewerApp {
         }
         self.dispatch_workbench_command(WorkbenchCommand::ZoomViewport { anchor, factor }, cx);
         self.workspace.update(cx, |workspace, cx| {
-            workspace.defer_metric_repaint(cx);
             workspace.schedule_detail_refresh(cx);
         });
     }

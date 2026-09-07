@@ -174,6 +174,14 @@ pub(crate) enum WorkbenchSessionEvent {
 
 impl EventEmitter<WorkbenchSessionEvent> for WorkbenchSession {}
 
+#[cfg(feature = "test-support")]
+impl Drop for WorkbenchSession {
+    fn drop(&mut self) {
+        self.event_tasks.clear();
+        self.sources.shutdown_for_tests();
+    }
+}
+
 impl WorkbenchSession {
     pub fn new(workbench_path: Option<PathBuf>) -> Self {
         let views = AnalysisViews::default();
@@ -314,6 +322,7 @@ impl WorkbenchSession {
                 succeeded,
             };
         }
+        let completed = *completed;
         let panel_id = completed.tag.panel_id.clone();
         let metric_key = self
             .views
@@ -337,22 +346,41 @@ impl WorkbenchSession {
                 completed.source_errors,
             )
         } else {
-            self.views.complete_active_panel_read(
-                &panel_id,
-                kind,
-                completed.tag.generation,
-                completed.tag.mode,
-                completed.curves,
-                completed.source_errors,
-            )
+            self.views.complete_active_panel_read(kind, completed)
         };
-        if accepted && kind == ReadKind::Overview {
+        if accepted
+            && kind == ReadKind::Overview
+            && self.views.active().selected_panel_id.as_ref() == Some(&panel_id)
+        {
+            let required_runs = self
+                .views
+                .active()
+                .runs
+                .iter()
+                .filter(|run| {
+                    self.sources.source(&run.source_id).is_some_and(|source| {
+                        source.catalog.runs.iter().any(|candidate| {
+                            candidate.project_id == run.project_id && candidate.run_id == run.run_id
+                        })
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
             let extent = self
                 .views
                 .active_panel(&panel_id)
                 .and_then(|panel| panel.overview.as_ref())
                 .and_then(|snapshot| snapshot.real_range);
-            if let Some(metric_key) = metric_key
+            let resolved = self.views.active_panel(&panel_id).is_some_and(|panel| {
+                let budget = panel.requested_overview_budget.unwrap_or_default();
+                !required_runs.is_empty()
+                    && required_runs
+                        .iter()
+                        .all(|run| panel.overview_run_resolved(run, budget))
+            });
+            let provisional = self.views.active().navigation.brush().is_none();
+            if (provisional || resolved)
+                && let Some(metric_key) = metric_key
                 && let Some(home) = self.views.record_active_metric_extent(metric_key, extent)
             {
                 self.views.active_mut().navigation.set_timeline_home(home);

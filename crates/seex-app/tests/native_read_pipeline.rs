@@ -224,7 +224,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         ReadSnapshot::Overview(snapshot) => snapshot,
         other => return Err(format!("unexpected overview snapshot: {other:?}").into()),
     };
-    assert_eq!(overview.point_budget, 256);
+    assert_eq!(overview.point_budget, 128);
     assert_eq!(
         overview
             .real_range
@@ -232,7 +232,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         Some((0, SOURCE_POINTS - 1))
     );
     assert_eq!(overview.series[0].source_row_count, SOURCE_POINTS as u64);
-    assert!(overview.series[0].returned_point_count <= 258);
+    assert!(overview.series[0].returned_point_count <= 130);
     assert!(overview.series[0].downsampled());
     assert_eq!(
         overview
@@ -276,8 +276,8 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         ReadSnapshot::Detail(snapshot) => snapshot,
         other => return Err(format!("unexpected detail snapshot: {other:?}").into()),
     };
-    assert_eq!(full_detail.point_budget, 512);
-    assert!(full_detail.series[0].returned_point_count <= 514);
+    assert_eq!(full_detail.point_budget, 256);
+    assert!(full_detail.series[0].returned_point_count <= 258);
     assert!(full_detail.series[0].downsampled());
 
     let detail_request = DetailRequest {
@@ -297,11 +297,11 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
     };
     assert_eq!(detail.point_budget, full_detail.point_budget);
     assert_eq!(detail.series[0].source_row_count, 1_003);
-    assert!(detail.series[0].returned_point_count <= 514);
+    assert!(detail.series[0].returned_point_count <= 258);
     #[cfg(feature = "test-support")]
     {
         let resources = detail.resource_snapshot();
-        assert_eq!(resources.requested_budget, 512);
+        assert_eq!(resources.requested_budget, 256);
         assert_eq!(resources.source_points, 1_003);
         assert_eq!(
             resources.returned_points,
