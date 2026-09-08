@@ -12,7 +12,7 @@ use crate::data::SourcePreflight;
 use crate::domain::{SourceAlias, suggest_source_alias};
 use crate::workbench::import::WorkbenchImportPlan;
 
-use super::components::{self, DialogButtonKind, TextInput};
+use super::components::{self, DialogButtonKind};
 use super::theme::ViewerTheme;
 
 #[derive(Clone, Debug)]
@@ -45,8 +45,6 @@ pub(crate) enum SourceManagementEvent {
 }
 
 pub(crate) struct SourceManagement {
-    alias: gpui::Entity<TextInput>,
-    alias_focus: FocusHandle,
     source_focus: FocusHandle,
     next_draft_id: u64,
     next_generation: u64,
@@ -69,7 +67,7 @@ struct SourcesDraft {
 struct SourceDraft {
     id: u64,
     original: Option<ConfiguredSource>,
-    alias: String,
+    alias: SourceAlias,
     root_path: PathBuf,
     projects: Vec<Project>,
     unavailable_projects: Vec<ProjectId>,
@@ -152,10 +150,7 @@ impl SourcesDraft {
                 if item.removed || !item.is_dirty() {
                     return true;
                 }
-                item.pending.is_none()
-                    && item.is_ready()
-                    && !item.selected.is_empty()
-                    && (!item.is_new() || validate_alias(self, item.id, &item.alias).is_ok())
+                item.pending.is_none() && item.is_ready() && !item.selected.is_empty()
             })
     }
 
@@ -170,7 +165,7 @@ impl SourcesDraft {
                 removed_roots.push(item.root_path.clone());
             } else if item.is_dirty() {
                 updates.push(ConfiguredSource {
-                    alias: SourceAlias::new(&item.alias).ok()?,
+                    alias: item.alias.clone(),
                     root_path: item.root_path.clone(),
                     projects: item.selected_projects(),
                 });
@@ -187,11 +182,7 @@ impl EventEmitter<SourceManagementEvent> for SourceManagement {}
 
 impl SourceManagement {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let alias = cx.new(|_| TextInput::default());
-        cx.observe(&alias, |_, _, cx| cx.notify()).detach();
         Self {
-            alias,
-            alias_focus: cx.focus_handle().tab_stop(true),
             source_focus: cx.focus_handle().tab_stop(true),
             next_draft_id: 1,
             next_generation: 1,
@@ -224,7 +215,7 @@ impl SourceManagement {
             });
             items.push(SourceDraft {
                 id,
-                alias: source.alias.as_str().to_owned(),
+                alias: source.alias.clone(),
                 root_path: source.root_path.clone(),
                 projects: Vec::new(),
                 unavailable_projects: source.projects.clone(),
@@ -236,15 +227,13 @@ impl SourceManagement {
                 original: Some(source),
             });
         }
-        let active = items.first().map(|item| item.id);
         self.sources = Some(SourcesDraft {
             items,
-            active,
+            active: None,
             reserved_aliases,
             saving: false,
             error: None,
         });
-        self.sync_active_alias(false, cx);
         self.source_focus.focus(window);
         cx.notify();
         requests
@@ -277,6 +266,7 @@ impl SourceManagement {
         };
         let mut requests = self.begin_sources(vec![configured], vec![alias], window, cx);
         if let Some(request) = requests.pop() {
+            self.select_source(request.draft_id, cx);
             self.finish_preflight(request, Ok(preflight), window, cx);
         }
     }
@@ -290,12 +280,7 @@ impl SourceManagement {
             return Vec::new();
         };
         let mut used_aliases = draft.reserved_aliases.clone();
-        used_aliases.extend(
-            draft
-                .items
-                .iter()
-                .filter_map(|item| SourceAlias::new(&item.alias).ok()),
-        );
+        used_aliases.extend(draft.items.iter().map(|item| item.alias.clone()));
         let mut requests = Vec::new();
         let mut first_new = None;
         for path in paths {
@@ -319,7 +304,7 @@ impl SourceManagement {
             draft.items.push(SourceDraft {
                 id,
                 original: None,
-                alias: alias.as_str().to_owned(),
+                alias,
                 root_path: path.clone(),
                 projects: Vec::new(),
                 unavailable_projects: Vec::new(),
@@ -334,7 +319,6 @@ impl SourceManagement {
             draft.active = Some(id);
         }
         draft.error = None;
-        self.sync_active_alias(false, cx);
         cx.notify();
         requests
     }
@@ -379,7 +363,7 @@ impl SourceManagement {
         &mut self,
         request: SourcePreflightRequest,
         result: Result<SourcePreflight, String>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(draft) = self.sources.as_mut() else {
@@ -406,7 +390,6 @@ impl SourceManagement {
                         draft.items.remove(index);
                         draft.items[existing_index].removed = false;
                         draft.active = Some(existing_id);
-                        self.sync_active_alias(false, cx);
                         cx.notify();
                         return;
                     }
@@ -442,14 +425,6 @@ impl SourceManagement {
                 item.status = DraftStatus::Ready;
                 item.pending = None;
                 item.source_error = None;
-                if item.is_new() && draft.active == Some(item.id) {
-                    self.alias.update(cx, |input, cx| {
-                        input.set_text(&item.alias);
-                        input.select_all();
-                        input.start_blink(cx);
-                    });
-                    self.alias_focus.focus(window);
-                }
             }
             Err(error) => {
                 let item = &mut draft.items[index];
@@ -493,7 +468,7 @@ impl SourceManagement {
                     .iter_mut()
                     .find(|item| item.id == request.draft_id)
             }) {
-                item.alias = alias.as_str().to_owned();
+                item.alias = alias;
             }
             preflight
         });
@@ -517,7 +492,6 @@ impl SourceManagement {
 
     pub(crate) fn complete_save(&mut self, cx: &mut Context<Self>) {
         self.sources = None;
-        self.alias.update(cx, |input, cx| input.stop_blink(cx));
         cx.notify();
     }
 
@@ -551,24 +525,13 @@ impl SourceManagement {
     }
 
     #[cfg(all(test, feature = "test-support"))]
-    pub(crate) fn active_alias_state(&self, cx: &gpui::App) -> (Option<String>, bool) {
-        (
-            self.sources
-                .as_ref()
-                .and_then(SourcesDraft::active)
-                .map(|item| item.alias.clone()),
-            self.alias.read(cx).is_select_all(),
-        )
-    }
-
-    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn active_source_state(&self) -> Option<(String, usize, Option<String>)> {
         self.sources
             .as_ref()
             .and_then(SourcesDraft::active)
             .map(|item| {
                 (
-                    item.alias.clone(),
+                    item.alias.to_string(),
                     item.projects.len(),
                     item.source_error.clone(),
                 )
@@ -581,7 +544,7 @@ impl SourceManagement {
             draft
                 .items
                 .iter()
-                .find(|item| item.alias == alias)
+                .find(|item| item.alias.as_str() == alias)
                 .map(|item| item.id)
         });
         if let Some(id) = id {
@@ -609,31 +572,12 @@ impl SourceManagement {
         generation
     }
 
-    fn sync_active_alias(&mut self, select_all: bool, cx: &mut Context<Self>) {
-        let alias = self
-            .sources
-            .as_ref()
-            .and_then(SourcesDraft::active)
-            .map(|item| item.alias.clone())
-            .unwrap_or_default();
-        self.alias.update(cx, |input, cx| {
-            input.set_text(alias);
-            if select_all {
-                input.select_all();
-                input.start_blink(cx);
-            } else {
-                input.stop_blink(cx);
-            }
-        });
-    }
-
     fn select_source(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(draft) = self.sources.as_mut().filter(|draft| !draft.saving) else {
             return;
         };
         draft.active = Some(id);
         draft.error = None;
-        self.sync_active_alias(false, cx);
         cx.notify();
     }
 
@@ -698,16 +642,7 @@ impl SourceManagement {
         };
         if draft.items[index].is_new() {
             draft.items.remove(index);
-            draft.active = draft
-                .items
-                .get(index)
-                .or_else(|| {
-                    index
-                        .checked_sub(1)
-                        .and_then(|index| draft.items.get(index))
-                })
-                .map(|item| item.id);
-            self.sync_active_alias(false, cx);
+            draft.active = None;
         } else {
             draft.items[index].removed = !draft.items[index].removed;
         }
@@ -719,7 +654,6 @@ impl SourceManagement {
             return;
         }
         self.next_generation = self.next_generation.saturating_add(1);
-        self.alias.update(cx, |input, cx| input.stop_blink(cx));
         self.sources = None;
         self.workbench = None;
         self.workbench_saving = false;
@@ -750,28 +684,6 @@ impl SourceManagement {
         cx.notify();
     }
 
-    fn edit_alias(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let outcome = self.alias.update(cx, |input, cx| {
-            let outcome = input.edit(event);
-            if outcome.handled {
-                input.start_blink(cx);
-            }
-            outcome
-        });
-        if outcome.changed {
-            let alias = self.alias.read(cx).text().to_owned();
-            if let Some(item) = self.sources.as_mut().and_then(SourcesDraft::active_mut)
-                && item.is_new()
-            {
-                item.alias = alias;
-            }
-            cx.notify();
-        }
-        if outcome.handled {
-            cx.stop_propagation();
-        }
-    }
-
     fn handle_dialog_key(
         &mut self,
         event: &KeyDownEvent,
@@ -788,23 +700,6 @@ impl SourceManagement {
         }
         cx.stop_propagation();
     }
-}
-
-fn validate_alias(draft: &SourcesDraft, id: u64, alias: &str) -> Result<SourceAlias, &'static str> {
-    if alias.is_empty() {
-        return Err("Enter a Source alias");
-    }
-    let alias =
-        SourceAlias::new(alias).map_err(|_| "Alias must be a lowercase portable identifier")?;
-    if draft.reserved_aliases.contains(&alias)
-        || draft
-            .items
-            .iter()
-            .any(|item| item.id != id && !item.removed && item.alias == alias.as_str())
-    {
-        return Err("Source alias is already configured");
-    }
-    Ok(alias)
 }
 
 impl Render for SourceManagement {
@@ -870,13 +765,7 @@ impl Render for SourceManagement {
                             .flex()
                             .when(narrow, |body| body.flex_col())
                             .child(self.render_source_list(&draft, narrow, theme, cx))
-                            .child(self.render_source_detail(
-                                &draft,
-                                active.as_ref(),
-                                theme,
-                                window,
-                                cx,
-                            )),
+                            .child(self.render_source_detail(&draft, active.as_ref(), theme, cx)),
                     )
                     .children(draft.error.map(|error| {
                         div()
@@ -944,6 +833,12 @@ impl SourceManagement {
                 let path_selector = SharedString::from(format!("source-item-path:{id}"));
                 let selected = draft.active == Some(id);
                 let path = item.root_path.to_string_lossy().into_owned();
+                let name = item
+                    .root_path
+                    .file_name()
+                    .unwrap_or_else(|| item.root_path.as_os_str())
+                    .to_string_lossy()
+                    .into_owned();
                 let status_color = if matches!(item.status, DraftStatus::Unavailable(_)) {
                     theme.colors.error_text
                 } else if item.removed || item.is_new() || item.is_dirty() {
@@ -968,7 +863,7 @@ impl SourceManagement {
                                 this.select_source(id, cx);
                             }))
                     })
-                    .child(div().truncate().child(item.alias.clone()))
+                    .child(div().truncate().child(name))
                     .child(
                         div()
                             .flex()
@@ -1010,12 +905,12 @@ impl SourceManagement {
         draft: &SourcesDraft,
         item: Option<&SourceDraft>,
         theme: ViewerTheme,
-        window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let Some(item) = item else {
             return div()
                 .id("source-detail-empty")
+                .debug_selector(|| "source-detail-empty".to_owned())
                 .flex_1()
                 .rounded(theme.spacing.corner_radius)
                 .border_1()
@@ -1024,20 +919,15 @@ impl SourceManagement {
                 .items_center()
                 .justify_center()
                 .text_color(theme.colors.text_muted)
-                .child("Add a Source to choose Projects.")
+                .child(if draft.items.is_empty() {
+                    "Add a Source to choose Projects."
+                } else {
+                    "Select a Source to manage its Projects."
+                })
                 .into_any_element();
         };
-        let alias_input = self.alias.read(cx);
-        let alias = alias_input.text().to_owned();
-        let (alias_prefix, alias_suffix) = alias.split_at(alias_input.cursor());
-        let alias_select_all = alias_input.is_select_all();
-        let alias_cursor_visible = alias_input.cursor_visible();
-        let alias_focused = self.alias_focus.is_focused(window);
         let editable = item.is_new() && !item.removed && !draft.saving;
         let selectable = item.is_ready() && !item.removed && !draft.saving;
-        let alias_error = editable
-            .then(|| validate_alias(draft, item.id, &item.alias).err())
-            .flatten();
         let selected_count = item.selected.len();
         let project_count = item.projects.len() + item.unavailable_projects.len();
         let id = item.id;
@@ -1091,59 +981,6 @@ impl SourceManagement {
                             .child("Replace")
                     })),
             )
-            .child(div().text_xs().child("Alias"))
-            .child(if editable {
-                div()
-                    .id("source-alias-input")
-                    .debug_selector(|| "source-alias-input".to_owned())
-                    .track_focus(&self.alias_focus)
-                    .h(theme.spacing.control_height)
-                    .relative()
-                    .px_2()
-                    .flex()
-                    .items_center()
-                    .border_1()
-                    .border_color(theme.colors.border)
-                    .rounded(theme.spacing.corner_radius)
-                    .cursor_text()
-                    .on_key_down(cx.listener(Self::edit_alias))
-                    .children(alias_select_all.then(|| {
-                        div()
-                            .id("source-alias-selection")
-                            .debug_selector(|| "source-alias-selection".to_owned())
-                            .rounded(px(2.))
-                            .bg(theme.colors.element_active)
-                            .child(alias.clone())
-                    }))
-                    .children((!alias_select_all).then(|| div().child(alias_prefix.to_owned())))
-                    .children((alias_focused && alias_cursor_visible).then(|| {
-                        div()
-                            .id("source-alias-caret")
-                            .debug_selector(|| "source-alias-caret".to_owned())
-                            .ml(px(1.))
-                            .w(px(1.))
-                            .h(px(14.))
-                            .flex_none()
-                            .bg(theme.colors.text)
-                    }))
-                    .children((!alias_select_all).then(|| div().child(alias_suffix.to_owned())))
-                    .child(TextInput::cursor_target(
-                        self.alias.clone(),
-                        self.alias_focus.clone(),
-                        px(8.),
-                    ))
-                    .into_any_element()
-            } else {
-                readonly_value("source-alias-readonly", item.alias.clone(), theme)
-                    .into_any_element()
-            })
-            .children(alias_error.map(|error| {
-                div()
-                    .id("source-alias-error")
-                    .debug_selector(|| "source-alias-error".to_owned())
-                    .text_color(theme.colors.error_text)
-                    .child(error)
-            }))
             .child(
                 div()
                     .flex()
@@ -1415,22 +1252,6 @@ fn dialog_max_height(window: &Window) -> gpui::Pixels {
     (window.viewport_size().height - px(32.))
         .max(px(120.))
         .min(px(560.))
-}
-
-fn readonly_value(
-    id: &'static str,
-    value: String,
-    theme: ViewerTheme,
-) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .debug_selector(move || id.to_owned())
-        .h(theme.spacing.control_height)
-        .flex()
-        .items_center()
-        .truncate()
-        .text_color(theme.colors.text_muted)
-        .child(value)
 }
 
 fn import_summary(
