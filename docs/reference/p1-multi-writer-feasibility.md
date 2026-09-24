@@ -57,8 +57,10 @@ The four-client write/read snapshot is covered by
 `crashed_writer_can_restart_and_finish_the_same_run` probe drains a child process, terminates it
 without running destructors, reopens the SQLite store, verifies the running Run and persisted point,
 resumes the same Run, and finishes it. A unit probe reopens after a terminal commit followed by a
-forced flush failure and explicitly retries the idempotent DuckLake inline flush. Missing storage
-format markers are rejected by both read-only and read-write opens.
+forced flush failure. It checks that a new writer automatically retries the idempotent DuckLake
+inline flush, that a second failure preserves the marker, and that a Reader sees the committed
+inline point without running recovery. Missing and v1 storage format markers are rejected by both
+readers and writers.
 
 Run-writer conflicts, catalog lock timeout versus queue pressure, four-process opening, concurrent
 Reader snapshots, and completed Run flush retries remain covered by the existing acceptance tests.
@@ -84,3 +86,21 @@ before and 621/628 ms after. The P1 implementation therefore carries a
 substantial observed local write cost, even though this comparison cannot
 classify a reliable regression under the gate's noise rule. The manifest and
 raw result remain outside the repository at `/tmp/seex-p1-durability-*.json`.
+
+The opt-in `SEEX_WRITE_TIMING=1` probe records `connection_attach`, lock wait
+and hold, batch append, summary rebuild, and inline flush phases. One four-writer
+correctness run produced four append samples and five finish samples. Mean
+connection open plus attach was 72.6 ms across 24 samples; batch append was
+20.7 ms, summary rebuild 30.9 ms, and inline flush 28.4 ms. Append lock wait
+averaged 325.6 ms and reached 1,096.8 ms. These samples show that connection
+setup and catalog contention matter in this workload; they do not isolate the
+cost of full-Run summary reconstruction or table-wide flush at scale. The raw
+diagnostic log is outside the repository at `/tmp/seex-p1-write-timing.log`.
+
+A second bounded A-B-B-A comparison after automatic recovery returned
+**inconclusive** because finalization samples exceeded the noise limit. Its
+baseline drain medians were 148/148 ms and candidate medians 386/389 ms;
+baseline finalization medians were 105/98 ms and candidate medians
+1,410/1,431 ms. The result does not establish a classified regression, but
+it reinforces that synchronous finalization remains expensive. Its raw result
+is `/tmp/seex-p1-recovery-result.json`.

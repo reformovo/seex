@@ -30,7 +30,7 @@ The default project-local store is:
 ```text
 <project>/.seex/
   config.toml        # optional native project configuration
-  catalog.sqlite     # SQLite-backed DuckLake catalog and format marker
+  catalog.sqlite     # SQLite-backed DuckLake catalog and v2 format marker
   data/              # default Parquet data path
 ```
 
@@ -38,7 +38,8 @@ Users may override `catalog_path` and `data_path` independently with local
 filesystem paths. S3 and DuckDB catalog configuration are rejected. An
 explicit `catalog_path` is used as provided. Newly created stores carry a
 `seex_storage_metadata` format marker; an existing store with a missing or
-unsupported marker is rejected instead of initialized or migrated.
+unsupported marker is rejected instead of initialized or migrated. Format v2
+adds a global `flush_pending` marker to `seex_storage_metadata`.
 
 Relative paths read from `<project>/.seex/config.toml` are resolved against
 the project root. Explicit SDK paths retain their caller-provided resolution
@@ -94,8 +95,12 @@ Opening an existing DELETE-journal catalog through a writer migrates it to WAL.
 Migration failure is a storage error; Seex does not silently fall back to DELETE
 mode. Read-only clients may inspect an older catalog before migration. SQLite
 `-wal` and `-shm` files are runtime sidecars, not catalog schema or Parquet
-compatibility boundaries. Writer reopen validates the format marker and
-terminal inline flush remains explicitly retryable after a crash.
+compatibility boundaries. Writer reopen validates the format marker. A
+successful terminal status update and `flush_pending = 1` commit in one
+transaction after summary construction. The catalog lock covers inline flush
+and marker clearing. A new writer retries only when the marker is set; a
+failed retry prevents that writer from opening. Read-only Readers never run
+recovery, and v1 directories are rejected.
 
 ## Data Area Responsibilities
 
