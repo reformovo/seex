@@ -17,30 +17,28 @@ catalog database
   seex_metric_aggregates
   small inline data managed by DuckLake
 
-data area / object storage
+local data area
   partitioned metric_points Parquet files
 ```
 
-Local native catalogs use DuckDB or SQLite. PostgreSQL is a future
-shared-catalog option. Object storage is for the data area, not for the catalog
-database file itself.
+The first-release Native store uses a local SQLite WAL catalog and a local
+DuckLake data area. [ADR 0018](adr/0018-local-sqlite-multi-writer-store.md)
+supersedes the earlier DuckDB catalog and S3 decisions for this release.
 
 The default project-local store is:
 
 ```text
 <project>/.seex/
   config.toml        # optional native project configuration
-  catalog.ducklake   # default DuckDB-backed DuckLake catalog
-  catalog.sqlite     # SQLite-backed DuckLake catalog
+  catalog.sqlite     # SQLite-backed DuckLake catalog and format marker
   data/              # default Parquet data path
 ```
 
-Users may override `catalog_path` and `data_path` independently. `catalog_path`
-remains a local filesystem path. `data_path` may be local or S3-compatible,
-such as `s3://bucket/prefix`. Backend-specific catalog defaults use
-conventional filenames, but an explicit `catalog_path` is used as provided.
-The catalog database remains local unless a shared-catalog decision says
-otherwise.
+Users may override `catalog_path` and `data_path` independently with local
+filesystem paths. S3 and DuckDB catalog configuration are rejected. An
+explicit `catalog_path` is used as provided. Newly created stores carry a
+`seex_storage_metadata` format marker; an existing store with a missing or
+unsupported marker is rejected instead of initialized or migrated.
 
 Relative paths read from `<project>/.seex/config.toml` are resolved against
 the project root. Explicit SDK paths retain their caller-provided resolution
@@ -51,12 +49,12 @@ behavior.
 `seex_projects`, `seex_runs`, and `seex_metric_aggregates` are small,
 hot, and transactional relative to metric points. They serve project selection,
 run lifecycle updates, or metric discovery and summary queries. Keeping them in
-the catalog database avoids small Parquet file churn, object-store read/write
-amplification, and awkward transactional updates for fields such as run status
+the catalog database avoids small Parquet file churn and awkward transactional
+updates for fields such as run status
 and finish time.
 
 `metric_points` is the large append-oriented fact table. It is the table most
-likely to grow to object-store scale, and it is the main long-series analytic
+likely to grow large, and it is the main long-series analytic
 workload. Its durable open boundary should remain partitioned and
 Parquet-shaped so local and external readers can scan or export metric series
 without depending on Seex internals.
@@ -81,28 +79,29 @@ Seex SQL addresses catalog application tables through Seex-owned names
 or a backend-aware adapter, not through DuckLake's internal metadata alias.
 This keeps control-plane and query-index state from becoming coupled to
 DuckLake internal catalog naming. The tables live in the same catalog database
-file as DuckLake metadata for both DuckDB and SQLite local backends.
+file as DuckLake metadata in the SQLite catalog.
 
 ### SQLite Reader/Writer Concurrency
 
-SQLite catalogs use WAL journal mode for the supported local concurrency shape:
-one writer process with multiple read-only Readers. Writer connections enable
-WAL and use a 30-second metadata busy timeout. Native Reader connections attach
-DuckLake in read-only mode and use the same busy timeout without changing the
-catalog journal mode.
+SQLite catalogs use WAL journal mode for multiple writer processes writing
+different Runs alongside read-only Readers. A Run has one advisory-locked writer.
+Catalog/DuckLake write transactions hold a cross-process catalog lock; metric
+admission remains an in-process bounded queue. Writer connections enable WAL
+and use a 30-second metadata busy timeout. Reader connections attach DuckLake
+in read-only mode and refresh stale snapshots before retrying a query.
 
 Opening an existing DELETE-journal catalog through a writer migrates it to WAL.
 Migration failure is a storage error; Seex does not silently fall back to DELETE
 mode. Read-only clients may inspect an older catalog before migration. SQLite
 `-wal` and `-shm` files are runtime sidecars, not catalog schema or Parquet
-compatibility boundaries. This contract does not add multi-writer coordination.
+compatibility boundaries. Writer reopen validates the format marker and
+terminal inline flush remains explicitly retryable after a crash.
 
 ## Data Area Responsibilities
 
 - Store large Parquet data files for metric facts.
 - Support local filesystem paths in native mode.
 - Support a custom local Parquet data path.
-- Support S3-compatible object-storage data paths, including local MinIO.
 - Keep the metric point schema compatible with the Parquet contract.
 - Partition metric point files for export-friendly layout.
 - Preserve accepted metric points without making the training hot path wait for
@@ -187,27 +186,19 @@ The default `data_path` is `<project>/.seex/data`. Users may override it
 with a local filesystem path:
 
 ```text
-catalog_path = <project>/.seex/catalog.ducklake
+catalog_path = <project>/.seex/catalog.sqlite
 data_path    = /mnt/seex/<project>/data/
 ```
 
-When `data_path` is object storage, DuckLake records relative data-file paths
-in the catalog and resolves them against the configured object-store URI.
-Accessing S3-compatible storage requires the DuckDB HTTPFS/S3 configuration
-outside the catalog file itself.
-
-S3 configuration lives in `<project>/.seex/config.toml`. Explicit
-`seex.init(...)` keyword arguments override config-file values. S3 secrets
-configure only the current DuckDB connection and must not be copied into
-DuckLake or Seex catalog tables. S3-backed `data_path` is supported for both
-DuckDB and SQLite catalog backends, while `catalog_path` remains local-only.
+Both paths must be local filesystem paths. The configuration resolver rejects
+URI paths before opening the catalog.
 
 ## Metric Ingestion Durability
 
 Metric ingestion has two separate requirements:
 
 - Training code must not wait for DuckDB writes, DuckLake snapshot work,
-  aggregate refresh, object-storage I/O, or Parquet flush.
+  aggregate refresh, or Parquet flush.
 - Seex must not silently drop metric points that it has accepted from user
   code.
 
