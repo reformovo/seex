@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use crate::storage::bootstrap::{
     CatalogBackend, NativeStorageConfig, flush_pending_in_locked_connection,
     open_existing_native_connection_with_config, open_existing_writer_connection_with_config,
+    record_write_timing,
 };
 use crate::storage::rows::{StoredRun, status_as_str};
 use crate::storage::time::{timestamp_as_rfc3339, timestamp_from_millis};
@@ -70,9 +71,16 @@ impl ProjectConnection {
         &self,
         write: impl FnOnce(&duckdb::Connection) -> Result<T, StorageError>,
     ) -> Result<T, StorageError> {
+        let started = Instant::now();
         let _guard = self.write_guard()?;
+        record_write_timing("summary_lock_wait", started.elapsed());
+        let held_since = Instant::now();
         let fresh = self.fresh_writer()?;
-        write(fresh.as_ref().unwrap_or(&self.connection))
+        let summary_started = Instant::now();
+        let result = write(fresh.as_ref().unwrap_or(&self.connection));
+        record_write_timing("summary_rebuild", summary_started.elapsed());
+        record_write_timing("summary_lock_hold", held_since.elapsed());
+        result
     }
 
     fn fresh_writer(&self) -> Result<Option<duckdb::Connection>, StorageError> {
@@ -384,6 +392,7 @@ impl ProjectConnection {
         deadline: Option<Instant>,
         only_pending: bool,
     ) -> (Result<(), StorageError>, bool) {
+        let started = Instant::now();
         let guard_timeout = deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .unwrap_or(CATALOG_WRITE_TIMEOUT);
@@ -394,6 +403,8 @@ impl ProjectConnection {
                 return (Err(error), timed_out);
             }
         };
+        record_write_timing("flush_lock_wait", started.elapsed());
+        let held_since = Instant::now();
         let completed = Arc::new(AtomicBool::new(false));
         let timed_out = Arc::new(AtomicBool::new(false));
         let fresh = match self.fresh_writer() {
@@ -414,6 +425,7 @@ impl ProjectConnection {
                 }
             });
         }
+        let flush_started = Instant::now();
         let result = if only_pending {
             if self.uses_sqlite_catalog() {
                 flush_pending_in_locked_connection(connection).map(|_| ())
@@ -443,17 +455,23 @@ impl ProjectConnection {
                 )
                 .map_err(StorageError::from)
         };
+        record_write_timing("inline_flush", flush_started.elapsed());
         completed.store(true, Ordering::Relaxed);
         drop(guard);
+        record_write_timing("flush_lock_hold", held_since.elapsed());
         let timed_out = timed_out.load(Ordering::Relaxed)
             || deadline.is_some_and(|deadline| Instant::now() >= deadline);
         (result, timed_out)
     }
 
     pub fn append_metric_batch(&self, rows: &[MetricWrite]) -> Result<(), StorageError> {
+        let started = Instant::now();
         let _guard = self.write_guard()?;
+        record_write_timing("append_lock_wait", started.elapsed());
+        let held_since = Instant::now();
         let fresh = self.fresh_writer()?;
         let connection = fresh.as_ref().unwrap_or(&self.connection);
+        let append_started = Instant::now();
         let mut appender = connection.appender_with_columns_to_catalog_and_db(
             "metric_points",
             "dl",
@@ -483,6 +501,8 @@ impl ProjectConnection {
             ])?;
         }
         appender.flush()?;
+        record_write_timing("batch_append", append_started.elapsed());
+        record_write_timing("append_lock_hold", held_since.elapsed());
         Ok(())
     }
 }

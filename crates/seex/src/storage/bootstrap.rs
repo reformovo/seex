@@ -336,6 +336,7 @@ fn open_native_connection_with_mode(
     config: NativeStorageConfig,
     mode: NativeConnectionMode,
 ) -> Result<duckdb::Connection, StorageError> {
+    let connection_started = std::time::Instant::now();
     let must_exist = mode.must_exist();
     let _catalog_guard = if must_exist {
         None
@@ -376,6 +377,9 @@ fn open_native_connection_with_mode(
         mode,
     )?;
     setup_catalog_adapter(&connection, config.catalog_backend, &config.catalog_path)?;
+    if !matches!(mode, NativeConnectionMode::ReadOnly) {
+        record_write_timing("connection_attach", connection_started.elapsed());
+    }
     if !must_exist && !catalog_preexisted {
         initialize_storage_tables(&connection)?;
     } else {
@@ -385,6 +389,16 @@ fn open_native_connection_with_mode(
         flush_pending_in_locked_connection(&connection)?;
     }
     Ok(connection)
+}
+
+pub(crate) fn record_write_timing(stage: &str, elapsed: std::time::Duration) {
+    if std::env::var_os("SEEX_WRITE_TIMING").is_some() {
+        eprintln!(
+            "seex_write_timing,pid={},stage={stage},elapsed_ns={}",
+            std::process::id(),
+            elapsed.as_nanos()
+        );
+    }
 }
 
 /// Retries a pending terminal flush while the caller holds the catalog write lock.
