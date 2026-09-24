@@ -57,11 +57,9 @@ impl PySettings {
     ) -> PyResult<Self> {
         if catalog_backend
             .as_deref()
-            .is_some_and(|value| !matches!(value, "duckdb" | "sqlite"))
+            .is_some_and(|value| value != "sqlite")
         {
-            return Err(PyValueError::new_err(
-                "catalog_backend must be 'duckdb' or 'sqlite'",
-            ));
+            return Err(PyValueError::new_err("catalog_backend must be 'sqlite'"));
         }
         if !(1..=1_048_576).contains(&metric_queue_capacity) {
             return Err(PyValueError::new_err(
@@ -123,7 +121,6 @@ impl PySettings {
 
     fn native_catalog_backend(&self) -> Option<CatalogBackend> {
         match self.catalog_backend.as_deref() {
-            Some("duckdb") => Some(CatalogBackend::DuckDb),
             Some("sqlite") => Some(CatalogBackend::Sqlite),
             _ => None,
         }

@@ -19,7 +19,7 @@ class Settings:
     def __init__(
         self,
         *,
-        catalog_backend: Literal["duckdb", "sqlite"] | None = None,
+        catalog_backend: Literal["sqlite"] | None = None,
         catalog_path: str | os.PathLike[str] | None = None,
         data_path: str | os.PathLike[str] | None = None,
         metric_queue_capacity: int = 65536,
@@ -32,7 +32,7 @@ class Settings:
         s3_use_ssl: bool | None = None,
     ) -> None: ...
     @property
-    def catalog_backend(self) -> Literal["duckdb", "sqlite"] | None: ...
+    def catalog_backend(self) -> Literal["sqlite"] | None: ...
     @property
     def catalog_path(self) -> str | os.PathLike[str] | None: ...
     @property
