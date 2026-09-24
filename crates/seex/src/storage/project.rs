@@ -1,12 +1,16 @@
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 use chrono::{DateTime, Utc};
 
+use crate::storage::bootstrap::{
+    NativeStorageConfig, open_existing_native_connection_with_config,
+    open_existing_writer_connection_with_config,
+};
 use crate::storage::rows::{StoredRun, status_as_str};
 use crate::storage::time::{timestamp_as_rfc3339, timestamp_from_millis};
 use crate::storage::write::NativeWriteStore;
@@ -17,7 +21,7 @@ const CATALOG_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Owning connection for one native Seex project store.
 pub struct ProjectConnection {
     connection: duckdb::Connection,
-    write_catalog_path: Option<PathBuf>,
+    write_config: Option<NativeStorageConfig>,
 }
 
 /// Cloneable cancellation capability bound to one native connection.
@@ -34,24 +38,40 @@ impl ProjectConnection {
     pub const fn new(connection: duckdb::Connection) -> Self {
         Self {
             connection,
-            write_catalog_path: None,
+            write_config: None,
         }
     }
 
     pub(crate) fn with_catalog_write_lock(
         connection: duckdb::Connection,
-        catalog_path: &Path,
+        config: NativeStorageConfig,
     ) -> Self {
         Self {
             connection,
-            write_catalog_path: Some(catalog_path.to_owned()),
+            write_config: Some(config),
         }
     }
 
     fn write_guard(&self) -> Result<Option<CatalogWriteGuard>, StorageError> {
-        self.write_catalog_path
-            .as_deref()
-            .map(|path| CatalogWriteGuard::acquire(path, CATALOG_WRITE_TIMEOUT))
+        self.write_config
+            .as_ref()
+            .map(|config| CatalogWriteGuard::acquire(config.catalog_path(), CATALOG_WRITE_TIMEOUT))
+            .transpose()
+    }
+
+    fn with_write<T>(
+        &self,
+        write: impl FnOnce(&duckdb::Connection) -> Result<T, StorageError>,
+    ) -> Result<T, StorageError> {
+        let _guard = self.write_guard()?;
+        let fresh = self.fresh_writer()?;
+        write(fresh.as_ref().unwrap_or(&self.connection))
+    }
+
+    fn fresh_writer(&self) -> Result<Option<duckdb::Connection>, StorageError> {
+        self.write_config
+            .as_ref()
+            .map(|config| open_existing_writer_connection_with_config(config.clone()))
             .transpose()
     }
 
@@ -60,8 +80,17 @@ impl ProjectConnection {
         connection.execute_batch("USE seex_catalog;")?;
         Ok(Self {
             connection,
-            write_catalog_path: self.write_catalog_path.clone(),
+            write_config: self.write_config.clone(),
         })
+    }
+
+    pub(crate) fn fresh_read(&self) -> Result<Self, StorageError> {
+        let Some(config) = self.write_config.as_ref() else {
+            return self.try_clone();
+        };
+        Ok(Self::new(open_existing_native_connection_with_config(
+            config.clone(),
+        )?))
     }
 
     #[doc(hidden)]
@@ -266,8 +295,9 @@ impl ProjectConnection {
     }
 
     pub fn rebuild_metric_aggregates_for_run(&self, run_id: &RunId) -> Result<(), StorageError> {
-        let _guard = self.write_guard()?;
-        NativeWriteStore::new(&self.connection).rebuild_metric_aggregates_for_run(run_id)
+        self.with_write(|connection| {
+            NativeWriteStore::new(connection).rebuild_metric_aggregates_for_run(run_id)
+        })
     }
 
     pub fn mark_run_terminal(
@@ -291,16 +321,47 @@ impl ProjectConnection {
     }
 
     pub fn flush_metric_points(&self) -> Result<(), StorageError> {
-        let _guard = self.write_guard()?;
-        self.connection.execute_batch(
-            "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
-        )?;
-        Ok(())
+        self.flush_metric_points_with_deadline(None).0
+    }
+
+    pub(crate) fn flush_metric_points_with_deadline(
+        &self,
+        deadline: Option<Instant>,
+    ) -> (Result<(), StorageError>, bool) {
+        let completed = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let result = self.with_write(|connection| {
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                let interrupt = connection.interrupt_handle();
+                let timer_completed = Arc::clone(&completed);
+                let timer_timed_out = Arc::clone(&timed_out);
+                std::thread::spawn(move || {
+                    std::thread::sleep(remaining);
+                    if !timer_completed.load(Ordering::Relaxed) {
+                        timer_timed_out.store(true, Ordering::Relaxed);
+                        interrupt.interrupt();
+                    }
+                });
+            }
+            let result = connection
+                .execute_batch(
+                    "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
+                )
+                .map_err(StorageError::from);
+            completed.store(true, Ordering::Relaxed);
+            result
+        });
+        let timed_out = timed_out.load(Ordering::Relaxed)
+            || deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        (result, timed_out)
     }
 
     pub fn append_metric_batch(&self, rows: &[MetricWrite]) -> Result<(), StorageError> {
         let _guard = self.write_guard()?;
-        let mut appender = self.connection.appender_with_columns_to_catalog_and_db(
+        let fresh = self.fresh_writer()?;
+        let connection = fresh.as_ref().unwrap_or(&self.connection);
+        let mut appender = connection.appender_with_columns_to_catalog_and_db(
             "metric_points",
             "dl",
             "main",

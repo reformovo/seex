@@ -14,12 +14,13 @@ const SQLITE_JOURNAL_MODE: &str = "WAL";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeConnectionMode {
     ReadWrite,
+    ReadWriteExisting,
     ReadOnly,
 }
 
 impl NativeConnectionMode {
     const fn must_exist(self) -> bool {
-        matches!(self, Self::ReadOnly)
+        !matches!(self, Self::ReadWrite)
     }
 }
 
@@ -46,6 +47,7 @@ impl CatalogBackend {
     }
 }
 
+#[derive(Clone)]
 pub struct NativeStorageConfig {
     catalog_backend: CatalogBackend,
     catalog_path: PathBuf,
@@ -149,12 +151,17 @@ impl CatalogAdapter {
             .map(|clause| format!("                 {clause},\n"))
             .unwrap_or_default();
         let read_only_clause = match mode {
-            NativeConnectionMode::ReadWrite => String::new(),
+            NativeConnectionMode::ReadWrite | NativeConnectionMode::ReadWriteExisting => {
+                String::new()
+            }
             NativeConnectionMode::ReadOnly => "                 READ_ONLY,\n".to_owned(),
         };
         let metadata_parameters = match (self.backend, mode) {
             (CatalogBackend::DuckDb, _) => String::new(),
-            (CatalogBackend::Sqlite, NativeConnectionMode::ReadWrite) => format!(
+            (
+                CatalogBackend::Sqlite,
+                NativeConnectionMode::ReadWrite | NativeConnectionMode::ReadWriteExisting,
+            ) => format!(
                 "                 METADATA_PARAMETERS MAP {{'busy_timeout': \
                  '{SQLITE_BUSY_TIMEOUT_MS}', 'journal_mode': '{SQLITE_JOURNAL_MODE}'}},\n"
             ),
@@ -270,6 +277,12 @@ pub fn open_existing_native_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<duckdb::Connection, StorageError> {
     open_native_connection_with_mode(config, NativeConnectionMode::ReadOnly)
+}
+
+pub(crate) fn open_existing_writer_connection_with_config(
+    config: NativeStorageConfig,
+) -> Result<duckdb::Connection, StorageError> {
+    open_native_connection_with_mode(config, NativeConnectionMode::ReadWriteExisting)
 }
 
 pub(crate) fn open_shared_existing_local_connection_with_config(
