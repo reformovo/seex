@@ -1,6 +1,6 @@
 # P1 SQLite/DuckLake multi-process feasibility
 
-Status: P1 acceptance passes through `5f534bd`.
+Status: P1 correctness acceptance passes through `82601a0`.
 These probes ran on
 Darwin 27.0.0 arm64 with Rust 1.97.1. They use one local SQLite WAL catalog, four child processes
 writing distinct Runs, and a Reader opened before the writes. Each child writes 32 points.
@@ -64,3 +64,23 @@ Run-writer conflicts, catalog lock timeout versus queue pressure, four-process o
 Reader snapshots, and completed Run flush retries remain covered by the existing acceptance tests.
 The first release store is SQLite catalog plus local DuckLake data; S3 and the DuckDB catalog
 backend are rejected at configuration resolution.
+
+## Verification and performance observation
+
+The workspace Rust tests, Python tests (99 passed), Pyright, Ruff, wheel build,
+package smoke, and Viewer release build passed after the P1 changes. The
+freshly built release Viewer passed `scripts/viewer_smoke.py` in global and
+Project scopes. `uv run python scripts/viewer_smoke.py` could not read the uv
+cache in the sandbox; `.venv/bin/python scripts/viewer_smoke.py` ran the same
+script successfully.
+
+One bounded A-B-B-A preservation comparison used the P0 revision `4da28dc`
+and the P1 revision `82601a0`, with 1,000 reports in each of 30 Runs per
+capture. It finished within 120 seconds, with ten calibrated samples of at
+least 25 ms per metric. The result was **inconclusive** because baseline
+finalization noise exceeded the 2% limit. Median drain samples were 148/147 ms
+before and 379/379 ms after; median finalization samples were 102/108 ms
+before and 621/628 ms after. The P1 implementation therefore carries a
+substantial observed local write cost, even though this comparison cannot
+classify a reliable regression under the gate's noise rule. The manifest and
+raw result remain outside the repository at `/tmp/seex-p1-durability-*.json`.
