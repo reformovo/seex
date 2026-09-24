@@ -53,9 +53,16 @@ impl ProjectConnection {
     }
 
     fn write_guard(&self) -> Result<Option<CatalogWriteGuard>, StorageError> {
+        self.write_guard_with_timeout(CATALOG_WRITE_TIMEOUT)
+    }
+
+    fn write_guard_with_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<Option<CatalogWriteGuard>, StorageError> {
         self.write_config
             .as_ref()
-            .map(|config| CatalogWriteGuard::acquire(config.catalog_path(), CATALOG_WRITE_TIMEOUT))
+            .map(|config| CatalogWriteGuard::acquire(config.catalog_path(), timeout))
             .transpose()
     }
 
@@ -328,30 +335,38 @@ impl ProjectConnection {
         &self,
         deadline: Option<Instant>,
     ) -> (Result<(), StorageError>, bool) {
+        let guard_timeout = deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(CATALOG_WRITE_TIMEOUT);
+        let guard = match self.write_guard_with_timeout(guard_timeout) {
+            Ok(guard) => guard,
+            Err(error) => return (Err(error), true),
+        };
         let completed = Arc::new(AtomicBool::new(false));
         let timed_out = Arc::new(AtomicBool::new(false));
-        let result = self.with_write(|connection| {
-            if let Some(deadline) = deadline {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let interrupt = connection.interrupt_handle();
-                let timer_completed = Arc::clone(&completed);
-                let timer_timed_out = Arc::clone(&timed_out);
-                std::thread::spawn(move || {
-                    std::thread::sleep(remaining);
-                    if !timer_completed.load(Ordering::Relaxed) {
-                        timer_timed_out.store(true, Ordering::Relaxed);
-                        interrupt.interrupt();
-                    }
-                });
-            }
-            let result = connection
-                .execute_batch(
-                    "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
-                )
-                .map_err(StorageError::from);
-            completed.store(true, Ordering::Relaxed);
-            result
-        });
+        let fresh = match self.fresh_writer() {
+            Ok(fresh) => fresh,
+            Err(error) => return (Err(error), false),
+        };
+        let connection = fresh.as_ref().unwrap_or(&self.connection);
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let interrupt = connection.interrupt_handle();
+            let timer_completed = Arc::clone(&completed);
+            let timer_timed_out = Arc::clone(&timed_out);
+            std::thread::spawn(move || {
+                std::thread::sleep(remaining);
+                if !timer_completed.load(Ordering::Relaxed) {
+                    timer_timed_out.store(true, Ordering::Relaxed);
+                    interrupt.interrupt();
+                }
+            });
+        }
+        let result = connection
+            .execute_batch("CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');")
+            .map_err(StorageError::from);
+        completed.store(true, Ordering::Relaxed);
+        drop(guard);
         let timed_out = timed_out.load(Ordering::Relaxed)
             || deadline.is_some_and(|deadline| Instant::now() >= deadline);
         (result, timed_out)
