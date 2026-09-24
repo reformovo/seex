@@ -1,6 +1,6 @@
 # P1 SQLite/DuckLake multi-process feasibility
 
-Status: investigation; the four-writer snapshot portion of the P1 gate now passes at `159fe4e`.
+Status: P1 acceptance passes through `5f534bd`.
 These probes ran on
 Darwin 27.0.0 arm64 with Rust 1.97.1. They use one local SQLite WAL catalog, four child processes
 writing distinct Runs, and a Reader opened before the writes. Each child writes 32 points.
@@ -50,10 +50,17 @@ for a finished Run. Inline flush follows under the lock; a crash after terminal 
 the existing idempotent flush retry. Measure lock hold time: DuckLake's flush is table-wide, so a
 different coordination design may be required.
 
-## P1 gate still required
+## P1 gate complete
 
-The four-client write/read snapshot is now proven by the regular
-`simultaneous_writers_keep_reader_consistent` test. The remaining P1 gate is to verify lock timeout
-versus queue full, process kill at each commit/flush boundary, restart, terminal flush retry, and one
-bounded A-B-B-A workload. Keep P2–P6 paused and retain other catalog and S3 paths until those checks
-pass.
+The four-client write/read snapshot is covered by
+`simultaneous_writers_keep_reader_consistent`. The
+`crashed_writer_can_restart_and_finish_the_same_run` probe drains a child process, terminates it
+without running destructors, reopens the SQLite store, verifies the running Run and persisted point,
+resumes the same Run, and finishes it. Writer reopen also retries an idempotent DuckLake inline
+flush; a unit probe covers a terminal commit followed by a forced flush failure. Missing storage
+format markers are rejected by both read-only and read-write opens.
+
+Run-writer conflicts, catalog lock timeout versus queue pressure, four-process opening, concurrent
+Reader snapshots, and completed Run flush retries remain covered by the existing acceptance tests.
+The first release store is SQLite catalog plus local DuckLake data; S3 and the DuckDB catalog
+backend are rejected at configuration resolution.

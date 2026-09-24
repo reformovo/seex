@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use seex::{
     CatalogBackend, Client, LogOptions, MetricAxis, MetricKey, MetricQuery, MetricRange, Reader,
-    RunOptions, RunStatus,
+    ResumePolicy, RunOptions, RunStatus,
 };
 
 const WRITERS: usize = 4;
@@ -79,6 +79,29 @@ fn p1_writer_child() -> Result<(), Box<dyn std::error::Error>> {
     run.finish()?;
     client.shutdown()?;
     Ok(())
+}
+
+#[test]
+fn p1_crash_child() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(root) = std::env::var_os("SEEX_P1_CRASH_ROOT") else {
+        return Ok(());
+    };
+    let root = Path::new(&root);
+    let client = Client::builder(root)
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()?;
+    let run = client.start_run(
+        RunOptions::new("p1-crash")
+            .id("crash-run")
+            .resume(ResumePolicy::Never),
+    )?;
+    run.log_with([("loss", 1.0)], LogOptions::new().step(0).commit(true))?;
+    while run.diagnostics().pending_reports != 0 {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fs::write(root.join("crash.ready"), b"ready")?;
+    wait_for(&root.join("crash.go"))?;
+    std::process::exit(0);
 }
 
 fn wait_for(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -174,5 +197,55 @@ fn simultaneous_writers_keep_reader_consistent() -> Result<(), Box<dyn std::erro
     for child in &mut children.0 {
         assert!(child.wait()?.success(), "P1 writer child failed");
     }
+    Ok(())
+}
+
+#[test]
+fn crashed_writer_can_restart_and_finish_the_same_run() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let mut child = Command::new(std::env::current_exe()?)
+        .args(["--exact", "p1_crash_child", "--nocapture"])
+        .env("SEEX_P1_CRASH_ROOT", root.path())
+        .spawn()?;
+    wait_for(&root.path().join("crash.ready"))?;
+    fs::write(root.path().join("crash.go"), b"go")?;
+    assert!(
+        child.wait()?.success(),
+        "crashed writer child did not exit cleanly"
+    );
+
+    let reader = Reader::builder(root.path())
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()?;
+    let project = seex::ProjectId::from_string("p1-crash");
+    let run_id = seex::RunId::from_string("crash-run");
+    let running = reader
+        .run(&project, &run_id)?
+        .ok_or("crashed Run is missing")?;
+    assert_eq!(running.status, RunStatus::Running);
+    let query = MetricQuery::new(MetricRange::All(MetricAxis::Step), 1_024)?;
+    let persisted = reader.query_metric(&run_id, &MetricKey::from_string("loss"), &query)?;
+    assert_eq!(persisted.samples().len(), 1);
+
+    let client = Client::builder(root.path())
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()?;
+    let resumed = client.start_run(
+        RunOptions::new("p1-crash")
+            .id("crash-run")
+            .resume(ResumePolicy::Allow),
+    )?;
+    resumed.log_with([("loss", 2.0)], LogOptions::new().step(1).commit(true))?;
+    resumed.finish()?;
+    let reader = Reader::builder(root.path())
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()?;
+    let finished = reader
+        .run(&project, &run_id)?
+        .ok_or("restarted Run is missing")?;
+    assert_eq!(finished.status, RunStatus::Finished);
+    let series = reader.query_metric(&run_id, &MetricKey::from_string("loss"), &query)?;
+    assert_eq!(series.samples().len(), 2);
+    client.shutdown()?;
     Ok(())
 }
