@@ -22,8 +22,8 @@ pub mod write;
 use crate::model::alignment::{AlignmentQuery, AlignmentQueryResult};
 use crate::model::metric::{MetricQuery, MetricQueryResult};
 
-pub(crate) use lock::ProjectCreateGuard;
 pub use lock::RunWriterGuard;
+pub(crate) use lock::{CatalogWriteGuard, ProjectCreateGuard};
 #[doc(hidden)]
 pub use metric_query::SeriesDiagnostics;
 pub use metric_query::{ProjectMetricReader, percent_encode_metric_key};
@@ -55,6 +55,8 @@ pub enum StorageError {
     RunAlreadyActive { run_id: String },
     #[error("catalog not found: {name}")]
     CatalogNotFound { name: String },
+    #[error("timed out waiting for the catalog write lock")]
+    CatalogWriteLockTimeout,
     #[error("storage operation failed while {operation}: {name}")]
     Storage {
         operation: &'static str,

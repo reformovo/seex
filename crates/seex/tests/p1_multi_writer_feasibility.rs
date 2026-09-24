@@ -15,6 +15,49 @@ const POINTS: i64 = 32;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
+fn p1_open_child() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(root) = std::env::var_os("SEEX_P1_OPEN_ROOT") else {
+        return Ok(());
+    };
+    let root = Path::new(&root);
+    let index = std::env::var("SEEX_P1_OPEN_INDEX")?;
+    fs::write(root.join(format!("open-{index}.ready")), b"ready")?;
+    wait_for(&root.join("open.go"))?;
+    Client::builder(root)
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()?
+        .shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn four_processes_open_existing_sqlite_store() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    Client::builder(root.path())
+        .catalog_backend(CatalogBackend::Sqlite)
+        .open()?
+        .shutdown()?;
+    let mut children = Children(Vec::new());
+    for index in 0..WRITERS {
+        children.0.push(
+            Command::new(std::env::current_exe()?)
+                .args(["--exact", "p1_open_child"])
+                .env("SEEX_P1_OPEN_ROOT", root.path())
+                .env("SEEX_P1_OPEN_INDEX", index.to_string())
+                .spawn()?,
+        );
+    }
+    for index in 0..WRITERS {
+        wait_for(&root.path().join(format!("open-{index}.ready")))?;
+    }
+    fs::write(root.path().join("open.go"), b"go")?;
+    for child in &mut children.0 {
+        assert!(child.wait()?.success(), "concurrent store open failed");
+    }
+    Ok(())
+}
+
+#[test]
 fn p1_writer_child() -> Result<(), Box<dyn std::error::Error>> {
     let Some(root) = std::env::var_os("SEEX_P1_PROBE_ROOT") else {
         return Ok(());

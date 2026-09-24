@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::storage::StorageError;
 use crate::storage::sql::string_literal as sql_string_literal;
+use crate::storage::{CatalogWriteGuard, StorageError};
 
 const DUCKLAKE_ALIAS: &str = "dl";
 const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
@@ -308,6 +308,14 @@ fn open_native_connection_with_mode(
     mode: NativeConnectionMode,
 ) -> Result<duckdb::Connection, StorageError> {
     let must_exist = mode.must_exist();
+    let _catalog_guard = if must_exist {
+        None
+    } else {
+        Some(CatalogWriteGuard::acquire(
+            &config.catalog_path,
+            std::time::Duration::from_secs(30),
+        )?)
+    };
     if must_exist {
         verify_catalog_exists(&config.catalog_path)?;
     } else if let Some(catalog_parent) = config.catalog_path.parent() {
