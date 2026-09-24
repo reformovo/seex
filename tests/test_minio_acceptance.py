@@ -10,14 +10,13 @@ import os
 import pathlib
 import urllib.parse
 import urllib.request
-import uuid
 from typing import Literal
 
 import pytest
 import seex
 
-_CatalogBackend = Literal["duckdb", "sqlite"]
-_CATALOG_BACKENDS: tuple[_CatalogBackend, ...] = ("duckdb", "sqlite")
+_CatalogBackend = Literal["sqlite"]
+_CATALOG_BACKENDS: tuple[_CatalogBackend, ...] = ("sqlite",)
 _REQUIRED_ENV = (
     "SEEX_MINIO_ENDPOINT",
     "SEEX_MINIO_BUCKET",
@@ -43,33 +42,13 @@ def test_minio_s3_data_path_round_trips_catalog_backend(
     tmp_path: pathlib.Path,
     catalog_backend: _CatalogBackend,
 ) -> None:
-    config = _require_minio_config()
-    root_path = tmp_path / catalog_backend / "seex"
-    prefix = f"seex-acceptance/{uuid.uuid4().hex}/{catalog_backend}"
-    partition_prefix = prefix + "/main/metric_points/run_id=run-1/metric_key_encoded=train%252Floss/"
-    settings = _minio_settings(config, prefix, catalog_backend)
-    run = seex.init(
-        project="project-1",
-        dir=root_path,
-        id="run-1",
-        name="baseline",
-        settings=settings,
-    )
-    run.log({"train/loss": 0.25, "eval/accuracy": 0.8}, step=0)
-    run.log({"train/loss": 0.125}, step=1)
-    run.finish()
-    diagnostics = run.diagnostics()
-    terminal_keys = _list_minio_keys(config, partition_prefix)
-    run.finish()
-    retry_diagnostics = run.diagnostics()
-    retry_keys = _list_minio_keys(config, partition_prefix)
-
-    assert diagnostics.last_flush_run_id == "run-1"
-    assert diagnostics.last_flush_status == "succeeded"
-    assert any(key.endswith(".parquet") for key in terminal_keys)
-    assert retry_diagnostics.last_flush_run_id == "run-1"
-    assert retry_diagnostics.last_flush_status == "succeeded"
-    assert any(key.endswith(".parquet") for key in retry_keys)
+    del catalog_backend
+    with pytest.raises(seex.InvalidConfigurationError, match="local filesystem path"):
+        seex.init(
+            project="project-1",
+            dir=tmp_path / "seex",
+            settings=seex.Settings(data_path="s3://bucket/seex"),
+        )
 
 
 def _minio_settings(

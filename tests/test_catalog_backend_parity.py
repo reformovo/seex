@@ -10,7 +10,7 @@ from typing import Literal
 import pytest
 import seex
 
-_CatalogBackend = Literal["duckdb", "sqlite"]
+_CatalogBackend = Literal["sqlite"]
 _CATALOG_BACKENDS: tuple[_CatalogBackend, ...] = ("sqlite",)
 
 
