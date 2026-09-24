@@ -119,7 +119,6 @@ impl NativeClient {
             flush_lock: Arc::new(Mutex::new(())),
             is_shutdown: AtomicBool::new(false),
         };
-        client.recover_pending_flushes()?;
         Ok(client)
     }
 
@@ -302,18 +301,6 @@ impl NativeClient {
                 Err(EngineError::MetricFlush { message })
             }
         }
-    }
-
-    fn recover_pending_flushes(&self) -> Result<(), EngineError> {
-        let connection = self.connection()?;
-        let (result, timed_out) = connection.flush_metric_points_with_deadline(None);
-        drop(connection);
-        if timed_out {
-            return Err(EngineError::MetricFlushTimeout);
-        }
-        result.map_err(|_| EngineError::MetricFlush {
-            message: "flush metric_points failed during store recovery".to_owned(),
-        })
     }
 
     pub fn shutdown(&self, timeout: Option<Duration>) -> Result<(), EngineError> {
@@ -1340,6 +1327,7 @@ mod tests {
             None,
             65_536,
         )?;
+        recovered.flush_run_data(&run.run_id, None)?;
         let partition_path = metric_points_path
             .join("run_id=run-recovery")
             .join("metric_key_encoded=train%252Floss");

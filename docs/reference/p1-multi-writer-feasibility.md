@@ -56,8 +56,8 @@ The four-client write/read snapshot is covered by
 `simultaneous_writers_keep_reader_consistent`. The
 `crashed_writer_can_restart_and_finish_the_same_run` probe drains a child process, terminates it
 without running destructors, reopens the SQLite store, verifies the running Run and persisted point,
-resumes the same Run, and finishes it. Writer reopen also retries an idempotent DuckLake inline
-flush; a unit probe covers a terminal commit followed by a forced flush failure. Missing storage
+resumes the same Run, and finishes it. A unit probe reopens after a terminal commit followed by a
+forced flush failure and explicitly retries the idempotent DuckLake inline flush. Missing storage
 format markers are rejected by both read-only and read-write opens.
 
 Run-writer conflicts, catalog lock timeout versus queue pressure, four-process opening, concurrent

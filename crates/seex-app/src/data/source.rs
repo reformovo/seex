@@ -52,8 +52,8 @@ impl ReadSession {
     ///
     /// # Errors
     ///
-    /// Returns [`SourceError::UnsupportedS3`] before credential resolution for
-    /// an S3 data path. Other configuration and storage failures are preserved.
+    /// Returns a configuration error for an S3 data path before any credential
+    /// resolution. Other configuration and storage failures are preserved.
     pub fn open_existing(root_path: &Path) -> Result<Self, SourceError> {
         let reader = open_local_reader(root_path)?;
         Ok(Self {
@@ -193,7 +193,10 @@ mod tests {
 
         let error = ReadSession::open_existing(root.path()).err();
 
-        assert!(matches!(error, Some(SourceError::UnsupportedS3)));
+        assert!(matches!(
+            error,
+            Some(SourceError::Sdk(seex::Error::Configuration))
+        ));
         Ok(())
     }
 
