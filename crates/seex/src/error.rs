@@ -37,6 +37,7 @@ pub enum Error {
         maximum: usize,
     },
     MetricQueueFull,
+    CatalogWriteLockTimeout,
     RunClosed {
         run_id: String,
     },
@@ -98,6 +99,9 @@ impl fmt::Display for Error {
                 )
             }
             Self::MetricQueueFull => formatter.write_str("Seex metric queue is full"),
+            Self::CatalogWriteLockTimeout => {
+                formatter.write_str("timed out waiting for the catalog write lock")
+            }
             Self::RunClosed { run_id } => write!(formatter, "Run is closed: {run_id}"),
             Self::StepRegression { cursor, attempted } => write!(
                 formatter,
@@ -141,6 +145,7 @@ impl From<crate::engine::EngineError> for Error {
             EngineError::DuplicateRunIdentity { run_id } => Self::DuplicateRunIdentity { run_id },
             EngineError::InvalidRunTransition { run_id, .. } => Self::InvalidRunState { run_id },
             EngineError::MetricQueueFull => Self::MetricQueueFull,
+            EngineError::CatalogWriteLockTimeout => Self::CatalogWriteLockTimeout,
             EngineError::InvalidMetricBatch { count } => Self::MetricMappingTooLarge {
                 count,
                 maximum: 8_192,

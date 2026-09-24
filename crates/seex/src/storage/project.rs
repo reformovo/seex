@@ -1,5 +1,7 @@
 use std::ops::Deref;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
@@ -8,11 +10,14 @@ use chrono::{DateTime, Utc};
 use crate::storage::rows::{StoredRun, status_as_str};
 use crate::storage::time::{timestamp_as_rfc3339, timestamp_from_millis};
 use crate::storage::write::NativeWriteStore;
-use crate::storage::{StorageError, percent_encode_metric_key};
+use crate::storage::{CatalogWriteGuard, StorageError, percent_encode_metric_key};
+
+const CATALOG_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Owning connection for one native Seex project store.
 pub struct ProjectConnection {
     connection: duckdb::Connection,
+    write_catalog_path: Option<PathBuf>,
 }
 
 /// Cloneable cancellation capability bound to one native connection.
@@ -27,13 +32,36 @@ impl ReadInterrupt {
 
 impl ProjectConnection {
     pub const fn new(connection: duckdb::Connection) -> Self {
-        Self { connection }
+        Self {
+            connection,
+            write_catalog_path: None,
+        }
+    }
+
+    pub(crate) fn with_catalog_write_lock(
+        connection: duckdb::Connection,
+        catalog_path: &Path,
+    ) -> Self {
+        Self {
+            connection,
+            write_catalog_path: Some(catalog_path.to_owned()),
+        }
+    }
+
+    fn write_guard(&self) -> Result<Option<CatalogWriteGuard>, StorageError> {
+        self.write_catalog_path
+            .as_deref()
+            .map(|path| CatalogWriteGuard::acquire(path, CATALOG_WRITE_TIMEOUT))
+            .transpose()
     }
 
     pub fn try_clone(&self) -> Result<Self, StorageError> {
         let connection = self.connection.try_clone()?;
         connection.execute_batch("USE seex_catalog;")?;
-        Ok(Self::new(connection))
+        Ok(Self {
+            connection,
+            write_catalog_path: self.write_catalog_path.clone(),
+        })
     }
 
     #[doc(hidden)]
@@ -42,6 +70,7 @@ impl ProjectConnection {
     }
 
     pub fn create_project(&self, project: &Project) -> Result<(), StorageError> {
+        let _guard = self.write_guard()?;
         self.connection.execute(
             "INSERT INTO seex_projects (project_id, name, created_at) VALUES (?, ?, ?)",
             (
@@ -118,6 +147,7 @@ impl ProjectConnection {
         name: &str,
         run_id: RunId,
     ) -> Result<Run, StorageError> {
+        let _guard = self.write_guard()?;
         NativeWriteStore::new(&self.connection).create_run(project_id, name, Some(run_id))
     }
 
@@ -236,6 +266,7 @@ impl ProjectConnection {
     }
 
     pub fn rebuild_metric_aggregates_for_run(&self, run_id: &RunId) -> Result<(), StorageError> {
+        let _guard = self.write_guard()?;
         NativeWriteStore::new(&self.connection).rebuild_metric_aggregates_for_run(run_id)
     }
 
@@ -245,6 +276,7 @@ impl ProjectConnection {
         status: RunStatus,
         finished_at: DateTime<Utc>,
     ) -> Result<bool, StorageError> {
+        let _guard = self.write_guard()?;
         let updated = self.connection.execute(
             "UPDATE seex_runs
              SET status = ?, finished_at = ?
@@ -259,6 +291,7 @@ impl ProjectConnection {
     }
 
     pub fn flush_metric_points(&self) -> Result<(), StorageError> {
+        let _guard = self.write_guard()?;
         self.connection.execute_batch(
             "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
         )?;
@@ -266,6 +299,7 @@ impl ProjectConnection {
     }
 
     pub fn append_metric_batch(&self, rows: &[MetricWrite]) -> Result<(), StorageError> {
+        let _guard = self.write_guard()?;
         let mut appender = self.connection.appender_with_columns_to_catalog_and_db(
             "metric_points",
             "dl",

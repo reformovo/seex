@@ -104,7 +104,10 @@ impl NativeClient {
             open_native_connection_with_config(storage_config)?
         };
         let lock_namespace = catalog_lock_namespace(&catalog_path)?;
-        let connection = Arc::new(Mutex::new(ProjectConnection::new(connection)));
+        let connection = Arc::new(Mutex::new(ProjectConnection::with_catalog_write_lock(
+            connection,
+            &catalog_path,
+        )));
         let reporter =
             MetricReporter::open_with_capacity(Arc::clone(&connection), metric_queue_capacity);
 
