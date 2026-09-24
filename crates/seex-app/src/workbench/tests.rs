@@ -313,7 +313,14 @@ fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
         .expect("current workbench document should round-trip");
     let (views, issues) = AnalysisViews::restore(&decoded);
 
-    assert!(issues.is_empty());
+    assert_eq!(issues.len(), 1);
+    assert_eq!(
+        issues[0],
+        RestoreIssue::RunLimit {
+            view_name: "Over limit".to_owned(),
+            count: 25,
+        }
+    );
     assert_eq!(decoded.views[0].runs.len(), 25);
     assert_eq!(views.active().runs.len(), 25);
 }

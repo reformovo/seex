@@ -115,7 +115,6 @@ def _populate_and_query(
 ) -> tuple[int, dict[str, Any]]:
     import seex
 
-    points: list[seex.MetricPoint] = []
     events: list[dict[str, Any]] = []
     settings = seex.Settings(
         data_path=f"s3://{config.bucket}/{prefix}",
@@ -143,19 +142,67 @@ def _populate_and_query(
     trace = _start_trace(config, prefix)
     time.sleep(0.25)
     try:
-        with seex.Api(root, settings) as api:
-            record = api.run(f"acceptance/{target_run_id}")
-            if record is None:
-                raise RuntimeError("partition-pruning Run was not found")
-            points = record.history(
-                target_metric_key,
-                start=args.start_step,
-                end=args.end_step,
-            ).points
+        points = _query_native_reader(
+            root,
+            config,
+            prefix,
+            catalog_backend,
+            target_run_id,
+            target_metric_key,
+        )
     finally:
         events = _stop_trace(trace)
     remote = _trace_metrics(events, target_run_id, target_metric_key)
-    return len(points), remote
+    return points, remote
+
+
+def _query_native_reader(
+    root: pathlib.Path,
+    config: MinioConfig,
+    prefix: str,
+    catalog_backend: _CatalogBackend,
+    run_id: str,
+    metric_key: str,
+) -> int:
+    catalog_name = "catalog.ducklake" if catalog_backend == "duckdb" else "catalog.sqlite"
+    command = [
+        "cargo",
+        "run",
+        "--quiet",
+        "-p",
+        "seex",
+        "--example",
+        "p0_query",
+        "--",
+        os.fspath(root),
+        run_id,
+        metric_key,
+        "--data-path",
+        f"s3://{config.bucket}/{prefix}",
+        "--catalog-backend",
+        catalog_backend,
+        "--catalog-path",
+        os.fspath(root / ".seex" / catalog_name),
+        "--s3-endpoint",
+        config.endpoint,
+        "--s3-access-key-id",
+        config.access_key_id,
+        "--s3-secret-access-key",
+        config.secret_access_key,
+        "--s3-region",
+        config.region,
+        "--s3-path-style",
+        "true",
+        "--s3-use-ssl",
+        str(config.use_ssl).lower(),
+        "--once",
+    ]
+    completed = subprocess.run(command, check=True, capture_output=True, text=True)
+    document = json.loads(completed.stdout)
+    points = document.get("points")
+    if not isinstance(points, int):
+        raise TypeError("native query probe did not return a point count")
+    return points
 
 
 def _start_trace(config: MinioConfig, prefix: str) -> subprocess.Popen[str]:

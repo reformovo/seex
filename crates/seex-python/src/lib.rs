@@ -9,18 +9,7 @@ use pyo3::prelude::*;
 #[pymodule]
 fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
-    m.add_class::<sdk::api::PyApi>()?;
-    m.add_class::<sdk::api::PyRunRecord>()?;
     m.add_class::<sdk::client::PyDiagnostics>()?;
-    m.add_class::<sdk::client::PyMetricPoint>()?;
-    m.add_class::<sdk::client::PyMetricSummary>()?;
-    m.add_class::<sdk::client::PyProject>()?;
-    m.add_class::<sdk::comparison::PyComparisonResult>()?;
-    m.add_class::<sdk::comparison::PyObjectiveEvidence>()?;
-    m.add_class::<sdk::comparison::PyObjectiveMetric>()?;
-    m.add_class::<sdk::comparison::PyRankingEntry>()?;
-    m.add_class::<sdk::comparison::PyRankingResult>()?;
-    m.add_class::<sdk::history::PyMetricSeries>()?;
     m.add_class::<sdk::settings::PySettings>()?;
     m.add_class::<sdk::run::PyRun>()?;
     m.add("SeexError", py.get_type::<sdk::client::SeexError>())?;
@@ -40,7 +29,6 @@ fn _seex(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_exception!(RunAlreadyActiveError);
     add_exception!(InvalidConfigurationError);
     add_exception!(StorageError);
-    add_exception!(ApiClosedError);
     m.add_function(wrap_pyfunction!(sdk::run::start_run, m)?)?;
     Ok(())
 }

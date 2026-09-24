@@ -9,13 +9,12 @@ import seex
 
 
 def main() -> None:
-    """Checks import, initialization, logging, finalization, and querying."""
-    if "Run" not in seex.__all__ or "Client" in seex.__all__:
-        raise RuntimeError("installed seex package does not export the beta Run API")
+    """Checks import, initialization, logging, finalization, and diagnostics."""
+    if "Run" not in seex.__all__ or "Api" in seex.__all__:
+        raise RuntimeError("installed seex package does not export the Run-only API")
 
     with tempfile.TemporaryDirectory(prefix="seex-wheel-smoke-") as root:
         project_root = pathlib.Path(root)
-        points: list[seex.MetricPoint] = []
         with seex.init(
             project="project-1",
             dir=project_root,
@@ -26,13 +25,9 @@ def main() -> None:
 
         if run.status != "finished":
             raise RuntimeError(f"run did not finish: {run.status!r}")
-        with seex.Api(project_root) as api:
-            record = api.run("project-1/run-1")
-            if record is None:
-                raise RuntimeError("query did not find the finished Run")
-            points = record.history("train/loss").points
-        if [(point.step, point.value_f64) for point in points] != [(0, 0.25)]:
-            raise RuntimeError("query did not return the logged metric point")
+        diagnostics = run.diagnostics()
+        if diagnostics.writer_state not in {"drained", "closed"}:
+            raise RuntimeError(f"writer did not drain: {diagnostics.writer_state!r}")
 
 
 if __name__ == "__main__":

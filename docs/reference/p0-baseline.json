@@ -1,0 +1,61 @@
+{
+  "distribution": {
+    "actual_sequences": 12,
+    "generated_sequences": 12,
+    "metric_keys": 3,
+    "patterns": [
+      "short",
+      "long",
+      "sparse_step",
+      "duplicate_step_lww",
+      "out_of_order"
+    ],
+    "runs": 4
+  },
+  "git_revision": "be75fae94151d2f30b3561b082e14febca1aee4a",
+  "latency_ns": {
+    "cold_process": 3361765375,
+    "cold_query": 41526458,
+    "hot_query": [
+      48961084,
+      52492375,
+      79307333,
+      39264000,
+      26237834,
+      33481667,
+      69307625,
+      48832125,
+      26856958,
+      26835709
+    ]
+  },
+  "peak_rss_bytes": {
+    "reader": 120619008,
+    "writer": 156663808
+  },
+  "platform": {
+    "machine": "arm64",
+    "release": "27.0.0",
+    "system": "Darwin"
+  },
+  "profile": "correctness",
+  "query_plan": {
+    "axis": "Step",
+    "max_points": 1024,
+    "max_selected_runs": 16,
+    "normalized": "step_lttb_1024"
+  },
+  "schema_version": 1,
+  "seed": 1592524801,
+  "storage": {
+    "bytes": 39010,
+    "catalog_bytes": 8925184,
+    "file_count": 12
+  },
+  "tool_versions": {
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
+    "python": "3.13.2",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  },
+  "workload": "p0"
+}

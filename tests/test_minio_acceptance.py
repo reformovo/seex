@@ -64,32 +64,12 @@ def test_minio_s3_data_path_round_trips_catalog_backend(
     retry_diagnostics = run.diagnostics()
     retry_keys = _list_minio_keys(config, partition_prefix)
 
-    with seex.Api(root_path, settings) as api:
-        assert [item.project_id for item in api.projects()] == ["project-1"]
-        assert [item.run_id for item in api.runs("project-1")] == ["run-1"]
-        record = api.run("project-1/run-1")
-        assert record is not None
-        assert record.status == "finished"
-        assert [point.step for point in record.history("train/loss", start=0, end=1).points] == [0]
-        assert [point.step for point in record.history("train/loss").points] == [0, 1]
-        assert [metric.metric_key for metric in record.metrics()] == [
-            "eval/accuracy",
-            "train/loss",
-        ]
-        summary = record.metric_summary("train/loss")
-        assert summary is not None
-        assert (summary.effective_count, summary.last_value_f64) == (2, 0.125)
     assert diagnostics.last_flush_run_id == "run-1"
     assert diagnostics.last_flush_status == "succeeded"
     assert any(key.endswith(".parquet") for key in terminal_keys)
     assert retry_diagnostics.last_flush_run_id == "run-1"
     assert retry_diagnostics.last_flush_status == "succeeded"
     assert any(key.endswith(".parquet") for key in retry_keys)
-    with seex.Api(root_path, settings) as reopened:
-        reopened_run = reopened.run("project-1/run-1")
-        assert reopened_run is not None
-        assert reopened_run.status == "finished"
-        assert [point.step for point in reopened_run.history("train/loss").points] == [0, 1]
 
 
 def _minio_settings(

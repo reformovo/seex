@@ -236,7 +236,7 @@ fn sqlite_reader_child_process() -> Result<(), Box<dyn std::error::Error>> {
     wait_for_path(Path::new(&go), Duration::from_secs(30))?;
     let project_id = seex::ProjectId::from_string("concurrent");
     let run_id = seex::RunId::from_string("running");
-    let query = seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), Some(256))?;
+    let query = seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), 256)?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if Instant::now() >= deadline {
@@ -489,7 +489,7 @@ fn log_defaults_and_commit_cursor_are_atomic() -> Result<(), Box<dyn std::error:
     let series = reader.query_metric(
         run.run_id(),
         &seex::MetricKey::from_string("loss"),
-        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), None)?,
+        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), 1024)?,
     )?;
     let steps = series
         .samples()
@@ -543,7 +543,7 @@ fn failed_mapping_does_not_advance_the_cursor() -> Result<(), Box<dyn std::error
     wait_for_drain(&client);
     assert_eq!(client.diagnostics().persisted_reports, 1);
     let reader = Reader::builder(root.path()).open()?;
-    let query = seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), None)?;
+    let query = seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), 1024)?;
     let loss = reader.query_metric(run.run_id(), &seex::MetricKey::from_string("loss"), &query)?;
     let accuracy = reader.query_metric(
         run.run_id(),
@@ -579,7 +579,7 @@ fn resume_continues_after_the_greatest_persisted_step() -> Result<(), Box<dyn st
     let series = reader.query_metric(
         resumed.run_id(),
         &seex::MetricKey::from_string("loss"),
-        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), None)?,
+        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), 1024)?,
     )?;
     assert_eq!(
         series
@@ -634,7 +634,7 @@ fn matching_terminal_calls_are_idempotent_and_conflicts_are_typed()
     let series = reader.query_metric(
         run.run_id(),
         &seex::MetricKey::from_string("loss"),
-        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), None)?,
+        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), 1024)?,
     )?;
     assert_eq!(
         series.samples().len(),
@@ -741,7 +741,7 @@ fn cloned_handles_share_one_implicit_cursor() -> Result<(), Box<dyn std::error::
     let series = reader.query_metric(
         run.run_id(),
         &seex::MetricKey::from_string("loss"),
-        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), None)?,
+        &seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), 1024)?,
     )?;
     assert_eq!(
         series

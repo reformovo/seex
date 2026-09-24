@@ -3,22 +3,19 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use crate::config::{CatalogBackend, S3Options};
-use crate::engine::comparison::compare_evidence;
 use crate::engine::query::NativeQueryStore;
-use crate::engine::ranking::rank_run_evidence;
 use crate::error::{Error, Result as SdkResult};
 use crate::model::alignment::{
     AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
     AlignmentViewport,
 };
 use crate::model::comparison::{
-    ComparisonResult, EvidenceCompleteness, EvidenceReason, ObjectiveEvidence, ObjectiveMetric,
-    RankingResult,
+    EvidenceCompleteness, EvidenceReason, ObjectiveEvidence, ObjectiveMetric,
 };
 use crate::model::metric::{
     MetricAggregate, MetricKey, MetricPoint, MetricQuery as StorageMetricQuery, ReductionPolicy,
@@ -31,24 +28,19 @@ use crate::storage::bootstrap::{
     open_existing_native_connection_with_config, open_shared_existing_local_connection_with_config,
 };
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config, resolve_storage_config};
-use crate::storage::{
-    ParquetSource, ProjectConnection, ProjectMetricReader, SeriesDiagnostics,
-    StandaloneMetricReader, StorageError,
-};
+use crate::storage::{ProjectConnection, ProjectMetricReader, SeriesDiagnostics, StorageError};
 
-/// Builder for opening one existing native or standalone store read-only.
+/// Builder for opening one existing native store read-only.
 pub struct ReaderBuilder {
-    source: ReaderSource,
+    root_path: PathBuf,
     catalog_backend: Option<CatalogBackend>,
     catalog_path: Option<PathBuf>,
     data_path: Option<PathBuf>,
     s3: S3Options,
 }
 
-enum ReaderSource {
-    Native(PathBuf),
-    Parquet(String),
-}
+/// Maximum number of real points returned for one chart curve.
+pub const MAX_CHART_POINTS: usize = 1_024;
 
 /// Failure while opening a Reader restricted to local data.
 #[doc(hidden)]
@@ -97,18 +89,7 @@ pub struct DesktopMetricEvidence {
 impl ReaderBuilder {
     pub fn new(root_path: impl Into<PathBuf>) -> Self {
         Self {
-            source: ReaderSource::Native(root_path.into()),
-            catalog_backend: None,
-            catalog_path: None,
-            data_path: None,
-            s3: S3Options::default(),
-        }
-    }
-
-    /// Selects a standalone Parquet file, glob, or object-store URI.
-    pub fn parquet(source: impl Into<String>) -> Self {
-        Self {
-            source: ReaderSource::Parquet(source.into()),
+            root_path: root_path.into(),
             catalog_backend: None,
             catalog_path: None,
             data_path: None,
@@ -160,24 +141,7 @@ impl ReaderBuilder {
     }
 
     fn open_impl(self, local_only: bool) -> std::result::Result<Reader, LocalReaderError> {
-        let root_path = match self.source {
-            ReaderSource::Native(root_path) => root_path,
-            ReaderSource::Parquet(source) => {
-                let standalone = StandaloneMetricReader::open(
-                    ParquetSource::new(source).map_err(|_| Error::Storage)?,
-                )
-                .map_err(|_| Error::Storage)?;
-                return Ok(Reader {
-                    connection: None,
-                    _native_database: None,
-                    standalone: Some(standalone),
-                    run_metadata: RefCell::new(HashMap::new()),
-                    diagnostics: RefCell::new(DiagnosticsCache::default()),
-                    #[cfg(test)]
-                    diagnostics_loads: Cell::new(0),
-                });
-            }
-        };
+        let root_path = self.root_path;
         if local_only {
             let storage = resolve_storage_config(
                 &root_path,
@@ -228,7 +192,6 @@ impl ReaderBuilder {
         Ok(Reader {
             connection: Some(ProjectConnection::new(connection)),
             _native_database: native_database,
-            standalone: None,
             run_metadata: RefCell::new(HashMap::new()),
             diagnostics: RefCell::new(DiagnosticsCache::default()),
             #[cfg(test)]
@@ -241,7 +204,6 @@ impl ReaderBuilder {
 pub struct Reader {
     connection: Option<ProjectConnection>,
     _native_database: Option<NativeReadDatabase>,
-    standalone: Option<StandaloneMetricReader>,
     run_metadata: RefCell<HashMap<RunId, RunMetadata>>,
     diagnostics: RefCell<DiagnosticsCache>,
     #[cfg(test)]
@@ -251,7 +213,6 @@ pub struct Reader {
 #[derive(Clone)]
 struct RunMetadata {
     project_id: Option<ProjectId>,
-    started_at_millis: i64,
     status: RunStatus,
 }
 
@@ -298,11 +259,6 @@ struct DiagnosticsCache {
 impl Reader {
     pub fn builder(root_path: impl AsRef<Path>) -> ReaderBuilder {
         ReaderBuilder::new(root_path.as_ref().to_owned())
-    }
-
-    /// Builds a Reader over a standalone Parquet source.
-    pub fn parquet(source: impl Into<String>) -> ReaderBuilder {
-        ReaderBuilder::parquet(source)
     }
 
     fn native(&self) -> SdkResult<&ProjectConnection> {
@@ -375,66 +331,6 @@ impl Reader {
             .query_metric_summaries(std::slice::from_ref(&run.run_id), metric_key)
             .map(|summaries| summaries.into_iter().next())
             .map_err(|_| Error::Storage)
-    }
-
-    /// Compares two Runs using their last effective objective values.
-    pub fn compare_runs(
-        &self,
-        candidate_run_id: &RunId,
-        reference_run_id: &RunId,
-        objective: &ObjectiveMetric,
-    ) -> SdkResult<ComparisonResult> {
-        if candidate_run_id == reference_run_id {
-            return Err(Error::DuplicateRunIdentity {
-                run_id: candidate_run_id.as_str().to_owned(),
-            });
-        }
-        let mut evidence = self
-            .ranking_evidence(
-                &[candidate_run_id.clone(), reference_run_id.clone()],
-                objective,
-            )?
-            .into_iter();
-        let candidate = evidence.next().ok_or(Error::Storage)?.1;
-        let reference = evidence.next().ok_or(Error::Storage)?.1;
-        Ok(compare_evidence(objective, candidate, reference))
-    }
-
-    /// Ranks Runs by one objective while retaining incomplete evidence.
-    pub fn rank_runs(
-        &self,
-        run_ids: &[RunId],
-        objective: &ObjectiveMetric,
-    ) -> SdkResult<RankingResult> {
-        let mut seen = HashSet::with_capacity(run_ids.len());
-        for run_id in run_ids {
-            if !seen.insert(run_id) {
-                return Err(Error::DuplicateRunIdentity {
-                    run_id: run_id.as_str().to_owned(),
-                });
-            }
-        }
-        Ok(rank_run_evidence(
-            objective,
-            self.ranking_evidence(run_ids, objective)?,
-        ))
-    }
-
-    fn ranking_evidence(
-        &self,
-        run_ids: &[RunId],
-        objective: &ObjectiveMetric,
-    ) -> SdkResult<Vec<(Run, ObjectiveEvidence)>> {
-        let connection = self.native()?;
-        let runs = connection.get_runs(run_ids).map_err(|error| match error {
-            StorageError::RunNotFound { run_id } => Error::RunNotFound { run_id },
-            _ => Error::Storage,
-        })?;
-        self.remember_runs(&runs);
-        let evidence = NativeQueryStore::new(connection)
-            .objective_evidence_for_runs(&runs, objective)
-            .map_err(Error::from)?;
-        Ok(runs.into_iter().zip(evidence).collect())
     }
 
     /// Queries one axis with a strict caller-selected point bound.
@@ -518,8 +414,8 @@ impl Reader {
     /// Desktop-only query retaining one real sample outside each range edge.
     ///
     /// The stable [`Reader::query_metric`] contract never returns these
-    /// neighbors. `max_points` bounds in-range samples; this adapter may return
-    /// at most two additional samples.
+    /// neighbors. This adapter may return at most two neighbors while keeping
+    /// the complete result within the query's `max_points` bound.
     ///
     /// # Errors
     ///
@@ -554,18 +450,10 @@ impl Reader {
         force_full_step: bool,
     ) -> SdkResult<MetricSeries> {
         let metadata = self.metadata(run_id)?;
-        let (run_start, run_status) = (metadata.started_at_millis, metadata.status);
+        let run_status = metadata.status;
         let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
-        let standalone = self.standalone.is_some();
         let (axis, storage_axis, bounds) = match query.range() {
-            MetricRange::All(axis) => (
-                *axis,
-                match axis {
-                    MetricAxis::Step => AlignmentAxis::Step,
-                    MetricAxis::RelativeTime | MetricAxis::Timestamp => AlignmentAxis::ElapsedTime,
-                },
-                None,
-            ),
+            MetricRange::All(axis) => (*axis, AlignmentAxis::Step, None),
             MetricRange::Steps { start, end } => (
                 MetricAxis::Step,
                 AlignmentAxis::Step,
@@ -581,85 +469,24 @@ impl Reader {
                 AlignmentAxis::Step,
                 Some(AxisBounds::new(None, Some(end.value()))),
             ),
-            MetricRange::RelativeTime { start, end } => (
-                MetricAxis::RelativeTime,
-                AlignmentAxis::ElapsedTime,
-                Some(AxisBounds::new(
-                    Some(start.as_millis()),
-                    Some(end.as_millis()),
-                )),
-            ),
-            MetricRange::RelativeTimeFrom { start } => (
-                MetricAxis::RelativeTime,
-                AlignmentAxis::ElapsedTime,
-                Some(AxisBounds::new(Some(start.as_millis()), None)),
-            ),
-            MetricRange::RelativeTimeUntil { end } => (
-                MetricAxis::RelativeTime,
-                AlignmentAxis::ElapsedTime,
-                Some(AxisBounds::new(None, Some(end.as_millis()))),
-            ),
-            MetricRange::Timestamps { start, end } => (
-                MetricAxis::Timestamp,
-                AlignmentAxis::ElapsedTime,
-                Some(if standalone {
-                    AxisBounds::new(Some(start.as_millis()), Some(end.as_millis()))
-                } else {
-                    AxisBounds::new(
-                        Some(
-                            start
-                                .as_millis()
-                                .checked_sub(run_start)
-                                .ok_or(Error::UnsupportedQuery)?,
-                        ),
-                        Some(
-                            end.as_millis()
-                                .checked_sub(run_start)
-                                .ok_or(Error::UnsupportedQuery)?,
-                        ),
-                    )
-                }),
-            ),
-            MetricRange::TimestampsFrom { start } => (
-                MetricAxis::Timestamp,
-                AlignmentAxis::ElapsedTime,
-                Some(AxisBounds::new(
-                    Some(if standalone {
-                        start.as_millis()
-                    } else {
-                        start
-                            .as_millis()
-                            .checked_sub(run_start)
-                            .ok_or(Error::UnsupportedQuery)?
-                    }),
-                    None,
-                )),
-            ),
-            MetricRange::TimestampsUntil { end } => (
-                MetricAxis::Timestamp,
-                AlignmentAxis::ElapsedTime,
-                Some(AxisBounds::new(
-                    None,
-                    Some(if standalone {
-                        end.as_millis()
-                    } else {
-                        end.as_millis()
-                            .checked_sub(run_start)
-                            .ok_or(Error::UnsupportedQuery)?
-                    }),
-                )),
-            ),
+            // MetricQuery::new rejects these axes. Keep the match exhaustive so
+            // the internal range types can be retired independently later.
+            MetricRange::RelativeTime { .. }
+            | MetricRange::RelativeTimeFrom { .. }
+            | MetricRange::RelativeTimeUntil { .. }
+            | MetricRange::Timestamps { .. }
+            | MetricRange::TimestampsFrom { .. }
+            | MetricRange::TimestampsUntil { .. } => return Err(Error::UnsupportedQuery),
         };
         if axis == MetricAxis::Step && !retain_neighbors {
             return self.query_step_metric(run_id, metric_key, query, &metadata, diagnostics);
         }
         let viewport = bounds.unwrap_or(AxisBounds::new(None, None)).viewport()?;
-        let reduction = query
-            .max_points()
-            .map_or(Ok(AlignmentReduction::Full), |limit| {
-                AlignmentReduction::screen_budget(u32::try_from(limit).unwrap_or(u32::MAX), 1)
-            })
-            .map_err(|_| Error::UnsupportedQuery)?;
+        let reduction = AlignmentReduction::screen_budget(
+            u32::try_from(query.max_points()).unwrap_or(u32::MAX),
+            1,
+        )
+        .map_err(|_| Error::UnsupportedQuery)?;
         let storage_query = AlignmentQuery {
             run_id: run_id.clone(),
             metric_key: metric_key.clone(),
@@ -674,28 +501,17 @@ impl Reader {
             .then(|| use_bounded_full_plan(axis, bounds, diagnostics, narrow_step))
             .filter(|bounded| *bounded)
             .and(diagnostics.map(|diagnostics| diagnostics.effective_count));
-        let result = match (
-            &self.connection,
-            &self.standalone,
-            narrow_step,
-            bounded_full_count,
-        ) {
-            (Some(connection), None, true, None) => {
+        let connection = self.connection.as_ref().ok_or(Error::Storage)?;
+        let result = match (narrow_step, bounded_full_count) {
+            (true, None) => {
                 ProjectMetricReader::new(connection).query_narrow_step_metric(&storage_query)
             }
-            (None, Some(reader), true, None) => reader.query_narrow_step_metric(&storage_query),
-            (Some(connection), None, false, Some(source_count)) => {
-                ProjectMetricReader::new(connection)
-                    .query_bounded_full_aligned_metric(&storage_query, source_count)
-            }
-            (Some(connection), None, false, None) => {
+            (false, Some(source_count)) => ProjectMetricReader::new(connection)
+                .query_bounded_full_aligned_metric(&storage_query, source_count),
+            (false, None) => {
                 ProjectMetricReader::new(connection).query_aligned_metric(&storage_query)
             }
-            (None, Some(reader), false, None) if axis == MetricAxis::Timestamp => {
-                reader.query_timestamp_metric(&storage_query)
-            }
-            (None, Some(reader), false, None) => reader.query_aligned_metric(&storage_query),
-            _ => return Err(Error::Storage),
+            (true, Some(_)) => return Err(Error::Storage),
         }
         .map_err(public_storage_error)?;
         let neighbor_count = result
@@ -730,8 +546,8 @@ impl Reader {
                 }
             })
             .collect::<Vec<_>>();
-        if !retain_neighbors && let Some(max_points) = query.max_points() {
-            samples = enforce_point_bound(samples, max_points);
+        if !retain_neighbors {
+            samples = enforce_point_bound(samples, query.max_points());
         }
         let source_count = if retain_neighbors {
             result.source_row_count
@@ -758,23 +574,18 @@ impl Reader {
             MetricRange::StepsUntil { end } => (None, Some(*end)),
             _ => return Err(Error::UnsupportedQuery),
         };
-        let reduction = query
-            .max_points()
-            .map_or(Ok(ReductionPolicy::Full), |limit| {
-                ReductionPolicy::screen_budget(u32::try_from(limit).unwrap_or(u32::MAX), 1)
-            })
-            .map_err(|_| Error::UnsupportedQuery)?;
+        let reduction = ReductionPolicy::screen_budget(
+            u32::try_from(query.max_points()).unwrap_or(u32::MAX),
+            1,
+        )
+        .map_err(|_| Error::UnsupportedQuery)?;
         let storage_query =
             StorageMetricQuery::new(run_id.clone(), metric_key.clone(), start, end, reduction)
                 .map_err(|_| Error::UnsupportedQuery)?;
-        let result = match (&self.connection, &self.standalone) {
-            (Some(connection), None) => {
-                ProjectMetricReader::new(connection).query_metric(&storage_query)
-            }
-            (None, Some(reader)) => reader.query_metric(&storage_query),
-            _ => return Err(Error::Storage),
-        }
-        .map_err(public_storage_error)?;
+        let connection = self.connection.as_ref().ok_or(Error::Storage)?;
+        let result = ProjectMetricReader::new(connection)
+            .query_metric(&storage_query)
+            .map_err(public_storage_error)?;
         let mut samples = result
             .points
             .into_iter()
@@ -783,9 +594,7 @@ impl Reader {
                 point,
             })
             .collect::<Vec<_>>();
-        if let Some(max_points) = query.max_points() {
-            samples = enforce_point_bound(samples, max_points);
-        }
+        samples = enforce_point_bound(samples, query.max_points());
         let (completeness, reasons) = qualify_series(Vec::new(), diagnostics, metadata.status);
         MetricSeries::from_samples(
             MetricAxis::Step,
@@ -821,13 +630,9 @@ impl Reader {
         drop(cached);
         #[cfg(test)]
         self.diagnostics_loads.set(self.diagnostics_loads.get() + 1);
-        let loaded = match (&self.connection, &self.standalone) {
-            (Some(connection), None) => ProjectMetricReader::new(connection)
-                .series_diagnostics(run_id, metric_key)
-                .ok(),
-            (None, Some(reader)) => reader.series_diagnostics(run_id, metric_key).ok(),
-            _ => None,
-        }?;
+        let loaded = ProjectMetricReader::new(self.connection.as_ref()?)
+            .series_diagnostics(run_id, metric_key)
+            .ok()?;
         let mut cache = self.diagnostics.borrow_mut();
         if finished {
             cache.finished.insert(key, loaded);
@@ -846,11 +651,7 @@ impl Reader {
                 let run = connection.get_run(run_id).map_err(|_| Error::Storage)?;
                 RunMetadata::from(&run)
             }
-            None => RunMetadata {
-                project_id: None,
-                started_at_millis: 0,
-                status: RunStatus::Finished,
-            },
+            None => return Err(Error::Storage),
         };
         self.run_metadata
             .borrow_mut()
@@ -870,7 +671,6 @@ impl From<&Run> for RunMetadata {
     fn from(run: &Run) -> Self {
         Self {
             project_id: Some(run.project_id.clone()),
-            started_at_millis: run.started_at.timestamp_millis(),
             status: run.status,
         }
     }
@@ -943,13 +743,10 @@ fn in_half_open_range(value: i64, bounds: Option<AxisBounds>) -> bool {
 fn bounded_desktop_points(
     points: Vec<AlignedMetricPoint>,
     bounds: Option<AxisBounds>,
-    max_points: Option<usize>,
+    max_points: usize,
 ) -> Vec<AlignedMetricPoint> {
     let Some(bounds) = bounds else {
-        return match max_points {
-            Some(limit) => enforce_point_bound(points, limit),
-            None => points,
-        };
+        return enforce_point_bound(points, max_points);
     };
     let mut left = None;
     let mut right = None;
@@ -963,8 +760,12 @@ fn bounded_desktop_points(
             inside.push(point);
         }
     }
-    if let Some(limit) = max_points {
-        inside = enforce_point_bound(inside, limit);
+    let neighbor_count = usize::from(left.is_some()) + usize::from(right.is_some());
+    let inside_limit = max_points.saturating_sub(neighbor_count);
+    if inside_limit < 2 {
+        inside.truncate(inside_limit);
+    } else {
+        inside = enforce_point_bound(inside, inside_limit);
     }
     left.into_iter().chain(inside).chain(right).collect()
 }
@@ -1149,7 +950,7 @@ impl MetricRange {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetricQuery {
     range: MetricRange,
-    max_points: Option<usize>,
+    max_points: usize,
 }
 
 impl MetricQuery {
@@ -1157,19 +958,21 @@ impl MetricQuery {
     ///
     /// # Errors
     ///
-    /// Returns [`MetricQueryError`] for an empty range or a point limit below
-    /// two.
-    pub const fn new(
-        range: MetricRange,
-        max_points: Option<usize>,
-    ) -> Result<Self, MetricQueryError> {
+    /// Returns [`MetricQueryError`] for an empty range, unsupported axis, or
+    /// point limit outside the chart contract.
+    pub const fn new(range: MetricRange, max_points: usize) -> Result<Self, MetricQueryError> {
         if range.is_empty() {
             return Err(MetricQueryError::EmptyRange);
         }
-        if let Some(max_points) = max_points
-            && max_points < 2
-        {
+        let axis = range.axis();
+        if !matches!(axis, MetricAxis::Step) {
+            return Err(MetricQueryError::UnsupportedAxis { axis });
+        }
+        if max_points < 2 {
             return Err(MetricQueryError::MaxPointsTooSmall { max_points });
+        }
+        if max_points > MAX_CHART_POINTS {
+            return Err(MetricQueryError::MaxPointsTooLarge { max_points });
         }
         Ok(Self { range, max_points })
     }
@@ -1182,7 +985,7 @@ impl MetricQuery {
         self.range.axis()
     }
 
-    pub const fn max_points(&self) -> Option<usize> {
+    pub const fn max_points(&self) -> usize {
         self.max_points
     }
 }
@@ -1191,15 +994,26 @@ impl MetricQuery {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MetricQueryError {
     EmptyRange,
+    UnsupportedAxis { axis: MetricAxis },
     MaxPointsTooSmall { max_points: usize },
+    MaxPointsTooLarge { max_points: usize },
 }
 
 impl fmt::Display for MetricQueryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyRange => formatter.write_str("metric range must be non-empty"),
+            Self::UnsupportedAxis { axis } => {
+                write!(formatter, "metric axis {axis:?} is not supported; use Step")
+            }
             Self::MaxPointsTooSmall { max_points } => {
                 write!(formatter, "max_points must be at least 2, got {max_points}")
+            }
+            Self::MaxPointsTooLarge { max_points } => {
+                write!(
+                    formatter,
+                    "max_points must be at most {MAX_CHART_POINTS}, got {max_points}"
+                )
             }
         }
     }
@@ -1343,23 +1157,23 @@ mod tests {
     #[test]
     fn typed_ranges_select_their_axis_and_reject_empty_bounds() {
         let query = MetricQuery::new(
-            MetricRange::RelativeTime {
-                start: RelativeTime::from_millis(10),
-                end: RelativeTime::from_millis(20),
+            MetricRange::Steps {
+                start: Step::new(10),
+                end: Step::new(20),
             },
-            Some(500),
+            500,
         )
         .expect("typed range should be valid");
 
-        assert_eq!(query.axis(), MetricAxis::RelativeTime);
-        assert_eq!(query.max_points(), Some(500));
+        assert_eq!(query.axis(), MetricAxis::Step);
+        assert_eq!(query.max_points(), 500);
         assert_eq!(
             MetricQuery::new(
                 MetricRange::Steps {
                     start: Step::new(4),
                     end: Step::new(4),
                 },
-                None,
+                2,
             ),
             Err(MetricQueryError::EmptyRange)
         );
@@ -1368,10 +1182,22 @@ mod tests {
     #[test]
     fn public_point_limit_is_strictly_validated_without_pixels() {
         assert_eq!(
-            MetricQuery::new(MetricRange::All(MetricAxis::Timestamp), Some(1)),
+            MetricQuery::new(MetricRange::All(MetricAxis::Step), 1),
             Err(MetricQueryError::MaxPointsTooSmall { max_points: 1 })
         );
-        assert!(MetricQuery::new(MetricRange::All(MetricAxis::Step), Some(2)).is_ok());
+        assert_eq!(
+            MetricQuery::new(MetricRange::All(MetricAxis::Timestamp), 2),
+            Err(MetricQueryError::UnsupportedAxis {
+                axis: MetricAxis::Timestamp
+            })
+        );
+        assert_eq!(
+            MetricQuery::new(MetricRange::All(MetricAxis::Step), MAX_CHART_POINTS + 1),
+            Err(MetricQueryError::MaxPointsTooLarge {
+                max_points: MAX_CHART_POINTS + 1
+            })
+        );
+        assert!(MetricQuery::new(MetricRange::All(MetricAxis::Step), 2).is_ok());
     }
 
     #[test]
@@ -1551,7 +1377,7 @@ mod tests {
                     start: Step::new(1),
                     end: Step::new(4),
                 },
-                Some(2),
+                2,
             )?,
         )?;
         let desktop_series = reader.query_metric_for_desktop(
@@ -1562,63 +1388,7 @@ mod tests {
                     start: Step::new(1),
                     end: Step::new(4),
                 },
-                Some(2),
-            )?,
-        )?;
-        let relative = reader.query_metric(
-            &runs[0].run_id,
-            &MetricKey::from_string("loss"),
-            &MetricQuery::new(
-                MetricRange::RelativeTime {
-                    start: RelativeTime::from_millis(0),
-                    end: RelativeTime::from_millis(60_000),
-                },
-                Some(3),
-            )?,
-        )?;
-        let started_at = runs[0].started_at.timestamp_millis();
-        let timestamps = reader.query_metric(
-            &runs[0].run_id,
-            &MetricKey::from_string("loss"),
-            &MetricQuery::new(
-                MetricRange::Timestamps {
-                    start: Timestamp::from_millis(started_at),
-                    end: Timestamp::from_millis(started_at + 60_000),
-                },
-                Some(3),
-            )?,
-        )?;
-        let parquet = root
-            .path()
-            .join(".seex/data/main/metric_points/**/*.parquet")
-            .to_string_lossy()
-            .into_owned();
-        let standalone = Reader::parquet(parquet).open()?;
-        let standalone_steps = standalone.query_metric(
-            &run.run_id,
-            &MetricKey::from_string("loss"),
-            &MetricQuery::new(
-                MetricRange::Steps {
-                    start: Step::new(1),
-                    end: Step::new(4),
-                },
-                Some(2),
-            )?,
-        )?;
-        let standalone_relative = standalone.query_metric(
-            &run.run_id,
-            &MetricKey::from_string("loss"),
-            &MetricQuery::new(MetricRange::All(MetricAxis::RelativeTime), Some(3))?,
-        )?;
-        let standalone_timestamps = standalone.query_metric(
-            &run.run_id,
-            &MetricKey::from_string("loss"),
-            &MetricQuery::new(
-                MetricRange::Timestamps {
-                    start: Timestamp::from_millis(started_at),
-                    end: Timestamp::from_millis(started_at + 60_000),
-                },
-                Some(3),
+                2,
             )?,
         )?;
 
@@ -1641,35 +1411,9 @@ mod tests {
                 EvidenceReason::NonFiniteValue,
             ]
         );
-        assert_eq!(desktop_series.samples().len(), 4);
+        assert_eq!(desktop_series.samples().len(), 2);
         assert_eq!(desktop_series.samples()[0].point.step, Step::new(0));
-        assert_eq!(desktop_series.samples()[3].point.step, Step::new(4));
-        assert_eq!(relative.axis(), MetricAxis::RelativeTime);
-        assert!(relative.samples().len() <= 3);
-        assert!(relative.samples().iter().all(|sample| matches!(
-            sample.coordinate,
-            MetricCoordinate::RelativeTime(value) if (0..60_000).contains(&value.as_millis())
-        )));
-        assert_eq!(timestamps.axis(), MetricAxis::Timestamp);
-        assert!(timestamps.samples().len() <= 3);
-        assert!(timestamps.samples().iter().all(|sample| matches!(
-            sample.coordinate,
-            MetricCoordinate::Timestamp(value)
-                if (started_at..started_at + 60_000).contains(&value.as_millis())
-        )));
-        assert_eq!(standalone.projects(), Err(Error::UnsupportedQuery));
-        assert_eq!(standalone_steps, series);
-        assert!(standalone_relative.samples().is_empty());
-        assert!(
-            standalone_relative
-                .reasons()
-                .contains(&EvidenceReason::MissingRunStart)
-        );
-        assert_eq!(
-            standalone_relative.completeness(),
-            EvidenceCompleteness::Invalid
-        );
-        assert_eq!(standalone_timestamps, timestamps);
+        assert_eq!(desktop_series.samples()[1].point.step, Step::new(4));
         assert_eq!(reader.diagnostics_loads.get(), 1);
         reader.refresh_diagnostics(1);
         let cache_query = MetricQuery::new(
@@ -1677,7 +1421,7 @@ mod tests {
                 start: Step::new(1),
                 end: Step::new(4),
             },
-            Some(2),
+            2,
         )?;
         reader.query_metric_for_desktop(
             &run.run_id,

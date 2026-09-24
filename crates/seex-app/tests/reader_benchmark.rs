@@ -7,14 +7,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use seex::{
-    CatalogBackend, MetricKey, MetricQuery, MetricRange, Reader, RelativeTime, RunId, Step,
-    Timestamp,
+    CatalogBackend, MAX_CHART_POINTS, MetricKey, MetricQuery, MetricRange, Reader, RunId, Step,
 };
 
 const POINTS: i64 = 1_000_000;
 const SAMPLES: usize = 10;
 const TARGET: Duration = Duration::from_millis(25);
-const EPOCH_MILLIS: i64 = 1_700_000_000_000;
 
 #[derive(Clone, Copy)]
 enum Axis {
@@ -96,6 +94,9 @@ fn selected_ranges() -> Result<Vec<bool>, Box<dyn Error>> {
 }
 
 fn query(reader: &Reader, axis: Axis, narrow: bool) -> Result<usize, Box<dyn Error>> {
+    if !matches!(axis, Axis::Step) {
+        return Err("P0 benchmark supports Step queries only".into());
+    }
     let (start, end) = if narrow {
         (450_000, 550_000)
     } else {
@@ -106,16 +107,9 @@ fn query(reader: &Reader, axis: Axis, narrow: bool) -> Result<usize, Box<dyn Err
             start: Step::new(start),
             end: Step::new(end),
         },
-        Axis::RelativeTime => MetricRange::RelativeTime {
-            start: RelativeTime::from_millis(start),
-            end: RelativeTime::from_millis(end),
-        },
-        Axis::Timestamp => MetricRange::Timestamps {
-            start: Timestamp::from_millis(EPOCH_MILLIS + start),
-            end: Timestamp::from_millis(EPOCH_MILLIS + end),
-        },
+        Axis::RelativeTime | Axis::Timestamp => unreachable!(),
     };
-    let query = MetricQuery::new(range, Some(5_000))?;
+    let query = MetricQuery::new(range, MAX_CHART_POINTS)?;
     let series = match reader_boundary(narrow) {
         ReaderBoundary::Detail => reader.query_metric_for_desktop(
             &RunId::from_string("run-1"),
@@ -137,7 +131,7 @@ fn capture(reader: &Reader, axis: Axis, narrow: bool) -> Result<(usize, Vec<f64>
         let started = Instant::now();
         for _ in 0..iterations {
             let points = query(reader, axis, narrow)?;
-            if points == 0 || points > 5_000 + usize::from(narrow) * 2 {
+            if points == 0 || points > MAX_CHART_POINTS {
                 return Err("Reader benchmark violated its point budget".into());
             }
         }

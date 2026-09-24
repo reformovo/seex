@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use seex::{CatalogBackend, ClientBuilder, ReaderBuilder, S3Options};
+use seex::{CatalogBackend, ClientBuilder, S3Options};
 
 #[pyclass(name = "Settings", module = "seex._seex", frozen, skip_from_py_object)]
 #[derive(Clone)]
@@ -109,20 +109,6 @@ impl PySettings {
         let mut builder = ClientBuilder::new(root)
             .metric_queue_capacity(self.metric_queue_capacity)
             .s3_options(self.s3_options());
-        if let Some(backend) = self.native_catalog_backend() {
-            builder = builder.catalog_backend(backend);
-        }
-        if let Some(path) = &self.catalog_path {
-            builder = builder.catalog_path(path);
-        }
-        if let Some(path) = &self.data_path {
-            builder = builder.data_path(path);
-        }
-        builder
-    }
-
-    pub fn reader_builder(&self, root: PathBuf) -> ReaderBuilder {
-        let mut builder = ReaderBuilder::new(root).s3_options(self.s3_options());
         if let Some(backend) = self.native_catalog_backend() {
             builder = builder.catalog_backend(backend);
         }

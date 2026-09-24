@@ -57,7 +57,7 @@ pub use client::{
 pub use config::{CatalogBackend, S3Options};
 pub use error::{Error, Result};
 pub use reader::{
-    DesktopMetricEvidence, LocalReaderError, MetricAxis, MetricCoordinate, MetricQuery,
-    MetricQueryError, MetricRange, MetricSample, MetricSeries, MetricSeriesError, Reader,
-    ReaderBuilder, ReaderInterrupt, RelativeTime, Timestamp,
+    DesktopMetricEvidence, LocalReaderError, MAX_CHART_POINTS, MetricAxis, MetricCoordinate,
+    MetricQuery, MetricQueryError, MetricRange, MetricSample, MetricSeries, MetricSeriesError,
+    Reader, ReaderBuilder, ReaderInterrupt, RelativeTime, Timestamp,
 };

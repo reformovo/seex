@@ -1,12 +1,13 @@
 use crate::data::source::ReadSession;
-use crate::domain::{DataSourceId, RunRef};
+use crate::domain::{DataSourceId, MAX_SELECTED_RUNS, RunRef};
 use seex::Run;
 use seex::{AlignmentQueryError, AlignmentViewport};
 use seex::{EvidenceCompleteness, EvidenceReason, ObjectiveEvidence};
-use seex::{MetricAggregate, MetricKey};
 use seex::{
-    MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange, RelativeTime,
+    MAX_CHART_POINTS, MetricAxis, MetricCoordinate, MetricQuery, MetricQueryError, MetricRange,
+    RelativeTime,
 };
+use seex::{MetricAggregate, MetricKey};
 use seex_plot::{DataPoint, Series, SeriesId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -125,6 +126,10 @@ pub enum QueryError {
     Sdk(#[from] seex::Error),
     #[error(transparent)]
     MetricQuery(#[from] MetricQueryError),
+    #[error("a chart can contain at most {MAX_SELECTED_RUNS} curves; got {count}")]
+    TooManyCurves { count: usize },
+    #[error("ElapsedTime chart queries are disabled in P0")]
+    ElapsedTimeUnsupported,
     #[error("Reader returned a coordinate on the wrong axis")]
     ReaderAxisMismatch,
 }
@@ -240,11 +245,13 @@ impl ReadSession {
 }
 
 pub(crate) fn overview_budget(logical_width: u32) -> u32 {
-    logical_width.div_ceil(2).clamp(128, 1_024)
+    let _ = logical_width;
+    MAX_CHART_POINTS as u32
 }
 
 pub(crate) fn detail_budget(logical_width: u32) -> u32 {
-    logical_width.clamp(256, 2_500)
+    let _ = logical_width;
+    MAX_CHART_POINTS as u32
 }
 
 fn query_curves(
@@ -255,6 +262,14 @@ fn query_curves(
     force_full_step: bool,
     is_superseded: &mut dyn FnMut() -> bool,
 ) -> Result<Option<CurveSnapshot>, QueryError> {
+    if selection.runs.len() > crate::domain::MAX_SELECTED_RUNS {
+        return Err(QueryError::TooManyCurves {
+            count: selection.runs.len(),
+        });
+    }
+    if selection.axis == CurveAxis::ElapsedTime {
+        return Err(QueryError::ElapsedTimeUnsupported);
+    }
     let run_ids = selection
         .runs
         .iter()
@@ -277,7 +292,7 @@ fn query_curves(
         };
         let query = MetricQuery::new(
             desktop_metric_range(selection.axis, viewport),
-            Some(point_budget as usize),
+            point_budget as usize,
         )?;
         let evidence = if force_full_step {
             session.reader().query_metric_overview_for_desktop(
@@ -389,11 +404,10 @@ fn brushable_range(
 #[cfg(test)]
 mod tests {
     use super::{
-        AlignmentViewport, CurveAxis, CurveSelection, DataSourceId, DetailRequest,
-        InspectorRequest, MetricKey, OverviewRequest, ReadSession, RunRef, brushable_range,
-        detail_budget, overview_budget,
+        CurveAxis, CurveSelection, DataSourceId, InspectorRequest, MetricKey, OverviewRequest,
+        ReadSession, RunRef, brushable_range, detail_budget, overview_budget,
     };
-    use seex::{Client, LogOptions, ProjectId, RunOptions, RunStatus};
+    use seex::{Client, LogOptions, ProjectId, RunOptions};
     use seex_plot::{AxisRange, BrushState};
 
     #[test]
@@ -407,7 +421,7 @@ mod tests {
                 detail_budget(2_500),
                 detail_budget(u32::MAX)
             ],
-            [128, 450, 1_024, 256, 2_500, 2_500]
+            [1_024; 6]
         );
     }
 
@@ -428,8 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_time_uses_run_relative_observation_timestamps()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn elapsed_time_chart_entry_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let client = Client::builder(root.path()).open()?;
         let run = client.start_run(RunOptions::new("project").id("run").name("candidate"))?;
@@ -450,70 +463,14 @@ mod tests {
             axis: CurveAxis::ElapsedTime,
         };
 
-        let overview = session.query_overview(&OverviewRequest {
+        let error = session.query_overview(&OverviewRequest {
             selection: selection.clone(),
             logical_width: 500,
-        })?;
-        let curve = &overview.series[0];
-
-        assert_eq!(overview.series[0].run.status, RunStatus::Finished);
-        let points = curve
-            .chart_series
-            .as_ref()
-            .expect("complete evidence should draw")
-            .points();
-        assert!(
-            points
-                .iter()
-                .all(|point| point.x >= 0. && point.x < 60_000.),
-            "fixture points should be elapsed milliseconds near the Run start"
-        );
-        let first = points.first().expect("fixture should have points").x as i64;
-        let last = points.last().expect("fixture should have points").x as i64;
-        let detail = session.query_detail(&DetailRequest {
-            selection: selection.clone(),
-            viewport: AlignmentViewport::new(first, last)?,
-            logical_width: 500,
-        })?;
-        assert!(
-            detail.series[0]
-                .chart_series
-                .as_ref()
-                .expect("complete evidence should draw")
-                .points()
-                .iter()
-                .all(|point| point.x >= first as f64 && point.x <= last as f64)
-        );
-
-        let mut duplicate_selection = selection.clone();
-        duplicate_selection.runs.push(selection.runs[0].clone());
-        let mut between_checks = 0;
-        let between_runs = session.query_detail_until(
-            &DetailRequest {
-                selection: duplicate_selection,
-                viewport: AlignmentViewport::new(first, last)?,
-                logical_width: 500,
-            },
-            &mut || {
-                between_checks += 1;
-                between_checks == 2
-            },
-        )?;
-        let mut merge_checks = 0;
-        let before_merge = session.query_detail_until(
-            &DetailRequest {
-                selection,
-                viewport: AlignmentViewport::new(first, last)?,
-                logical_width: 500,
-            },
-            &mut || {
-                merge_checks += 1;
-                merge_checks == 2
-            },
-        )?;
-
-        assert!(between_runs.is_none());
-        assert!(before_merge.is_none());
+        });
+        assert!(matches!(
+            error,
+            Err(super::QueryError::ElapsedTimeUnsupported)
+        ));
         Ok(())
     }
 

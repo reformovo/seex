@@ -40,30 +40,6 @@ def test_catalog_backend_round_trips_native_storage_workflow(
     run.finish()
     diagnostics = run.diagnostics()
 
-    with seex.Api(root_path, settings) as api:
-        projects = api.projects()
-        project = api.project("project-1")
-        runs = api.runs("project-1")
-        record = api.run("project-1/run-1")
-        assert record is not None
-        terminal_points = record.history("train/loss").points
-        ranged_points = record.history("train/loss", start=0, end=1).points
-        metrics = record.metrics()
-        summary = record.metric_summary("train/loss")
-        assert [item.project_id for item in projects] == ["project-1"]
-        assert [item.run_id for item in runs] == ["run-1"]
-        assert [point.step for point in ranged_points] == [0]
-        assert [point.step for point in terminal_points] == [0, 1]
-        assert [point.value_f64 for point in terminal_points] == [0.25, 0.0625]
-        assert summary is not None
-        assert (summary.effective_count, summary.last_value_f64) == (2, 0.0625)
-        assert [metric.metric_key for metric in metrics] == [
-            "eval/accuracy",
-            "train/loss",
-        ]
-        assert project is not None and project.name == "project-1"
-        assert record.status == "finished"
-
     assert run.status == "finished"
     assert diagnostics.last_flush_status == "succeeded"
     assert any(
@@ -97,13 +73,9 @@ def test_short_run_metrics_flush_from_inline_to_parquet(
     assert not list((data_path / "main" / "metric_points").rglob("*.parquet"))
 
     run.finish(0 if terminal_method == "finish_run" else 1)
-    record = seex.Api(root_path, settings).run("project-1/run-1")
-    assert record is not None
-    terminal_points = record.history("train/loss").points
     partition_path = data_path / "main" / "metric_points" / "run_id=run-1" / "metric_key_encoded=train%252Floss"
 
     assert run.status == ("finished" if terminal_method == "finish_run" else "failed")
-    assert [point.step for point in terminal_points] == list(range(16))
     assert any(partition_path.glob("*.parquet"))
 
 

@@ -11,11 +11,9 @@ backed by Rust, PyO3, DuckDB, and DuckLake.
 
 Seex 0.1.0b5 beta surface:
 
-- use the same typed Run, Reader, comparison, and ranking model from Rust or Python
-- discover projects, runs, metrics, and persisted metric points
+- use the typed Run writing surface from Python or Rust
 - log run-scoped numeric metric mappings with explicit or implicit steps
-- return Python objects or Arrow PyCapsule-compatible metric series
-- inspect existing stores through a dependency-free, read-only CLI
+- keep chart reads in the native Rust Reader and Viewer
 - use DuckDB or SQLite catalogs with local or S3-compatible Parquet data
 - inspect bounded multi-Run curves in the independently distributed macOS Viewer
 - keep the Parquet schema as the long-term compatibility boundary
@@ -25,8 +23,7 @@ with `cargo add seex@0.1.0-beta.5`.
 
 Known limit: with the default DuckDB catalog, an independent reader may not
 attach or refresh while a writer is active. SQLite catalogs support one writer
-process with multiple read-only Readers using WAL. Open `Api` after Run
-finalization for portable behavior across catalog backends. See the
+process with multiple native Readers using WAL. See the
 [0.1.0b5 release notes](docs/release-notes/0.1.0b5.md) for Viewer source
 management changes and inherited compatibility and performance limits.
 
@@ -38,31 +35,12 @@ import seex
 with seex.init(project="training", dir="runs", id="baseline") as run:
     run.log({"train/loss": 0.25, "samples": 64}, step=0)
     run.log({"train/loss": 0.125})  # Implicitly advances to step 1.
-
-with seex.Api("runs") as api:
-    projects = api.projects()
-    runs = api.runs("training")
-    record = api.run("training/baseline")
-    if record is not None:
-        metrics = record.metrics()
-        series = record.history("train/loss", start=0, end=100)
-        points = series.points
-        arrow_stream = series.__arrow_c_stream__()
 ```
 
-`MetricSeries` does not require PyArrow, pandas, or Polars. Consumers that
-support the Arrow PyCapsule protocol can import its existing six-column metric
-point schema directly through `__arrow_c_stream__`.
-
-The `seex` command opens an existing store and never creates a missing one:
+The `seex` command only launches the native Viewer:
 
 ```console
-seex --path runs projects list
-seex --path runs runs list <project-id> --status finished --limit 20
-seex --path runs metrics list <run-id>
-seex --path runs --format json metrics query <run-id> train/loss --all
-seex --path runs autoresearch leaderboard <project-id> --metric eval/loss --direction minimize
-seex --path runs --format json autoresearch best <project-id> --metric eval/loss --direction minimize
+seex app runs
 ```
 
 Launch an independently installed desktop app with `seex app`, optionally
@@ -81,10 +59,6 @@ the checksum, extract the archive and open `Seex.app`. Direct downloads are not
 Apple-notarized and may require a one-time Gatekeeper approval. The Homebrew
 Formula builds the app bundle from source and also exposes `seex-app` on
 `PATH`; the Python wheel and Viewer remain separate artifacts.
-
-Machine-readable CLI success and error output uses JSON schema version 2.
-Autoresearch rankings may be limited to a repeated `--run <run-id>` subset;
-leaderboards rank the full selection before applying pagination.
 
 By default, Seex stores local state under `./.seex` and uses the
 `"uncategorized"` project. Pass `dir` and `project` explicitly when needed:
@@ -107,7 +81,7 @@ as `s3://bucket/prefix`. Credential values are redacted from `repr(settings)`.
 
 Project-local storage settings can live in `./.seex/config.toml`. Relative
 `data_path` and `catalog_path` values in this file are resolved from the project
-root passed as `dir` to `seex.init(...)`, to `Api(...)`, or to `seex --path`:
+root passed as `dir` to `seex.init(...)`:
 
 ```toml
 data_path = "s3://example-bucket/seex/demo"
@@ -152,20 +126,16 @@ Runtime extensions:
 
 - DuckLake is installed and loaded by the native engine because it is required
   for native storage.
-- DuckDB LTTB is optional and is not bundled into Seex wheels. Readers use an
-  available compatible `lttb` extension when applicable, but neither the SDK
-  nor CLI installs extensions implicitly. `max_points` always remains a strict
-  upper bound on returned points.
+- DuckDB LTTB is optional and is not bundled into Seex wheels. Native Readers
+  use an available compatible `lttb` extension when applicable. Chart queries
+  require an explicit `max_points` from 2 through 1024, and the bound is strict.
 - Seex embeds DuckDB 1.5.4 and delegates signed community-extension
   compatibility to DuckDB and the community extension repository rather than
   duplicating their platform matrix in Seex's generated CI. DuckDB extension
   binaries are specific to a DuckDB version and platform; for offline
   deployment, set
   `SEEX_LTTB_EXTENSION_PATH=/path/to/lttb.duckdb_extension` to a compatible,
-  signed binary rather than reusing one built for another DuckDB version. If no
-  upstream build exists, use `--all`. CLI JSON failures use the
-  `lttb_extension_unavailable` code and include machine-readable guidance for
-  the local-extension and `--all` recovery paths.
+  signed binary rather than reusing one built for another DuckDB version.
 
 See DuckDB's [LTTB extension page][lttb] and [extension installation
 guide][duckdb-extension-install] for the upstream commands and compatibility
