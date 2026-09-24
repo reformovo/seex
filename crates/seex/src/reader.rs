@@ -178,6 +178,7 @@ impl ReaderBuilder {
             resolved.data_path,
             resolved.s3_connection,
         );
+        let retry_config = config.clone();
         let (connection, native_database) = if local_only {
             let (connection, database) = open_shared_existing_local_connection_with_config(config)
                 .map_err(public_storage_error)?;
@@ -192,6 +193,7 @@ impl ReaderBuilder {
         Ok(Reader {
             connection: Some(ProjectConnection::new(connection)),
             _native_database: native_database,
+            retry_config,
             run_metadata: RefCell::new(HashMap::new()),
             diagnostics: RefCell::new(DiagnosticsCache::default()),
             #[cfg(test)]
@@ -204,6 +206,7 @@ impl ReaderBuilder {
 pub struct Reader {
     connection: Option<ProjectConnection>,
     _native_database: Option<NativeReadDatabase>,
+    retry_config: NativeStorageConfig,
     run_metadata: RefCell<HashMap<RunId, RunMetadata>>,
     diagnostics: RefCell<DiagnosticsCache>,
     #[cfg(test)]
@@ -249,7 +252,7 @@ impl AxisBounds {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct DiagnosticsCache {
     generation: Option<u64>,
     finished: HashMap<DiagnosticsKey, SeriesDiagnostics>,
@@ -442,6 +445,62 @@ impl Reader {
     }
 
     fn query_metric_impl(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+        retain_neighbors: bool,
+        force_full_step: bool,
+    ) -> SdkResult<MetricSeries> {
+        let first_reader = self.fresh_query_reader()?;
+        let first = first_reader.query_metric_once(
+            run_id,
+            metric_key,
+            query,
+            retain_neighbors,
+            force_full_step,
+        );
+        if !matches!(first, Err(Error::Storage)) {
+            self.remember_query_diagnostics(&first_reader);
+            return first;
+        }
+        let retry_reader = self.fresh_query_reader()?;
+        let result = retry_reader.query_metric_once(
+            run_id,
+            metric_key,
+            query,
+            retain_neighbors,
+            force_full_step,
+        );
+        if result.is_ok() {
+            self.remember_query_diagnostics(&retry_reader);
+        }
+        result
+    }
+
+    fn remember_query_diagnostics(&self, query_reader: &Self) {
+        self.diagnostics
+            .replace(query_reader.diagnostics.borrow().clone());
+        #[cfg(test)]
+        self.diagnostics_loads
+            .set(query_reader.diagnostics_loads.get());
+    }
+
+    fn fresh_query_reader(&self) -> SdkResult<Self> {
+        let connection = open_existing_native_connection_with_config(self.retry_config.clone())
+            .map_err(public_storage_error)?;
+        Ok(Self {
+            connection: Some(ProjectConnection::new(connection)),
+            _native_database: None,
+            retry_config: self.retry_config.clone(),
+            run_metadata: RefCell::new(HashMap::new()),
+            diagnostics: RefCell::new(self.diagnostics.borrow().clone()),
+            #[cfg(test)]
+            diagnostics_loads: Cell::new(self.diagnostics_loads.get()),
+        })
+    }
+
+    fn query_metric_once(
         &self,
         run_id: &RunId,
         metric_key: &MetricKey,
@@ -1436,6 +1495,7 @@ mod tests {
             .get_mut(&run.run_id)
             .expect("test Run metadata should be cached")
             .status = RunStatus::Running;
+        // A stale caller-side status cannot change the fresh query snapshot.
         reader.refresh_diagnostics(2);
         for _ in 0..2 {
             reader.query_metric_for_desktop(
@@ -1444,14 +1504,14 @@ mod tests {
                 &cache_query,
             )?;
         }
-        assert_eq!(reader.diagnostics_loads.get(), 2);
+        assert_eq!(reader.diagnostics_loads.get(), 1);
         reader.refresh_diagnostics(3);
         reader.query_metric_for_desktop(
             &run.run_id,
             &MetricKey::from_string("loss"),
             &cache_query,
         )?;
-        assert_eq!(reader.diagnostics_loads.get(), 3);
+        assert_eq!(reader.diagnostics_loads.get(), 1);
         Ok(())
     }
 

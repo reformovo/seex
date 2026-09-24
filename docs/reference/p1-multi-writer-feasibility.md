@@ -1,6 +1,7 @@
 # P1 SQLite/DuckLake multi-process feasibility
 
-Status: investigation; the P1 multi-writer gate is **not met**. These probes ran at `4da28dc` on
+Status: investigation; the four-writer snapshot portion of the P1 gate now passes at `159fe4e`.
+These probes ran on
 Darwin 27.0.0 arm64 with Rust 1.97.1. They use one local SQLite WAL catalog, four child processes
 writing distinct Runs, and a Reader opened before the writes. Each child writes 32 points.
 
@@ -14,6 +15,7 @@ writing distinct Runs, and a Reader opened before the writes. Each child writes 
 | Same lock and already-open clients, temporarily set inline limit to zero | One four-writer run passed; the Reader saw all 32 points of each finished Run. |
 | Inline limit zero, remove the test lock | Concurrent `finish()` calls again failed with `Storage`. |
 | Normal inline limit, acquire the test lock before opening each client and hold through shutdown | One four-writer run passed; the continuously open Reader saw all finished Runs and their points. |
+| Normal inline limit, catalog lock plus fresh writer/read connections | Four independently opened clients passed concurrently three times; Reader saw 32 points and a 32-point summary for every finished Run. |
 
 The final passing case is reproducible with:
 
@@ -22,7 +24,7 @@ cargo test -p seex --test p1_multi_writer_feasibility \
   serialized_lifecycles_keep_reader_consistent -- --ignored --nocapture
 ```
 
-The test lock covers the *entire* client lifecycle. It prevents simultaneous training writers and
+The earlier test lock covers the *entire* client lifecycle. It prevents simultaneous training writers and
 does not satisfy P1. The zero-inline probes temporarily changed `data_inlining_row_limit` in
 `storage/bootstrap.rs` and restored 8192 afterward. Neither probe establishes crash recovery or
 bounded lock hold time.
@@ -50,8 +52,8 @@ different coordination design may be required.
 
 ## P1 gate still required
 
-Prove four concurrently active clients can report to distinct Runs while a Reader queries them.
-Verify per-query snapshots, lock timeout versus queue full, same-Run conflict, process kill at each
-commit/flush boundary, restart, and terminal flush retry. Compare the affected writer/reader boundary
-with one bounded A-B-B-A workload. Keep P2–P6 paused and retain other catalog and S3 paths until
-these checks pass.
+The four-client write/read snapshot is now proven by the regular
+`simultaneous_writers_keep_reader_consistent` test. The remaining P1 gate is to verify lock timeout
+versus queue full, process kill at each commit/flush boundary, restart, terminal flush retry, and one
+bounded A-B-B-A workload. Keep P2–P6 paused and retain other catalog and S3 paths until those checks
+pass.

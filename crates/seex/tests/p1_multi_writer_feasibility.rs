@@ -1,6 +1,6 @@
 //! Isolated P1 probe for concurrent SQLite-backed DuckLake writers.
 
-use std::fs::{self, File};
+use std::fs;
 use std::path::Path;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -64,20 +64,11 @@ fn p1_writer_child() -> Result<(), Box<dyn std::error::Error>> {
     };
     let root = Path::new(&root);
     let index: usize = std::env::var("SEEX_P1_PROBE_INDEX")?.parse()?;
-    fs::write(root.join(format!("writer-{index}.ready")), b"ready")?;
-    wait_for(&root.join("writers.go"))?;
-    let lifecycle_lock = File::options()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(root.join("p1-probe.lock"))?;
-    lifecycle_lock.lock()?;
-    eprintln!("writer {index}: open");
     let client = Client::builder(root)
         .catalog_backend(CatalogBackend::Sqlite)
         .open()?;
-    eprintln!("writer {index}: start_run");
+    fs::write(root.join(format!("writer-{index}.ready")), b"ready")?;
+    wait_for(&root.join("writers.go"))?;
     let run = client.start_run(RunOptions::new("p1-probe").id(format!("run-{index}")))?;
     for step in 0..POINTS {
         run.log_with(
@@ -85,10 +76,8 @@ fn p1_writer_child() -> Result<(), Box<dyn std::error::Error>> {
             LogOptions::new().step(step),
         )?;
     }
-    eprintln!("writer {index}: finish");
     run.finish()?;
     client.shutdown()?;
-    lifecycle_lock.unlock()?;
     Ok(())
 }
 
@@ -115,8 +104,7 @@ impl Drop for Children {
 }
 
 #[test]
-#[ignore = "P1 baseline serializes whole lifecycles; not a multi-writer acceptance test"]
-fn serialized_lifecycles_keep_reader_consistent() -> Result<(), Box<dyn std::error::Error>> {
+fn simultaneous_writers_keep_reader_consistent() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let seed = Client::builder(root.path())
         .catalog_backend(CatalogBackend::Sqlite)
@@ -170,6 +158,10 @@ fn serialized_lifecycles_keep_reader_consistent() -> Result<(), Box<dyn std::err
                 reader.query_metric(&run.run_id, &MetricKey::from_string("loss"), &query)?;
             assert_eq!(series.samples().len(), POINTS as usize);
             assert_eq!(series.source_count(), POINTS as u64);
+            let summary = reader
+                .metric_summary(run, &MetricKey::from_string("loss"))?
+                .ok_or("finished Run has no metric summary")?;
+            assert_eq!(summary.effective_count, POINTS as u64);
         }
         if runs.len() == WRITERS + 1 && runs.iter().all(|run| run.status == RunStatus::Finished) {
             break;
