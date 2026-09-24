@@ -111,14 +111,16 @@ impl NativeClient {
         let reporter =
             MetricReporter::open_with_capacity(Arc::clone(&connection), metric_queue_capacity);
 
-        Ok(Self {
+        let client = Self {
             lock_namespace,
             reporter,
             connection,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
             flush_lock: Arc::new(Mutex::new(())),
             is_shutdown: AtomicBool::new(false),
-        })
+        };
+        client.recover_pending_flushes()?;
+        Ok(client)
     }
 
     pub fn create_project(
@@ -300,6 +302,18 @@ impl NativeClient {
                 Err(EngineError::MetricFlush { message })
             }
         }
+    }
+
+    fn recover_pending_flushes(&self) -> Result<(), EngineError> {
+        let connection = self.connection()?;
+        let (result, timed_out) = connection.flush_metric_points_with_deadline(None);
+        drop(connection);
+        if timed_out {
+            return Err(EngineError::MetricFlushTimeout);
+        }
+        result.map_err(|_| EngineError::MetricFlush {
+            message: "flush metric_points failed during store recovery".to_owned(),
+        })
     }
 
     pub fn shutdown(&self, timeout: Option<Duration>) -> Result<(), EngineError> {
@@ -1273,6 +1287,64 @@ mod tests {
             diagnostics.last_flush_error.as_deref(),
             Some("flush metric_points failed"),
         );
+        std::fs::remove_dir_all(root_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn reopening_store_recovers_terminal_inline_flush() -> Result<(), Box<dyn std::error::Error>> {
+        let root_path = std::env::temp_dir().join(format!("seex-client-{}", uuid::Uuid::new_v4()));
+        let client = NativeClient::open_with_catalog_backend_storage_config(
+            &root_path,
+            CatalogBackend::Sqlite,
+            None,
+            None,
+            None,
+            65_536,
+        )?;
+        let project = client.create_project(
+            "local training",
+            Some(ProjectId::from_string("project-recovery")),
+        )?;
+        let run = client.create_run(
+            &project.project_id,
+            "baseline",
+            Some(RunId::from_string("run-recovery")),
+        )?;
+        client
+            .run_handle(run.clone())
+            .log_metric_at_step("train/loss", 0, 0.25)?;
+        client.reporter.drain(None)?;
+
+        let metric_points_path = root_path
+            .join(".seex")
+            .join("data")
+            .join("main")
+            .join("metric_points");
+        if metric_points_path.is_dir() {
+            std::fs::remove_dir_all(&metric_points_path)?;
+        }
+        std::fs::write(&metric_points_path, b"flush failure")?;
+        let finish = client.finish_run(&run.run_id);
+        assert!(matches!(finish, Err(EngineError::MetricFlush { .. })));
+        assert_eq!(client.get_run(&run.run_id)?.status, RunStatus::Finished);
+        client.shutdown(None)?;
+
+        std::fs::remove_file(&metric_points_path)?;
+        std::fs::create_dir_all(&metric_points_path)?;
+        let recovered = NativeClient::open_with_catalog_backend_storage_config(
+            &root_path,
+            CatalogBackend::Sqlite,
+            None,
+            None,
+            None,
+            65_536,
+        )?;
+        let partition_path = metric_points_path
+            .join("run_id=run-recovery")
+            .join("metric_key_encoded=train%252Floss");
+        assert!(partition_contains_parquet(&partition_path)?);
+        recovered.shutdown(None)?;
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }

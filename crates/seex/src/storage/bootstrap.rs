@@ -330,6 +330,7 @@ fn open_native_connection_with_mode(
             std::time::Duration::from_secs(30),
         )?)
     };
+    let catalog_preexisted = config.catalog_path.exists();
     if must_exist {
         verify_catalog_exists(&config.catalog_path)?;
     } else if let Some(catalog_parent) = config.catalog_path.parent() {
@@ -360,7 +361,7 @@ fn open_native_connection_with_mode(
         mode,
     )?;
     setup_catalog_adapter(&connection, config.catalog_backend, &config.catalog_path)?;
-    if !must_exist {
+    if !must_exist && !catalog_preexisted {
         initialize_storage_tables(&connection)?;
     } else {
         validate_storage_format(&connection)?;
@@ -640,6 +641,18 @@ mod tests {
 
         let error = open_existing_native_connection_with_config(config).unwrap_err();
         assert!(error.to_string().contains("native storage format marker"));
+
+        let writer_error = open_native_connection_with_config(NativeStorageConfig::duckdb(
+            root.path(),
+            None,
+            None,
+        ))
+        .expect_err("writers must reject stores without a format marker");
+        assert!(
+            writer_error
+                .to_string()
+                .contains("native storage format marker")
+        );
         Ok(())
     }
 
