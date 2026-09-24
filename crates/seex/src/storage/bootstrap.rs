@@ -10,7 +10,7 @@ const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
 const S3_SECRET_NAME: &str = "seex_s3";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
 const SQLITE_JOURNAL_MODE: &str = "WAL";
-const STORAGE_FORMAT_VERSION: i64 = 1;
+const STORAGE_FORMAT_VERSION: i64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeConnectionMode {
@@ -233,6 +233,10 @@ impl NativeStorageConfig {
     pub(crate) fn catalog_path(&self) -> &Path {
         self.catalog_path.as_path()
     }
+
+    pub(crate) fn catalog_backend(&self) -> CatalogBackend {
+        self.catalog_backend
+    }
 }
 
 pub(crate) fn catalog_lock_namespace(catalog_path: &Path) -> Result<PathBuf, StorageError> {
@@ -284,6 +288,17 @@ pub(crate) fn open_existing_writer_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<duckdb::Connection, StorageError> {
     open_native_connection_with_mode(config, NativeConnectionMode::ReadWriteExisting)
+}
+
+pub(crate) fn open_existing_client_connection_with_config(
+    config: NativeStorageConfig,
+) -> Result<duckdb::Connection, StorageError> {
+    let _guard =
+        CatalogWriteGuard::acquire(&config.catalog_path, std::time::Duration::from_secs(30))?;
+    let writer = open_existing_writer_connection_with_config(config.clone())?;
+    flush_pending_in_locked_connection(&writer)?;
+    drop(writer);
+    open_existing_native_connection_with_config(config)
 }
 
 pub(crate) fn open_shared_existing_local_connection_with_config(
@@ -366,7 +381,31 @@ fn open_native_connection_with_mode(
     } else {
         validate_storage_format(&connection)?;
     }
+    if matches!(mode, NativeConnectionMode::ReadWrite) {
+        flush_pending_in_locked_connection(&connection)?;
+    }
     Ok(connection)
+}
+
+/// Retries a pending terminal flush while the caller holds the catalog write lock.
+pub(crate) fn flush_pending_in_locked_connection(
+    connection: &duckdb::Connection,
+) -> Result<bool, StorageError> {
+    let pending: i64 = connection.query_row(
+        "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+        [],
+        |row| row.get(0),
+    )?;
+    if pending == 0 {
+        return Ok(false);
+    }
+    connection
+        .execute_batch("CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');")?;
+    connection.execute(
+        "UPDATE seex_storage_metadata SET value = 0 WHERE key = 'flush_pending'",
+        [],
+    )?;
+    Ok(true)
 }
 
 fn verify_catalog_exists(catalog_path: &Path) -> Result<(), StorageError> {
@@ -562,6 +601,11 @@ pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), 
          SELECT 'format_version', {STORAGE_FORMAT_VERSION}
          WHERE NOT EXISTS (
              SELECT 1 FROM seex_storage_metadata WHERE key = 'format_version'
+         );
+         INSERT INTO seex_storage_metadata (key, value)
+         SELECT 'flush_pending', 0
+         WHERE NOT EXISTS (
+             SELECT 1 FROM seex_storage_metadata WHERE key = 'flush_pending'
          );",
     ))?;
     Ok(())
@@ -585,6 +629,17 @@ fn validate_storage_format(connection: &duckdb::Connection) -> Result<(), Storag
             found: version,
         });
     }
+    connection
+        .query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|source| StorageError::StorageDuckDb {
+            operation: "reading native flush recovery marker",
+            name: "seex_storage_metadata".to_owned(),
+            source,
+        })?;
     Ok(())
 }
 
@@ -653,6 +708,49 @@ mod tests {
                 .to_string()
                 .contains("native storage format marker")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn version_one_store_is_rejected_by_readers_and_writers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::duckdb(root.path(), None, None);
+        let connection = open_native_connection_with_config(config.clone())?;
+        connection.execute(
+            "UPDATE seex_storage_metadata SET value = 1 WHERE key = 'format_version'",
+            [],
+        )?;
+        drop(connection);
+
+        for error in [
+            open_existing_native_connection_with_config(config.clone()).unwrap_err(),
+            open_native_connection_with_config(config).unwrap_err(),
+        ] {
+            assert!(
+                matches!(
+                    error,
+                    StorageError::StorageFormatMismatch {
+                        expected: 2,
+                        found: 1
+                    }
+                ),
+                "unexpected format error: {error:?}",
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn writer_open_skips_flush_without_pending_marker() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::duckdb(root.path(), None, None);
+        drop(open_native_connection_with_config(config.clone())?);
+        let metric_points_path = config.data_path.join("main").join("metric_points");
+        std::fs::create_dir_all(metric_points_path.parent().expect("metric_points parent"))?;
+        std::fs::write(&metric_points_path, b"flush must not run")?;
+
+        drop(open_native_connection_with_config(config)?);
         Ok(())
     }
 

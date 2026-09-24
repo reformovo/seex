@@ -8,8 +8,8 @@ use crate::model::types::{Project, ProjectId};
 use chrono::{DateTime, Utc};
 
 use crate::storage::bootstrap::{
-    NativeStorageConfig, open_existing_native_connection_with_config,
-    open_existing_writer_connection_with_config,
+    CatalogBackend, NativeStorageConfig, flush_pending_in_locked_connection,
+    open_existing_native_connection_with_config, open_existing_writer_connection_with_config,
 };
 use crate::storage::rows::{StoredRun, status_as_str};
 use crate::storage::time::{timestamp_as_rfc3339, timestamp_from_millis};
@@ -98,6 +98,12 @@ impl ProjectConnection {
         Ok(Self::new(open_existing_native_connection_with_config(
             config.clone(),
         )?))
+    }
+
+    pub(crate) fn uses_sqlite_catalog(&self) -> bool {
+        self.write_config
+            .as_ref()
+            .is_some_and(|config| config.catalog_backend() == CatalogBackend::Sqlite)
     }
 
     #[doc(hidden)]
@@ -314,17 +320,45 @@ impl ProjectConnection {
         finished_at: DateTime<Utc>,
     ) -> Result<bool, StorageError> {
         let _guard = self.write_guard()?;
-        let updated = self.connection.execute(
-            "UPDATE seex_runs
-             SET status = ?, finished_at = ?
-             WHERE run_id = ? AND status = 'running'",
-            (
-                status_as_str(status),
-                timestamp_as_rfc3339(finished_at),
-                run_id.as_str(),
-            ),
-        )?;
-        Ok(updated > 0)
+        let fresh = if self.uses_sqlite_catalog() {
+            self.fresh_writer()?
+        } else {
+            None
+        };
+        let connection = fresh.as_ref().unwrap_or(&self.connection);
+        connection.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| {
+            let updated = connection.execute(
+                "UPDATE seex_runs
+                 SET status = ?, finished_at = ?
+                 WHERE run_id = ? AND status = 'running'",
+                (
+                    status_as_str(status),
+                    timestamp_as_rfc3339(finished_at),
+                    run_id.as_str(),
+                ),
+            )?;
+            if updated > 0 {
+                connection.execute(
+                    "UPDATE seex_storage_metadata SET value = 1 WHERE key = 'flush_pending'",
+                    [],
+                )?;
+            }
+            Ok(updated > 0)
+        })();
+        match result {
+            Ok(updated) => {
+                if let Err(error) = connection.execute_batch("COMMIT") {
+                    let _ = connection.execute_batch("ROLLBACK");
+                    return Err(error.into());
+                }
+                Ok(updated)
+            }
+            Err(error) => {
+                let _ = connection.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     pub fn flush_metric_points(&self) -> Result<(), StorageError> {
@@ -335,12 +369,30 @@ impl ProjectConnection {
         &self,
         deadline: Option<Instant>,
     ) -> (Result<(), StorageError>, bool) {
+        self.flush_metric_points_impl(deadline, false)
+    }
+
+    pub(crate) fn flush_pending_metric_points_with_deadline(
+        &self,
+        deadline: Option<Instant>,
+    ) -> (Result<(), StorageError>, bool) {
+        self.flush_metric_points_impl(deadline, true)
+    }
+
+    fn flush_metric_points_impl(
+        &self,
+        deadline: Option<Instant>,
+        only_pending: bool,
+    ) -> (Result<(), StorageError>, bool) {
         let guard_timeout = deadline
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .unwrap_or(CATALOG_WRITE_TIMEOUT);
         let guard = match self.write_guard_with_timeout(guard_timeout) {
             Ok(guard) => guard,
-            Err(error) => return (Err(error), true),
+            Err(error) => {
+                let timed_out = matches!(error, StorageError::CatalogWriteLockTimeout);
+                return (Err(error), timed_out);
+            }
         };
         let completed = Arc::new(AtomicBool::new(false));
         let timed_out = Arc::new(AtomicBool::new(false));
@@ -362,9 +414,35 @@ impl ProjectConnection {
                 }
             });
         }
-        let result = connection
-            .execute_batch("CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');")
-            .map_err(StorageError::from);
+        let result = if only_pending {
+            if self.uses_sqlite_catalog() {
+                flush_pending_in_locked_connection(connection).map(|_| ())
+            } else {
+                (|| {
+                    let pending: i64 = self.connection.query_row(
+                        "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                    if pending != 0 {
+                        connection.execute_batch(
+                            "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
+                        )?;
+                        self.connection.execute(
+                            "UPDATE seex_storage_metadata SET value = 0 WHERE key = 'flush_pending'",
+                            [],
+                        )?;
+                    }
+                    Ok(())
+                })()
+            }
+        } else {
+            connection
+                .execute_batch(
+                    "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
+                )
+                .map_err(StorageError::from)
+        };
         completed.store(true, Ordering::Relaxed);
         drop(guard);
         let timed_out = timed_out.load(Ordering::Relaxed)
