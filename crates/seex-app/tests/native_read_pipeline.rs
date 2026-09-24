@@ -338,38 +338,39 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn both_catalog_backends_preserve_query_and_refresh_contracts() -> Result<(), Box<dyn Error>> {
-    let duckdb = fixture(CatalogBackend::DuckDb, false)?;
-    assert_backend_contract(&duckdb)?;
+fn sqlite_relative_and_absolute_paths_preserve_query_and_refresh_contracts()
+-> Result<(), Box<dyn Error>> {
+    let relative = fixture(CatalogBackend::Sqlite, false)?;
+    assert_backend_contract(&relative)?;
     let sqlite = fixture(CatalogBackend::Sqlite, true)?;
     assert_backend_contract(&sqlite)?;
     Ok(())
 }
 
 #[test]
-fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Error>> {
-    let duckdb = fixture(CatalogBackend::DuckDb, false)?;
+fn source_registry_reads_two_sqlite_sources_together() -> Result<(), Box<dyn Error>> {
+    let relative = fixture(CatalogBackend::Sqlite, false)?;
     let sqlite = fixture(CatalogBackend::Sqlite, true)?;
     let mut registry = SourceRegistry::default();
-    let duckdb_id = registry.configure(ConfiguredSource {
-        alias: SourceAlias::new("duckdb").expect("test alias should be valid"),
-        root_path: duckdb.root_path().to_path_buf(),
-        projects: vec![duckdb.project_id.clone()],
+    let relative_id = registry.configure(ConfiguredSource {
+        alias: SourceAlias::new("relative").expect("test alias should be valid"),
+        root_path: relative.root_path().to_path_buf(),
+        projects: vec![relative.project_id.clone()],
     });
     let sqlite_id = registry.configure(ConfiguredSource {
         alias: SourceAlias::new("sqlite").expect("test alias should be valid"),
         root_path: sqlite.root_path().to_path_buf(),
         projects: vec![sqlite.project_id.clone()],
     });
-    let duckdb_events = registry
-        .activate(&duckdb_id)?
-        .ok_or("DuckDB source should return an event stream")?;
+    let relative_events = registry
+        .activate(&relative_id)?
+        .ok_or("relative source should return an event stream")?;
     let sqlite_events = registry
         .activate(&sqlite_id)?
         .ok_or("SQLite source should return an event stream")?;
 
     registry.submit(
-        &duckdb_id,
+        &relative_id,
         Generation(1),
         ReadRequest::Discover(DiscoveryRequest::default()),
     )?;
@@ -378,21 +379,21 @@ fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Erro
         Generation(2),
         ReadRequest::Discover(DiscoveryRequest::default()),
     )?;
-    let duckdb_event = receive_event(&duckdb_events, EVENT_TIMEOUT)?;
+    let relative_event = receive_event(&relative_events, EVENT_TIMEOUT)?;
     let sqlite_event = receive_event(&sqlite_events, EVENT_TIMEOUT)?;
     assert!(matches!(
-        &duckdb_event.result,
+        &relative_event.result,
         Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
     ));
     assert!(matches!(
         &sqlite_event.result,
         Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
     ));
-    registry.apply_event(&duckdb_event);
+    registry.apply_event(&relative_event);
     registry.apply_event(&sqlite_event);
 
     assert_eq!(
-        registry.source(&duckdb_id).map(|source| &source.status),
+        registry.source(&relative_id).map(|source| &source.status),
         Some(&SourceStatus::Ready)
     );
     assert_eq!(

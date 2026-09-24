@@ -9,7 +9,7 @@ use crate::storage::{ProjectConnection, RunWriterGuard};
 use crate::engine::EngineError;
 use crate::engine::bootstrap::{
     CatalogBackend, NativeStorageConfig, S3ConnectionConfig, catalog_lock_namespace,
-    open_existing_native_connection_with_config, open_native_connection_with_config,
+    open_existing_client_connection_with_config, open_native_connection_with_config,
 };
 #[cfg(test)]
 use crate::engine::query::NativeQueryStore;
@@ -99,7 +99,7 @@ impl NativeClient {
         );
         let catalog_path = storage_config.catalog_path().to_owned();
         let connection = if must_exist {
-            open_existing_native_connection_with_config(storage_config.clone())?
+            open_existing_client_connection_with_config(storage_config.clone())?
         } else {
             open_native_connection_with_config(storage_config.clone())?
         };
@@ -194,7 +194,11 @@ impl NativeClient {
 
     pub fn get_run(&self, run_id: &RunId) -> Result<Run, EngineError> {
         let connection = self.connection()?;
-        Ok(connection.get_run(run_id)?)
+        if connection.uses_sqlite_catalog() {
+            Ok(connection.fresh_read()?.get_run(run_id)?)
+        } else {
+            Ok(connection.get_run(run_id)?)
+        }
     }
 
     pub fn resume_run(&self, run_id: &RunId) -> Result<Run, EngineError> {
@@ -284,7 +288,7 @@ impl NativeClient {
         }
 
         let connection = self.connection()?;
-        let (result, timed_out) = connection.flush_metric_points_with_deadline(deadline);
+        let (result, timed_out) = connection.flush_pending_metric_points_with_deadline(deadline);
         drop(connection);
         if timed_out {
             self.reporter.set_flush_timed_out(run_id);
@@ -1317,22 +1321,99 @@ mod tests {
         assert_eq!(client.get_run(&run.run_id)?.status, RunStatus::Finished);
         client.shutdown(None)?;
 
-        std::fs::remove_file(&metric_points_path)?;
-        std::fs::create_dir_all(&metric_points_path)?;
-        let recovered = NativeClient::open_with_catalog_backend_storage_config(
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            &root_path,
+            None,
+            None,
+            None,
+        );
+        let reader =
+            crate::storage::bootstrap::open_existing_native_connection_with_config(config)?;
+        let pending: i64 = reader.query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(pending, 1);
+        let visible_points: i64 = reader.query_row(
+            "SELECT count(*) FROM dl.metric_points WHERE run_id = 'run-recovery'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(visible_points, 1);
+        drop(reader);
+
+        let failed_recovery = NativeClient::open_with_catalog_backend_storage_config(
             &root_path,
             CatalogBackend::Sqlite,
             None,
             None,
             None,
             65_536,
+        );
+        assert!(
+            failed_recovery.is_err(),
+            "writer open must retry and fail while flush is blocked"
+        );
+
+        let reader = crate::storage::bootstrap::open_existing_native_connection_with_config(
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                &root_path,
+                None,
+                None,
+                None,
+            ),
         )?;
-        recovered.flush_run_data(&run.run_id, None)?;
+        let pending_after_failure: i64 = reader.query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(pending_after_failure, 1);
+        drop(reader);
+
+        std::fs::remove_file(&metric_points_path)?;
+        std::fs::create_dir_all(&metric_points_path)?;
+        let recovered = NativeClient::open_with_catalog_backend_storage_config_mode(
+            &root_path,
+            CatalogBackend::Sqlite,
+            None,
+            None,
+            None,
+            65_536,
+            true,
+        )?;
         let partition_path = metric_points_path
             .join("run_id=run-recovery")
             .join("metric_key_encoded=train%252Floss");
         assert!(partition_contains_parquet(&partition_path)?);
         recovered.shutdown(None)?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            &root_path,
+            None,
+            None,
+            None,
+        );
+        let connection = open_native_connection_with_config(config.clone())?;
+        connection.execute(
+            "UPDATE seex_storage_metadata SET value = 1 WHERE key = 'flush_pending'",
+            [],
+        )?;
+        drop(connection);
+        let recovered_again = open_existing_client_connection_with_config(config)?;
+        let pending: i64 = recovered_again.query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            pending, 0,
+            "retry after an already completed flush must be idempotent"
+        );
+        drop(recovered_again);
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }
