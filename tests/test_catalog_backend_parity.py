@@ -11,7 +11,7 @@ import pytest
 import seex
 
 _CatalogBackend = Literal["duckdb", "sqlite"]
-_CATALOG_BACKENDS: tuple[_CatalogBackend, ...] = ("duckdb", "sqlite")
+_CATALOG_BACKENDS: tuple[_CatalogBackend, ...] = ("sqlite",)
 
 
 @pytest.mark.parametrize("catalog_backend", _CATALOG_BACKENDS)

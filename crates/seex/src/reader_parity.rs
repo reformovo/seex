@@ -1,4 +1,6 @@
-use crate::storage::bootstrap::open_native_connection;
+use crate::storage::bootstrap::{
+    CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
+};
 use crate::storage::{MetricWrite, ProjectConnection};
 use crate::{
     Error, MAX_CHART_POINTS, MetricCoordinate, MetricKey, MetricQuery, MetricRange, Project,
@@ -22,8 +24,8 @@ fn native_reader_honors_explicit_storage_overrides_without_creating_a_store()
     )?;
 
     let reader = Reader::builder(root)
-        .catalog_backend(crate::CatalogBackend::DuckDb)
-        .catalog_path(root.join(".seex/catalog.ducklake"))
+        .catalog_backend(crate::CatalogBackend::Sqlite)
+        .catalog_path(root.join(".seex/catalog.sqlite"))
         .data_path(root.join(".seex/data"))
         .open()?;
 
@@ -32,10 +34,10 @@ fn native_reader_honors_explicit_storage_overrides_without_creating_a_store()
     assert_eq!(
         Reader::builder(empty.path()).open().err(),
         Some(Error::CatalogNotFound {
-            name: String::from("catalog.ducklake")
+            name: String::from("catalog.sqlite")
         })
     );
-    assert!(!empty.path().join(".seex/catalog.ducklake").exists());
+    assert!(!empty.path().join(".seex/catalog.sqlite").exists());
     Ok(())
 }
 
@@ -74,7 +76,15 @@ fn native_reader_scopes_run_lookup_and_optional_metric_summaries()
 impl Fixture {
     fn open() -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let connection = ProjectConnection::new(open_native_connection(root.path())?);
+        let connection = ProjectConnection::new(open_native_connection_with_config(
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                root.path(),
+                None,
+                None,
+                None,
+            ),
+        )?);
         let created_at = crate::storage::time::current_timestamp("created_at")?;
         let project = Project {
             project_id: ProjectId::from_string("project-1"),
@@ -111,7 +121,7 @@ impl Fixture {
         drop(connection);
         std::fs::write(
             root.path().join(".seex/config.toml"),
-            "schema_version = 1\ncatalog_path = '.seex/catalog.ducklake'\n\
+            "schema_version = 1\ncatalog_backend = 'sqlite'\ncatalog_path = '.seex/catalog.sqlite'\n\
              data_path = '.seex/data'\n",
         )?;
         Ok(Self {

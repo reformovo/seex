@@ -151,8 +151,15 @@ impl<'connection> NativeWriteStore<'connection> {
             "INSERT INTO seex_metric_aggregates
                  (run_id, metric_key, effective_count, last_step, last_value_f64,
                   min_value_f64, max_value_f64)
-             SELECT run_id, metric_key, count(*), arg_max(step, step), arg_max(value_f64, step),
-                    min(value_f64), max(value_f64)
+             SELECT run_id, metric_key, count(*), arg_max(step, step),
+                    -- SQLite cannot persist IEEE non-finite values in scalar
+                    -- columns; chart diagnostics still inspect the source rows.
+                    CASE WHEN isfinite(arg_max(value_f64, step))
+                         THEN arg_max(value_f64, step) ELSE 0.0 END,
+                    CASE WHEN isfinite(min(value_f64))
+                         THEN min(value_f64) ELSE 0.0 END,
+                    CASE WHEN isfinite(max(value_f64))
+                         THEN max(value_f64) ELSE 0.0 END
              FROM (
                  SELECT *,
                         row_number() OVER (

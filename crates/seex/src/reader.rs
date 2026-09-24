@@ -1370,10 +1370,20 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::model::run::RunId;
         use crate::storage::MetricWrite;
-        use crate::storage::bootstrap::open_native_connection;
+        use crate::storage::bootstrap::{
+            CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
+        };
 
         let root = tempfile::tempdir()?;
-        let connection = ProjectConnection::new(open_native_connection(root.path())?);
+        let connection = ProjectConnection::new(open_native_connection_with_config(
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                root.path(),
+                None,
+                None,
+                None,
+            ),
+        )?);
         let project_id = ProjectId::from_string("project-1");
         let created_at = crate::storage::time::current_timestamp("created_at")?;
         let project = Project {
@@ -1420,7 +1430,7 @@ mod tests {
         drop(connection);
         std::fs::write(
             root.path().join(".seex/config.toml"),
-            "schema_version = 1\ncatalog_path = '.seex/catalog.ducklake'\n\
+            "schema_version = 1\ncatalog_backend = 'sqlite'\ncatalog_path = '.seex/catalog.sqlite'\n\
              data_path = '.seex/data'\n",
         )?;
 
