@@ -57,6 +57,8 @@ pub enum StorageError {
     CatalogNotFound { name: String },
     #[error("timed out waiting for the catalog write lock")]
     CatalogWriteLockTimeout,
+    #[error("unsupported native storage format version {found}; expected {expected}")]
+    StorageFormatMismatch { expected: i64, found: i64 },
     #[error("storage operation failed while {operation}: {name}")]
     Storage {
         operation: &'static str,

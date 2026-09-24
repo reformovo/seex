@@ -53,6 +53,8 @@ pub enum EngineError {
     MetricQueueFull,
     #[error("timed out waiting for the catalog write lock")]
     CatalogWriteLockTimeout,
+    #[error("unsupported native storage format version {found}; expected {expected}")]
+    StorageFormatMismatch { expected: i64, found: i64 },
     #[error("metric batch must contain between 1 and 8192 points, got {count}")]
     InvalidMetricBatch { count: usize },
     #[error("committed step {attempted} regresses from cursor {cursor}")]
@@ -100,6 +102,9 @@ impl From<crate::storage::StorageError> for EngineError {
             StorageError::RunAlreadyActive { run_id } => Self::RunAlreadyActive { run_id },
             StorageError::CatalogNotFound { name } => Self::CatalogNotFound { name },
             StorageError::CatalogWriteLockTimeout => Self::CatalogWriteLockTimeout,
+            StorageError::StorageFormatMismatch { expected, found } => {
+                Self::StorageFormatMismatch { expected, found }
+            }
             StorageError::Storage {
                 operation,
                 name,

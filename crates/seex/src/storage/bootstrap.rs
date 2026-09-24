@@ -10,6 +10,7 @@ const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
 const S3_SECRET_NAME: &str = "seex_s3";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
 const SQLITE_JOURNAL_MODE: &str = "WAL";
+const STORAGE_FORMAT_VERSION: i64 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeConnectionMode {
@@ -361,6 +362,8 @@ fn open_native_connection_with_mode(
     setup_catalog_adapter(&connection, config.catalog_backend, &config.catalog_path)?;
     if !must_exist {
         initialize_storage_tables(&connection)?;
+    } else {
+        validate_storage_format(&connection)?;
     }
     Ok(connection)
 }
@@ -511,7 +514,7 @@ fn create_s3_secret_statement(config: &S3ConnectionConfig) -> String {
 }
 
 pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), StorageError> {
-    connection.execute_batch(
+    connection.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS seex_projects (
              project_id VARCHAR NOT NULL,
              name VARCHAR NOT NULL,
@@ -549,8 +552,38 @@ pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), 
              last_value_f64 DOUBLE NOT NULL,
              min_value_f64 DOUBLE NOT NULL,
              max_value_f64 DOUBLE NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS seex_storage_metadata (
+             key VARCHAR PRIMARY KEY,
+             value BIGINT NOT NULL
+         );
+         INSERT INTO seex_storage_metadata (key, value)
+         SELECT 'format_version', {STORAGE_FORMAT_VERSION}
+         WHERE NOT EXISTS (
+             SELECT 1 FROM seex_storage_metadata WHERE key = 'format_version'
          );",
-    )?;
+    ))?;
+    Ok(())
+}
+
+fn validate_storage_format(connection: &duckdb::Connection) -> Result<(), StorageError> {
+    let version = connection
+        .query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'format_version'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|source| StorageError::StorageDuckDb {
+            operation: "reading native storage format marker",
+            name: "seex_storage_metadata".to_owned(),
+            source,
+        })?;
+    if version != STORAGE_FORMAT_VERSION {
+        return Err(StorageError::StorageFormatMismatch {
+            expected: STORAGE_FORMAT_VERSION,
+            found: version,
+        });
+    }
     Ok(())
 }
 
@@ -587,6 +620,27 @@ mod tests {
         );
         assert_eq!(error.to_string(), "catalog not found: catalog.ducklake");
         assert!(!root_path.exists());
+    }
+
+    #[test]
+    fn existing_connection_rejects_catalog_without_storage_format_marker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::duckdb(root.path(), None, None);
+        drop(open_native_connection_with_config(config.clone())?);
+        let connection = open_duckdb_connection()?;
+        attach_ducklake_with_backend(
+            &connection,
+            CatalogBackend::DuckDb,
+            config.catalog_path(),
+            &config.data_path,
+        )?;
+        connection.execute_batch("DROP TABLE seex_catalog.seex_storage_metadata;")?;
+        drop(connection);
+
+        let error = open_existing_native_connection_with_config(config).unwrap_err();
+        assert!(error.to_string().contains("native storage format marker"));
+        Ok(())
     }
 
     #[test]
