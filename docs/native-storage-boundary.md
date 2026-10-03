@@ -30,7 +30,7 @@ The default project-local store is:
 ```text
 <project>/.seex/
   config.toml        # optional native project configuration
-  catalog.sqlite     # SQLite-backed DuckLake catalog and v2 format marker
+  catalog.sqlite     # SQLite-backed DuckLake catalog and v3 format marker
   data/              # default Parquet data path
 ```
 
@@ -39,7 +39,8 @@ filesystem paths. S3 and DuckDB catalog configuration are rejected. An
 explicit `catalog_path` is used as provided. Newly created stores carry a
 `seex_storage_metadata` format marker; an existing store with a missing or
 unsupported marker is rejected instead of initialized or migrated. Format v2
-adds a global `flush_pending` marker to `seex_storage_metadata`.
+added a global `flush_pending` marker to `seex_storage_metadata`. Format v3
+adds indexed Run, metric key, and actual sequence discovery directories.
 
 Relative paths read from `<project>/.seex/config.toml` are resolved against
 the project root. Explicit SDK paths retain their caller-provided resolution
@@ -100,7 +101,10 @@ successful terminal status update and `flush_pending = 1` commit in one
 transaction after summary construction. The catalog lock covers inline flush
 and marker clearing. A new writer retries only when the marker is set; a
 failed retry prevents that writer from opening. Read-only Readers never run
-recovery, and v1 directories are rejected.
+recovery, and older directories are rejected. The sequence directory records
+only actual `(Run, metric key)` pairs. First append creates a pending record;
+successful append publishes it. Writer reopen repairs only pending records
+by checking the corresponding fact and removes entries with no fact.
 
 ## Data Area Responsibilities
 

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -471,6 +472,35 @@ impl ProjectConnection {
         let held_since = Instant::now();
         let fresh = self.fresh_writer()?;
         let connection = fresh.as_ref().unwrap_or(&self.connection);
+        let series = rows
+            .iter()
+            .map(|row| (row.run_id.as_str(), row.metric_key.as_str()))
+            .collect::<HashSet<_>>();
+        connection.execute_batch("BEGIN TRANSACTION")?;
+        let directory_result: Result<(), StorageError> = (|| {
+            for (run_id, metric_key) in &series {
+                connection.execute(
+                    "INSERT INTO seex_metric_keys(metric_key)
+                     SELECT ? WHERE NOT EXISTS (
+                         SELECT 1 FROM seex_metric_keys WHERE metric_key = ?
+                     )",
+                    [metric_key, metric_key],
+                )?;
+                connection.execute(
+                    "INSERT INTO seex_series_directory(run_id, metric_key, status)
+                     SELECT ?, ?, 'pending' WHERE NOT EXISTS (
+                         SELECT 1 FROM seex_series_directory WHERE run_id = ? AND metric_key = ?
+                     )",
+                    [run_id, metric_key, run_id, metric_key],
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = directory_result {
+            let _ = connection.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+        connection.execute_batch("COMMIT")?;
         let append_started = Instant::now();
         let mut appender = connection.appender_with_columns_to_catalog_and_db(
             "metric_points",
@@ -501,6 +531,19 @@ impl ProjectConnection {
             ])?;
         }
         appender.flush()?;
+        drop(appender);
+        connection.execute_batch("BEGIN TRANSACTION")?;
+        for (run_id, metric_key) in series {
+            if let Err(error) = connection.execute(
+                "UPDATE seex_series_directory SET status = 'published'
+                 WHERE run_id = ? AND metric_key = ? AND status = 'pending'",
+                [run_id, metric_key],
+            ) {
+                let _ = connection.execute_batch("ROLLBACK");
+                return Err(error.into());
+            }
+        }
+        connection.execute_batch("COMMIT")?;
         record_write_timing("batch_append", append_started.elapsed());
         record_write_timing("append_lock_hold", held_since.elapsed());
         Ok(())
@@ -531,6 +574,62 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::storage::bootstrap::{CatalogBackend, open_native_connection_with_config};
+
+    #[test]
+    fn series_directory_publishes_only_actual_sequences_and_repairs_pending()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        let connection = open_native_connection_with_config(config.clone())?;
+        let store = ProjectConnection::with_catalog_write_lock(connection, config.clone());
+        store.append_metric_batch(&[MetricWrite {
+            run_id: "run-a".to_owned(),
+            metric_key: "loss".to_owned(),
+            step: 0,
+            timestamp_millis: 1_700_000_000_000,
+            value_f64: 0.5,
+            ingested_at_millis: 1_700_000_000_000,
+        }])?;
+        let reader = store.fresh_read()?;
+        let published: i64 = reader.query_row(
+            "SELECT count(*) FROM seex_series_directory WHERE status = 'published'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(published, 1);
+        drop(reader);
+        store.execute(
+            "UPDATE seex_series_directory SET status = 'pending' WHERE run_id = 'run-a'",
+            [],
+        )?;
+        store.execute("INSERT INTO seex_metric_keys VALUES ('orphan')", [])?;
+        store.execute(
+            "INSERT INTO seex_series_directory VALUES ('run-a', 'orphan', 'pending')",
+            [],
+        )?;
+        drop(store);
+
+        let reopened = open_native_connection_with_config(config)?;
+        let statuses = reopened
+            .prepare("SELECT metric_key, status FROM seex_series_directory ORDER BY metric_key")?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(statuses, vec![("loss".to_owned(), "published".to_owned())]);
+        let keys: i64 = reopened.query_row("SELECT count(*) FROM seex_metric_keys", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(keys, 1);
+        Ok(())
+    }
 
     #[test]
     fn read_interrupt_stops_the_bound_connection_query() -> Result<(), Box<dyn std::error::Error>> {

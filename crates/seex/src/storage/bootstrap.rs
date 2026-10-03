@@ -10,7 +10,7 @@ const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
 const S3_SECRET_NAME: &str = "seex_s3";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
 const SQLITE_JOURNAL_MODE: &str = "WAL";
-const STORAGE_FORMAT_VERSION: i64 = 2;
+const STORAGE_FORMAT_VERSION: i64 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeConnectionMode {
@@ -297,6 +297,7 @@ pub(crate) fn open_existing_client_connection_with_config(
         CatalogWriteGuard::acquire(&config.catalog_path, std::time::Duration::from_secs(30))?;
     let writer = open_existing_writer_connection_with_config(config.clone())?;
     flush_pending_in_locked_connection(&writer)?;
+    repair_pending_series(&writer)?;
     drop(writer);
     open_existing_native_connection_with_config(config)
 }
@@ -387,8 +388,44 @@ fn open_native_connection_with_mode(
     }
     if matches!(mode, NativeConnectionMode::ReadWrite) {
         flush_pending_in_locked_connection(&connection)?;
+        repair_pending_series(&connection)?;
     }
     Ok(connection)
+}
+
+fn repair_pending_series(connection: &duckdb::Connection) -> Result<(), StorageError> {
+    let mut pending = connection
+        .prepare("SELECT run_id, metric_key FROM seex_series_directory WHERE status = 'pending'")?;
+    let rows = pending.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let rows = rows.collect::<Result<Vec<_>, _>>()?;
+    drop(pending);
+    for (run_id, metric_key) in rows {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM dl.metric_points WHERE run_id = ? AND metric_key = ?)",
+            [&run_id, &metric_key],
+            |row| row.get(0),
+        )?;
+        if exists {
+            connection.execute(
+                "UPDATE seex_series_directory SET status = 'published' WHERE run_id = ? AND metric_key = ?",
+                [&run_id, &metric_key],
+            )?;
+        } else {
+            connection.execute(
+                "DELETE FROM seex_series_directory WHERE run_id = ? AND metric_key = ?",
+                [&run_id, &metric_key],
+            )?;
+            connection.execute(
+                "DELETE FROM seex_metric_keys WHERE metric_key = ? AND NOT EXISTS (
+                     SELECT 1 FROM seex_series_directory WHERE metric_key = ?
+                 )",
+                [&metric_key, &metric_key],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn record_write_timing(stage: &str, elapsed: std::time::Duration) {
@@ -611,6 +648,21 @@ pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), 
              key VARCHAR PRIMARY KEY,
              value BIGINT NOT NULL
          );
+         CREATE INDEX IF NOT EXISTS seex_runs_project_cursor
+             ON seex_runs(project_id, created_at, run_id);
+         CREATE TABLE IF NOT EXISTS seex_metric_keys (
+             metric_key VARCHAR PRIMARY KEY
+         );
+         CREATE TABLE IF NOT EXISTS seex_series_directory (
+             run_id VARCHAR NOT NULL,
+             metric_key VARCHAR NOT NULL,
+             status VARCHAR NOT NULL,
+             PRIMARY KEY (run_id, metric_key)
+         );
+         CREATE INDEX IF NOT EXISTS seex_series_pending
+             ON seex_series_directory(status);
+         CREATE INDEX IF NOT EXISTS seex_series_key
+             ON seex_series_directory(metric_key, run_id);
          INSERT INTO seex_storage_metadata (key, value)
          SELECT 'format_version', {STORAGE_FORMAT_VERSION}
          WHERE NOT EXISTS (
@@ -726,31 +778,33 @@ mod tests {
     }
 
     #[test]
-    fn version_one_store_is_rejected_by_readers_and_writers()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let config = NativeStorageConfig::duckdb(root.path(), None, None);
-        let connection = open_native_connection_with_config(config.clone())?;
-        connection.execute(
-            "UPDATE seex_storage_metadata SET value = 1 WHERE key = 'format_version'",
-            [],
-        )?;
-        drop(connection);
+    fn older_stores_are_rejected_by_readers_and_writers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for version in [1, 2] {
+            let root = tempfile::tempdir()?;
+            let config = NativeStorageConfig::duckdb(root.path(), None, None);
+            let connection = open_native_connection_with_config(config.clone())?;
+            connection.execute(
+                "UPDATE seex_storage_metadata SET value = ? WHERE key = 'format_version'",
+                [version],
+            )?;
+            drop(connection);
 
-        for error in [
-            open_existing_native_connection_with_config(config.clone()).unwrap_err(),
-            open_native_connection_with_config(config).unwrap_err(),
-        ] {
-            assert!(
-                matches!(
-                    error,
-                    StorageError::StorageFormatMismatch {
-                        expected: 2,
-                        found: 1
-                    }
-                ),
-                "unexpected format error: {error:?}",
-            );
+            for error in [
+                open_existing_native_connection_with_config(config.clone()).unwrap_err(),
+                open_native_connection_with_config(config).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(
+                        error,
+                        StorageError::StorageFormatMismatch {
+                            expected: 3,
+                            found
+                        } if found == version
+                    ),
+                    "unexpected format error: {error:?}",
+                );
+            }
         }
         Ok(())
     }

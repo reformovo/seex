@@ -117,6 +117,32 @@ impl<'connection> NativeWriteStore<'connection> {
         timestamp: DateTime<Utc>,
         ingested_at: DateTime<Utc>,
     ) -> Result<MetricPoint, StorageError> {
+        self.connection.execute_batch("BEGIN TRANSACTION")?;
+        let directory_result: Result<(), StorageError> = (|| {
+            self.connection.execute(
+                "INSERT INTO seex_metric_keys(metric_key)
+                 SELECT ? WHERE NOT EXISTS (SELECT 1 FROM seex_metric_keys WHERE metric_key = ?)",
+                [metric_key.as_str(), metric_key.as_str()],
+            )?;
+            self.connection.execute(
+                "INSERT INTO seex_series_directory(run_id, metric_key, status)
+                 SELECT ?, ?, 'pending' WHERE NOT EXISTS (
+                     SELECT 1 FROM seex_series_directory WHERE run_id = ? AND metric_key = ?
+                 )",
+                [
+                    run_id.as_str(),
+                    metric_key.as_str(),
+                    run_id.as_str(),
+                    metric_key.as_str(),
+                ],
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = directory_result {
+            let _ = self.connection.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+        self.connection.execute_batch("COMMIT")?;
         self.connection.execute(
             "INSERT INTO dl.metric_points
                  (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
@@ -130,6 +156,11 @@ impl<'connection> NativeWriteStore<'connection> {
                 value_f64,
                 timestamp_as_rfc3339(ingested_at),
             ),
+        )?;
+        self.connection.execute(
+            "UPDATE seex_series_directory SET status = 'published'
+             WHERE run_id = ? AND metric_key = ? AND status = 'pending'",
+            [run_id.as_str(), metric_key.as_str()],
         )?;
         Ok(MetricPoint {
             run_id: run_id.clone(),
