@@ -41,6 +41,8 @@ pub struct ReaderBuilder {
 
 /// Maximum number of real points returned for one chart curve.
 pub const MAX_CHART_POINTS: usize = 1_024;
+/// Maximum number of Runs returned by one discovery request.
+pub const MAX_RUN_PAGE_SIZE: usize = 100;
 
 /// Failure while opening a Reader restricted to local data.
 #[doc(hidden)]
@@ -280,11 +282,27 @@ impl Reader {
             .map_err(|_| Error::Storage)
     }
 
-    /// Lists Runs for one Project.
+    /// Lists the first bounded page of Runs for one Project, newest first.
     pub fn runs(&self, project_id: &ProjectId) -> SdkResult<Vec<Run>> {
+        self.runs_page(project_id, None, MAX_RUN_PAGE_SIZE)
+    }
+
+    /// Lists Runs after the last Run of a prior page in stable descending order.
+    pub fn runs_page(
+        &self,
+        project_id: &ProjectId,
+        after: Option<&Run>,
+        limit: usize,
+    ) -> SdkResult<Vec<Run>> {
+        if limit == 0
+            || limit > MAX_RUN_PAGE_SIZE
+            || after.is_some_and(|run| &run.project_id != project_id)
+        {
+            return Err(Error::UnsupportedQuery);
+        }
         let runs = self
             .native()?
-            .list_runs(project_id, None, None, 0)
+            .list_runs_page(project_id, after, limit)
             .map_err(|_| Error::Storage)?;
         self.remember_runs(&runs);
         Ok(runs)
@@ -1204,6 +1222,32 @@ impl std::error::Error for MetricSeriesError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_pages_reject_unbounded_limits() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            crate::storage::bootstrap::CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        drop(crate::storage::bootstrap::open_native_connection_with_config(config)?);
+        let reader = Reader::builder(root.path())
+            .catalog_backend(CatalogBackend::Sqlite)
+            .open()?;
+        let project = ProjectId::from_string("project");
+        assert!(matches!(
+            reader.runs_page(&project, None, 0),
+            Err(Error::UnsupportedQuery)
+        ));
+        assert!(matches!(
+            reader.runs_page(&project, None, MAX_RUN_PAGE_SIZE + 1),
+            Err(Error::UnsupportedQuery)
+        ));
+        Ok(())
+    }
 
     fn sample(coordinate: MetricCoordinate) -> MetricSample {
         let timestamp = "2026-01-01T00:00:00Z"

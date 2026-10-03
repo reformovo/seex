@@ -94,9 +94,7 @@ impl ReadSession {
         );
         let mut runs = Vec::new();
         for project_id in projects_to_load {
-            let mut project_runs = self.reader.runs(project_id)?;
-            project_runs.reverse();
-            runs.extend(project_runs);
+            runs.extend(self.reader.runs(project_id)?);
         }
         let mut requested = request.metric_runs.iter().cloned().collect::<HashSet<_>>();
         if let Some(project_id) = project_id {
@@ -117,21 +115,20 @@ impl ReadSession {
             .iter()
             .map(|run| ((run.project_id.clone(), run.run_id.clone()), run.clone()))
             .collect::<HashMap<_, _>>();
-        for requested_project in requested
-            .iter()
-            .map(|(project_id, _)| project_id)
-            .collect::<HashSet<_>>()
-        {
-            if project_id == Some(requested_project) {
+        for (requested_project, requested_run) in &requested {
+            if known_runs.contains_key(&(requested_project.clone(), requested_run.clone())) {
                 continue;
             }
-            known_runs.extend(
-                self.reader
-                    .runs(requested_project)?
-                    .into_iter()
-                    .map(|run| ((run.project_id.clone(), run.run_id.clone()), run)),
-            );
+            if let Some(run) = self.reader.run(requested_project, requested_run)? {
+                if project_id.is_none_or(|project_id| project_id == requested_project) {
+                    runs.push(run.clone());
+                }
+                known_runs.insert((requested_project.clone(), requested_run.clone()), run);
+            }
         }
+        runs.sort_by(|left, right| {
+            (right.created_at, right.run_id.as_str()).cmp(&(left.created_at, left.run_id.as_str()))
+        });
         let mut metric_keys = BTreeMap::new();
         for (project_id, run_id) in requested {
             let Some(run) = known_runs.get(&(project_id, run_id)) else {

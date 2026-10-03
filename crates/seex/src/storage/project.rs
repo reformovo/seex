@@ -286,6 +286,54 @@ impl ProjectConnection {
         run_ids.iter().map(|run_id| self.get_run(run_id)).collect()
     }
 
+    pub fn list_runs_page(
+        &self,
+        project_id: &ProjectId,
+        after: Option<&Run>,
+        limit: usize,
+    ) -> Result<Vec<Run>, StorageError> {
+        let sql = "SELECT run_id, project_id, name, status,
+                          epoch_ms(created_at::TIMESTAMPTZ),
+                          epoch_ms(started_at::TIMESTAMPTZ),
+                          epoch_ms(finished_at::TIMESTAMPTZ)
+                   FROM seex_runs WHERE project_id = ?";
+        let tail = " ORDER BY created_at DESC, run_id DESC LIMIT ?";
+        let cursor = " AND (created_at < ? OR (created_at = ? AND run_id < ?))";
+        let decode = |row: &duckdb::Row<'_>| {
+            Ok(StoredRun {
+                run_id: row.get(0)?,
+                project_id: row.get(1)?,
+                name: row.get(2)?,
+                status: row.get(3)?,
+                created_at_millis: row.get(4)?,
+                started_at_millis: row.get(5)?,
+                finished_at_millis: row.get(6)?,
+            })
+        };
+        let stored = if let Some(after) = after {
+            let mut statement = self.connection.prepare(&format!("{sql}{cursor}{tail}"))?;
+            let created_at = timestamp_as_rfc3339(after.created_at);
+            statement
+                .query_map(
+                    (
+                        project_id.as_str(),
+                        created_at.as_str(),
+                        created_at.as_str(),
+                        after.run_id.as_str(),
+                        limit as i64,
+                    ),
+                    decode,
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut statement = self.connection.prepare(&format!("{sql}{tail}"))?;
+            statement
+                .query_map((project_id.as_str(), limit as i64), decode)?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        stored.into_iter().map(StoredRun::into_run).collect()
+    }
+
     pub fn list_orphan_runs(
         &self,
         project_id: Option<&ProjectId>,
@@ -575,6 +623,34 @@ mod tests {
 
     use super::*;
     use crate::storage::bootstrap::{CatalogBackend, open_native_connection_with_config};
+
+    #[test]
+    fn run_page_cursor_handles_equal_creation_times() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        let connection = ProjectConnection::new(open_native_connection_with_config(config)?);
+        for index in 0..105 {
+            connection.execute(
+                "INSERT INTO seex_runs VALUES (?, 'project', 'run', 'running',
+                 '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', NULL)",
+                [format!("run-{index:03}")],
+            )?;
+        }
+        let project = ProjectId::from_string("project");
+        let first = connection.list_runs_page(&project, None, 100)?;
+        let second = connection.list_runs_page(&project, first.last(), 100)?;
+        assert_eq!(first.len(), 100);
+        assert_eq!(second.len(), 5);
+        assert_eq!(first[0].run_id.as_str(), "run-104");
+        assert_eq!(second[4].run_id.as_str(), "run-000");
+        Ok(())
+    }
 
     #[test]
     fn series_directory_publishes_only_actual_sequences_and_repairs_pending()
