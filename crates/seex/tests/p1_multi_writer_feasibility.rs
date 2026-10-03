@@ -172,17 +172,21 @@ fn simultaneous_writers_keep_reader_consistent() -> Result<(), Box<dyn std::erro
                 return Err(format!("writer {index} exited during write: {status}").into());
             }
         }
-        let runs = reader.runs(&project)?;
+        let runs = reader
+            .runs(&project)
+            .map_err(|error| format!("reader runs: {error:?}"))?;
         for run in runs.iter().filter(|run| run.status == RunStatus::Finished) {
             if run.run_id.as_str() == "seed" {
                 continue;
             }
-            let series =
-                reader.query_metric(&run.run_id, &MetricKey::from_string("loss"), &query)?;
+            let series = reader
+                .query_metric(&run.run_id, &MetricKey::from_string("loss"), &query)
+                .map_err(|error| format!("reader metric {}: {error:?}", run.run_id.as_str()))?;
             assert_eq!(series.samples().len(), POINTS as usize);
             assert_eq!(series.source_count(), POINTS as u64);
             let summary = reader
-                .metric_summary(run, &MetricKey::from_string("loss"))?
+                .metric_summary(run, &MetricKey::from_string("loss"))
+                .map_err(|error| format!("reader summary {}: {error:?}", run.run_id.as_str()))?
                 .ok_or("finished Run has no metric summary")?;
             assert_eq!(summary.effective_count, POINTS as u64);
         }

@@ -318,9 +318,13 @@ impl Reader {
     /// Lists persisted Metric summaries for one Run.
     pub fn metrics(&self, run: &Run) -> SdkResult<Vec<MetricAggregate>> {
         self.remember_runs(std::slice::from_ref(run));
-        ProjectMetricReader::new(self.native()?)
-            .list_metrics(&run.run_id, run.status)
-            .map_err(|_| Error::Storage)
+        let result = ProjectMetricReader::new(self.native()?).list_metrics(&run.run_id, run.status);
+        match result {
+            Ok(metrics) => Ok(metrics),
+            Err(_) => ProjectMetricReader::new(self.fresh_query_reader()?.native()?)
+                .list_metrics(&run.run_id, run.status)
+                .map_err(|_| Error::Storage),
+        }
     }
 
     /// Gets one persisted Metric summary when the Run contains that Metric.
@@ -330,10 +334,15 @@ impl Reader {
         metric_key: &MetricKey,
     ) -> SdkResult<Option<MetricAggregate>> {
         self.remember_runs(std::slice::from_ref(run));
-        ProjectMetricReader::new(self.native()?)
-            .query_metric_summaries(std::slice::from_ref(&run.run_id), metric_key)
-            .map(|summaries| summaries.into_iter().next())
-            .map_err(|_| Error::Storage)
+        let query = |reader: &Reader| {
+            ProjectMetricReader::new(reader.native()?)
+                .query_metric_summaries(std::slice::from_ref(&run.run_id), metric_key)
+                .map_err(|_| Error::Storage)
+        };
+        match query(self) {
+            Ok(summaries) => Ok(summaries.into_iter().next()),
+            Err(_) => Ok(query(&self.fresh_query_reader()?)?.into_iter().next()),
+        }
     }
 
     /// Queries one axis with a strict caller-selected point bound.
