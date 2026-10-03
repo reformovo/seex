@@ -308,6 +308,43 @@ impl Reader {
         Ok(runs)
     }
 
+    /// Finds a metric key in the indexed global dictionary.
+    pub fn metric_key_exists(&self, metric_key: &MetricKey) -> SdkResult<bool> {
+        self.native()?
+            .metric_key_exists(metric_key)
+            .map_err(|_| Error::Storage)
+    }
+
+    /// Lists an indexed prefix page from the global metric key dictionary.
+    pub fn metric_keys_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> SdkResult<Vec<MetricKey>> {
+        if limit == 0 || limit > MAX_RUN_PAGE_SIZE {
+            return Err(Error::UnsupportedQuery);
+        }
+        self.native()?
+            .metric_keys_page(prefix, after, limit)
+            .map_err(|_| Error::Storage)
+    }
+
+    /// Lists an indexed page of actual metric keys for one Run.
+    pub fn series_keys_page(
+        &self,
+        run: &Run,
+        after: Option<&str>,
+        limit: usize,
+    ) -> SdkResult<Vec<MetricKey>> {
+        if limit == 0 || limit > MAX_RUN_PAGE_SIZE {
+            return Err(Error::UnsupportedQuery);
+        }
+        self.native()?
+            .series_keys_page(&run.run_id, after, limit)
+            .map_err(|_| Error::Storage)
+    }
+
     /// Gets one Run only when it belongs to the requested Project.
     pub fn run(&self, project_id: &ProjectId, run_id: &RunId) -> SdkResult<Option<Run>> {
         let run = match self.native()?.get_run(run_id) {

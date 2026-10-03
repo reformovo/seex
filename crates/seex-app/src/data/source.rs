@@ -134,11 +134,8 @@ impl ReadSession {
             let Some(run) = known_runs.get(&(project_id, run_id)) else {
                 continue;
             };
-            for aggregate in self.reader.metrics(run)? {
-                metric_keys.insert(
-                    aggregate.metric_key.as_str().to_owned(),
-                    aggregate.metric_key,
-                );
+            for metric_key in self.reader.series_keys_page(run, None, 100)? {
+                metric_keys.insert(metric_key.as_str().to_owned(), metric_key);
             }
         }
         Ok(CatalogSnapshot {

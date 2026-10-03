@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::model::metric::MetricKey;
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 use chrono::{DateTime, Utc};
@@ -334,6 +335,71 @@ impl ProjectConnection {
         stored.into_iter().map(StoredRun::into_run).collect()
     }
 
+    pub fn metric_key_exists(&self, metric_key: &MetricKey) -> Result<bool, StorageError> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM seex_metric_keys WHERE metric_key = ?)",
+                [metric_key.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(StorageError::from)
+    }
+
+    pub fn metric_keys_page(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MetricKey>, StorageError> {
+        let upper = prefix_upper_bound(prefix);
+        let sql = "SELECT metric_key FROM seex_metric_keys
+                   WHERE metric_key >= ? AND metric_key > ? AND starts_with(metric_key, ?)";
+        let tail = " ORDER BY metric_key LIMIT ?";
+        let keys = if let Some(upper) = upper {
+            let mut statement = self
+                .connection
+                .prepare(&format!("{sql} AND metric_key < ?{tail}"))?;
+            statement
+                .query_map(
+                    (
+                        prefix,
+                        after.unwrap_or(""),
+                        prefix,
+                        upper.as_str(),
+                        limit as i64,
+                    ),
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let mut statement = self.connection.prepare(&format!("{sql}{tail}"))?;
+            statement
+                .query_map((prefix, after.unwrap_or(""), prefix, limit as i64), |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        Ok(keys.into_iter().map(MetricKey::from_string).collect())
+    }
+
+    pub fn series_keys_page(
+        &self,
+        run_id: &RunId,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MetricKey>, StorageError> {
+        let mut statement = self.connection.prepare(
+            "SELECT metric_key FROM seex_series_directory
+             WHERE run_id = ? AND status = 'published' AND metric_key > ?
+             ORDER BY metric_key LIMIT ?",
+        )?;
+        let rows = statement.query_map(
+            (run_id.as_str(), after.unwrap_or(""), limit as i64),
+            |row| row.get::<_, String>(0),
+        )?;
+        rows.map(|row| Ok(MetricKey::from_string(row?))).collect()
+    }
+
     pub fn list_orphan_runs(
         &self,
         project_id: Option<&ProjectId>,
@@ -606,6 +672,21 @@ impl Deref for ProjectConnection {
     }
 }
 
+fn prefix_upper_bound(prefix: &str) -> Option<String> {
+    let mut chars = prefix.chars().collect::<Vec<_>>();
+    while let Some(last) = chars.pop() {
+        let mut next = u32::from(last) + 1;
+        while next <= 0x10ffff {
+            if let Some(next_char) = char::from_u32(next) {
+                chars.push(next_char);
+                return Some(chars.into_iter().collect());
+            }
+            next += 1;
+        }
+    }
+    None
+}
+
 /// One accepted metric write prepared by the Core background worker.
 pub struct MetricWrite {
     pub run_id: String,
@@ -623,6 +704,38 @@ mod tests {
 
     use super::*;
     use crate::storage::bootstrap::{CatalogBackend, open_native_connection_with_config};
+
+    #[test]
+    fn metric_key_prefix_pages_are_exact_and_stable() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        let store = ProjectConnection::new(open_native_connection_with_config(config)?);
+        for key in ["loss", "loss/train", "loss/val", "other", "零/损失"] {
+            store.execute("INSERT INTO seex_metric_keys VALUES (?)", [key])?;
+        }
+        let first = store.metric_keys_page("loss", None, 2)?;
+        let second = store.metric_keys_page("loss", first.last().map(MetricKey::as_str), 2)?;
+        assert_eq!(
+            first.iter().map(MetricKey::as_str).collect::<Vec<_>>(),
+            ["loss", "loss/train"]
+        );
+        assert_eq!(
+            second.iter().map(MetricKey::as_str).collect::<Vec<_>>(),
+            ["loss/val"]
+        );
+        let after_exact_prefix = store.metric_keys_page("loss", Some("loss"), 2)?;
+        assert_eq!(after_exact_prefix.len(), 2);
+        assert!(store.metric_key_exists(&MetricKey::from_string("零/损失"))?);
+        assert!(!store.metric_key_exists(&MetricKey::from_string("missing"))?);
+        assert_eq!(prefix_upper_bound("loss").as_deref(), Some("lost"));
+        Ok(())
+    }
 
     #[test]
     fn run_page_cursor_handles_equal_creation_times() -> Result<(), Box<dyn std::error::Error>> {
