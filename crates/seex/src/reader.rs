@@ -43,6 +43,9 @@ pub struct ReaderBuilder {
 pub const MAX_CHART_POINTS: usize = 1_024;
 /// Maximum number of Runs returned by one discovery request.
 pub const MAX_RUN_PAGE_SIZE: usize = 100;
+const MAX_RUN_METADATA_CACHE: usize = 4_096;
+const MAX_FINISHED_DIAGNOSTICS_CACHE: usize = 4_096;
+const MAX_VOLATILE_DIAGNOSTICS_CACHE: usize = 1_024;
 
 /// Failure while opening a Reader restricted to local data.
 #[doc(hidden)]
@@ -758,8 +761,14 @@ impl Reader {
             .ok()?;
         let mut cache = self.diagnostics.borrow_mut();
         if finished {
+            if cache.finished.len() >= MAX_FINISHED_DIAGNOSTICS_CACHE {
+                cache.finished.clear();
+            }
             cache.finished.insert(key, loaded);
         } else {
+            if cache.volatile.len() >= MAX_VOLATILE_DIAGNOSTICS_CACHE {
+                cache.volatile.clear();
+            }
             cache.volatile.insert(key, loaded);
         }
         Some(loaded)
@@ -776,14 +785,23 @@ impl Reader {
             }
             None => return Err(Error::Storage),
         };
-        self.run_metadata
-            .borrow_mut()
-            .insert(run_id.clone(), metadata.clone());
+        let mut cached = self.run_metadata.borrow_mut();
+        if cached.len() >= MAX_RUN_METADATA_CACHE {
+            cached.clear();
+        }
+        cached.insert(run_id.clone(), metadata.clone());
         Ok(metadata)
     }
 
     fn remember_runs(&self, runs: &[Run]) {
-        self.run_metadata.borrow_mut().extend(
+        let runs = runs
+            .get(runs.len().saturating_sub(MAX_RUN_METADATA_CACHE)..)
+            .unwrap_or(runs);
+        let mut cached = self.run_metadata.borrow_mut();
+        if cached.len().saturating_add(runs.len()) > MAX_RUN_METADATA_CACHE {
+            cached.clear();
+        }
+        cached.extend(
             runs.iter()
                 .map(|run| (run.run_id.clone(), RunMetadata::from(run))),
         );
@@ -1283,6 +1301,37 @@ mod tests {
             reader.runs_page(&project, None, MAX_RUN_PAGE_SIZE + 1),
             Err(Error::UnsupportedQuery)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn run_metadata_cache_does_not_grow_with_pages() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            crate::storage::bootstrap::CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        drop(crate::storage::bootstrap::open_native_connection_with_config(config)?);
+        let reader = Reader::builder(root.path())
+            .catalog_backend(CatalogBackend::Sqlite)
+            .open()?;
+        let now = chrono::Utc::now();
+        let runs = (0..MAX_RUN_METADATA_CACHE + 100)
+            .map(|index| Run {
+                run_id: RunId::from_string(format!("run-{index}")),
+                project_id: ProjectId::from_string("project"),
+                name: String::new(),
+                status: RunStatus::Running,
+                created_at: now,
+                started_at: now,
+                finished_at: None,
+            })
+            .collect::<Vec<_>>();
+        reader.remember_runs(&runs);
+        assert_eq!(reader.run_metadata.borrow().len(), MAX_RUN_METADATA_CACHE);
         Ok(())
     }
 
