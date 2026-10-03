@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,30 @@ def _profile(name: str, overrides: dict[str, int] | None = None) -> dict[str, in
         profile.update(overrides)
     if any(value <= 0 for value in profile.values()):
         raise ValueError("profile dimensions must be positive")
+    if (
+        not max(profile["runs"], profile["metric_keys"])
+        <= profile["actual_sequences"]
+        <= profile["runs"] * profile["metric_keys"]
+    ):
+        raise ValueError("actual_sequences must cover every Run and key without duplicate sequences")
     return profile
+
+
+def _series_for_run(run_index: int, profile: dict[str, int]) -> Iterator[tuple[int, int]]:
+    """Yield (sequence index, key index) for actual series in one Run."""
+    runs = profile["runs"]
+    keys = profile["metric_keys"]
+    budget = profile["actual_sequences"]
+    if runs >= keys:
+        for sequence_index in range(run_index, budget, runs):
+            yield sequence_index, (run_index + sequence_index // runs) % keys
+    else:
+        for batch in range((budget + keys - 1) // keys):
+            first_key = (run_index - batch) % runs
+            for metric_index in range(first_key, keys, runs):
+                sequence_index = batch * keys + metric_index
+                if sequence_index < budget:
+                    yield sequence_index, metric_index
 
 
 def _steps(rng: random.Random, count: int, *, sparse: bool = False) -> list[int]:
@@ -61,7 +85,6 @@ def _write_workload(root: Path, profile: dict[str, int], *, seed: int) -> dict[s
     project = "p0"
     runs = profile["runs"]
     keys = profile["metric_keys"]
-    sequence_budget = profile["actual_sequences"]
     sequence_count = 0
     writer_peak_rss = 0
     first_run = "run-000000"
@@ -69,11 +92,9 @@ def _write_workload(root: Path, profile: dict[str, int], *, seed: int) -> dict[s
     for run_index in range(runs):
         run_id = f"run-{run_index:06d}"
         run = seex.init(project=project, dir=root, id=run_id)
-        for metric_index in range(keys):
-            if sequence_count >= sequence_budget:
-                break
+        for sequence_index, metric_index in _series_for_run(run_index, profile):
             metric_key = f"metric-{metric_index:06d}"
-            if run_index == 0 and metric_index == 0:
+            if sequence_index == 0:
                 point_count = 12
             elif (run_index + metric_index) % 4 == 0:
                 point_count = 256
