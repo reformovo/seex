@@ -650,6 +650,12 @@ pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), 
          );
          CREATE INDEX IF NOT EXISTS seex_runs_project_cursor
              ON seex_runs(project_id, created_at, run_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS seex_projects_id
+             ON seex_projects(project_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS seex_runs_id
+             ON seex_runs(run_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS seex_aggregates_run_key
+             ON seex_metric_aggregates(run_id, metric_key);
          CREATE TABLE IF NOT EXISTS seex_metric_keys (
              metric_key VARCHAR PRIMARY KEY
          );
@@ -727,6 +733,34 @@ pub fn is_s3_data_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_creates_project_run_and_sequence_indexes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        let connection = open_native_connection_with_config(config.clone())?;
+        let catalog = sql_string_literal(config.catalog_path.to_string_lossy().as_ref());
+        let index_count: i64 = connection.query_row(
+            &format!(
+                "SELECT count(*) FROM sqlite_scan({catalog}, 'sqlite_master')
+             WHERE type = 'index' AND name IN (
+                 'seex_projects_id', 'seex_runs_id', 'seex_runs_project_cursor',
+                 'seex_series_pending', 'seex_series_key', 'seex_aggregates_run_key'
+             )"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(index_count, 6);
+        Ok(())
+    }
 
     #[test]
     fn existing_connection_rejects_missing_catalog_without_creating_store() {
