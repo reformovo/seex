@@ -389,9 +389,12 @@ impl ProjectConnection {
         limit: usize,
     ) -> Result<Vec<MetricKey>, StorageError> {
         let mut statement = self.connection.prepare(
-            "SELECT metric_key FROM seex_series_directory
-             WHERE run_id = ? AND status = 'published' AND metric_key > ?
-             ORDER BY metric_key LIMIT ?",
+            "SELECT directory.metric_key FROM seex_series_directory AS directory
+             JOIN seex_runs AS run ON run.run_id = directory.run_id
+             JOIN seex_projects AS project ON project.project_id = run.project_id
+             WHERE directory.run_id = ? AND directory.status = 'published'
+               AND directory.metric_key > ?
+             ORDER BY directory.metric_key LIMIT ?",
         )?;
         let rows = statement.query_map(
             (run_id.as_str(), after.unwrap_or(""), limit as i64),
@@ -778,6 +781,15 @@ mod tests {
         );
         let connection = open_native_connection_with_config(config.clone())?;
         let store = ProjectConnection::with_catalog_write_lock(connection, config.clone());
+        store.execute(
+            "INSERT INTO seex_projects VALUES ('project', 'project', '2026-01-01T00:00:00+00:00')",
+            [],
+        )?;
+        store.execute(
+            "INSERT INTO seex_runs VALUES ('run-a', 'project', 'run-a', 'running',
+             '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00', NULL)",
+            [],
+        )?;
         store.append_metric_batch(&[MetricWrite {
             run_id: "run-a".to_owned(),
             metric_key: "loss".to_owned(),
@@ -805,7 +817,7 @@ mod tests {
         )?;
         drop(store);
 
-        let reopened = open_native_connection_with_config(config)?;
+        let reopened = ProjectConnection::new(open_native_connection_with_config(config)?);
         let statuses = reopened
             .prepare("SELECT metric_key, status FROM seex_series_directory ORDER BY metric_key")?
             .query_map([], |row| {
@@ -817,6 +829,18 @@ mod tests {
             row.get(0)
         })?;
         assert_eq!(keys, 1);
+        assert_eq!(
+            reopened
+                .series_keys_page(&RunId::from_string("run-a"), None, 100)?
+                .len(),
+            1
+        );
+        reopened.execute("DELETE FROM seex_runs WHERE run_id = 'run-a'", [])?;
+        assert!(
+            reopened
+                .series_keys_page(&RunId::from_string("run-a"), None, 100)?
+                .is_empty()
+        );
         Ok(())
     }
 
