@@ -13,6 +13,9 @@ target/
 # Virtual environments
 .venv/
 
+# Local P3 layout diagnostics (catalogs, Parquet, profiles)
+/.tmp/p3-*/
+
 # Local environment files
 .env
 .env.*
