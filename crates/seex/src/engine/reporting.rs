@@ -17,7 +17,7 @@ use crate::model::run::RunId;
     reason = "retained for crate-local reporter acceptance tests"
 )]
 const DEFAULT_METRIC_BUFFER_CAPACITY: usize = 65_536;
-const METRIC_BATCH_MAX_REPORTS: usize = 8_192;
+const METRIC_BATCH_MAX_REPORTS: usize = 16_384;
 const METRIC_BATCH_MAX_AGE: Duration = Duration::from_millis(10);
 const WRITER_MAX_RETRIES: usize = 5;
 const WRITER_INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(50);

@@ -279,76 +279,62 @@ fn reporting_durability_phases() -> Result<(), Box<dyn StdError>> {
 }
 
 #[test]
-#[ignore = "default-queue admission and persistence diagnostic"]
-fn reporting_default_queue_pipeline() -> Result<(), Box<dyn StdError>> {
+#[ignore = "fresh-store bounded batch candidate diagnostic"]
+fn reporting_bounded_batch_pipeline() -> Result<(), Box<dyn StdError>> {
     assert!(
         black_box(!cfg!(debug_assertions)),
         "workload requires --release"
     );
-    let root = fixture_path("default-queue")?;
-    let client = Client::builder(&root).open()?;
-    let run = client.start_run(RunOptions::new("pipeline"))?;
+    const REPORTS: usize = 32_768;
     let started = Instant::now();
-    let mut step = 0_i64;
-    let mut measure = |reports: usize| -> Result<(Duration, Duration, u64), Box<dyn StdError>> {
-        if started.elapsed() >= Duration::from_secs(60) {
-            return Err("pipeline diagnostic exceeded 60 seconds".into());
+    let mut admission_samples = Vec::with_capacity(SAMPLES);
+    let mut persistence_samples = Vec::with_capacity(SAMPLES);
+    let mut finish_samples = Vec::with_capacity(SAMPLES);
+    for sample in 0..SAMPLES {
+        if started.elapsed() >= Duration::from_secs(25) {
+            return Err("bounded batch diagnostic exceeded 25 seconds".into());
         }
+        let root = fixture_path(&format!("bounded-batch-{sample}"))?;
+        let client = Client::builder(&root).open()?;
+        let run = client.start_run(RunOptions::new("pipeline"))?;
         let begin = Instant::now();
-        for _ in 0..reports {
+        for step in 0..REPORTS as i64 {
             run.log_with([("loss", step as f64)], LogOptions::new().step(step))?;
-            step += 1;
         }
         let admission = begin.elapsed();
         let pending = client.diagnostics().pending_reports;
         wait_for_drain(&client)?;
         let persisted = begin.elapsed();
+        let finish_started = Instant::now();
+        run.finish()?;
+        let finish = finish_started.elapsed();
         assert_eq!(client.diagnostics().pending_reports, 0);
-        Ok((admission, persisted, pending))
-    };
-    let result = (|| -> Result<(), Box<dyn StdError>> {
-        let mut reports = 4096;
-        let calibrated = loop {
-            let (admission, _, _) = measure(reports)?;
-            if admission >= CALIBRATION_TARGET {
-                break true;
-            }
-            if reports == 65_536 {
-                break false;
-            }
-            reports *= 2;
-        };
-        println!("pipeline_calibrated={calibrated},reports={reports},queue_capacity=65536");
-        const PIPELINE_SAMPLES: usize = SAMPLES;
-        let mut admission_samples = Vec::with_capacity(PIPELINE_SAMPLES);
-        let mut persistence_samples = Vec::with_capacity(PIPELINE_SAMPLES);
-        for sample in 0..PIPELINE_SAMPLES {
-            let (admission, persisted, pending) = measure(reports)?;
-            if calibrated && admission < CALIBRATION_TARGET {
-                return Err("pipeline admission sample completed in less than 25 ms".into());
-            }
-            admission_samples.push(reports as f64 / admission.as_secs_f64());
-            persistence_samples.push(reports as f64 / persisted.as_secs_f64());
-            println!(
-                "pipeline_sample={sample},reports={reports},pending_before_drain={pending},pending_after_drain=0,admission_ns={},admission_to_persisted_ns={}",
-                admission.as_nanos(),
-                persisted.as_nanos()
-            );
+        assert_eq!(client.diagnostics().persisted_reports, REPORTS as u64);
+        if persisted < CALIBRATION_TARGET || finish < CALIBRATION_TARGET {
+            return Err("bounded batch persistence/finish sample below 25 ms".into());
         }
         println!(
-            "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"reporting\",\"metric\":\"rust.default_queue.admission\",\"unit\":\"points/s\",\"direction\":\"higher\",\"batch_iterations\":{reports},\"samples\":{admission_samples:?}}}"
+            "bounded_sample={sample},reports={REPORTS},pending_before_drain={pending},admission_ns={},admission_to_persisted_ns={},finish_ns={}",
+            admission.as_nanos(),
+            persisted.as_nanos(),
+            finish.as_nanos()
         );
-        println!(
-            "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"reporting\",\"metric\":\"rust.default_queue.persistence\",\"unit\":\"points/s\",\"direction\":\"higher\",\"batch_iterations\":{reports},\"samples\":{persistence_samples:?}}}"
-        );
-        let finish = Instant::now();
-        run.finish()?;
-        println!("pipeline_finish_ns={}", finish.elapsed().as_nanos());
-        Ok(())
-    })();
-    client.shutdown()?;
-    fs::remove_dir_all(root)?;
-    result
+        admission_samples.push(REPORTS as f64 / admission.as_secs_f64());
+        persistence_samples.push(REPORTS as f64 / persisted.as_secs_f64());
+        finish_samples.push(finish.as_nanos() as f64);
+        client.shutdown()?;
+        fs::remove_dir_all(root)?;
+    }
+    println!(
+        "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"reporting\",\"metric\":\"rust.bounded_batch.admission\",\"unit\":\"points/s\",\"direction\":\"higher\",\"batch_iterations\":{REPORTS},\"samples\":{admission_samples:?}}}"
+    );
+    println!(
+        "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"reporting\",\"metric\":\"rust.bounded_batch.persistence\",\"unit\":\"points/s\",\"direction\":\"higher\",\"batch_iterations\":{REPORTS},\"samples\":{persistence_samples:?}}}"
+    );
+    println!(
+        "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"reporting\",\"metric\":\"rust.bounded_batch.finish\",\"unit\":\"ns\",\"direction\":\"lower\",\"batch_iterations\":1,\"samples\":{finish_samples:?}}}"
+    );
+    Ok(())
 }
 
 #[test]

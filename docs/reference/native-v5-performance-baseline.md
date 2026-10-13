@@ -321,8 +321,30 @@ Do not accept 16K as a production optimization until a clean candidate measureme
 uses fresh stores, identical fixed batch counts, excludes pilot runs from all
 reported metrics, and repeats the signal with stable protected admission,
 per-stage attach/flush timings, RSS, queue backlog and finish latency. The
-candidate has not been committed as an accepted runtime change; the working tree
-was restored to the 8K baseline after capture.
+A clean follow-up replaced the confounded pipeline with a fresh-store bounded
+workload: every sample created a new store, wrote exactly 32,768 reports, drained
+fully, finished the Run, and excluded pilot calibration. The queue was 65,536;
+admission remained below the 25 ms floor and was recorded diagnostically, not as
+a protected timing metric. Ten samples per capture were used.
+
+| Median | 8K A1 | 16K B1 | 16K B2 | 8K A2 |
+|---|---:|---:|---:|---:|
+| Admission | 6.22M | 5.44M | 5.34M | 5.93M reports/s |
+| Admission→persistence | **19.7k** | **293.9k** | **291.1k** | **19.3k reports/s** |
+| Finish | 275.8 | 216.4 | 218.1 | 279.0 ms |
+
+Formal gate on persistence primary with finish protected: **PASS**. The
+candidate reduced the persistence median by roughly 15x in this controlled
+fresh-store workload, while finish stayed below the paired 8K medians. Admission
+was intentionally not protected because its samples were shorter than 25 ms;
+there is no admission-preservation claim. The earlier same-store 15x signal was
+therefore not wholly attributable, but the fresh-store result reproduces the
+large direction with aligned setup and fixed report count.
+
+The 16K batch limit is accepted for this bounded candidate. This does not prove
+benefit for low-rate streams, default queue-full behavior, four writers, RSS,
+long runs, or all DuckLake data states. Follow-up acceptance must cover queue
+pressure, cancellation, retry replay, four writers and finish/flush visibility.
 
 The diagnostic still reports `pipeline_calibrated=false`: admission did not reach
 25 ms at the 65,536 queue limit. It is therefore a bounded stress comparison,
