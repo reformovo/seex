@@ -288,6 +288,41 @@ The diagnostic is useful for direction only: it used five samples, a single Run,
 65,536 queued reports and no four-writer overload. It does not establish sustained
 throughput, queue-full behavior under a long run, RSS, or fairness between writers.
 
+## 8K versus 16K batch candidate
+
+A single candidate changed `METRIC_BATCH_MAX_REPORTS` from 8,192 to 16,384.
+The ordinary 1,000-report durability test cannot exercise either limit, so the
+comparison used the 65,536-report default-queue pipeline and two release test
+binaries. Four captures ran in one bounded A-B-B-A sequence; total gate budget
+was respected. The test used 10 samples per capture and a 60-second cooperative
+per-test diagnostic budget.
+
+| Median | 8K A1 | 16K B1 | 16K B2 | 8K A2 |
+|---|---:|---:|---:|---:|
+| Admission reports/s | 6,344k | 5,886k | 5,682k | 5,676k |
+| Admission→drain reports/s | **19.32k** | **308.67k** | **303.27k** | **18.95k** |
+
+The raw candidate signal is large, but the formal result is **INCONCLUSIVE**:
+the protected admission metric exceeded the 2% noise limit. The corrected offline
+classification reused the exact four captures and did not rerun the workload;
+it remained INCONCLUSIVE. The original gate invocation had the usual metric-key
+prefix mistake (`reporting.` is part of the parser key); the corrected result
+retains the original captures and explicitly records that limitation.
+
+The 15–16x persistence difference is much larger than the simple expectation of
+halving the number of 8K batches. It may reflect DuckLake inline-table/attach
+state and batch interaction, not just the batch count. Do not accept 16K as a
+production optimization until a clean candidate measurement repeats the signal
+with stable protected admission, per-stage attach/flush timings, RSS, queue
+backlog and finish latency. The candidate has not been committed as an accepted runtime change; the
+working tree was restored to the 8K baseline after capture.
+
+The diagnostic still reports `pipeline_calibrated=false`: admission did not reach
+25 ms at the 65,536 queue limit. It is therefore a bounded stress comparison,
+not a universal sustained-throughput claim. Artifacts:
+`.tmp/v5-pipeline-{manifest.json,result.json,corrected-manifest.json,offline-result.json}`
+and the 8K/16K binaries and build logs.
+
 ## Next independent slice
 
 Investigate whether one bounded write operation can amortize fresh DuckLake attach

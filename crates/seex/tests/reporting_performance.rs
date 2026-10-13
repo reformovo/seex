@@ -291,8 +291,8 @@ fn reporting_default_queue_pipeline() -> Result<(), Box<dyn StdError>> {
     let started = Instant::now();
     let mut step = 0_i64;
     let mut measure = |reports: usize| -> Result<(Duration, Duration, u64), Box<dyn StdError>> {
-        if started.elapsed() >= Duration::from_secs(25) {
-            return Err("pipeline diagnostic exceeded 25 seconds".into());
+        if started.elapsed() >= Duration::from_secs(60) {
+            return Err("pipeline diagnostic exceeded 60 seconds".into());
         }
         let begin = Instant::now();
         for _ in 0..reports {
@@ -319,7 +319,7 @@ fn reporting_default_queue_pipeline() -> Result<(), Box<dyn StdError>> {
             reports *= 2;
         };
         println!("pipeline_calibrated={calibrated},reports={reports},queue_capacity=65536");
-        const PIPELINE_SAMPLES: usize = 5;
+        const PIPELINE_SAMPLES: usize = SAMPLES;
         let mut admission_samples = Vec::with_capacity(PIPELINE_SAMPLES);
         let mut persistence_samples = Vec::with_capacity(PIPELINE_SAMPLES);
         for sample in 0..PIPELINE_SAMPLES {
