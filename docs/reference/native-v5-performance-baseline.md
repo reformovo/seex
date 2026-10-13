@@ -288,6 +288,33 @@ The diagnostic is useful for direction only: it used five samples, a single Run,
 65,536 queued reports and no four-writer overload. It does not establish sustained
 throughput, queue-full behavior under a long run, RSS, or fairness between writers.
 
+## Four-writer 16K shared-store diagnostic
+
+Four release child processes wrote 32,768 reports each to the same SQLite/DuckLake
+store and different Runs. Each used the 16K batch limit and a 65,536 report queue.
+This is a concurrency diagnostic, not an A-B-B-A comparison. Each child admitted
+in about 7.6–7.8 ms; admission is not the bottleneck in this fixture.
+
+| Observation | Range |
+|---|---:|
+| Admission per writer | 7.6–7.8 ms |
+| Admission→persistence | 117–567 ms |
+| Maximum append lock wait | 318 ms |
+| Maximum summary lock wait | 278 ms |
+| Maximum flush lock wait | 62.6 ms |
+| Finish per writer | 1.27–3.70 s |
+
+The large finish spread and append/summary lock waits show that single-writer
+16K persistence results do not generalize to concurrent writers. Flush wait was
+not the dominant stable tail in this run; catalog append and summary serialization
+were more concerning. Attach remained roughly 25–51 ms per writer. Artifacts:
+`.tmp/v5-four16-shared.log` and `.tmp/v5-four16-build.log`.
+
+The diagnostic does not establish a regression against 8K under concurrency:
+there is no matched four-writer 8K run yet. Next compare 8K and 16K with the same
+four-child orchestration, capturing lock wait/hold, finish tail, pending backlog
+and process RSS before considering any further batch change.
+
 ## 8K versus 16K batch candidate
 
 A single candidate changed `METRIC_BATCH_MAX_REPORTS` from 8,192 to 16,384.

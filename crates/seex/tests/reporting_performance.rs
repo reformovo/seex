@@ -364,7 +364,49 @@ fn reporting_low_rate_persistence() -> Result<(), Box<dyn StdError>> {
 }
 
 #[test]
-#[ignore = "fresh-process release reporting RSS workload"]
+#[ignore = "subprocess helper for shared-store reporting diagnostic"]
+fn reporting_shared_store_child() -> Result<(), Box<dyn StdError>> {
+    assert!(
+        black_box(!cfg!(debug_assertions)),
+        "workload requires --release"
+    );
+    let root = PathBuf::from(std::env::var("SEEX_DIAGNOSTIC_ROOT")?);
+    let writer = std::env::var("SEEX_DIAGNOSTIC_WRITER")?;
+    let client = Client::builder(&root).open()?;
+    let run =
+        client.start_run(RunOptions::new("shared-diagnostic").id(format!("writer-{writer}")))?;
+    fs::write(root.join(format!("ready-{writer}")), "ready")?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !root.join("start").exists() {
+        if Instant::now() >= deadline {
+            return Err("shared diagnostic barrier timed out".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    let started = Instant::now();
+    for step in 0..32_768 {
+        run.log_with([("loss", step as f64)], LogOptions::new().step(step))?;
+    }
+    let admission = started.elapsed();
+    let pending = client.diagnostics().pending_reports;
+    wait_for_drain(&client)?;
+    let persisted = started.elapsed();
+    let finish_started = Instant::now();
+    run.finish()?;
+    assert_eq!(client.diagnostics().persisted_reports, 32_768);
+    assert_eq!(client.diagnostics().pending_reports, 0);
+    println!(
+        "shared_writer={writer},admission_ns={},pending_before_drain={pending},persistence_ns={},finish_ns={}",
+        admission.as_nanos(),
+        persisted.as_nanos(),
+        finish_started.elapsed().as_nanos()
+    );
+    client.shutdown()?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "fresh-process release RSS workload"]
 fn reporting_peak_rss() -> Result<(), Box<dyn StdError>> {
     assert!(
         black_box(!cfg!(debug_assertions)),
