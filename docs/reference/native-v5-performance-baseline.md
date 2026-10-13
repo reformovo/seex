@@ -311,11 +311,18 @@ retains the original captures and explicitly records that limitation.
 
 The 15–16x persistence difference is much larger than the simple expectation of
 halving the number of 8K batches. It may reflect DuckLake inline-table/attach
-state and batch interaction, not just the batch count. Do not accept 16K as a
-production optimization until a clean candidate measurement repeats the signal
-with stable protected admission, per-stage attach/flush timings, RSS, queue
-backlog and finish latency. The candidate has not been committed as an accepted runtime change; the
-working tree was restored to the 8K baseline after capture.
+state and batch interaction, not just the batch count. A follow-up timing run
+reported 96 `batch_append` calls for 8K and 49 for 16K, but those counts include
+pilot calibration and are not aligned formal samples. Their aggregate timing is
+therefore not a candidate comparison: it is diagnostic evidence that pilot work,
+inline state and flush must be separated before attribution.
+
+Do not accept 16K as a production optimization until a clean candidate measurement
+uses fresh stores, identical fixed batch counts, excludes pilot runs from all
+reported metrics, and repeats the signal with stable protected admission,
+per-stage attach/flush timings, RSS, queue backlog and finish latency. The
+candidate has not been committed as an accepted runtime change; the working tree
+was restored to the 8K baseline after capture.
 
 The diagnostic still reports `pipeline_calibrated=false`: admission did not reach
 25 ms at the 65,536 queue limit. It is therefore a bounded stress comparison,
