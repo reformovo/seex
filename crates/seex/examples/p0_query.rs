@@ -117,8 +117,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     if !options.once {
         for _ in 0..SAMPLE_COUNT {
             let mut iterations = 1_u64;
-            let started = Instant::now();
             loop {
+                let started = Instant::now();
                 for _ in 0..iterations {
                     std::hint::black_box(reader.query_metric(
                         &options.run_id,
@@ -126,21 +126,33 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &query,
                     )?);
                 }
-                if started.elapsed() >= MIN_SAMPLE {
+                let elapsed = started.elapsed();
+                if elapsed >= MIN_SAMPLE {
+                    let elapsed_ns = elapsed.as_nanos();
+                    samples.push((
+                        iterations,
+                        elapsed_ns,
+                        elapsed_ns as f64 / iterations as f64,
+                    ));
                     break;
                 }
-                iterations = iterations.saturating_mul(2);
+                iterations = iterations
+                    .checked_mul(2)
+                    .ok_or("query calibration overflow")?;
             }
-            samples.push(started.elapsed().as_nanos());
         }
     }
     let samples_json = samples
         .iter()
-        .map(u128::to_string)
+        .map(|(iterations, elapsed_ns, ns_per_op)| {
+            format!(
+                "{{\"iterations\":{iterations},\"elapsed_ns\":{elapsed_ns},\"ns_per_op\":{ns_per_op}}}"
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     println!(
-        "{{\"cold_ns\":{cold_ns},\"source_count\":{},\"points\":{},\"hot_samples_ns\":[{samples_json}],\"plan\":\"step_lttb_1024\"}}",
+        "{{\"schema_version\":2,\"record_type\":\"query_probe\",\"cold_query_ns\":{cold_ns},\"source_count\":{},\"points\":{},\"hot_samples\":[{samples_json}]}}",
         cold.source_count(),
         cold.samples().len(),
     );

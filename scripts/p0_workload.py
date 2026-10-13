@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
 import os
 import platform
 import random
@@ -119,15 +121,10 @@ def _write_workload(root: Path, profile: dict[str, int], *, seed: int) -> dict[s
 
 
 def _query_probe(root: Path, run_id: str, metric_key: str) -> tuple[dict[str, Any], int]:
+    subprocess.run(["cargo", "build", "--release", "-p", "seex", "--example", "p0_query"], check=True)
+    target = Path(os.environ.get("CARGO_TARGET_DIR", "target"))
     command = [
-        "cargo",
-        "run",
-        "--quiet",
-        "-p",
-        "seex",
-        "--example",
-        "p0_query",
-        "--",
+        os.fspath(target / "release/examples/p0_query"),
         os.fspath(root),
         run_id,
         metric_key,
@@ -139,6 +136,25 @@ def _query_probe(root: Path, run_id: str, metric_key: str) -> tuple[dict[str, An
     if not isinstance(result, dict):
         raise TypeError("p0 query probe did not return an object")
     return result, process_ns
+
+
+def _validate_hot_samples(probe: dict[str, Any]) -> list[dict[str, Any]]:
+    if probe.get("schema_version") != 2 or probe.get("record_type") != "query_probe":
+        raise ValueError("unsupported query probe schema")
+    samples = probe["hot_samples"]
+    if not isinstance(samples, list) or len(samples) != 10:
+        raise ValueError("hot query requires ten calibrated samples")
+    for sample in samples:
+        iterations, elapsed, per_op = sample["iterations"], sample["elapsed_ns"], sample["ns_per_op"]
+        if type(iterations) is not int or iterations <= 0 or type(elapsed) is not int or elapsed < MIN_SAMPLE_NS:
+            raise ValueError("hot query samples did not meet the 25 ms calibration floor")
+        if (
+            not isinstance(per_op, (int, float))
+            or not math.isfinite(per_op)
+            or not math.isclose(per_op, elapsed / iterations, rel_tol=1e-9)
+        ):
+            raise ValueError("hot query ns_per_op does not match batch elapsed/iterations")
+    return samples
 
 
 def _file_stats(root: Path) -> dict[str, int]:
@@ -171,7 +187,7 @@ def run(
     profile = _profile(profile_name, overrides)
     if profile_name == "scale" and root is None:
         result = {
-            "schema_version": 1,
+            "schema_version": 2,
             "workload": "p0",
             "profile": profile_name,
             "seed": SEED,
@@ -191,18 +207,22 @@ def run(
     try:
         distribution = _write_workload(workload_root, profile, seed=SEED)
         probe, process_ns = _query_probe(workload_root, distribution["first_run"], distribution["first_metric"])
-        hot_samples = [int(value) for value in probe["hot_samples_ns"]]
-        if len(hot_samples) != 10 or any(value < MIN_SAMPLE_NS for value in hot_samples):
-            raise ValueError("hot query samples did not meet the 25 ms calibration floor")
+        hot_samples = _validate_hot_samples(probe)
         baseline = {
-            "schema_version": 1,
+            "schema_version": 2,
             "workload": "p0",
             "profile": profile_name,
             "seed": SEED,
+            "semantics": "append_only",
+            "native_format_version": 5,
+            "reader_build": "release",
+            "tracked_patch_sha256": hashlib.sha256(
+                subprocess.run(["git", "diff", "HEAD", "--binary"], check=True, capture_output=True).stdout
+            ).hexdigest(),
             "distribution": {
                 **profile,
                 "generated_sequences": distribution["actual_sequences"],
-                "patterns": ["short", "long", "sparse_step", "duplicate_step_lww", "out_of_order"],
+                "patterns": ["short", "long", "sparse_step", "duplicate_step", "out_of_order"],
             },
             "git_revision": subprocess.run(
                 ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
@@ -214,16 +234,30 @@ def run(
                 "axis": "Step",
                 "max_points": MAX_CHART_POINTS,
                 "max_selected_runs": MAX_SELECTED_RUNS,
-                "normalized": "step_lttb_1024",
+                "api": "Reader.query_metric",
+                "reduction": "screen_budget",
+                "physical_plan": "not_captured",
             },
             "latency_ns": {
-                "cold_query": int(probe["cold_ns"]),
-                "cold_process": process_ns,
-                "hot_query": hot_samples,
+                "cold_query": int(probe["cold_query_ns"]),
+                "probe_process": process_ns,
+                "hot_query_batch": [
+                    {
+                        "iterations": int(sample["iterations"]),
+                        "elapsed_ns": int(sample["elapsed_ns"]),
+                        "ns_per_op": float(sample["ns_per_op"]),
+                    }
+                    for sample in hot_samples
+                ],
+            },
+            "measurement_notes": {
+                "cold_query": "first Reader request; OS page cache not cleared",
+                "probe_process": "entire probe process including cold and hot queries; excludes build",
+                "scale": "legacy sparse generator, not the P7 milestone distribution",
             },
             "peak_rss_bytes": {
-                "writer": distribution["writer_peak_rss"],
-                "reader": (
+                "workload_process": distribution["writer_peak_rss"],
+                "all_children_including_build": (
                     int(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)
                     if platform.system() == "Darwin"
                     else int(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss) * 1024
@@ -241,7 +275,7 @@ def run(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=("correctness", "scale"), default="correctness")
-    parser.add_argument("--output", type=Path, default=Path("docs/reference/p0-baseline.json"))
+    parser.add_argument("--output", type=Path, default=Path(".tmp/p0-v5-baseline.json"))
     parser.add_argument("--root", type=Path)
     parser.add_argument("--runs", type=int)
     parser.add_argument("--metric-keys", type=int)
