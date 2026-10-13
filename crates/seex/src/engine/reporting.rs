@@ -1182,6 +1182,39 @@ mod tests {
     }
 
     #[test]
+    fn collect_metric_batch_preserves_atomic_mapping_at_threshold() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        sender
+            .send(MetricBatch {
+                reports: (0..METRIC_BATCH_MAX_REPORTS).map(metric_report).collect(),
+            })
+            .unwrap();
+        sender
+            .send(MetricBatch {
+                reports: vec![metric_report(42)],
+            })
+            .unwrap();
+        let mut batch = vec![metric_report(0)];
+        let queued = AtomicUsize::new(METRIC_BATCH_MAX_REPORTS + 1);
+        collect_metric_batch(&receiver, &mut batch, &queued);
+        // Whole mapping batches stay atomic. The threshold can overshoot by
+        // at most one admitted mapping; it is not a strict point cap.
+        assert_eq!(batch.len(), METRIC_BATCH_MAX_REPORTS + 1);
+        assert_eq!(queued.load(Ordering::Acquire), 1);
+        assert_eq!(receiver.try_recv().unwrap().reports.len(), 1);
+    }
+
+    #[test]
+    fn collect_metric_batch_flushes_low_rate_input_without_filling_threshold() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let mut batch = vec![metric_report(0)];
+        let queued = AtomicUsize::new(0);
+        collect_metric_batch(&receiver, &mut batch, &queued);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(queued.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn write_metric_batch_preserves_observation_time_and_orders_ingested_at()
     -> Result<(), Box<dyn std::error::Error>> {
         let root_path =

@@ -341,10 +341,22 @@ there is no admission-preservation claim. The earlier same-store 15x signal was
 therefore not wholly attributable, but the fresh-store result reproduces the
 large direction with aligned setup and fixed report count.
 
-The 16K batch limit is accepted for this bounded candidate. This does not prove
-benefit for low-rate streams, default queue-full behavior, four writers, RSS,
-long runs, or all DuckLake data states. Follow-up acceptance must cover queue
-pressure, cancellation, retry replay, four writers and finish/flush visibility.
+The 16K batch limit is accepted for this bounded candidate. Additional 16K
+checks passed: full `cargo test -p seex` (167 passed, 4 ignored), low-rate
+single-observation persistence (10 observations, median enqueue-to-persisted
+55.0 ms, range 53.4–57.5 ms), and release RSS diagnostics. The low-rate process
+reported 79,446,016 bytes peak RSS (~75.7 MiB); the 10k x 5-cycle RSS workload
+reported 85,049,344 bytes (~81.1 MiB). These RSS values include the test process
+and are diagnostic, not product limits.
+
+The reporting acceptance tests also prove that a mapping batch is kept atomic:
+the collection threshold is a report-count target, not a hard point cap, and one
+admitted mapping may overshoot it. This matters for memory budgeting and is why
+16K is not described as a strict maximum.
+
+This does not prove benefit for default queue-full behavior, four writers, long
+runs, or all DuckLake data states. Follow-up acceptance must cover queue pressure,
+cancellation, retry replay, four writers and finish/flush visibility.
 
 The diagnostic still reports `pipeline_calibrated=false`: admission did not reach
 25 ms at the 65,536 queue limit. It is therefore a bounded stress comparison,

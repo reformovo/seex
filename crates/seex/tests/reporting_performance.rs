@@ -338,13 +338,41 @@ fn reporting_bounded_batch_pipeline() -> Result<(), Box<dyn StdError>> {
 }
 
 #[test]
+#[ignore = "low-rate release persistence diagnostic"]
+fn reporting_low_rate_persistence() -> Result<(), Box<dyn StdError>> {
+    assert!(
+        black_box(!cfg!(debug_assertions)),
+        "workload requires --release"
+    );
+    let root = fixture_path("low-rate")?;
+    let client = Client::builder(&root).open()?;
+    let run = client.start_run(RunOptions::new("low-rate"))?;
+    for step in 0..10 {
+        let started = Instant::now();
+        run.log_with([("loss", step as f64)], LogOptions::new().step(step))?;
+        wait_for_drain(&client)?;
+        assert_eq!(client.diagnostics().persisted_reports, step as u64 + 1);
+        println!(
+            "low_rate_step={step},enqueue_to_persisted_ns={}",
+            started.elapsed().as_nanos()
+        );
+    }
+    run.finish()?;
+    client.shutdown()?;
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 #[ignore = "fresh-process release reporting RSS workload"]
 fn reporting_peak_rss() -> Result<(), Box<dyn StdError>> {
     assert!(
         black_box(!cfg!(debug_assertions)),
         "workload requires --release"
     );
-    let (root, client, run) = run_for_mode("rss")?;
+    let root = fixture_path("rss")?;
+    let client = Client::builder(&root).open()?;
+    let run = client.start_run(RunOptions::new("rss"))?;
     for step in 0..10_000 {
         run.log_with([("loss", step as f64)], LogOptions::new().step(step as i64))?;
     }
