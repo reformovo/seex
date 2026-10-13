@@ -10,7 +10,7 @@ const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
 const S3_SECRET_NAME: &str = "seex_s3";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
 const SQLITE_JOURNAL_MODE: &str = "WAL";
-const STORAGE_FORMAT_VERSION: i64 = 3;
+const STORAGE_FORMAT_VERSION: i64 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeConnectionMode {
@@ -814,7 +814,7 @@ mod tests {
     #[test]
     fn older_stores_are_rejected_by_readers_and_writers() -> Result<(), Box<dyn std::error::Error>>
     {
-        for version in [1, 2] {
+        for version in [1, 2, 3, 4] {
             let root = tempfile::tempdir()?;
             let config = NativeStorageConfig::duckdb(root.path(), None, None);
             let connection = open_native_connection_with_config(config.clone())?;
@@ -832,7 +832,7 @@ mod tests {
                     matches!(
                         error,
                         StorageError::StorageFormatMismatch {
-                            expected: 3,
+                            expected: 5,
                             found
                         } if found == version
                     ),

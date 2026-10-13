@@ -5,7 +5,7 @@
 ## Scope
 
 Comparison is a read-only derived layer over Runs and effective metric facts. It adds no stored Run roles, catalog or Parquet fields, renderer policy, research decision, tolerance, significance, or uncertainty claim.
-Effective series use [last-write-wins storage semantics](native-storage-boundary.md), and ownership follows the [crate boundaries](crate-boundaries.md).
+Native v5 series use [append-only observation semantics](native-storage-boundary.md), and ownership follows the [crate boundaries](crate-boundaries.md). Repeated Steps remain observations, not replacements; equal-Step order is unspecified.
 Ordinary metric queries remain half-open. Aligned metric queries use a closed viewport, retain one strict neighbor on each side when present, and support full or screen-budgeted extrema results. Seex 0.1.x supports only raw step and elapsed wall time as comparison axes; cumulative-token and normalized-budget axes are out of scope.
 
 ## Product Language
@@ -41,7 +41,7 @@ Evidence is never repaired by interpolation, filling, reordering, clamping, or f
 
 | Axis | Contract |
 | --- | --- |
-| Raw step | Apply effective-series deduplication, then use ascending `step`; a negative step is invalid. |
+| Raw step | Retain every observation and use ascending `step`; equal-Step order is unspecified; a negative step is invalid. |
 | Elapsed wall time | Use integer `timestamp_millis - Run.started_at_millis`, without rebasing to the first point. Equal values are valid; negative or decreasing values are invalid. Missing Run metadata is `missing_run_start`. |
 
 Axis monotonicity is evaluated in effective objective-step order: a decrease is invalid, while equality on the elapsed axis is retained.

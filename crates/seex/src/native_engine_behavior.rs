@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn query_metric_uses_last_write_wins_for_duplicate_steps() -> Result<(), Box<dyn Error>> {
+    fn query_metric_preserves_duplicate_step_observations() -> Result<(), Box<dyn Error>> {
         // Given
         let dataset = open_project_dataset()?;
         let connection = dataset.connection();
@@ -227,7 +227,19 @@ mod tests {
             .iter()
             .map(|point| (point.step.value(), point.value_f64))
             .collect();
-        assert_eq!(values, vec![(0, 0.125), (1, 0.0625)]);
+        assert_eq!(values.len(), 3);
+        assert_eq!(values[2], (1, 0.0625));
+        let mut duplicates = values[..2]
+            .iter()
+            .map(|(_, value)| *value)
+            .collect::<Vec<_>>();
+        duplicates.sort_by(f64::total_cmp);
+        assert_eq!(duplicates, vec![0.125, 0.25]);
+        store.rebuild_metric_aggregates_for_run(&run.run_id)?;
+        let aggregate = query.metric_aggregate(&run.run_id, &metric_key)?;
+        assert_eq!(aggregate.effective_count, 3);
+        assert_eq!(aggregate.min_value_f64, 0.0625);
+        assert_eq!(aggregate.max_value_f64, 0.25);
         Ok(())
     }
 
@@ -261,7 +273,11 @@ mod tests {
             .iter()
             .map(|point| (point.step.value(), point.value_f64))
             .collect();
-        assert_eq!(values, vec![(1, 0.125)]);
+        assert_eq!(values.len(), 2);
+        assert!(values.iter().all(|(step, _)| *step == 1));
+        let mut observations = values.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+        observations.sort_by(f64::total_cmp);
+        assert_eq!(observations, vec![0.125, 0.25]);
         Ok(())
     }
 
@@ -353,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn metric_aggregate_tracks_effective_series_values() -> Result<(), Box<dyn Error>> {
+    fn metric_aggregate_tracks_all_observation_values() -> Result<(), Box<dyn Error>> {
         // Given
         let dataset = open_project_dataset()?;
         let connection = dataset.connection();
@@ -372,11 +388,11 @@ mod tests {
         let aggregate = query.metric_aggregate(&run.run_id, &metric_key)?;
 
         // Then
-        assert_eq!(aggregate.effective_count, 3);
+        assert_eq!(aggregate.effective_count, 4);
         assert_eq!(aggregate.last_step, Step::new(2));
         assert_eq!(aggregate.last_value_f64, 0.375);
         assert_eq!(aggregate.min_value_f64, 0.125);
-        assert_eq!(aggregate.max_value_f64, 0.375);
+        assert_eq!(aggregate.max_value_f64, 0.5);
         Ok(())
     }
 
@@ -425,8 +441,8 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_metric_aggregates_refreshes_stale_old_step_overwrite() -> Result<(), Box<dyn Error>>
-    {
+    fn rebuild_metric_aggregates_includes_appended_old_step_observation()
+    -> Result<(), Box<dyn Error>> {
         // Given
         let dataset = open_project_dataset()?;
         let connection = dataset.connection();
@@ -451,7 +467,7 @@ mod tests {
 
         // Then
         assert_eq!(stale.min_value_f64, 0.25);
-        assert_eq!(repaired.effective_count, 2);
+        assert_eq!(repaired.effective_count, 3);
         assert_eq!(repaired.min_value_f64, 0.125);
         assert_eq!(repaired.max_value_f64, 0.5);
         Ok(())

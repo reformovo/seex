@@ -30,7 +30,7 @@ The default project-local store is:
 ```text
 <project>/.seex/
   config.toml        # optional native project configuration
-  catalog.sqlite     # SQLite-backed DuckLake catalog and v3 format marker
+  catalog.sqlite     # SQLite-backed DuckLake catalog and v5 format marker
   data/              # default Parquet data path
 ```
 
@@ -41,6 +41,9 @@ explicit `catalog_path` is used as provided. Newly created stores carry a
 unsupported marker is rejected instead of initialized or migrated. Format v2
 added a global `flush_pending` marker to `seex_storage_metadata`. Format v3
 adds indexed Run, metric key, and actual sequence discovery directories.
+Format v5 changes metric reads and summaries to append-only observations.
+Version 4 is reserved for the archived stable-LWW implementation. Readers and
+writers reject v1–v4 stores without migration or rewriting existing data.
 
 Relative paths read from `<project>/.seex/config.toml` are resolved against
 the project root. Explicit SDK paths retain their caller-provided resolution
@@ -128,11 +131,14 @@ persisted effective metric points:
   persisted `dl.metric_points` or from terminal-run aggregate indexes rebuilt
   from those points.
 
-An effective metric series contains at most one point for each
-`(run_id, metric_key, step)`. When a step has been written more than once, the
-point with the latest writer-assigned `ingested_at` wins; the persisted row
-order breaks a remaining timestamp tie. Point queries return this effective
-series in ascending step order. Step ranges are half-open: `start_step` is
+Every persisted report is an independent observation. Repeated
+`(run_id, metric_key, step)` observations are retained without winner selection.
+Queries order observations by ascending Step; order within an equal Step is
+unspecified. `ingested_at` is a fact field, not replacement precedence. Summaries
+count all observations; `last_value_f64` is an unspecified observation at the
+maximum Step. Bounded chart reduction selects real observations, not unique
+Steps. See [ADR 0019](adr/0019-append-only-metric-observations.md).
+Step ranges are half-open: `start_step` is
 inclusive and `end_step` is exclusive, so a bounded query selects
 `[start_step, end_step)`.
 
@@ -324,8 +330,8 @@ Lock acquisition is a try-lock, not a blocking wait. If the lock is already
 held, `create_run(...)` or `resume_run(run_id)` immediately raises
 non-fatal `RunAlreadyActiveError` with the conflicting `run_id` in the message,
 but not the local lock path by default. This preserves the
-meaning of close barriers, enqueue order, and writer-assigned `ingested_at` for
-last-write-wins queries.
+meaning of close barriers and Run ownership; it does not impose replacement
+semantics on repeated observations.
 `create_run(user_supplied_run_id)` remains distinct from resume: if the run
 already exists, it raises `RunAlreadyExistsError` and callers must use explicit
 `resume_run(...)` even when no writer lock is active. `RunAlreadyExistsError`

@@ -49,16 +49,17 @@ all-feature tests there.
 
 The public Reader accepts Step ranges plus a required strict `max_points` from
 2 through `MAX_CHART_POINTS` (1024); it never accepts pixels or an unbounded
-query. Every implementation applies last-write-wins before reduction and
-returns real samples with source count, downsampled state, completeness, and
+query. Every implementation preserves repeated observations before reduction and
+returns real samples with observation count, downsampled state, completeness, and
 reasons. Relative-time and timestamp chart entry points are rejected in P0.
 
 Desktop converts its closed viewport into crate-private options while preserving
-the 1024 point bound. Step coordinates are derived after last-write-wins.
+the 1024 point bound. Step coordinates retain repeated observations; equal-Step
+order is unspecified.
 
 Full-span and narrow queries use distinct physical plans. The protected
 full-span plan remains unchanged while narrow Step selection can filter before
-materialization and reduction without discarding replacements. Whole-series
+materialization and reduction without choosing replacement winners. Whole-series
 diagnostics are separate from viewport selection. Superseded requests may
 interrupt only the cloned connection and current request token that own them;
 stale results never enter a Viewer snapshot.

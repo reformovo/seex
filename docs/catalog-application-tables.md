@@ -38,15 +38,15 @@ into metric-point Parquet.
 
 ## `seex_metric_aggregates`
 
-Metric aggregates are derived query-index state over effective metric series.
+Metric aggregates are derived query-index state over all persisted observations.
 They may be repaired or rebuilt from persisted `metric_points`.
 
 | Column | Type | Required | Contract |
 | --- | --- | --- | --- |
 | `run_id` | string | yes | Owning run identity. |
 | `metric_key` | string | yes | User-facing metric key. |
-| `effective_count` | uint64 | yes | Count after last-write-wins compaction. |
-| `last_step` | int64 | yes | Highest effective step. |
-| `last_value_f64` | float64 | yes | Value at `last_step`. |
-| `min_value_f64` | float64 | yes | Minimum effective value. |
-| `max_value_f64` | float64 | yes | Maximum effective value. |
+| `effective_count` | uint64 | yes | Count of all observations, including repeated Steps; legacy column name retained. |
+| `last_step` | int64 | yes | Highest observed Step. |
+| `last_value_f64` | float64 | yes | An observed value at `last_step`; choice among equal-Step observations is unspecified. |
+| `min_value_f64` | float64 | yes | Minimum observed value. |
+| `max_value_f64` | float64 | yes | Maximum observed value. |

@@ -234,31 +234,16 @@ fn ordered_ctes(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
 }
 
 fn derived_ctes(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
-    let (relation, tie_breaker) = match source {
-        AlignmentSource::Project => ("dl.metric_points", "rowid DESC"),
-        AlignmentSource::Parquet(_) => (
-            "read_parquet(?, hive_partitioning = true, union_by_name = true, \
-             filename = true, file_row_number = true)",
-            "filename DESC, file_row_number DESC",
-        ),
-    };
+    let relation = source_relation(source);
     let axis_expression = match axis {
         AlignmentAxis::Step => "step",
         AlignmentAxis::ElapsedTime => "epoch_ms(timestamp) - ?",
     };
     format!(
-        "WITH ranked AS (
-             SELECT step, timestamp, value_f64, ingested_at,
-                    row_number() OVER (
-                        PARTITION BY step
-                        ORDER BY ingested_at DESC, {tie_breaker}
-                    ) AS write_rank
+        "WITH effective AS (
+             SELECT step, timestamp, value_f64, ingested_at
              FROM {relation}
              WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
-         ),
-         effective AS (
-             SELECT step, timestamp, value_f64, ingested_at
-             FROM ranked WHERE write_rank = 1
          ),
          derived AS (
              SELECT *, {axis_expression} AS axis_value FROM effective
@@ -267,7 +252,7 @@ fn derived_ctes(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
 }
 
 fn narrow_step_ctes(source: AlignmentSource<'_>) -> String {
-    let (relation, tie_breaker) = source_relation(source, "points");
+    let relation = source_relation(source);
     format!(
         "WITH requested AS (
              SELECT ?::BIGINT AS start_step, ?::BIGINT AS end_step
@@ -284,22 +269,14 @@ fn narrow_step_ctes(source: AlignmentSource<'_>) -> String {
                    AND points.metric_key_encoded = ?
              GROUP BY requested.start_step, requested.end_step
          ),
-         ranked AS (
-             SELECT points.step, points.timestamp, points.value_f64, points.ingested_at,
-                    row_number() OVER (
-                        PARTITION BY points.step
-                        ORDER BY points.ingested_at DESC, {tie_breaker}
-                    ) AS write_rank
+         effective AS (
+             SELECT points.step, points.timestamp, points.value_f64, points.ingested_at
              FROM requested CROSS JOIN step_bounds
              CROSS JOIN {relation} AS points
              WHERE points.run_id = ? AND points.metric_key = ?
                    AND points.metric_key_encoded = ?
                    AND points.step >= coalesce(step_bounds.left_step, requested.start_step)
                    AND points.step <= coalesce(step_bounds.right_step, requested.end_step)
-         ),
-         effective AS (
-             SELECT step, timestamp, value_f64, ingested_at
-             FROM ranked WHERE write_rank = 1
          ),
          derived AS (
              SELECT *, step AS axis_value FROM effective
@@ -311,19 +288,12 @@ fn narrow_step_ctes(source: AlignmentSource<'_>) -> String {
     )
 }
 
-fn source_relation(source: AlignmentSource<'_>, alias: &str) -> (String, String) {
+fn source_relation(source: AlignmentSource<'_>) -> &'static str {
     match source {
-        AlignmentSource::Project => (
-            String::from("dl.metric_points"),
-            format!("{alias}.rowid DESC"),
-        ),
-        AlignmentSource::Parquet(_) => (
-            String::from(
-                "read_parquet(?, hive_partitioning = true, union_by_name = true, \
-                 filename = true, file_row_number = true)",
-            ),
-            format!("{alias}.filename DESC, {alias}.file_row_number DESC"),
-        ),
+        AlignmentSource::Project => "dl.metric_points",
+        AlignmentSource::Parquet(_) => {
+            "read_parquet(?, hive_partitioning = true, union_by_name = true)"
+        }
     }
 }
 
@@ -410,38 +380,42 @@ struct StoredAlignedPoint {
 
 #[derive(Default)]
 struct BucketCandidates {
-    first: Option<StoredAlignedPoint>,
-    last: Option<StoredAlignedPoint>,
-    min: Option<StoredAlignedPoint>,
-    max: Option<StoredAlignedPoint>,
+    first: Option<(u64, StoredAlignedPoint)>,
+    last: Option<(u64, StoredAlignedPoint)>,
+    min: Option<(u64, StoredAlignedPoint)>,
+    max: Option<(u64, StoredAlignedPoint)>,
 }
 
 impl BucketCandidates {
-    fn push(&mut self, point: StoredAlignedPoint) {
-        self.first.get_or_insert_with(|| point.clone());
-        self.last = Some(point.clone());
+    fn push(&mut self, ordinal: u64, point: StoredAlignedPoint) {
+        self.first.get_or_insert_with(|| (ordinal, point.clone()));
+        self.last = Some((ordinal, point.clone()));
         if self
             .min
             .as_ref()
-            .is_none_or(|current| point_cmp(&point, current).is_lt())
+            .is_none_or(|current| point_cmp(&point, &current.1).is_lt())
         {
-            self.min = Some(point.clone());
+            self.min = Some((ordinal, point.clone()));
         }
         if self
             .max
             .as_ref()
-            .is_none_or(|current| point_cmp(&point, current).is_gt())
+            .is_none_or(|current| point_cmp(&point, &current.1).is_gt())
         {
-            self.max = Some(point);
+            self.max = Some((ordinal, point));
         }
     }
 
     fn append_to(self, points: &mut Vec<StoredAlignedPoint>) {
-        points.extend(
-            [self.first, self.last, self.min, self.max]
-                .into_iter()
-                .flatten(),
-        );
+        // A row may fill several roles, but distinct observations must survive
+        // even when their Steps and all payload fields are identical.
+        let mut selected = [self.first, self.last, self.min, self.max]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        selected.sort_by_key(|(ordinal, _)| *ordinal);
+        selected.dedup_by_key(|(ordinal, _)| *ordinal);
+        points.extend(selected.into_iter().map(|(_, point)| point));
     }
 }
 
@@ -474,14 +448,13 @@ impl ScreenReducer {
             std::mem::take(&mut self.candidates).append_to(&mut self.points);
         }
         self.current_bucket = Some(bucket);
-        self.candidates.push(point);
+        self.candidates.push(self.ordinal, point);
         self.ordinal += 1;
     }
 
     fn finish(mut self) -> Vec<StoredAlignedPoint> {
         self.candidates.append_to(&mut self.points);
         self.points.sort_by_key(|point| point.step);
-        self.points.dedup_by_key(|point| point.step);
         self.points
     }
 }
@@ -585,21 +558,23 @@ mod tests {
     }
 
     #[test]
-    fn full_step_query_keeps_closed_viewport_neighbors_and_effective_points()
+    fn full_step_query_keeps_closed_viewport_neighbors_and_observations()
     -> Result<(), Box<dyn Error>> {
         let connection = connection()?;
         let result = ProjectMetricReader::new(&connection)
             .query_aligned_metric(&query(AlignmentAxis::Step, AlignmentReduction::Full))?;
 
+        let mut observed = result
+            .points
+            .iter()
+            .map(|point| (point.axis_value, point.point.value_f64))
+            .collect::<Vec<_>>();
+        observed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
         assert_eq!(
-            result
-                .points
-                .iter()
-                .map(|point| (point.axis_value, point.point.value_f64))
-                .collect::<Vec<_>>(),
-            vec![(1, 1.0), (2, 2.0), (3, -1.0), (4, 4.0), (5, 5.0)]
+            observed,
+            vec![(1, 1.0), (2, 2.0), (3, -1.0), (3, 3.0), (4, 4.0), (5, 5.0)]
         );
-        assert_eq!(result.source_row_count, 5);
+        assert_eq!(result.source_row_count, 6);
         assert!(result.reasons.is_empty());
         Ok(())
     }
@@ -622,7 +597,7 @@ mod tests {
                 .iter()
                 .map(|point| point.axis_value)
                 .collect::<Vec<_>>(),
-            vec![0, 10, 20, 20, 10, 50]
+            vec![0, 10, 20, 20, 20, 10, 50]
         );
         Ok(())
     }
@@ -637,7 +612,7 @@ mod tests {
         elapsed.viewport = AlignmentViewport::new(10, 50)?;
         let result = ProjectMetricReader::new(&connection).query_aligned_metric(&elapsed)?;
 
-        assert_eq!(result.source_row_count, 7);
+        assert_eq!(result.source_row_count, 8);
         assert!(result.downsampled());
         assert!(result.reasons.is_empty());
         assert_eq!(result.points.first().map(|point| point.axis_value), Some(0));
@@ -655,14 +630,16 @@ mod tests {
         screen.viewport = AlignmentViewport::new(1, 5)?;
         let result = query_aligned_metric(&connection, AlignmentSource::Project, &screen, None)?;
 
-        assert_eq!(result.source_row_count, 7);
+        assert_eq!(result.source_row_count, 8);
         assert!(result.downsampled());
+        let mut observed = result
+            .points
+            .iter()
+            .map(|point| (point.axis_value, point.point.value_f64))
+            .collect::<Vec<_>>();
+        observed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
         assert_eq!(
-            result
-                .points
-                .iter()
-                .map(|point| (point.axis_value, point.point.value_f64))
-                .collect::<Vec<_>>(),
+            observed,
             vec![(0, 0.0), (1, 1.0), (3, -1.0), (5, 5.0), (6, 6.0)]
         );
         Ok(())
@@ -680,7 +657,7 @@ mod tests {
 
         let result = ProjectMetricReader::new(&connection).query_aligned_metric(&screen)?;
 
-        assert_eq!(result.points.len(), 7);
+        assert_eq!(result.points.len(), 8);
         assert!(!result.downsampled());
         Ok(())
     }
@@ -718,11 +695,35 @@ mod tests {
             AlignmentSource::Project,
             &screen,
             None,
-            7,
+            8,
         )?;
 
         assert_eq!(bounded, windowed);
         Ok(())
+    }
+
+    #[test]
+    fn bounded_reducer_preserves_same_step_extrema_without_repeating_roles() {
+        let point = |value| StoredAlignedPoint {
+            step: 3,
+            timestamp_millis: 1000,
+            value_f64: value,
+            ingested_at_millis: 2000,
+            axis_value: 3,
+        };
+        let mut reducer = ScreenReducer::new(4, 3);
+        reducer.push(point(-1.0));
+        reducer.push(point(2.0));
+        reducer.push(point(0.0));
+        let selected = reducer.finish();
+        assert_eq!(selected.len(), 3);
+        assert!(selected.iter().any(|p| p.value_f64 == -1.0));
+        assert!(selected.iter().any(|p| p.value_f64 == 2.0));
+
+        let mut identical = ScreenReducer::new(4, 2);
+        identical.push(point(1.0));
+        identical.push(point(1.0));
+        assert_eq!(identical.finish().len(), 2);
     }
 
     #[test]
@@ -767,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn narrow_step_plan_keeps_lww_and_real_neighbors() -> Result<(), Box<dyn Error>> {
+    fn narrow_step_plan_keeps_duplicates_and_real_neighbors() -> Result<(), Box<dyn Error>> {
         let connection = connection()?;
         let query = query(
             AlignmentAxis::Step,
@@ -775,11 +776,28 @@ mod tests {
         );
         let reader = ProjectMetricReader::new(&connection);
 
-        let full = reader.query_aligned_metric(&query)?;
-        let narrow = reader.query_narrow_step_metric(&query)?;
+        let mut full = reader.query_aligned_metric(&query)?;
+        let mut narrow = reader.query_narrow_step_metric(&query)?;
 
+        for points in [&mut narrow.points, &mut full.points] {
+            points.sort_by(|a, b| {
+                a.point
+                    .step
+                    .value()
+                    .cmp(&b.point.step.value())
+                    .then_with(|| a.point.value_f64.total_cmp(&b.point.value_f64))
+            });
+        }
         assert_eq!(narrow, full);
-        assert_eq!(narrow.points[2].point.value_f64, -1.0);
+        assert_eq!(narrow.source_row_count, 6);
+        assert_eq!(
+            narrow
+                .points
+                .iter()
+                .filter(|p| p.point.step.value() == 3)
+                .count(),
+            2
+        );
         let sql = aligned_points_sql(
             AlignmentSource::Project,
             AlignmentAxis::Step,

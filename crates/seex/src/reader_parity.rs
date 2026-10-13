@@ -68,8 +68,22 @@ fn native_reader_scopes_run_lookup_and_optional_metric_summaries()
             .native
             .metric_summary(&run, &MetricKey::from_string("loss"))?
             .map(|summary| summary.effective_count),
-        Some(8)
+        Some(10)
     );
+    let series = fixture.query(MetricQuery::new(
+        MetricRange::All(crate::MetricAxis::Step),
+        MAX_CHART_POINTS,
+    )?)?;
+    assert_eq!(series.source_count(), 10);
+    assert_eq!(series.samples().len(), 10);
+    let mut duplicates = series
+        .samples()
+        .iter()
+        .filter(|sample| sample.point.step == Step::new(2))
+        .map(|sample| sample.point.value_f64)
+        .collect::<Vec<_>>();
+    duplicates.sort_by(f64::total_cmp);
+    assert_eq!(duplicates, vec![2.0, 42.0]);
     Ok(())
 }
 
@@ -173,7 +187,7 @@ fn relative_time_and_timestamp_ranges_are_rejected() {
 }
 
 #[test]
-fn small_fixture_preserves_lww_spikes_and_true_step_neighbors()
+fn small_fixture_preserves_repeated_observations_and_true_step_neighbors()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::open()?;
     let metric = MetricKey::from_string("loss");
@@ -196,6 +210,11 @@ fn small_fixture_preserves_lww_spikes_and_true_step_neighbors()
             _ => panic!("Step query returned another coordinate axis"),
         })
         .collect::<Vec<_>>();
-    assert_eq!(points, [(1, 1.0), (2, 42.0), (3, 3.0)]);
+    assert_eq!(points.len(), 4);
+    assert_eq!(points[0], (1, 1.0));
+    assert_eq!(points[3], (3, 3.0));
+    let mut repeated = points[1..3].to_vec();
+    repeated.sort_by(|left, right| left.1.total_cmp(&right.1));
+    assert_eq!(repeated, [(2, 2.0), (2, 42.0)]);
     Ok(())
 }

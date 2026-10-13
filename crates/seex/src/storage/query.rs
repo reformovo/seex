@@ -66,7 +66,7 @@ impl<'connection> ParquetMetricReader<'connection> {
         &self.schema
     }
 
-    /// Queries one effective metric series with its requested reduction policy.
+    /// Queries one append-only metric series with its requested reduction policy.
     ///
     /// # Errors
     ///
@@ -162,7 +162,7 @@ impl StandaloneMetricReader {
         &self.schema
     }
 
-    /// Queries one effective metric series.
+    /// Queries one append-only metric series.
     ///
     /// # Errors
     ///
@@ -437,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn reader_queries_full_and_screen_reduced_effective_series() -> Result<(), Box<dyn Error>> {
+    fn reader_queries_full_and_screen_reduced_observations() -> Result<(), Box<dyn Error>> {
         let connection = Connection::open_in_memory()?;
         let parquet = TestParquet::create(&connection)?;
         let reader =
@@ -451,14 +451,21 @@ mod tests {
             &MetricKey::from_string("train/loss"),
         )?;
 
-        assert_eq!(full.source_row_count, 3);
-        assert_eq!(full.points.len(), 3);
+        assert_eq!(full.source_row_count, 4);
+        assert_eq!(full.points.len(), 4);
         assert_eq!(full.points[0].step.value(), 2);
-        assert_eq!(full.points[0].value_f64, 0.2);
+        let mut duplicate_values = full
+            .points
+            .iter()
+            .filter(|p| p.step.value() == 2)
+            .map(|p| p.value_f64)
+            .collect::<Vec<_>>();
+        duplicate_values.sort_by(f64::total_cmp);
+        assert_eq!(duplicate_values, vec![0.2, 0.5]);
         assert!(screen.points.len() <= 4);
-        assert_eq!(screen.source_row_count, 3);
+        assert_eq!(screen.source_row_count, 4);
         assert_eq!(lttb.points, full.points);
-        assert_eq!(diagnostics.effective_count, 25);
+        assert_eq!(diagnostics.effective_count, 26);
         assert_eq!(
             (diagnostics.min_step, diagnostics.max_step),
             (Some(1), Some(25))
@@ -472,12 +479,12 @@ mod tests {
         let parquet = TestParquet::create(&connection)?;
         let reader =
             ParquetMetricReader::open(&connection, ParquetSource::new(parquet.location.clone())?)?;
-        let result = reader.query_aligned_metric(&aligned_query(
+        let mut result = reader.query_aligned_metric(&aligned_query(
             AlignmentAxis::Step,
             AlignmentViewport::new(2, 4)?,
             AlignmentReduction::Full,
         ))?;
-        let narrow = query_narrow_step_metric(
+        let mut narrow = query_narrow_step_metric(
             &connection,
             AlignmentSource::Parquet(&parquet.location),
             &aligned_query(
@@ -487,16 +494,35 @@ mod tests {
             ),
         )?;
 
+        let mut observed = result
+            .points
+            .iter()
+            .map(|point| (point.axis_value, point.point.value_f64))
+            .collect::<Vec<_>>();
+        observed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.total_cmp(&b.1)));
         assert_eq!(
-            result
-                .points
-                .iter()
-                .map(|point| (point.axis_value, point.point.value_f64))
-                .collect::<Vec<_>>(),
-            vec![(1, 1.0), (2, 0.2), (3, 1.0 / 3.0), (4, 0.25), (5, 0.2)]
+            observed,
+            vec![
+                (1, 1.0),
+                (2, 0.2),
+                (2, 0.5),
+                (3, 1.0 / 3.0),
+                (4, 0.25),
+                (5, 0.2)
+            ]
         );
-        assert_eq!(result.source_row_count, 5);
+        assert_eq!(result.source_row_count, 6);
         assert!(result.reasons.is_empty());
+        // Equal-Step observation ordering is unspecified across query plans.
+        for points in [&mut narrow.points, &mut result.points] {
+            points.sort_by(|a, b| {
+                a.point
+                    .step
+                    .value()
+                    .cmp(&b.point.step.value())
+                    .then_with(|| a.point.value_f64.total_cmp(&b.point.value_f64))
+            });
+        }
         assert_eq!(narrow, result);
 
         let screen = reader.query_aligned_metric(&aligned_query(
@@ -504,7 +530,7 @@ mod tests {
             AlignmentViewport::new(2, 24)?,
             AlignmentReduction::screen_budget(1, 1)?,
         ))?;
-        assert_eq!(screen.source_row_count, 25);
+        assert_eq!(screen.source_row_count, 26);
         assert!(screen.downsampled());
         assert_eq!(screen.points.first().map(|point| point.axis_value), Some(1));
         assert_eq!(screen.points.last().map(|point| point.axis_value), Some(25));
@@ -556,7 +582,7 @@ mod tests {
             &MetricKey::from_string("train/loss"),
         )?;
 
-        assert_eq!(steps.source_row_count, 3);
+        assert_eq!(steps.source_row_count, 4);
         assert!(
             timestamps
                 .points
@@ -564,7 +590,7 @@ mod tests {
                 .all(|point| { (EPOCH_MILLIS..=EPOCH_MILLIS + 4_000).contains(&point.axis_value) })
         );
         assert_eq!(relative.reasons, [AlignmentReason::MissingRunStart]);
-        assert_eq!(diagnostics.effective_count, 25);
+        assert_eq!(diagnostics.effective_count, 26);
         Ok(())
     }
 

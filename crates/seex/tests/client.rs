@@ -503,8 +503,18 @@ fn log_defaults_and_commit_cursor_are_atomic() -> Result<(), Box<dyn std::error:
             seex::MetricCoordinate::Step(seex::Step::new(1)),
             seex::MetricCoordinate::Step(seex::Step::new(4)),
             seex::MetricCoordinate::Step(seex::Step::new(5)),
+            seex::MetricCoordinate::Step(seex::Step::new(5)),
         ]
     );
+    assert_eq!(series.source_count(), 5);
+    let mut repeated = series
+        .samples()
+        .iter()
+        .filter(|sample| sample.point.step == seex::Step::new(5))
+        .map(|sample| sample.point.value_f64)
+        .collect::<Vec<_>>();
+    repeated.sort_by(f64::total_cmp);
+    assert_eq!(repeated, [5.0, 6.0]);
     client.shutdown()?;
     Ok(())
 }

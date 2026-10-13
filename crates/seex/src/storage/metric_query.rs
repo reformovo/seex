@@ -46,7 +46,7 @@ impl<'connection> ProjectMetricReader<'connection> {
         Self { connection }
     }
 
-    /// Queries effective project metric points.
+    /// Queries append-only project metric observations.
     ///
     /// # Errors
     ///
@@ -175,14 +175,8 @@ impl<'connection> ProjectMetricReader<'connection> {
                         max(points.value_f64) AS max_value_f64
                  FROM requested
                  JOIN seex_runs AS run USING (run_id)
-                 JOIN (
-                     SELECT *, row_number() OVER (
-                         PARTITION BY run_id, metric_key, step
-                         ORDER BY ingested_at DESC, rowid DESC
-                     ) AS write_rank
-                     FROM dl.metric_points WHERE metric_key = ?
-                 ) AS points USING (run_id)
-                 WHERE run.status = 'running' AND points.write_rank = 1
+                 JOIN dl.metric_points AS points USING (run_id)
+                 WHERE run.status = 'running' AND points.metric_key = ?
                  GROUP BY requested.ordinal, points.run_id, points.metric_key
              )
              ORDER BY ordinal"
@@ -206,19 +200,12 @@ impl<'connection> ProjectMetricReader<'connection> {
     ) -> Result<Vec<MetricAggregate>, StorageError> {
         let sql = match run_status {
             RunStatus::Running => {
-                "WITH effective AS (
-                     SELECT *, row_number() OVER (
-                         PARTITION BY run_id, metric_key, step
-                         ORDER BY ingested_at DESC, rowid DESC
-                     ) AS write_rank
-                     FROM dl.metric_points WHERE run_id = ?
-                 )
-                 SELECT run_id, metric_key, count(*) AS effective_count,
+                "SELECT run_id, metric_key, count(*) AS effective_count,
                         max(step) AS last_step,
                         arg_max(value_f64, step) AS last_value_f64,
                         min(value_f64) AS min_value_f64,
                         max(value_f64) AS max_value_f64
-                 FROM effective WHERE write_rank = 1
+                 FROM dl.metric_points WHERE run_id = ?
                  GROUP BY run_id, metric_key ORDER BY metric_key"
             }
             RunStatus::Finished | RunStatus::Failed => {
@@ -256,22 +243,13 @@ pub(crate) fn query_series_diagnostics(
     if run_id.as_str().trim().is_empty() || metric_key.as_str().trim().is_empty() {
         return Err(StorageError::InvalidIdentity);
     }
-    let (relation, tie_breaker) = source_relation(source);
+    let relation = source_relation(source);
     let sql = format!(
-        "WITH ranked AS (
+        "WITH ordered AS (
              SELECT step, timestamp, value_f64,
-                    row_number() OVER (
-                        PARTITION BY step ORDER BY ingested_at DESC, {tie_breaker}
-                    ) AS write_rank
+                    lag(timestamp) OVER (ORDER BY step, timestamp) AS previous_timestamp
              FROM {relation}
              WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
-         ),
-         effective AS (
-             SELECT step, timestamp, value_f64 FROM ranked WHERE write_rank = 1
-         ),
-         ordered AS (
-             SELECT *, lag(timestamp) OVER (ORDER BY step) AS previous_timestamp
-             FROM effective
          )
          SELECT count(*)::UBIGINT, min(step), max(step),
                 coalesce(bool_or(step < 0), false),
@@ -428,34 +406,24 @@ fn query_params(source: MetricSource<'_>, query: &MetricQuery) -> Vec<Box<dyn du
 }
 
 fn effective_cte(source: MetricSource<'_>) -> String {
-    let (relation, tie_breaker) = source_relation(source);
+    let relation = source_relation(source);
     format!(
-        "WITH ranked AS (
-             SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at,
-                    row_number() OVER (
-                        PARTITION BY run_id, metric_key, step
-                        ORDER BY ingested_at DESC, {tie_breaker}
-                    ) AS write_rank
+        "WITH effective AS (
+             SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at
              FROM {relation}
              WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
                AND (? IS NULL OR step >= ?)
                AND (? IS NULL OR step < ?)
-         ),
-         effective AS (
-             SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at
-             FROM ranked WHERE write_rank = 1
          )"
     )
 }
 
-fn source_relation(source: MetricSource<'_>) -> (&'static str, &'static str) {
+fn source_relation(source: MetricSource<'_>) -> &'static str {
     match source {
-        MetricSource::Project => ("dl.metric_points", "rowid DESC"),
-        MetricSource::Parquet(_) => (
-            "read_parquet(?, hive_partitioning = true, union_by_name = true, \
-             filename = true, file_row_number = true)",
-            "filename DESC, file_row_number DESC",
-        ),
+        MetricSource::Project => "dl.metric_points",
+        MetricSource::Parquet(_) => {
+            "read_parquet(?, hive_partitioning = true, union_by_name = true)"
+        }
     }
 }
 
@@ -500,24 +468,35 @@ fn screen_query_sql(source: MetricSource<'_>) -> String {
     )
 }
 
+// LTTB returns coordinates, not row identity. Match both coordinates and cap
+// each match to the sampled multiplicity: joining only on Step would fan out
+// duplicates, while assembling fields independently could fabricate a point.
 fn lttb_query_sql(source: MetricSource<'_>) -> String {
     format!(
         "{},
-         normalized AS (
+         normalized AS MATERIALIZED (
              SELECT *, CAST(step AS HUGEINT) -
-                       min(CAST(step AS HUGEINT)) OVER () AS lttb_step
+                       min(CAST(step AS HUGEINT)) OVER () AS lttb_step,
+                    row_number() OVER (PARTITION BY step, value_f64) AS occurrence
              FROM effective
          ),
          sampled AS (
              SELECT unnest(lttb(lttb_step, value_f64, ?)) AS point,
                     count(*)::UBIGINT AS source_row_count
              FROM normalized
+         ),
+         sampled_counts AS (
+             SELECT point.x AS x, point.y AS y, count(*) AS selected_count,
+                    max(source_row_count) AS source_row_count
+             FROM sampled GROUP BY point.x, point.y
          )
          SELECT normalized.run_id, normalized.metric_key, normalized.step,
                 epoch_ms(normalized.timestamp), normalized.value_f64,
-                epoch_ms(normalized.ingested_at), sampled.source_row_count
-         FROM sampled
-         JOIN normalized ON normalized.lttb_step = sampled.point.x
+                epoch_ms(normalized.ingested_at), sampled_counts.source_row_count
+         FROM sampled_counts
+         JOIN normalized ON normalized.lttb_step = sampled_counts.x
+                        AND normalized.value_f64 = sampled_counts.y
+                        AND normalized.occurrence <= sampled_counts.selected_count
          ORDER BY normalized.step",
         effective_cte(source)
     )
@@ -742,8 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_cover_the_whole_effective_series_after_lww()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn diagnostics_cover_all_observations() -> Result<(), Box<dyn std::error::Error>> {
         let connection = Connection::open_in_memory()?;
         connection.execute_batch(
             "CREATE SCHEMA dl;
@@ -765,12 +743,89 @@ mod tests {
             &MetricKey::from_string("loss"),
         )?;
 
-        assert_eq!(diagnostics.effective_count, 2);
+        assert_eq!(diagnostics.effective_count, 3);
         assert_eq!(diagnostics.min_step, Some(-1));
         assert_eq!(diagnostics.max_step, Some(0));
         assert!(diagnostics.has_negative_step);
         assert!(diagnostics.has_decreasing_timestamp);
         assert!(diagnostics.has_non_finite_value);
+        let reader = ProjectMetricReader::new(&connection);
+        let bounded = MetricQuery::new(
+            RunId::from_string("run-1"),
+            MetricKey::from_string("loss"),
+            Some(Step::new(0)),
+            Some(Step::new(1)),
+            ReductionPolicy::Full,
+        )?;
+        let result = reader.query_metric(&bounded)?;
+        assert_eq!(result.source_row_count, 2);
+        assert_eq!(result.points.len(), 2);
+        assert!(result.points.iter().all(|p| p.step.value() == 0));
+        assert!(result.points.iter().any(|p| p.value_f64 == 2.0));
+        assert!(result.points.iter().any(|p| p.value_f64.is_nan()));
+        Ok(())
+    }
+
+    #[test]
+    fn lttb_duplicate_axes_join_only_selected_observation_multiplicities()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute_batch(
+            "CREATE SCHEMA dl;
+             CREATE TABLE dl.metric_points AS
+             SELECT 'run-1' AS run_id, 'loss' AS metric_key, 'loss' AS metric_key_encoded,
+                    3::BIGINT AS step, epoch_ms(i) AS timestamp,
+                    CASE WHEN i < 3 THEN 1.0 ELSE 9.0 END::DOUBLE AS value_f64,
+                    epoch_ms(i + 100) AS ingested_at FROM range(1, 5) AS t(i);
+             -- Deterministic sampler isolates the reconstruction join from the
+             -- network-loaded extension. Select two identical (x, y) occurrences.
+             CREATE MACRO lttb(x, y, n) AS
+                 list_slice(list(struct_pack(x := x, y := y) ORDER BY y), 1, n);",
+        )?;
+        let query = MetricQuery::new(
+            RunId::from_string("run-1"),
+            MetricKey::from_string("loss"),
+            None,
+            None,
+            ReductionPolicy::lttb(3)?,
+        )?;
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("points.parquet");
+        connection.execute_batch(&format!(
+            "COPY dl.metric_points TO {} (FORMAT PARQUET)",
+            sql_string_literal(&path.to_string_lossy())
+        ))?;
+        let location = path.to_string_lossy();
+        for source in [MetricSource::Project, MetricSource::Parquet(&location)] {
+            let selected = execute_query(
+                &connection,
+                source,
+                &query,
+                QueryShape::Lttb { max_points: 2 },
+            )?;
+            assert_eq!(selected.source_row_count, 4);
+            assert_eq!(selected.points.len(), 2);
+            assert!(selected.points.iter().all(|p| p.value_f64 == 1.0));
+            let mixed = execute_query(
+                &connection,
+                source,
+                &query,
+                QueryShape::Lttb { max_points: 3 },
+            )?;
+            assert_eq!(mixed.points.len(), 3);
+            assert_eq!(
+                mixed.points.iter().filter(|p| p.value_f64 == 9.0).count(),
+                1
+            );
+            assert!(
+                selected
+                    .points
+                    .iter()
+                    .all(|p| p.ingested_at.timestamp_millis()
+                        == p.timestamp.timestamp_millis() + 100)
+            );
+            assert_ne!(selected.points[0].timestamp, selected.points[1].timestamp);
+        }
         Ok(())
     }
 

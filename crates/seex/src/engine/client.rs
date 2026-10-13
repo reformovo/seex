@@ -1089,11 +1089,18 @@ mod tests {
                 .map(|summary| (
                     summary.metric_key.as_str(),
                     summary.effective_count,
-                    summary.last_value_f64
+                    summary.min_value_f64,
+                    summary.max_value_f64
                 ))
                 .collect::<Vec<_>>(),
-            vec![("eval/accuracy", 1, 0.8), ("train/loss", 1, 0.125)],
+            vec![
+                ("eval/accuracy", 1, 0.8, 0.8),
+                ("train/loss", 2, 0.125, 0.25)
+            ],
         );
+        let loss = &summaries[1];
+        assert_eq!(loss.last_step, Step::new(0));
+        assert!([0.125, 0.25].contains(&loss.last_value_f64));
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }
