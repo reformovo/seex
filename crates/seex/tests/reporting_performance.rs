@@ -118,11 +118,15 @@ fn measure_mode(
 
 fn duration_record(label: &str, batch_iterations: usize, samples: &[Duration]) -> String {
     assert_eq!(samples.len(), SAMPLES, "reporting benchmark sample count");
-    let raw = samples.iter().map(Duration::as_nanos).collect::<Vec<_>>();
+    assert!(batch_iterations > 0, "duration batches must contain a Run");
+    let raw = samples
+        .iter()
+        .map(|sample| sample.as_nanos() as f64 / batch_iterations as f64)
+        .collect::<Vec<_>>();
     format!(
         "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\
          \"domain\":\"reporting\",\"metric\":\"rust.{label}\",\
-         \"unit\":\"ns\",\"direction\":\"lower\",\
+         \"unit\":\"ns/op\",\"direction\":\"lower\",\
          \"batch_iterations\":{batch_iterations},\"samples\":{raw:?}}}"
     )
 }
@@ -136,6 +140,9 @@ fn metric_record_contains_only_raw_samples() {
     assert!(record.contains("\"samples\":[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]"));
     assert!(!record.contains("p50"));
     assert!(duration.contains("\"metric\":\"rust.finalization\""));
+    assert!(duration.contains("\"unit\":\"ns/op\""));
+    assert!(duration.contains("\"batch_iterations\":3"));
+    assert!(duration.contains("8333333.333333333"));
 }
 
 #[test]
@@ -175,22 +182,60 @@ fn reporting_mapping_admission() -> Result<(), Box<dyn StdError>> {
     })
 }
 
+fn calibrate_durability(
+    mut measure: impl FnMut(usize) -> Result<(Duration, Duration), Box<dyn StdError>>,
+) -> Result<usize, Box<dyn StdError>> {
+    const MAX_RUNS_PER_BATCH: usize = 32;
+    let mut repeats = 1;
+    loop {
+        let (drain, finish) = measure(repeats)?;
+        if drain >= CALIBRATION_TARGET && finish >= CALIBRATION_TARGET {
+            return Ok(repeats);
+        }
+        if repeats == MAX_RUNS_PER_BATCH {
+            return Err("durability calibration exceeded 32 Runs per batch".into());
+        }
+        repeats *= 2;
+    }
+}
+
+#[test]
+fn durability_calibration_requires_both_phases_and_bounds_work() {
+    let mut attempted = Vec::new();
+    let repeats = calibrate_durability(|runs| {
+        attempted.push(runs);
+        Ok((
+            Duration::from_millis(runs as u64 * 10),
+            Duration::from_millis(30),
+        ))
+    })
+    .unwrap();
+    assert_eq!(repeats, 4);
+    assert_eq!(attempted, [1, 2, 4]);
+    assert!(calibrate_durability(|_| Ok((Duration::from_millis(30), Duration::ZERO))).is_err());
+    assert!(calibrate_durability(|_| Err("measurement failed".into())).is_err());
+}
+
 #[test]
 #[ignore = "fresh-process release reporting durability workload"]
 fn reporting_durability_phases() -> Result<(), Box<dyn StdError>> {
     const REPORTS: usize = 1_000;
-    const REPEATS_PER_SAMPLE: usize = 3;
+    const WORKLOAD_BUDGET: Duration = Duration::from_secs(25);
     assert!(
         black_box(!cfg!(debug_assertions)),
         "workload requires --release"
     );
-    let mut drain_samples = Vec::with_capacity(SAMPLES);
-    let mut finalization_samples = Vec::with_capacity(SAMPLES);
-    for sample in 0..SAMPLES {
+    let started = Instant::now();
+    let mut run_index = 0;
+    let mut measure_batch = |repeats| -> Result<(Duration, Duration), Box<dyn StdError>> {
         let mut drain = Duration::ZERO;
         let mut finalization = Duration::ZERO;
-        for repeat in 0..REPEATS_PER_SAMPLE {
-            let label = format!("durability-{sample}-{repeat}");
+        for _ in 0..repeats {
+            if started.elapsed() >= WORKLOAD_BUDGET {
+                return Err("durability workload exceeded its 25-second budget".into());
+            }
+            let label = format!("durability-{run_index}");
+            run_index += 1;
             let (root, client, run) = run_for_mode(&label)?;
             for step in 0..REPORTS {
                 run.log_with([("loss", step as f64)], LogOptions::new().step(step as i64))?;
@@ -204,17 +249,31 @@ fn reporting_durability_phases() -> Result<(), Box<dyn StdError>> {
             client.shutdown()?;
             fs::remove_dir_all(root)?;
         }
+        Ok((drain, finalization))
+    };
+    // Pilot runs are excluded. Both metrics use the same calibrated Run count.
+    let repeats = calibrate_durability(&mut measure_batch)?;
+    let mut drain_samples = Vec::with_capacity(SAMPLES);
+    let mut finalization_samples = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let (drain, finalization) = measure_batch(repeats)?;
+        if drain < CALIBRATION_TARGET || finalization < CALIBRATION_TARGET {
+            return Err("durability sample completed in less than 25 ms".into());
+        }
         drain_samples.push(drain);
         finalization_samples.push(finalization);
+    }
+    if started.elapsed() >= WORKLOAD_BUDGET {
+        return Err("durability workload exceeded its 25-second budget".into());
     }
     println!();
     println!(
         "{}",
-        duration_record("drain_persistence", REPEATS_PER_SAMPLE, &drain_samples)
+        duration_record("drain_persistence", repeats, &drain_samples)
     );
     println!(
         "{}",
-        duration_record("finalization", REPEATS_PER_SAMPLE, &finalization_samples)
+        duration_record("finalization", repeats, &finalization_samples)
     );
     Ok(())
 }

@@ -149,11 +149,48 @@ Executable SHA-256:
 Artifacts: `.tmp/v5-reporting-fd3728d-{build.log,executable.txt,manifest.json,
 gate.log,result.json,environment.json,summary.json}`.
 
+## Adaptive reporting follow-up
+
+A measurement-only change replaces fixed three-Run batches with pilot calibration:
+try 1, 2, 4, ... up to 32 Runs until both drain and finish reach 25 ms. Exclude
+pilot Runs from the ten recorded samples. All samples then use that fixed calibrated
+count; a sample below 25 ms fails rather than being silently accepted or retried.
+A 25-second per-capture budget is checked between Runs and before publishing
+records; it is cooperative, not an interrupt for an in-flight storage call.
+The gate still enforces the complete 120-second deadline. Records are `ns/op`
+per Run, with `batch_iterations` so the gate can check total elapsed time.
+Queue capacity and production persistence behavior remain unchanged.
+
+Built in release outside measurement, then executed exactly once:
+
+```sh
+python scripts/performance_gate.py run \
+  --manifest .tmp/v5-reporting-adaptive-manifest.json \
+  --output .tmp/v5-reporting-adaptive-result.json
+```
+
+Source identity: `eb11c4f` plus tracked patch SHA-256
+`05810c5b33ec81bc6b687b7b88fde5a9de8104e2674988ada5179dd8959a51b5`.
+Release binary SHA-256:
+`c2a63f653e123ba4d808dba4b1013fdcb6d3c56f6d6e87d2032fb3d6688c5e3e`.
+Both A/B commands use the same executable. All captures calibrated to one Run
+per sample; each capture used one pilot Run and ten measured Runs.
+
+| Capture | A1 | B1 | B2 | A2 |
+| --- | ---: | ---: | ---: | ---: |
+| Drain median ms/Run | 87.234 | 87.005 | 86.604 | 88.278 |
+| Finish median ms/Run | 224.965 | 228.379 | 225.564 | 226.132 |
+
+**Formal gate: PASS (self-comparison repeatability only).** All eight records
+met the time floor and unchanged noise rules; within-capture relative MAD ranged
+from 0.624% to 1.925%. Test-reported durations sum to 19.32 seconds, not exact
+whole-gate wall time. Keep the earlier fixed-batch INCONCLUSIVE as historical
+diagnostic evidence. These different measurement contracts do not establish
+runtime performance improvement, steady-state throughput, or production RSS.
+
 ## Next independent slice
 
-Fix reporting calibration and retain explicit batch versus per-operation units,
-without increasing queue capacity or changing persistence behavior. Then diagnose
-connection/attach, catalog lock wait/hold, summary and flush costs before choosing
-one runtime candidate. Long/narrow Reader queries, diagnostic cache miss/hit,
+Diagnose connection/attach, catalog lock wait/hold, summary and flush costs before
+choosing one runtime candidate. Long/narrow Reader queries, diagnostic cache miss/hit,
 16 curves, RSS, temporary storage and large-scale P7 remain unmeasured here.
 Do not introduce Rollup or production layout switches to explain these results.
