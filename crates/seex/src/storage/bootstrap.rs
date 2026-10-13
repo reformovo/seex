@@ -364,12 +364,15 @@ fn open_native_connection_with_mode(
             source,
         })?;
     }
+    let phase_started = std::time::Instant::now();
     let connection = open_duckdb_connection()?;
+    record_write_timing("connection_duckdb_open", phase_started.elapsed());
     if is_s3_data_path(&config.data_path)
         && let Some(s3_connection) = config.s3_connection.as_ref()
     {
         configure_s3_connection(&connection, s3_connection)?;
     }
+    let phase_started = std::time::Instant::now();
     attach_ducklake_with_backend_and_mode(
         &connection,
         config.catalog_backend,
@@ -377,15 +380,23 @@ fn open_native_connection_with_mode(
         &config.data_path,
         mode,
     )?;
+    record_write_timing("connection_ducklake_attach", phase_started.elapsed());
+    let phase_started = std::time::Instant::now();
     setup_catalog_adapter(&connection, config.catalog_backend, &config.catalog_path)?;
+    record_write_timing("connection_catalog_adapter", phase_started.elapsed());
     if !matches!(mode, NativeConnectionMode::ReadOnly) {
         record_write_timing("connection_attach", connection_started.elapsed());
     }
+    let phase_started = std::time::Instant::now();
     if !must_exist && !catalog_preexisted {
         initialize_storage_tables(&connection)?;
     } else {
         validate_storage_format(&connection)?;
     }
+    record_write_timing(
+        "connection_format_setup_or_validate",
+        phase_started.elapsed(),
+    );
     if matches!(mode, NativeConnectionMode::ReadWrite) {
         flush_pending_in_locked_connection(&connection)?;
         repair_pending_series(&connection)?;
@@ -817,6 +828,50 @@ mod tests {
                 .to_string()
                 .contains("native storage format marker")
         );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "diagnostic: observe cached writer after another connection flushes"]
+    fn cached_writer_after_external_inline_flush() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        let cached = open_native_connection_with_config(config.clone())?;
+        let insert = "INSERT INTO dl.metric_points VALUES
+            ('probe-run', 'loss', 'loss', 0, now(), 1.0, now())";
+        cached.execute_batch(insert)?;
+        let before: i64 = cached.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(before, 1);
+        let external = open_existing_writer_connection_with_config(config.clone())?;
+        external.execute_batch(
+            "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
+        )?;
+        drop(external);
+        // Failure here is diagnostic evidence, not an accepted production fallback.
+        let read = cached.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+            row.get::<_, i64>(0)
+        });
+        eprintln!("cached_writer_after_flush_read={read:?}");
+        if let Ok(count) = read {
+            assert_eq!(count, 1);
+        }
+        let append = cached.execute_batch(insert);
+        eprintln!("cached_writer_after_flush_append={append:?}");
+        let expected = if append.is_ok() { 2 } else { 1 };
+        drop(cached);
+        let fresh = open_existing_writer_connection_with_config(config)?;
+        let count: i64 = fresh.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(count, expected);
         Ok(())
     }
 

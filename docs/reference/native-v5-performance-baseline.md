@@ -226,11 +226,48 @@ The helper used by normal `flush_run_data` is the pending/recovery path; the dir
 SQL branch was not exercised by these workloads. No cross-process timestamp trace
 was captured, so causal attribution of wait intervals remains unproven.
 
+## Writer connection phase and invalidation diagnostic
+
+A second diagnostic-only patch on `40dfac8` split writer opening into DuckDB
+connection creation, DuckLake attach, catalog adapter setup and format
+validation. In the single-writer release durability workload, the 99 observed
+writer opens had these medians:
+
+| Phase | Median |
+| --- | ---: |
+| DuckDB connection creation | 2.223 ms |
+| DuckLake attach/install/load | 23.840 ms |
+| Catalog adapter setup | 0.460 ms |
+| Format setup/validation | 2.194 ms |
+| Existing aggregate `connection_attach` timing | 26.726 ms |
+| Flush fresh-writer open (11 calls) | 28.920 ms |
+
+The timings are nested/overlapping: `connection_attach` excludes or combines
+some phases according to the open path and is not their arithmetic sum. The
+stable dominant phase is DuckLake attach, not DuckDB object creation or catalog
+adapter setup. Artifacts: `.tmp/v5-connection-phases-{build.log,log,summary.json}`.
+
+An ignored release diagnostic test deliberately held one cached writer while a
+second writer called `ducklake_flush_inlined_data`. The cached writer then failed
+to read with `ducklake_inlined_data_1_1 does not exist` while the fresh writer
+could read the catalog. The cached writer's subsequent append returned success,
+but this is not evidence of safe reuse; the stale read already violates the
+Reader/writer consistency contract. The test is diagnostic and ignored by the
+normal suite. This reproduces the historical P1 warning about obsolete inline
+table references.
+
+Decision: do not cache writer connections, move attach outside the catalog lock,
+or use append success as an invalidation signal. Any future reuse candidate must
+prove stale-snapshot invalidation and crash/reopen behavior with real SQLite /
+DuckLake connections before measuring speed.
+
 ## Next independent slice
 
-Investigate the fresh-writer connection cost and invalidation contract before
-considering reuse. Do not move attach outside the write lock or reuse stale
-connections without proving concurrent flush/reopen correctness. Long/narrow
+Investigate whether one bounded write operation can amortize fresh DuckLake attach
+without extending stale connection lifetime: compare current per-operation fresh
+writer behavior with a narrowly scoped batch boundary, preserving the catalog
+lock and recovery rules. Do not change production behavior until an isolated
+correctness probe passes. Long/narrow
 Reader queries, diagnostic cache miss/hit, 16 curves, RSS, temporary storage and
 large-scale P7 remain unmeasured. Choose one runtime candidate at a time.
 Do not introduce Rollup or production layout switches to explain these results.
