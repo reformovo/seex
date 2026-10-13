@@ -188,9 +188,49 @@ whole-gate wall time. Keep the earlier fixed-batch INCONCLUSIVE as historical
 diagnostic evidence. These different measurement contracts do not establish
 runtime performance improvement, steady-state throughput, or production RSS.
 
+## Flush phase diagnostic
+
+A diagnostic-only patch on `741049f` adds flush connection-open, direct/recovery
+SQL, pending-marker read/clear and lock-release timings under the existing
+`SEEX_WRITE_TIMING=1` switch. Transaction, lock scope and error behavior stay the
+same. Release single-writer durability and four-writer acceptance workloads ran
+once each, sequentially; no performance gate or optimization comparison ran.
+
+| Median ms | Single writer (11 flushes) | Four writers (5 flushes, including setup) |
+| --- | ---: | ---: |
+| Flush connection open | 28.786 | 28.606 |
+| Recovery flush SQL | 25.567 | 19.277 |
+| Marker clear | 1.245 | 0.727 |
+| Lock release | 0.002 | 0.002 |
+| Flush lock hold | 56.675 | 53.584 |
+| Flush lock wait | 0.053 | 0.059 |
+
+Marker-read counts are 22/10, because opening connections also checks the marker;
+these are not one-to-one with the timed flush requests. Connection-open includes
+format validation as well as attach. `inline_flush` includes pending-marker and
+SQL work; `flush_lock_hold` includes connection open and inline flush. Durations
+are nested, not independent terms. By summed durations, connection open accounts
+for approximately 51%/55% of flush hold time, recovery SQL 45%/42%; marker clear
+and release are small. Logging overhead is included; these are profiles, not
+uninstrumented timings or robust tail distributions.
+
+The first coarse four-writer diagnostic observed max flush lock wait 247.378 ms,
+but the refined run observed only 0.159 ms. Thus it did **not** reproduce a stable
+flush-wait bottleneck or prove which operation delayed another process. Max append
+wait in the refined run was 50.512 ms. Do not claim this decrease as improvement:
+there was no lock optimization, and scheduling/workload variation is uncontrolled.
+
+Bootstrap/flush acceptance tests and core check passed; both profiled workloads
+passed. Artifacts: `.tmp/v5-flush-phases-{build.log,single.log,four.log,summary.json}`.
+The helper used by normal `flush_run_data` is the pending/recovery path; the direct
+SQL branch was not exercised by these workloads. No cross-process timestamp trace
+was captured, so causal attribution of wait intervals remains unproven.
+
 ## Next independent slice
 
-Diagnose connection/attach, catalog lock wait/hold, summary and flush costs before
-choosing one runtime candidate. Long/narrow Reader queries, diagnostic cache miss/hit,
-16 curves, RSS, temporary storage and large-scale P7 remain unmeasured here.
+Investigate the fresh-writer connection cost and invalidation contract before
+considering reuse. Do not move attach outside the write lock or reuse stale
+connections without proving concurrent flush/reopen correctness. Long/narrow
+Reader queries, diagnostic cache miss/hit, 16 curves, RSS, temporary storage and
+large-scale P7 remain unmeasured. Choose one runtime candidate at a time.
 Do not introduce Rollup or production layout switches to explain these results.

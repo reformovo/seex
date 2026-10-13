@@ -525,7 +525,10 @@ impl ProjectConnection {
         let held_since = Instant::now();
         let completed = Arc::new(AtomicBool::new(false));
         let timed_out = Arc::new(AtomicBool::new(false));
-        let fresh = match self.fresh_writer() {
+        let connection_started = Instant::now();
+        let fresh_result = self.fresh_writer();
+        record_write_timing("flush_connection_open", connection_started.elapsed());
+        let fresh = match fresh_result {
             Ok(fresh) => fresh,
             Err(error) => return (Err(error), false),
         };
@@ -567,15 +570,20 @@ impl ProjectConnection {
                 })()
             }
         } else {
-            connection
+            let sql_started = Instant::now();
+            let result = connection
                 .execute_batch(
                     "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
                 )
-                .map_err(StorageError::from)
+                .map_err(StorageError::from);
+            record_write_timing("flush_direct_sql", sql_started.elapsed());
+            result
         };
         record_write_timing("inline_flush", flush_started.elapsed());
         completed.store(true, Ordering::Relaxed);
+        let release_started = Instant::now();
         drop(guard);
+        record_write_timing("flush_lock_release", release_started.elapsed());
         record_write_timing("flush_lock_hold", held_since.elapsed());
         let timed_out = timed_out.load(Ordering::Relaxed)
             || deadline.is_some_and(|deadline| Instant::now() >= deadline);

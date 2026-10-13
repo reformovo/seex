@@ -442,20 +442,29 @@ pub(crate) fn record_write_timing(stage: &str, elapsed: std::time::Duration) {
 pub(crate) fn flush_pending_in_locked_connection(
     connection: &duckdb::Connection,
 ) -> Result<bool, StorageError> {
-    let pending: i64 = connection.query_row(
+    let marker_started = std::time::Instant::now();
+    let pending_result = connection.query_row(
         "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
         [],
-        |row| row.get(0),
-    )?;
+        |row| row.get::<_, i64>(0),
+    );
+    record_write_timing("flush_pending_marker_read", marker_started.elapsed());
+    let pending = pending_result?;
     if pending == 0 {
         return Ok(false);
     }
-    connection
-        .execute_batch("CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');")?;
-    connection.execute(
+    let sql_started = std::time::Instant::now();
+    let flush_result = connection
+        .execute_batch("CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');");
+    record_write_timing("flush_recovery_sql", sql_started.elapsed());
+    flush_result?;
+    let marker_started = std::time::Instant::now();
+    let clear_result = connection.execute(
         "UPDATE seex_storage_metadata SET value = 0 WHERE key = 'flush_pending'",
         [],
-    )?;
+    );
+    record_write_timing("flush_pending_marker_clear", marker_started.elapsed());
+    clear_result?;
     Ok(true)
 }
 
