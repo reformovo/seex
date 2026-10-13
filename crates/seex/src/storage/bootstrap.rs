@@ -867,11 +867,19 @@ mod tests {
         eprintln!("cached_writer_after_flush_append={append:?}");
         let expected = if append.is_ok() { 2 } else { 1 };
         drop(cached);
-        let fresh = open_existing_writer_connection_with_config(config)?;
-        let count: i64 = fresh.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
-            row.get(0)
-        })?;
-        assert_eq!(count, expected);
+        let fresh = open_existing_writer_connection_with_config(config.clone())?;
+        let fresh_count: i64 =
+            fresh.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(fresh_count, expected);
+        drop(fresh);
+        let reopened_reader = open_existing_native_connection_with_config(config)?;
+        let reader_count: i64 =
+            reopened_reader.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(reader_count, expected);
         Ok(())
     }
 
