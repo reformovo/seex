@@ -385,6 +385,20 @@ This does not prove benefit for default queue-full behavior, four writers, long
 runs, or all DuckLake data states. Follow-up acceptance must cover queue pressure,
 cancellation, retry replay, four writers and finish/flush visibility.
 
+A matched four-child shared-store diagnostic then compared 8K and 16K, with four
+processes writing 32,768 reports to different Runs. It was not a formal gate:
+process scheduling and DuckLake state were not controlled tightly enough for
+paired protected metrics. The 8K run observed append-wait max 3.18 s, summary-wait
+median 706 ms (max 1.20 s), and flush-wait median 533 ms (max 1.76 s). The 16K
+run observed append-wait median 85.8 ms (max 544 ms), summary-wait median 149.6 ms
+(max 334 ms), and flush-wait median 20.2 ms (max 64 ms). The direction favors 16K,
+but the variance is too large to claim a concurrency improvement. Artifacts:
+`.tmp/v5-four8-comparison.log`, `.tmp/v5-four16-comparison.log`.
+
+Keep 16K as the accepted single-writer bounded candidate, but treat its
+four-writer behavior as INCONCLUSIVE. Do not increase to 32K until a repeated
+four-writer comparison has stable lock-tail and RSS protection.
+
 The diagnostic still reports `pipeline_calibrated=false`: admission did not reach
 25 ms at the 65,536 queue limit. It is therefore a bounded stress comparison,
 not a universal sustained-throughput claim. Artifacts:
