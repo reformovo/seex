@@ -261,6 +261,33 @@ or use append success as an invalidation signal. Any future reuse candidate must
 prove stale-snapshot invalidation and crash/reopen behavior with real SQLite /
 DuckLake connections before measuring speed.
 
+## Default-queue pipeline diagnostic
+
+A release-only ignored diagnostic measured one default-queue pipeline without
+changing production code or queue capacity. It calibrated from 4,096 to at most
+65,536 reports, but `run.log` admission never reached the 25 ms floor at the
+queue limit, so `pipeline_calibrated=false`. Five samples were retained for
+orientation only; this is not a formal performance gate.
+
+| Metric | Samples | Median |
+|---|---:|---:|
+| Admission | 4.29–6.57M reports/s | **5.48M reports/s** |
+| Admission through pending drain | 19.23–19.52k reports/s | **19.33k reports/s** |
+| Finish after drain | approximately 0.94 s / 65,536 reports | not a throughput metric |
+
+Each sample started with 65,536 pending reports before drain and ended at zero.
+Thus the admission path can enqueue substantially faster than the background
+writer persists; queue capacity is a backlog bound, not evidence of durable
+throughput. The persistence rate is measured from the beginning of admission to
+pending reaching zero, so it includes admission time and should not be compared
+directly with the earlier drain-only per-Run measurements. Finish includes the
+existing terminal summary/flush path. Artifacts:
+`.tmp/v5-default-queue-pipeline.log`.
+
+The diagnostic is useful for direction only: it used five samples, a single Run,
+65,536 queued reports and no four-writer overload. It does not establish sustained
+throughput, queue-full behavior under a long run, RSS, or fairness between writers.
+
 ## Next independent slice
 
 Investigate whether one bounded write operation can amortize fresh DuckLake attach

@@ -279,6 +279,79 @@ fn reporting_durability_phases() -> Result<(), Box<dyn StdError>> {
 }
 
 #[test]
+#[ignore = "default-queue admission and persistence diagnostic"]
+fn reporting_default_queue_pipeline() -> Result<(), Box<dyn StdError>> {
+    assert!(
+        black_box(!cfg!(debug_assertions)),
+        "workload requires --release"
+    );
+    let root = fixture_path("default-queue")?;
+    let client = Client::builder(&root).open()?;
+    let run = client.start_run(RunOptions::new("pipeline"))?;
+    let started = Instant::now();
+    let mut step = 0_i64;
+    let mut measure = |reports: usize| -> Result<(Duration, Duration, u64), Box<dyn StdError>> {
+        if started.elapsed() >= Duration::from_secs(25) {
+            return Err("pipeline diagnostic exceeded 25 seconds".into());
+        }
+        let begin = Instant::now();
+        for _ in 0..reports {
+            run.log_with([("loss", step as f64)], LogOptions::new().step(step))?;
+            step += 1;
+        }
+        let admission = begin.elapsed();
+        let pending = client.diagnostics().pending_reports;
+        wait_for_drain(&client)?;
+        let persisted = begin.elapsed();
+        assert_eq!(client.diagnostics().pending_reports, 0);
+        Ok((admission, persisted, pending))
+    };
+    let result = (|| -> Result<(), Box<dyn StdError>> {
+        let mut reports = 4096;
+        let calibrated = loop {
+            let (admission, _, _) = measure(reports)?;
+            if admission >= CALIBRATION_TARGET {
+                break true;
+            }
+            if reports == 65_536 {
+                break false;
+            }
+            reports *= 2;
+        };
+        println!("pipeline_calibrated={calibrated},reports={reports},queue_capacity=65536");
+        const PIPELINE_SAMPLES: usize = 5;
+        let mut admission_samples = Vec::with_capacity(PIPELINE_SAMPLES);
+        let mut persistence_samples = Vec::with_capacity(PIPELINE_SAMPLES);
+        for sample in 0..PIPELINE_SAMPLES {
+            let (admission, persisted, pending) = measure(reports)?;
+            if calibrated && admission < CALIBRATION_TARGET {
+                return Err("pipeline admission sample completed in less than 25 ms".into());
+            }
+            admission_samples.push(reports as f64 / admission.as_secs_f64());
+            persistence_samples.push(reports as f64 / persisted.as_secs_f64());
+            println!(
+                "pipeline_sample={sample},reports={reports},pending_before_drain={pending},pending_after_drain=0,admission_ns={},admission_to_persisted_ns={}",
+                admission.as_nanos(),
+                persisted.as_nanos()
+            );
+        }
+        println!(
+            "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"reporting\",\"metric\":\"rust.default_queue.admission\",\"unit\":\"points/s\",\"direction\":\"higher\",\"batch_iterations\":{reports},\"samples\":{admission_samples:?}}}"
+        );
+        println!(
+            "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"reporting\",\"metric\":\"rust.default_queue.persistence\",\"unit\":\"points/s\",\"direction\":\"higher\",\"batch_iterations\":{reports},\"samples\":{persistence_samples:?}}}"
+        );
+        let finish = Instant::now();
+        run.finish()?;
+        println!("pipeline_finish_ns={}", finish.elapsed().as_nanos());
+        Ok(())
+    })();
+    client.shutdown()?;
+    fs::remove_dir_all(root)?;
+    result
+}
+
+#[test]
 #[ignore = "fresh-process release reporting RSS workload"]
 fn reporting_peak_rss() -> Result<(), Box<dyn StdError>> {
     assert!(
