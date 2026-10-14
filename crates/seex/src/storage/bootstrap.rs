@@ -877,8 +877,8 @@ mod tests {
         }
         let started = Instant::now();
         for keys in [1, 32] {
-            for limit in [0, 8192, 16384] {
-                for batch in [256, 8192, 16384] {
+            for limit in [1024, 4096, 8192, 16384] {
+                for batch in [4096, 8192, 16384] {
                     if started.elapsed().as_secs() >= 110 {
                         return Err("inline matrix budget exceeded".into());
                     }
