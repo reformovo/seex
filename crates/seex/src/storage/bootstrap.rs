@@ -832,6 +832,136 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "diagnostic matrix: native batch size versus DuckLake inline limit"]
+    fn batch_inline_path_matrix() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::storage::{MetricWrite, ProjectConnection};
+        use std::time::Instant;
+
+        fn files(root: &Path) -> Result<(usize, u64), Box<dyn std::error::Error>> {
+            let mut pending = vec![root.to_path_buf()];
+            let (mut count, mut bytes) = (0, 0);
+            while let Some(dir) = pending.pop() {
+                for entry in std::fs::read_dir(dir)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        pending.push(entry.path());
+                    } else if entry.path().extension().is_some_and(|ext| ext == "parquet") {
+                        count += 1;
+                        bytes += entry.metadata()?.len();
+                    }
+                }
+            }
+            Ok((count, bytes))
+        }
+        fn inline_rows(connection: &duckdb::Connection) -> Result<i64, Box<dyn std::error::Error>> {
+            let names = connection
+                .prepare(
+                    "SELECT table_name FROM information_schema.tables
+                 WHERE table_catalog = 'seex_catalog'
+                   AND regexp_full_match(table_name, 'ducklake_inlined_data_[0-9]+_[0-9]+')",
+                )?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut count = 0;
+            for name in names {
+                count += connection.query_row(
+                    &format!(
+                        "SELECT count(*) FROM seex_catalog.main.\"{}\"",
+                        name.replace('"', "\"\"")
+                    ),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?;
+            }
+            Ok(count)
+        }
+        let started = Instant::now();
+        for keys in [1, 32] {
+            for limit in [0, 8192, 16384] {
+                for batch in [256, 8192, 16384] {
+                    if started.elapsed().as_secs() >= 110 {
+                        return Err("inline matrix budget exceeded".into());
+                    }
+                    let root = tempfile::tempdir()?;
+                    let config = NativeStorageConfig::with_backend_and_s3_config(
+                        CatalogBackend::Sqlite,
+                        root.path(),
+                        None,
+                        None,
+                        None,
+                    );
+                    let store = ProjectConnection::with_catalog_write_lock(
+                        open_native_connection_with_config(config.clone())?,
+                        config.clone(),
+                    );
+                    store.execute_batch(
+                        "INSERT INTO seex_projects VALUES ('probe', 'probe', now());",
+                    )?;
+                    let run = store.create_run(
+                        &crate::ProjectId::from_string("probe"),
+                        "probe",
+                        crate::RunId::from_string("probe-run"),
+                    )?;
+                    store.execute_batch(&format!(
+                        "CALL dl.set_option('data_inlining_row_limit', {limit}, table_name => 'metric_points');"
+                    ))?;
+                    let versions: (String, String) = store.query_row(
+                        "SELECT version(), extension_version FROM duckdb_extensions() WHERE extension_name='ducklake'",
+                        [], |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    println!(
+                        "inline_cell,keys={keys},limit={limit},batch={batch},duckdb={},ducklake={}",
+                        versions.0, versions.1
+                    );
+                    for start in (0..16384).step_by(batch) {
+                        let end = (start + batch).min(16384);
+                        let rows = (start..end)
+                            .map(|step| MetricWrite {
+                                run_id: run.run_id.as_str().to_owned(),
+                                metric_key: format!("key-{}", step % keys),
+                                step: step as i64,
+                                value_f64: 1.0,
+                                timestamp_millis: 1_700_000_000_000,
+                                ingested_at_millis: 1_700_000_000_000,
+                            })
+                            .collect::<Vec<_>>();
+                        let append = Instant::now();
+                        store.append_metric_batch(&rows)?;
+                        let append_ns = append.elapsed().as_nanos();
+                        let read = open_existing_native_connection_with_config(config.clone())?;
+                        let count: i64 =
+                            read.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+                                row.get(0)
+                            })?;
+                        assert_eq!(count, end as i64);
+                        let inline = inline_rows(&read)?;
+                        let (file_count, bytes) = files(&root.path().join(".seex/data"))?;
+                        println!(
+                            "inline_commit,keys={keys},limit={limit},batch={batch},rows={end},inline={inline},files={file_count},bytes={bytes},append_ns={append_ns}"
+                        );
+                    }
+                    let flush = Instant::now();
+                    store.flush_metric_points()?;
+                    let flush_ns = flush.elapsed().as_nanos();
+                    let read = open_existing_native_connection_with_config(config)?;
+                    let (count, sum): (i64, f64) = read.query_row(
+                        "SELECT count(*), sum(value_f64) FROM dl.metric_points",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    assert_eq!((count, sum), (16384, 16384.0));
+                    assert_eq!(inline_rows(&read)?, 0);
+                    let (file_count, bytes) = files(&root.path().join(".seex/data"))?;
+                    println!(
+                        "inline_final,keys={keys},limit={limit},batch={batch},files={file_count},bytes={bytes},flush_ns={flush_ns}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "diagnostic: observe cached writer after another connection flushes"]
     fn cached_writer_after_external_inline_flush() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;

@@ -405,13 +405,56 @@ not a universal sustained-throughput claim. Artifacts:
 `.tmp/v5-pipeline-{manifest.json,result.json,corrected-manifest.json,offline-result.json}`
 and the 8K/16K binaries and build logs.
 
+## Batch versus inline-limit path matrix
+
+The ignored `batch_inline_path_matrix` diagnostic uses actual
+`ProjectConnection::with_catalog_write_lock` and `append_metric_batch`, including
+fresh writers. Every cell has a new native SQLite WAL store, the production
+Run/key partition layout, 16,384 observations, and one or 32 keys. Batch sizes
+256/8192/16384 are crossed with inline limits 0/8192/16384. Read-only connections
+verify every commit's total count; diagnostics count only numeric inline data
+tables (not similarly named metadata tables) and on-disk Parquet files. Final
+flush must preserve count/sum and leave zero inline rows. No physical manifest
+or file deletion authority is introduced.
+
+Release run: DuckDB v1.5.4, DuckLake `d318a545`, 51.30 s for 18 cells. Each cell
+runs once, not a performance comparison. The initial development run used an
+unconfigured `ProjectConnection::new` and is not the fresh-writer evidence;
+retain `.tmp/v5-inline-matrix-fresh.log` as the authoritative corrected run.
+
+| Keys | Inline limit | Batch | Inline rows before flush | Parquet files before→after flush | Median append ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 8192 | 8192 | 16384 | 0→1 | 349.95 |
+| 1 | 8192 | 16384 | 0 | 1→1 | 50.09 |
+| 1 | 16384 | 16384 | 16384 | 0→1 | 857.45 |
+| 32 | 8192 | 8192 | 16384 | 0→32 | 365.89 |
+| 32 | 8192 | 16384 | 0 | 32→32 | 88.19 |
+| 32 | 16384 | 16384 | 16384 | 0→32 | 833.91 |
+| 32 | 0 | 256 | 0 | 2048→2048 | 78.19 |
+| 32 | 8192 | 256 | 16384 | 0→32 | 61.13 |
+
+This directly confirms a batch/inline path interaction: at the configured limit
+an 8192-row insert stays inline, while a 16384-row insert with limit8192 writes
+Parquet. Raising the limit to16384 moves that same batch back into inline and
+restores expensive append work. Observed behavior is based on the aggregate
+insert even when its 32 partitions each contain only512 rows. It is not simply
+"half as many attach calls". The prior15x result has a concrete path-switch
+explanation, although exact cost attribution remains diagnostic, not a profile
+of DuckLake internals.
+
+Inline solves small-file churn: 32-key/256-row commits with inline disabled
+produce2048 files (~3.02MiB), versus32 files (~0.20MiB) after inline flush.
+The limit determines eligibility of a write, not a cap on accumulated inline
+rows: multiple writes can leave16384 rows inline with limit8192. Inline facts
+are persisted and query-visible before Parquet flush; they are not an additional
+Seex memory queue. Benefits must be balanced against SQLite/WAL writes, metadata
+lock contention, later table-wide flush and stale-connection handling.
+
 ## Next independent slice
 
-Investigate whether one bounded write operation can amortize fresh DuckLake attach
-without extending stale connection lifetime: compare current per-operation fresh
-writer behavior with a narrowly scoped batch boundary, preserving the catalog
-lock and recovery rules. Do not change production behavior until an isolated
-correctness probe passes. Long/narrow
-Reader queries, diagnostic cache miss/hit, 16 curves, RSS, temporary storage and
-large-scale P7 remain unmeasured. Choose one runtime candidate at a time.
-Do not introduce Rollup or production layout switches to explain these results.
+Keep batch16384 and production inline8192 unchanged for now. Evaluate inline1024
+as one isolated candidate: retain genuinely small writes inline, send medium
+batches to Parquet. Include low-rate/many-key file counts, append+finish latency,
+WAL/catalog growth, four-writer correctness and RSS. Do not disable inline
+universally or raise it along with batch size. DuckLake retains file ownership;
+layout switches, Rollup and large-scale P7 remain outside this slice.
