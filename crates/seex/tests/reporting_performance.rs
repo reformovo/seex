@@ -349,9 +349,15 @@ fn reporting_low_rate_persistence() -> Result<(), Box<dyn StdError>> {
     let run = client.start_run(RunOptions::new("low-rate"))?;
     for step in 0..10 {
         let started = Instant::now();
-        run.log_with([("loss", step as f64)], LogOptions::new().step(step))?;
+        run.log_with(
+            (0..32).map(|key| (format!("key-{key}"), step as f64)),
+            LogOptions::new().step(step),
+        )?;
         wait_for_drain(&client)?;
-        assert_eq!(client.diagnostics().persisted_reports, step as u64 + 1);
+        assert_eq!(
+            client.diagnostics().persisted_reports,
+            (step as u64 + 1) * 32
+        );
         println!(
             "low_rate_step={step},enqueue_to_persisted_ns={}",
             started.elapsed().as_nanos()
@@ -384,10 +390,30 @@ fn reporting_shared_store_child() -> Result<(), Box<dyn StdError>> {
         thread::sleep(Duration::from_millis(1));
     }
     let started = Instant::now();
-    for step in 0..32_768 {
-        run.log_with([("loss", step as f64)], LogOptions::new().step(step))?;
+    let paced = std::env::var_os("SEEX_DIAGNOSTIC_PACED_KEYS").is_some();
+    let mut admission = Duration::ZERO;
+    let mut max_pending = 0;
+    if paced {
+        for group in 0..16 {
+            let begin = Instant::now();
+            for step in group * 64..(group + 1) * 64 {
+                run.log_with(
+                    (0..32).map(|key| (format!("key-{key}"), step as f64)),
+                    LogOptions::new().step(step),
+                )?;
+            }
+            admission += begin.elapsed();
+            max_pending = max_pending.max(client.diagnostics().pending_reports);
+            wait_for_drain(&client)?;
+        }
+    } else {
+        for step in 0..32_768 {
+            run.log_with([("loss", step as f64)], LogOptions::new().step(step))?;
+        }
+        admission = started.elapsed();
+        max_pending = client.diagnostics().pending_reports;
     }
-    let admission = started.elapsed();
+    println!("shared_mode_paced={paced},max_observed_pending={max_pending}");
     let pending = client.diagnostics().pending_reports;
     wait_for_drain(&client)?;
     let persisted = started.elapsed();

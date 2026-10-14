@@ -463,11 +463,54 @@ are persisted and query-visible before Parquet flush; they are not an additional
 Seex memory queue. Benefits must be balanced against SQLite/WAL writes, metadata
 lock contention, later table-wide flush and stale-connection handling.
 
+## Inline 1024 candidate: paced shared writers and RSS
+
+The production setting remains8192. Two copied release test executables differ
+only in initialization inline limit (8192 versus1024); batch remains16384.
+The revised diagnostic helper preserves burst mode and adds paced32-key mode:
+16 rounds of64 calls, each call reporting32 keys, draining between rounds.
+Each of four processes thus writes32768 observations to distinct Runs in one
+shared store. All four children open before the start barrier; each finishes
+independently after its own drain. No persistent writer reuse or lock change.
+
+Low-rate32-key mode reports32 observations per call, drains after each of ten
+calls, and stays below both inline limits. Both passed. Median enqueue-to-drain
+was79.59 ms for8192 and70.96 ms for1024; these are sequential diagnostic runs,
+not proof of a speedup. The prior ten single-key measurements are different
+fixtures and remain historical.
+
+| Shared-store diagnostic | Inline8192 | Inline1024 |
+| --- | ---: | ---: |
+| Final Parquet files | 192 | 2048 |
+| Parquet bytes | 2,571,724 | 4,504,106 |
+| Final catalog bytes | 12,894,208 | 1,257,472 |
+| Per-child peak RSS, MiB | 96.2–164.5 | 113.1–115.8 |
+| Append lock hold median/max, ms | 120.1/1165.6 | 84.0/123.5 |
+| Append lock wait median/max, ms | 235.7/3423.2 | 160.0/1028.5 |
+| Finish per writer, seconds | 0.247–5.730 | 0.440–2.405 |
+| Paced admission→drain per writer, seconds | 7.009–12.627 | 5.310–5.852 |
+
+These are four observations per setting, not a tail distribution or performance
+gate. The paced elapsed interval includes intermediate drain waits, not admission
+only. Each child asserted persisted32768 and pending0. All passed; existing
+multi-process crash/reopen and Reader acceptance also passed on the baseline.
+No crash was injected into the1024 candidate, and no fresh Reader validation was
+added to this particular resource run. Peak RSS is from `/usr/bin/time -l` for
+each child process; it does not include aggregate system memory or temp-disk peak.
+Endpoint WAL measurement is not WAL traffic or peak.
+
+Conclusion:1024 reduces catalog pressure but creates10.7x more files in a
+moderate-batch many-key workload. Do not promote it to the default on throughput
+or lock timings alone. Keep inline8192 and batch16384. No formal gate was run.
+Artifacts: `.tmp/v5-inline{8k,1024}-{candidate-build.log,lowrate.log,shared-*.log}`,
+`.tmp/v5-inline-candidate-shared-summary.json` and isolated shared stores.
+Binary SHA-256:8192 `0680867ebb4f5c1e8a68dca32400003587c1dfdba840816bd575c0bd197b4185`;
+1024 `2b97dc4a38202614ac974c4ce38e8e62d806795b274b8770a2851dbb3d93ff3e`.
+
 ## Next independent slice
 
-Keep batch16384 and production inline8192 unchanged for now. Evaluate inline1024
-as one isolated candidate: retain genuinely small writes inline, send medium
-batches to Parquet. Include low-rate/many-key file counts, append+finish latency,
-WAL/catalog growth, four-writer correctness and RSS. Do not disable inline
-universally or raise it along with batch size. DuckLake retains file ownership;
-layout switches, Rollup and large-scale P7 remain outside this slice.
+Keep batch16384/inline8192 unchanged. Before another parameter candidate, quantify
+query/file-open cost of the observed small-file growth and measure actual WAL
+peak/traffic separately. Any layout or physical consolidation experiment stays
+DuckLake-managed. Do not add adaptive thresholds, Rollup, connection caches or
+production compaction to compensate for an unqualified inline candidate.
