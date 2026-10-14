@@ -417,7 +417,7 @@ tables (not similarly named metadata tables) and on-disk Parquet files. Final
 flush must preserve count/sum and leave zero inline rows. No physical manifest
 or file deletion authority is introduced.
 
-Release run: DuckDB v1.5.4, DuckLake `d318a545`, 18.23 s for 24 cells. Each cell
+Release run: DuckDB v1.5.4, DuckLake `d318a545`, 73.82 s for 32 cells. Each cell
 runs once, not a performance comparison. The initial development run used an
 unconfigured `ProjectConnection::new` and is not the fresh-writer evidence;
 retain `.tmp/v5-inline-matrix-fresh.log` as the authoritative corrected run.
@@ -438,9 +438,13 @@ retain `.tmp/v5-inline-matrix-fresh.log` as the authoritative corrected run.
 
 The expanded grid shows `inline=1024` is the first candidate that retains a
 small-batch inline option while sending these medium batches to Parquet. At 32
-keys it produces 128/64/32 files for 4K/8K/16K batches, versus 2048 files when
-inline is disabled at 256-row batches. The 4K/8K inline-limit cells show large
-flush variance, so file count alone is not a selection criterion.
+keys it produces 32 files for a 256-row batch, 128/64/32 files for 4K/8K/16K
+batches, versus 2048 files when inline is disabled at 256-row batches. The
+catalog was about 1.68 MiB for inline-heavy 32-key cells, but only about 0.24–0.29
+MiB for inline=1024 after direct Parquet commits; the WAL was zero at the final
+measurement point after close/flush. The 4K/8K inline-limit cells show large
+flush variance (~175–182 ms for 32 keys), so file count alone is not a selection
+criterion.
 
 This directly confirms a batch/inline path interaction: at the configured limit
 an 8192-row insert stays inline, while a 16384-row insert with limit8192 writes

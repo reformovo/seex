@@ -853,6 +853,14 @@ mod tests {
             }
             Ok((count, bytes))
         }
+        fn catalog_bytes(root: &Path) -> (u64, u64) {
+            let size = |name: &str| {
+                std::fs::metadata(root.join(".seex").join(name))
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            };
+            (size("catalog.sqlite"), size("catalog.sqlite-wal"))
+        }
         fn inline_rows(connection: &duckdb::Connection) -> Result<i64, Box<dyn std::error::Error>> {
             let names = connection
                 .prepare(
@@ -878,7 +886,7 @@ mod tests {
         let started = Instant::now();
         for keys in [1, 32] {
             for limit in [1024, 4096, 8192, 16384] {
-                for batch in [4096, 8192, 16384] {
+                for batch in [256, 4096, 8192, 16384] {
                     if started.elapsed().as_secs() >= 110 {
                         return Err("inline matrix budget exceeded".into());
                     }
@@ -936,8 +944,9 @@ mod tests {
                         assert_eq!(count, end as i64);
                         let inline = inline_rows(&read)?;
                         let (file_count, bytes) = files(&root.path().join(".seex/data"))?;
+                        let (catalog_bytes, wal_bytes) = catalog_bytes(root.path());
                         println!(
-                            "inline_commit,keys={keys},limit={limit},batch={batch},rows={end},inline={inline},files={file_count},bytes={bytes},append_ns={append_ns}"
+                            "inline_commit,keys={keys},limit={limit},batch={batch},rows={end},inline={inline},files={file_count},bytes={bytes},catalog_bytes={catalog_bytes},wal_bytes={wal_bytes},append_ns={append_ns}"
                         );
                     }
                     let flush = Instant::now();
@@ -952,8 +961,9 @@ mod tests {
                     assert_eq!((count, sum), (16384, 16384.0));
                     assert_eq!(inline_rows(&read)?, 0);
                     let (file_count, bytes) = files(&root.path().join(".seex/data"))?;
+                    let (catalog_bytes, wal_bytes) = catalog_bytes(root.path());
                     println!(
-                        "inline_final,keys={keys},limit={limit},batch={batch},files={file_count},bytes={bytes},flush_ns={flush_ns}"
+                        "inline_final,keys={keys},limit={limit},batch={batch},files={file_count},bytes={bytes},catalog_bytes={catalog_bytes},wal_bytes={wal_bytes},flush_ns={flush_ns}"
                     );
                 }
             }
