@@ -507,10 +507,42 @@ Artifacts: `.tmp/v5-inline{8k,1024}-{candidate-build.log,lowrate.log,shared-*.lo
 Binary SHA-256:8192 `0680867ebb4f5c1e8a68dca32400003587c1dfdba840816bd575c0bd197b4185`;
 1024 `2b97dc4a38202614ac974c4ce38e8e62d806795b274b8770a2851dbb3d93ff3e`.
 
+## Small-file Reader diagnostic
+
+Two new stores were populated using the same paced four-writer workload. Their
+final file counts differ from the earlier8192 run because concurrent terminal
+flush timing affects physical grouping:8192 produced128 files and1024 produced
+2048. For `writer-0` / `key-0`, the corresponding partitions contain4 versus64
+Parquet files. These are filesystem counts, not measured query file opens or I/O.
+
+The same release `p0_query` executable queried both stores in A-B-B-A order.
+Each child made a first request and ten hot calibrated samples. Both returned
+`source_count=1024` and512 real screen-reduction samples with the same Step/value
+workload; ingestion/observation timestamps were generated in separate runs.
+OS page cache was not cleared; connection and diagnostic costs are included.
+
+| Median hot request | A1 inline8192 | B1 inline1024 | B2 inline1024 | A2 inline8192 |
+| --- | ---: | ---: | ---: | ---: |
+| ms/op | 51.615 | 60.117 | 61.846 | 47.715 |
+
+Both order pairs show a slowdown (about16.5% and29.6%) for1024. This is diagnostic
+A-B-B-A execution, **not** a `performance_gate.py` classification: the artifact
+retains capture medians/counts rather than complete raw hot samples, and no
+relative-MAD verdict or robust request p95 is available. Do not call it a formal
+regression or attribute all extra latency to file opens; per-operator profiles
+and actual read statistics were not captured. The first incomplete attempt used
+a mistyped1024 path and is excluded; it did not prove the original store missing.
+
+Artifacts: `.tmp/v5-reader-{8k,1024}-store`,
+`.tmp/v5-smallfiles-reader-abba.json`, `.tmp/v5-smallfiles-reader-build.log`.
+Reader binary SHA-256:
+`0d01042c75540d23dcc374d30caef6365485175978bdff6dee10cf7e50498c31`.
+
 ## Next independent slice
 
-Keep batch16384/inline8192 unchanged. Before another parameter candidate, quantify
-query/file-open cost of the observed small-file growth and measure actual WAL
-peak/traffic separately. Any layout or physical consolidation experiment stays
-DuckLake-managed. Do not add adaptive thresholds, Rollup, connection caches or
+Keep batch16384/inline8192 unchanged. The 1024 write/catalog benefit is offset by
+more small files and slower observed complete Reader requests. Before another
+parameter candidate, capture complete raw query records and actual file/RG read
+statistics, and measure WAL peak/traffic separately. Any physical consolidation
+experiment stays DuckLake-managed; do not add Rollup, connection caches or
 production compaction to compensate for an unqualified inline candidate.
