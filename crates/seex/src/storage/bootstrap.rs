@@ -832,6 +832,43 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "independent read-only verification of a retained large reporting store"]
+    fn verify_large_reporting_store() -> Result<(), Box<dyn std::error::Error>> {
+        let root = PathBuf::from(std::env::var("SEEX_LARGE_ROOT")?);
+        let expected: i64 = std::env::var("SEEX_LARGE_EXPECTED")?.parse()?;
+        let connection = open_existing_native_connection_with_config(
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                &root,
+                None,
+                None,
+                None,
+            ),
+        )?;
+        let actual: (i64, f64, i64, i64) = connection.query_row(
+            "SELECT count(*), sum(value_f64), min(step), max(step)
+             FROM dl.metric_points WHERE run_id='large-run' AND metric_key='loss'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(actual, (expected, expected as f64, 0, expected - 1));
+        let summary: i64 = connection.query_row(
+            "SELECT effective_count FROM seex_metric_aggregates WHERE run_id='large-run' AND metric_key='loss'",
+            [], |row| row.get(0),
+        )?;
+        assert_eq!(summary, expected);
+        let versions: (String, String) = connection.query_row(
+            "SELECT version(), extension_version FROM duckdb_extensions() WHERE extension_name='ducklake'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        println!(
+            "large_verified={actual:?},duckdb={},ducklake={}",
+            versions.0, versions.1
+        );
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "read-only Parquet RG diagnostic for a retained native store"]
     fn retained_store_row_group_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
         use crate::model::metric::{MetricQuery, ReductionPolicy};

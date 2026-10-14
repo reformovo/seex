@@ -338,6 +338,88 @@ fn reporting_bounded_batch_pipeline() -> Result<(), Box<dyn StdError>> {
 }
 
 #[test]
+#[ignore = "large calibrated reporting baseline; retained store required"]
+fn reporting_large_baseline() -> Result<(), Box<dyn StdError>> {
+    assert!(
+        black_box(!cfg!(debug_assertions)),
+        "workload requires --release"
+    );
+    let root = PathBuf::from(std::env::var("SEEX_LARGE_ROOT")?);
+    fs::create_dir(&root)?; // Refuse an existing store, never append to user data.
+    let client = Client::builder(&root).open()?;
+    let run = client.start_run(RunOptions::new("large-baseline").id("large-run"))?;
+    let started = Instant::now();
+    let mut step = 0_i64;
+    let mut measure = |reports: usize| -> Result<(Duration, Duration, u64), Box<dyn StdError>> {
+        let begin = Instant::now();
+        let mut admission = Duration::ZERO;
+        let mut peak_pending = 0;
+        for _ in 0..reports / 32_768 {
+            if started.elapsed() >= Duration::from_secs(110) {
+                return Err("large baseline exceeded 110-second cooperative budget".into());
+            }
+            let log_started = Instant::now();
+            for _ in 0..32_768 {
+                run.log_with([("loss", 1.0)], LogOptions::new().step(step))?;
+                step += 1;
+            }
+            admission += log_started.elapsed();
+            peak_pending = peak_pending.max(client.diagnostics().pending_reports);
+            wait_for_drain(&client)?;
+        }
+        Ok((admission, begin.elapsed(), peak_pending))
+    };
+    let mut reports = 1_048_576;
+    loop {
+        let (admission, persisted, pending) = measure(reports)?;
+        println!(
+            "large_pilot,reports={reports},admission_ns={},persistence_ns={},pending={pending}",
+            admission.as_nanos(),
+            persisted.as_nanos()
+        );
+        if admission >= CALIBRATION_TARGET && persisted >= CALIBRATION_TARGET {
+            break;
+        }
+        if reports >= 4_194_304 {
+            return Err("large admission calibration exceeded bound".into());
+        }
+        reports *= 2;
+    }
+    let mut admission_samples = Vec::with_capacity(SAMPLES);
+    let mut persistence_samples = Vec::with_capacity(SAMPLES);
+    for sample in 0..SAMPLES {
+        let (admission, persisted, pending) = measure(reports)?;
+        if admission < CALIBRATION_TARGET || persisted < CALIBRATION_TARGET {
+            return Err("large sample below 25 ms floor".into());
+        }
+        admission_samples.push(reports as f64 / admission.as_secs_f64());
+        persistence_samples.push(reports as f64 / persisted.as_secs_f64());
+        println!(
+            "large_sample,index={sample},reports={reports},admission_ns={},persistence_ns={},observed_pending={pending}",
+            admission.as_nanos(),
+            persisted.as_nanos()
+        );
+    }
+    let finish = Instant::now();
+    run.finish()?;
+    let finish_ns = finish.elapsed().as_nanos();
+    assert_eq!(client.diagnostics().persisted_reports, step as u64);
+    assert_eq!(client.diagnostics().pending_reports, 0);
+    assert_eq!(client.diagnostics().queue_full_errors, 0);
+    println!("{}", metric_record("large", reports, &admission_samples));
+    println!(
+        "SEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"reporting\",\"metric\":\"rust.large.persistence\",\"unit\":\"points/s\",\"direction\":\"higher\",\"batch_iterations\":{reports},\"samples\":{persistence_samples:?}}}"
+    );
+    println!(
+        "large_final,total_observations={step},measured_observations={},finish_ns={finish_ns},wall_ns={}",
+        reports * SAMPLES,
+        started.elapsed().as_nanos()
+    );
+    client.shutdown()?;
+    Ok(())
+}
+
+#[test]
 #[ignore = "low-rate release persistence diagnostic"]
 fn reporting_low_rate_persistence() -> Result<(), Box<dyn StdError>> {
     assert!(
