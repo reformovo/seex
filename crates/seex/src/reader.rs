@@ -554,8 +554,10 @@ impl Reader {
     }
 
     fn fresh_query_reader(&self) -> SdkResult<Self> {
+        let started = std::time::Instant::now();
         let connection = open_existing_native_connection_with_config(self.retry_config.clone())
             .map_err(public_storage_error)?;
+        crate::storage::bootstrap::record_write_timing("reader_connection_open", started.elapsed());
         Ok(Self {
             connection: Some(ProjectConnection::new(connection)),
             _native_database: None,
@@ -575,9 +577,13 @@ impl Reader {
         retain_neighbors: bool,
         force_full_step: bool,
     ) -> SdkResult<MetricSeries> {
+        let started = std::time::Instant::now();
         let metadata = self.metadata(run_id)?;
+        crate::storage::bootstrap::record_write_timing("reader_metadata", started.elapsed());
         let run_status = metadata.status;
+        let started = std::time::Instant::now();
         let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
+        crate::storage::bootstrap::record_write_timing("reader_diagnostics", started.elapsed());
         let (axis, storage_axis, bounds) = match query.range() {
             MetricRange::All(axis) => (*axis, AlignmentAxis::Step, None),
             MetricRange::Steps { start, end } => (
@@ -709,9 +715,11 @@ impl Reader {
             StorageMetricQuery::new(run_id.clone(), metric_key.clone(), start, end, reduction)
                 .map_err(|_| Error::UnsupportedQuery)?;
         let connection = self.connection.as_ref().ok_or(Error::Storage)?;
+        let started = std::time::Instant::now();
         let result = ProjectMetricReader::new(connection)
             .query_metric(&storage_query)
             .map_err(public_storage_error)?;
+        crate::storage::bootstrap::record_write_timing("reader_points_query", started.elapsed());
         let mut samples = result
             .points
             .into_iter()

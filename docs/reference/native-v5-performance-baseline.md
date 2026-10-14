@@ -302,9 +302,9 @@ in about 7.6–7.8 ms; admission is not the bottleneck in this fixture.
 | Maximum append lock wait | 318 ms |
 | Maximum summary lock wait | 278 ms |
 | Maximum flush lock wait | 62.6 ms |
-| Finish per writer | 1.27–3.70 s |
+| Finish per writer | 0.370–1.268 s |
 
-The large finish spread and append/summary lock waits show that single-writer
+The observed finish spread and append/summary lock waits show that single-writer
 16K persistence results do not generalize to concurrent writers. Flush wait was
 not the dominant stable tail in this run; catalog append and summary serialization
 were more concerning. Attach remained roughly 25–51 ms per writer. Artifacts:
@@ -357,14 +357,18 @@ a protected timing metric. Ten samples per capture were used.
 | Median | 8K A1 | 16K B1 | 16K B2 | 8K A2 |
 |---|---:|---:|---:|---:|
 | Admission | 6.22M | 5.44M | 5.34M | 5.93M reports/s |
-| Admission→persistence | **19.7k** | **293.9k** | **291.1k** | **19.3k reports/s** |
+| Admission→persistence | **19.664k** | **292.691k** | **291.322k** | **19.269k reports/s** |
 | Finish | 275.8 | 216.4 | 218.1 | 279.0 ms |
 
 Formal gate on persistence primary with finish protected: **PASS**. The
-candidate reduced the persistence median by roughly 15x in this controlled
+candidate increased admission-to-persistence throughput by roughly 15x in this controlled
 fresh-store workload, while finish stayed below the paired 8K medians. Admission
 was intentionally not protected because its samples were shorter than 25 ms;
-there is no admission-preservation claim. The earlier same-store 15x signal was
+there is no admission-preservation claim. The probe has fixed 32768 reports,
+not adaptive internal calibration: the gate confirms its time floor, but full
+compliance with the project calibration contract is not established. Treat PASS
+as a bounded observation, not complete measurement qualification. The earlier
+same-store 15x signal was
 therefore not wholly attributable, but the fresh-store result reproduces the
 large direction with aligned setup and fixed report count.
 
@@ -411,7 +415,7 @@ The ignored `batch_inline_path_matrix` diagnostic uses actual
 `ProjectConnection::with_catalog_write_lock` and `append_metric_batch`, including
 fresh writers. Every cell has a new native SQLite WAL store, the production
 Run/key partition layout, 16,384 observations, and one or 32 keys. Batch sizes
-4096/8192/16384 are crossed with inline limits 1024/4096/8192/16384. Read-only connections
+256/4096/8192/16384 are crossed with inline limits 1024/4096/8192/16384. Read-only connections
 verify every commit's total count; diagnostics count only numeric inline data
 tables (not similarly named metadata tables) and on-disk Parquet files. Final
 flush must preserve count/sum and leave zero inline rows. No physical manifest
@@ -432,9 +436,9 @@ retain `.tmp/v5-inline-matrix-fresh.log` as the authoritative corrected run.
 | 32 | 16384 | 16384 | 16384 | 0→32 | 833.91 |
 | 32 | 0 | 256 | 0 | 2048→2048 | 78.19 |
 | 32 | 8192 | 256 | 16384 | 0→32 | 61.13 |
-| 32 | 1024 | 4096/8192/16384 | 16384 | 128/64/32→same | flush 52/47/48 ms |
-| 32 | 4096 | 4096/8192/16384 | 16384 | 32/64/32→same | flush 175/47/57 ms |
-| 32 | 8192 | 4096/8192/16384 | 16384 | 32/32/32→same | flush 175/176/49 ms |
+| 32 | 1024 | 4096/8192/16384 | 0/0/0 | 128/64/32→same | flush 52/47/48 ms |
+| 32 | 4096 | 4096/8192/16384 | 16384/0/0 | 0/64/32→32/64/32 | flush 175/47/57 ms |
+| 32 | 8192 | 4096/8192/16384 | 16384/16384/0 | 0/0/32→32/32/32 | flush 175/176/49 ms |
 
 The expanded grid shows `inline=1024` is the first candidate that retains a
 small-batch inline option while sending these medium batches to Parquet. At 32
