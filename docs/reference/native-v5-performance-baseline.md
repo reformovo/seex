@@ -512,8 +512,10 @@ Binary SHA-256:8192 `0680867ebb4f5c1e8a68dca32400003587c1dfdba840816bd575c0bd197
 Two new stores were populated using the same paced four-writer workload. Their
 final file counts differ from the earlier8192 run because concurrent terminal
 flush timing affects physical grouping:8192 produced128 files and1024 produced
-2048. For `writer-0` / `key-0`, the corresponding partitions contain4 versus64
-Parquet files. These are filesystem counts, not measured query file opens or I/O.
+2048. For `writer-0` / `key-0`, the corresponding partitions contain 1 versus 16
+Parquet files (19,187 versus 35,084 bytes). The earlier 4/64 count incorrectly
+combined key-0 across all four Runs. These are filesystem counts, not measured
+query file opens or I/O.
 
 The same release `p0_query` executable queried both stores in A-B-B-A order.
 Each child made a first request and ten hot calibrated samples. Both returned
@@ -538,11 +540,43 @@ Artifacts: `.tmp/v5-reader-{8k,1024}-store`,
 Reader binary SHA-256:
 `0d01042c75540d23dcc374d30caef6365485175978bdff6dee10cf7e50498c31`.
 
+## Formal Reader comparison and RG follow-up
+
+A single subsequent gate invocation retained complete raw query records and used
+correct domain-prefixed keys. Every capture used the same Reader executable,
+selected1024 observations and returned512 samples. Executed:
+
+```sh
+python scripts/performance_gate.py run \
+  --manifest .tmp/v5-reader-smallfiles-manifest.json \
+  --output .tmp/v5-reader-smallfiles-result.json
+```
+
+| Capture | A1 inline8192 | B1 inline1024 | B2 inline1024 | A2 inline8192 |
+| --- | ---: | ---: | ---: | ---: |
+| Median ms/op | 46.919 | 58.421 | 59.028 | 46.205 |
+| Relative MAD | 1.336% | 2.150% | 3.115% | 1.069% |
+
+**INCONCLUSIVE**: both candidate records exceed the unchanged2% noise limit.
+No rerun or threshold relaxation. All records meet the25ms calibration floor.
+Raw query JSON and gate output are retained in `.tmp/v5-reader-smallfiles-gate.log`;
+the result contains all four metric sample arrays. No formal regression claim.
+
+A separate ignored release diagnostic opens a read-only connection and invokes
+actual `ProjectMetricReader::query_metric` with the same screen budget and
+predicate, logging DuckDB ParquetReader operator events. Both assert1024 source
+observations/512 samples. Inline8192 logged1 `ReadRowGroup` event; inline1024
+logged16. This corroborates increased physical read work for the observed file
+layout, but operator log events do not equal device I/O counts or decoded rows.
+The diagnostic excludes Reader connection opening and whole-series diagnostic
+queries, so it is not a profile of the complete end-to-end request. Artifacts:
+`.tmp/v5-reader-{8k,1024}-rg.log`. No Parquet data or catalog was modified.
+
 ## Next independent slice
 
-Keep batch16384/inline8192 unchanged. The 1024 write/catalog benefit is offset by
-more small files and slower observed complete Reader requests. Before another
-parameter candidate, capture complete raw query records and actual file/RG read
-statistics, and measure WAL peak/traffic separately. Any physical consolidation
+Keep batch16384/inline8192 unchanged. The1024 candidate has more selected files
+and RG read events, with consistently slower observed Reader medians, but remains
+formally INCONCLUSIVE. Measure WAL peak/traffic and complete request phase costs
+before another parameter candidate. Any physical consolidation
 experiment stays DuckLake-managed; do not add Rollup, connection caches or
 production compaction to compensate for an unqualified inline candidate.

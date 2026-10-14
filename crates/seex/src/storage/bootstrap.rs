@@ -832,6 +832,50 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "read-only Parquet RG diagnostic for a retained native store"]
+    fn retained_store_row_group_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::metric::{MetricQuery, ReductionPolicy};
+        let root = PathBuf::from(std::env::var("SEEX_DIAGNOSTIC_ROOT")?);
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            &root,
+            None,
+            None,
+            None,
+        );
+        let connection = open_existing_native_connection_with_config(config)?;
+        connection.execute_batch("SET enable_logging=true; SET logging_level='DEBUG';")?;
+        let query = MetricQuery::new(
+            crate::RunId::from_string("writer-0"),
+            crate::MetricKey::from_string("key-0"),
+            None,
+            None,
+            ReductionPolicy::screen_budget(1024, 1)?,
+        )?;
+        let result = crate::storage::ProjectMetricReader::new(&connection).query_metric(&query)?;
+        assert_eq!(result.source_row_count, 1024);
+        assert_eq!(result.points.len(), 512);
+        connection.execute_batch("SET enable_logging=false;")?;
+        let rows = connection
+            .prepare(
+                "SELECT event, count(*) FROM duckdb_logs_parsed('PhysicalOperator')
+             WHERE class = 'ParquetReader' GROUP BY event ORDER BY event",
+            )?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(
+            rows.iter()
+                .any(|(event, count)| event == "ReadRowGroup" && *count > 0)
+        );
+        for (event, count) in rows {
+            println!("retained_rg,event={event},count={count}");
+        }
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "diagnostic matrix: native batch size versus DuckLake inline limit"]
     fn batch_inline_path_matrix() -> Result<(), Box<dyn std::error::Error>> {
         use crate::storage::{MetricWrite, ProjectConnection};
