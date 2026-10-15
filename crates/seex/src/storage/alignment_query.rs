@@ -69,32 +69,13 @@ pub(crate) fn query_bounded_full_aligned_metric(
     ]);
     let mut statement = connection.prepare(&sql)?;
     let mut reducer = ScreenReducer::new(max_points, source_row_count);
-    let started = std::time::Instant::now();
-    if std::env::var_os("SEEX_DIAGNOSTIC_BATCH_READER").is_some() {
-        let batches = statement.query_arrow(duckdb::params_from_iter(
-            values.iter().map(|value| value.as_ref()),
-        ))?;
-        crate::storage::bootstrap::record_write_timing("bounded_execute_batch", started.elapsed());
-        let started = std::time::Instant::now();
-        for batch in batches {
-            reduce_batch(&batch, &mut reducer)?;
-        }
-        crate::storage::bootstrap::record_write_timing("bounded_consume_batch", started.elapsed());
-        if reducer.ordinal != statement.row_count() as u64 {
-            return Err(batch_decode_error("incomplete bounded result"));
-        }
-    } else {
-        let rows = statement.query_map(
-            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
-            stored_bounded_alignment_row,
-        )?;
-        crate::storage::bootstrap::record_write_timing("bounded_execute_rows", started.elapsed());
-        let started = std::time::Instant::now();
-        for row in rows {
-            reducer.push(row?);
-        }
-        crate::storage::bootstrap::record_write_timing("bounded_consume_rows", started.elapsed());
+    let batches = statement.query_arrow(duckdb::params_from_iter(
+        values.iter().map(|value| value.as_ref()),
+    ))?;
+    for batch in batches {
+        reduce_batch(&batch, &mut reducer)?;
     }
+    check_batch_row_count(reducer.ordinal, statement.row_count())?;
     let points = reducer
         .finish()
         .into_iter()
@@ -105,6 +86,13 @@ pub(crate) fn query_bounded_full_aligned_metric(
         source_row_count,
         reasons: Vec::new(),
     })
+}
+
+fn check_batch_row_count(consumed: u64, expected: usize) -> Result<(), StorageError> {
+    if consumed != expected as u64 {
+        return Err(batch_decode_error("incomplete bounded result"));
+    }
+    Ok(())
 }
 
 fn batch_decode_error(message: &'static str) -> StorageError {
@@ -907,6 +895,103 @@ mod tests {
         {
             assert!(reduce_batch(&batch, &mut ScreenReducer::new(4, 1)).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn batch_decoder_handles_multiple_batches_empty_and_malformed_results()
+    -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        let sql = "SELECT n // 2 AS step, 20000-n, (n % 97)::DOUBLE, n+30000, n // 2
+                   FROM range(10000) r(n) ORDER BY n";
+        let mut expected = ScreenReducer::new(1024, 10000);
+        for row in connection
+            .prepare(sql)?
+            .query_map([], stored_bounded_alignment_row)?
+        {
+            expected.push(row?);
+        }
+        let mut statement = connection.prepare(sql)?;
+        let mut actual = ScreenReducer::new(1024, 10000);
+        let mut batches = 0;
+        for batch in statement.query_arrow([])? {
+            batches += 1;
+            reduce_batch(&batch, &mut actual)?;
+        }
+        assert!(batches > 1);
+        check_batch_row_count(actual.ordinal, statement.row_count())?;
+        assert!(check_batch_row_count(actual.ordinal - 1, statement.row_count()).is_err());
+        let payloads = |points: Vec<StoredAlignedPoint>| {
+            points
+                .into_iter()
+                .map(|p| {
+                    (
+                        p.step,
+                        p.timestamp_millis,
+                        p.value_f64.to_bits(),
+                        p.ingested_at_millis,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(payloads(actual.finish()), payloads(expected.finish()));
+        for sql in [
+            "SELECT 1",
+            "SELECT 'bad', 1::BIGINT, 1.0::DOUBLE, 1::BIGINT, 1::BIGINT",
+        ] {
+            for batch in connection.prepare(sql)?.query_arrow([])? {
+                assert!(reduce_batch(&batch, &mut ScreenReducer::new(4, 1)).is_err());
+            }
+        }
+        let mut empty = connection.prepare(
+            "SELECT 1::BIGINT, 1::BIGINT, 1.0::DOUBLE, 1::BIGINT, 1::BIGINT WHERE false",
+        )?;
+        let mut reducer = ScreenReducer::new(4, 0);
+        for batch in empty.query_arrow([])? {
+            reduce_batch(&batch, &mut reducer)?;
+        }
+        check_batch_row_count(reducer.ordinal, empty.row_count())?;
+        assert!(reducer.finish().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn batch_query_propagates_interrupt_and_connection_recovers() -> Result<(), Box<dyn Error>> {
+        let connection = duckdb::Connection::open_in_memory()?;
+        let interrupt = connection.interrupt_handle();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let outcome = connection
+                .prepare(
+                    "SELECT sum(a.i*b.j)::DOUBLE FROM range(10000000) a(i), range(1000000) b(j)",
+                )
+                .and_then(|mut statement| statement.query_arrow([]).map(|_| ()));
+            tx.send(()).expect("receiver alive");
+            (connection, outcome)
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            interrupt.interrupt();
+            if rx.recv_timeout(std::time::Duration::from_millis(1)).is_ok() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "interrupt did not stop Arrow execution"
+            );
+        }
+        let (connection, outcome) = worker.join().expect("query worker must not panic");
+        assert!(
+            outcome
+                .expect_err("cancelled query must fail")
+                .to_string()
+                .to_lowercase()
+                .contains("interrupt")
+        );
+        assert_eq!(
+            connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?,
+            1
+        );
         Ok(())
     }
 

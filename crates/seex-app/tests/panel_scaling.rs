@@ -100,6 +100,58 @@ fn prepare_panel() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+#[ignore = "release bounded panel performance gate; OS cache is not cleared"]
+fn panel_gate() -> Result<(), Box<dyn Error>> {
+    if cfg!(debug_assertions) {
+        return Err("panel gate requires release".into());
+    }
+    let session = ReadSession::open_existing(&root()?)?;
+    let request = request(16);
+    let run = || -> Result<(), Box<dyn Error>> {
+        let snapshot = session.query_overview(&request)?;
+        assert_eq!(snapshot.series.len(), 16);
+        for curve in &snapshot.series {
+            assert_eq!(curve.source_row_count, (POINTS + 1) as u64);
+            assert_eq!(curve.completeness, EvidenceCompleteness::Complete);
+            assert!(
+                curve.returned_point_count > 0
+                    && curve.returned_point_count <= MAX_CHART_POINTS as u64
+            );
+        }
+        Ok(())
+    };
+    let mut iterations = 1_u64;
+    loop {
+        let started = Instant::now();
+        for _ in 0..iterations {
+            run()?;
+        }
+        if started.elapsed() >= Duration::from_millis(25) {
+            break;
+        }
+        iterations = iterations
+            .checked_mul(2)
+            .ok_or("panel calibration overflow")?;
+    }
+    let mut samples = Vec::with_capacity(10);
+    for _ in 0..10 {
+        let started = Instant::now();
+        for _ in 0..iterations {
+            run()?;
+        }
+        let elapsed = started.elapsed();
+        if elapsed < Duration::from_millis(25) {
+            return Err("panel sample below 25ms".into());
+        }
+        samples.push(elapsed.as_nanos() as f64 / iterations as f64);
+    }
+    println!(
+        "\nSEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"query\",\"metric\":\"panel.curves16.overview\",\"unit\":\"ns/op\",\"direction\":\"lower\",\"batch_iterations\":{iterations},\"samples\":{samples:?}}}"
+    );
+    Ok(())
+}
+
+#[test]
 #[ignore = "release full-request panel RSS/latency diagnostic; OS cache is not cleared"]
 fn query_panel() -> Result<(), Box<dyn Error>> {
     if cfg!(debug_assertions) {
