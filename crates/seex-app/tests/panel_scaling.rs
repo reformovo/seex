@@ -6,7 +6,7 @@ use seex::{
 use seex_app::{
     data::{
         ReadSession,
-        query::{CurveAxis, CurveSelection, OverviewRequest},
+        query::{CurveAxis, CurveSelection, DetailRequest, OverviewRequest},
     },
     domain::{DataSourceId, RunRef},
 };
@@ -49,6 +49,14 @@ fn request(curves: usize) -> OverviewRequest {
     }
 }
 
+fn is_detail(value: &str) -> Result<bool, Box<dyn Error>> {
+    match value {
+        "overview" => Ok(false),
+        "detail" => Ok(true),
+        _ => Err("panel range must be overview or detail".into()),
+    }
+}
+
 fn value(state: &mut u64) -> f64 {
     *state ^= *state << 13;
     *state ^= *state >> 7;
@@ -59,6 +67,9 @@ fn value(state: &mut u64) -> f64 {
 #[test]
 fn panel_contract_and_values() {
     assert_eq!(request(16).selection.runs.len(), 16);
+    assert_eq!(is_detail("overview").unwrap(), false);
+    assert_eq!(is_detail("detail").unwrap(), true);
+    assert!(is_detail("typo").is_err());
     let mut state = 0x5eec_u64;
     for _ in 0..1000 {
         assert!((0.0..1.0).contains(&value(&mut state)));
@@ -106,12 +117,24 @@ fn panel_gate() -> Result<(), Box<dyn Error>> {
         return Err("panel gate requires release".into());
     }
     let session = ReadSession::open_existing(&root()?)?;
+    let detail = is_detail(&env::var("SEEX_PANEL_RANGE").unwrap_or("overview".into()))?;
     let request = request(16);
     let run = || -> Result<(), Box<dyn Error>> {
-        let snapshot = session.query_overview(&request)?;
+        let snapshot = if detail {
+            session.query_detail(&DetailRequest {
+                selection: request.selection.clone(),
+                viewport: seex::AlignmentViewport::new(450_000, 550_000)?,
+                logical_width: 1024,
+            })?
+        } else {
+            session.query_overview(&request)?
+        };
         assert_eq!(snapshot.series.len(), 16);
         for curve in &snapshot.series {
-            assert_eq!(curve.source_row_count, (POINTS + 1) as u64);
+            assert_eq!(
+                curve.source_row_count,
+                if detail { 100_004 } else { (POINTS + 1) as u64 }
+            );
             assert_eq!(curve.completeness, EvidenceCompleteness::Complete);
             assert!(
                 curve.returned_point_count > 0
@@ -146,7 +169,8 @@ fn panel_gate() -> Result<(), Box<dyn Error>> {
         samples.push(elapsed.as_nanos() as f64 / iterations as f64);
     }
     println!(
-        "\nSEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"query\",\"metric\":\"panel.curves16.overview\",\"unit\":\"ns/op\",\"direction\":\"lower\",\"batch_iterations\":{iterations},\"samples\":{samples:?}}}"
+        "\nSEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"query\",\"metric\":\"panel.curves16.{}\",\"unit\":\"ns/op\",\"direction\":\"lower\",\"batch_iterations\":{iterations},\"samples\":{samples:?}}}",
+        if detail { "detail" } else { "overview" }
     );
     Ok(())
 }
@@ -163,13 +187,25 @@ fn query_panel() -> Result<(), Box<dyn Error>> {
     }
     let session = ReadSession::open_existing(&root()?)?;
     let request = request(curves);
+    let detail = is_detail(&env::var("SEEX_PANEL_RANGE").unwrap_or("overview".into()))?;
     for index in 0..4 {
         let started = Instant::now();
-        let snapshot = session.query_overview(&request)?;
+        let snapshot = if detail {
+            session.query_detail(&DetailRequest {
+                selection: request.selection.clone(),
+                viewport: seex::AlignmentViewport::new(450_000, 550_000)?,
+                logical_width: 1024,
+            })?
+        } else {
+            session.query_overview(&request)?
+        };
         let elapsed = started.elapsed().as_nanos();
         assert_eq!(snapshot.series.len(), curves);
         for curve in &snapshot.series {
-            assert_eq!(curve.source_row_count, (POINTS + 1) as u64);
+            assert_eq!(
+                curve.source_row_count,
+                if detail { 100_004 } else { (POINTS + 1) as u64 }
+            );
             assert_eq!(curve.completeness, EvidenceCompleteness::Complete);
             assert!(curve.reasons.is_empty());
             assert!(

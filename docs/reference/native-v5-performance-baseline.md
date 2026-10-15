@@ -643,3 +643,27 @@ relative MAD stayed below 2%. RSS remained approximately 220--221 MiB. The
 result identifies result decoding and reducer feed overhead as a substantial
 multi-curve cost without reducing SQL scan work. Raw capture, binary identity
 and fixture hashes remain in `.tmp/v5-batch-panel/`.
+
+### Narrow Detail boundary
+
+The same panel fixture was subsequently queried through `query_detail` with
+closed Step viewport [450000, 550000]. Each curve reports 100004 source
+observations: 100001 ordinary viewport observations, the repeated midpoint,
+and two real neighbors. This dispatches to the narrow aligned SQL path, not
+the bounded Arrow decoder; no direct Arrow speedup is claimed for it.
+
+The current release diagnostic measured one-curve hot requests at 79.6--96.6 ms
+and approximately 205 MiB peak process RSS. Sixteen-curve hot requests were
+1.265--1.280 s, with 1,600,064 source observations, 16,369 returned points,
+and approximately 226 MiB RSS. All curves remained Complete and individually
+bounded by 1024 points. These are first-plus-three-hot-request diagnostics,
+not a before/after comparison. A separate ten-sample baseline capture had a
+median near 1.267 s. OS cache was not cleared.
+
+An attempted old/new Detail comparison was invalid: the old binary did not
+support the range selector and queried Overview; record parsing failed before
+any completed comparison. A subsequent Detail assertion initially expected the
+Overview source count and was corrected. Neither failed attempt supplies
+performance evidence. Logs, sample arrays, source and binary identity are
+retained locally under `.tmp/v5-batch-detail/`; the next optimization boundary
+is narrow SQL work, not bounded result decoding.
