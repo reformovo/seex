@@ -68,13 +68,32 @@ pub(crate) fn query_bounded_full_aligned_metric(
         Box::new(query.viewport.end()),
     ]);
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(
-        duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
-        stored_bounded_alignment_row,
-    )?;
     let mut reducer = ScreenReducer::new(max_points, source_row_count);
-    for row in rows {
-        reducer.push(row?);
+    let started = std::time::Instant::now();
+    if std::env::var_os("SEEX_DIAGNOSTIC_BATCH_READER").is_some() {
+        let batches = statement.query_arrow(duckdb::params_from_iter(
+            values.iter().map(|value| value.as_ref()),
+        ))?;
+        crate::storage::bootstrap::record_write_timing("bounded_execute_batch", started.elapsed());
+        let started = std::time::Instant::now();
+        for batch in batches {
+            reduce_batch(&batch, &mut reducer)?;
+        }
+        crate::storage::bootstrap::record_write_timing("bounded_consume_batch", started.elapsed());
+        if reducer.ordinal != statement.row_count() as u64 {
+            return Err(batch_decode_error("incomplete bounded result"));
+        }
+    } else {
+        let rows = statement.query_map(
+            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
+            stored_bounded_alignment_row,
+        )?;
+        crate::storage::bootstrap::record_write_timing("bounded_execute_rows", started.elapsed());
+        let started = std::time::Instant::now();
+        for row in rows {
+            reducer.push(row?);
+        }
+        crate::storage::bootstrap::record_write_timing("bounded_consume_rows", started.elapsed());
     }
     let points = reducer
         .finish()
@@ -86,6 +105,50 @@ pub(crate) fn query_bounded_full_aligned_metric(
         source_row_count,
         reasons: Vec::new(),
     })
+}
+
+fn batch_decode_error(message: &'static str) -> StorageError {
+    StorageError::Storage {
+        operation: "decoding bounded query result",
+        name: String::from("Arrow batch"),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, message),
+    }
+}
+
+fn reduce_batch(
+    batch: &duckdb::arrow::record_batch::RecordBatch,
+    reducer: &mut ScreenReducer,
+) -> Result<(), StorageError> {
+    use duckdb::arrow::array::{Array, Float64Array, Int64Array};
+    if batch.num_columns() != 5 {
+        return Err(batch_decode_error("expected five bounded result columns"));
+    }
+    let integer = |index| {
+        batch
+            .column(index)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .ok_or_else(|| batch_decode_error("expected BIGINT bounded result column"))
+    };
+    let columns = [integer(0)?, integer(1)?, integer(3)?, integer(4)?];
+    let values = batch
+        .column(2)
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .ok_or_else(|| batch_decode_error("expected DOUBLE bounded value"))?;
+    if columns.iter().any(|column| column.null_count() != 0) || values.null_count() != 0 {
+        return Err(batch_decode_error("unexpected NULL bounded value"));
+    }
+    for index in 0..batch.num_rows() {
+        reducer.push(StoredAlignedPoint {
+            step: columns[0].value(index),
+            timestamp_millis: columns[1].value(index),
+            value_f64: values.value(index),
+            ingested_at_millis: columns[2].value(index),
+            axis_value: columns[3].value(index),
+        });
+    }
+    Ok(())
 }
 
 fn execute_aligned_metric(
@@ -805,6 +868,44 @@ mod tests {
                     "expression={expression}, budget={budget}"
                 );
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn batch_decoder_matches_rows_and_rejects_nulls() -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        let sql = "SELECT step, epoch_ms(timestamp), value_f64, epoch_ms(ingested_at), step
+                   FROM dl.metric_points ORDER BY step";
+        let mut expected = ScreenReducer::new(4, 8);
+        let mut statement = connection.prepare(sql)?;
+        for row in statement.query_map([], stored_bounded_alignment_row)? {
+            expected.push(row?);
+        }
+        let mut actual = ScreenReducer::new(4, 8);
+        for batch in connection.prepare(sql)?.query_arrow([])? {
+            reduce_batch(&batch, &mut actual)?;
+        }
+        let payloads = |points: Vec<StoredAlignedPoint>| {
+            points
+                .into_iter()
+                .map(|p| {
+                    (
+                        p.step,
+                        p.timestamp_millis,
+                        p.value_f64.to_bits(),
+                        p.ingested_at_millis,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(actual.ordinal, expected.ordinal);
+        assert_eq!(payloads(actual.finish()), payloads(expected.finish()));
+        for batch in connection
+            .prepare("SELECT 1::BIGINT, 1::BIGINT, NULL::DOUBLE, 1::BIGINT, 1::BIGINT")?
+            .query_arrow([])?
+        {
+            assert!(reduce_batch(&batch, &mut ScreenReducer::new(4, 1)).is_err());
         }
         Ok(())
     }

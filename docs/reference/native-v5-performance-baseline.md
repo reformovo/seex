@@ -615,4 +615,27 @@ within-capture relative-MAD rule: one baseline capture was 4.12% MAD. The
 candidate is therefore recorded as a measured optimization direction, not a
 formal performance PASS or universal memory guarantee. Raw identity, manifest,
 and captures remain in `.tmp/v5-invalid-step-overview-only/` and
-`.tmp/v5-invalid-step-corrected/`.
+and `.tmp/v5-invalid-step-corrected/`.
+
+## Batched bounded-result decoding diagnostic
+
+The 16-curve million-observation panel probe then separated SQL execution from
+DuckDB result decoding. The SQL, storage fixture, Rust reducer, and returned
+columns were unchanged; an opt-in diagnostic path consumed the same DuckDB
+result through its Arrow record batches and checked the consumed row count
+against DuckDB's result count. Null columns are rejected rather than silently
+converted, and the existing row decoder remains the default path.
+
+On the 1,000,001-observation-per-curve panel fixture, hot complete Overview
+requests measured approximately:
+
+| Curves | Existing row decoder | Arrow batch decoder | RSS row/batch |
+| ---: | ---: | ---: | ---: |
+| 1 | 112--123 ms | 69.6--70.2 ms | 205/208 MiB |
+| 16 | 1.778--1.798 s | 1.085--1.113 s | 220/221 MiB |
+
+These are diagnostic first-plus-three-hot-request captures, not a formal ABBA;
+OS cache was not cleared. The result identifies result decoding and reducer
+feed overhead as a substantial multi-curve cost without reducing SQL scan work
+or materially changing RSS. Raw capture, binary identity and fixture hashes
+remain in `.tmp/v5-batch-panel/`.
