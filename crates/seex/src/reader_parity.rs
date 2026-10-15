@@ -89,6 +89,10 @@ fn native_reader_scopes_run_lookup_and_optional_metric_summaries()
 
 impl Fixture {
     fn open() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_with_timestamp_order(false)
+    }
+
+    fn open_with_timestamp_order(decreasing: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let connection = ProjectConnection::new(open_native_connection_with_config(
             NativeStorageConfig::with_backend_and_s3_config(
@@ -128,6 +132,11 @@ impl Fixture {
                 ingested_at_millis: started_at + 10 + step,
             }),
         );
+        if decreasing {
+            for row in &mut rows {
+                row.timestamp_millis = started_at + 100 - row.step;
+            }
+        }
         connection.append_metric_batch(&rows)?;
         connection.rebuild_metric_aggregates_for_run(&run.run_id)?;
         connection.mark_run_terminal(&run.run_id, RunStatus::Finished, created_at)?;
@@ -149,6 +158,46 @@ impl Fixture {
         self.native
             .query_metric(&self.run_id, &MetricKey::from_string("loss"), &query)
     }
+}
+
+#[test]
+fn step_overview_keeps_invalid_timestamp_evidence_and_observations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open_with_timestamp_order(true)?;
+    let metric = MetricKey::from_string("loss");
+    for budget in [4, MAX_CHART_POINTS] {
+        let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), budget)?;
+        let expected = fixture.query(query.clone())?;
+        for _ in 0..2 {
+            let actual = fixture.native.query_metric_overview_for_desktop(
+                &fixture.run_id,
+                &metric,
+                &query,
+            )?;
+            assert_eq!(actual.source_count(), 10);
+            assert!(actual.samples().len() <= budget);
+            assert_eq!(actual.completeness(), crate::EvidenceCompleteness::Invalid);
+            assert_eq!(actual.reasons(), &[crate::EvidenceReason::DecreasingAxis]);
+            let payloads = |series: &crate::MetricSeries| {
+                let mut rows = series
+                    .samples()
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.point.step.value(),
+                            s.point.timestamp.timestamp_millis(),
+                            s.point.value_f64.to_bits(),
+                            s.point.ingested_at.timestamp_millis(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                rows.sort();
+                rows
+            };
+            assert_eq!(payloads(&actual), payloads(&expected));
+        }
+    }
+    Ok(())
 }
 
 #[test]

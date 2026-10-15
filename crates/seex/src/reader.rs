@@ -855,7 +855,7 @@ fn use_bounded_full_plan(
     let Some(diagnostics) = diagnostics else {
         return false;
     };
-    if narrow_step || !bounded_reduction_is_safe(diagnostics) {
+    if narrow_step || !bounded_reduction_is_safe(axis, diagnostics) {
         return false;
     }
     match (axis, bounds, diagnostics.min_step, diagnostics.max_step) {
@@ -868,10 +868,11 @@ fn use_bounded_full_plan(
     }
 }
 
-fn bounded_reduction_is_safe(diagnostics: SeriesDiagnostics) -> bool {
+fn bounded_reduction_is_safe(axis: MetricAxis, diagnostics: SeriesDiagnostics) -> bool {
     !diagnostics.has_negative_step
-        && !diagnostics.has_decreasing_timestamp
         && !diagnostics.has_non_finite_value
+        // Timestamp order qualifies evidence, but cannot change the Step reduction axis.
+        && (axis == MetricAxis::Step || !diagnostics.has_decreasing_timestamp)
 }
 
 fn public_storage_error(error: StorageError) -> Error {
@@ -1466,6 +1467,33 @@ mod tests {
             Some(diagnostics),
             false
         ));
+        let invalid = SeriesDiagnostics {
+            has_decreasing_timestamp: true,
+            ..diagnostics
+        };
+        assert!(!bounded_reduction_is_safe(
+            MetricAxis::RelativeTime,
+            invalid
+        ));
+        assert!(bounded_reduction_is_safe(MetricAxis::Step, invalid));
+        assert!(!bounded_reduction_is_safe(
+            MetricAxis::Step,
+            SeriesDiagnostics {
+                has_negative_step: true,
+                ..invalid
+            }
+        ));
+        assert!(!bounded_reduction_is_safe(
+            MetricAxis::Step,
+            SeriesDiagnostics {
+                has_non_finite_value: true,
+                ..invalid
+            }
+        ));
+        let (completeness, reasons) =
+            qualify_series(Vec::new(), Some(invalid), RunStatus::Finished);
+        assert_eq!(completeness, EvidenceCompleteness::Invalid);
+        assert_eq!(reasons, vec![EvidenceReason::DecreasingAxis]);
     }
 
     #[test]

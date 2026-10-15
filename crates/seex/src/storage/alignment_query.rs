@@ -393,14 +393,14 @@ impl BucketCandidates {
         if self
             .min
             .as_ref()
-            .is_none_or(|current| point_cmp(&point, &current.1).is_lt())
+            .is_none_or(|current| point_cmp(&point, &current.1, false).is_lt())
         {
             self.min = Some((ordinal, point.clone()));
         }
         if self
             .max
             .as_ref()
-            .is_none_or(|current| point_cmp(&point, &current.1).is_gt())
+            .is_none_or(|current| point_cmp(&point, &current.1, true).is_lt())
         {
             self.max = Some((ordinal, point));
         }
@@ -459,9 +459,23 @@ impl ScreenReducer {
     }
 }
 
-fn point_cmp(left: &StoredAlignedPoint, right: &StoredAlignedPoint) -> std::cmp::Ordering {
-    left.value_f64
-        .total_cmp(&right.value_f64)
+fn point_cmp(
+    left: &StoredAlignedPoint,
+    right: &StoredAlignedPoint,
+    maximum: bool,
+) -> std::cmp::Ordering {
+    // SQL treats signed zeros as equal and breaks both min/max ties by ascending axis.
+    let value_order = if left.value_f64 == right.value_f64 {
+        std::cmp::Ordering::Equal
+    } else {
+        left.value_f64.total_cmp(&right.value_f64)
+    };
+    let value_order = if maximum {
+        value_order.reverse()
+    } else {
+        value_order
+    };
+    value_order
         .then_with(|| left.axis_value.cmp(&right.axis_value))
         .then_with(|| left.step.cmp(&right.step))
 }
@@ -699,6 +713,99 @@ mod tests {
         )?;
 
         assert_eq!(bounded, windowed);
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_step_reducer_preserves_results_with_decreasing_timestamps()
+    -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        connection.execute_batch("UPDATE dl.metric_points SET timestamp=epoch_ms(2000-step);")?;
+        for budget in [1, 2, 100] {
+            let mut screen = query(
+                AlignmentAxis::Step,
+                AlignmentReduction::screen_budget(budget, 1)?,
+            );
+            screen.viewport = AlignmentViewport::new(0, 6)?;
+            let mut windowed =
+                query_aligned_metric(&connection, AlignmentSource::Project, &screen, None)?;
+            let mut bounded = query_bounded_full_aligned_metric(
+                &connection,
+                AlignmentSource::Project,
+                &screen,
+                None,
+                8,
+            )?;
+            for points in [&mut windowed.points, &mut bounded.points] {
+                points.sort_by(|a, b| {
+                    a.point
+                        .step
+                        .value()
+                        .cmp(&b.point.step.value())
+                        .then_with(|| a.point.value_f64.total_cmp(&b.point.value_f64))
+                });
+            }
+            assert_eq!(bounded, windowed, "screen budget {budget}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_step_reducer_matches_finite_ties_and_signed_zero() -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        for expression in [
+            "CASE WHEN step IN (1, 4) THEN -2.0 WHEN step IN (2, 5) THEN 2.0 ELSE 1.0 END",
+            "CASE WHEN step = 1 THEN 0.0::DOUBLE WHEN step = 4 THEN '-0.0'::DOUBLE ELSE 1.0 END",
+        ] {
+            connection.execute_batch(&format!(
+                "DELETE FROM dl.metric_points;
+                 INSERT INTO dl.metric_points
+                 SELECT 'run-1', 'loss', 'loss', step, epoch_ms(2000-step),
+                        {expression}, epoch_ms(3000+step)
+                 FROM range(0, 8) AS generated(step);"
+            ))?;
+            for budget in [1, 2, 3, 100] {
+                let mut screen = query(
+                    AlignmentAxis::Step,
+                    AlignmentReduction::screen_budget(budget, 1)?,
+                );
+                screen.viewport = AlignmentViewport::new(0, 7)?;
+                let expected =
+                    query_aligned_metric(&connection, AlignmentSource::Project, &screen, None)?;
+                let actual = query_bounded_full_aligned_metric(
+                    &connection,
+                    AlignmentSource::Project,
+                    &screen,
+                    None,
+                    8,
+                )?;
+                let payloads = |points: Vec<AlignedMetricPoint>| {
+                    let mut values = points
+                        .into_iter()
+                        .map(|p| {
+                            (
+                                p.point.step.value(),
+                                p.point.timestamp.timestamp_millis(),
+                                if p.point.value_f64 == 0.0 {
+                                    0
+                                } else {
+                                    p.point.value_f64.to_bits()
+                                },
+                                p.point.ingested_at.timestamp_millis(),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    values.sort();
+                    values
+                };
+                assert_eq!(actual.source_row_count, expected.source_row_count);
+                assert_eq!(
+                    payloads(actual.points),
+                    payloads(expected.points),
+                    "expression={expression}, budget={budget}"
+                );
+            }
+        }
         Ok(())
     }
 

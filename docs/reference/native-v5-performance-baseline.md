@@ -584,3 +584,35 @@ formally INCONCLUSIVE. Measure WAL peak/traffic and complete request phase costs
 before another parameter candidate. Any physical consolidation
 experiment stays DuckLake-managed; do not add Rollup, connection caches or
 production compaction to compensate for an unqualified inline candidate.
+
+## Step overview bounded-plan optimization
+
+The million-observation `query_curves` investigation found that a Finished Step
+series with decreasing timestamps paid the full windowed alignment plan even
+though the requested reduction axis was Step. That plan materialized a large
+intermediate result: on the one-curve, 1,000,001-observation fixture, the
+invalid-series Overview diagnostic reached approximately 519 MiB process RSS.
+
+The optimization keeps timestamp validation in the evidence contract, but stops
+using timestamp monotonicity to reject the Step bounded reducer. Negative Steps
+and non-finite values still reject that plan; non-Step axes retain the timestamp
+requirement. The result remains `Invalid` with `DecreasingAxis`, and all repeated
+observations remain available to the reducer. No public API, storage layout,
+connection lifetime, or append semantics changed.
+
+Correctness coverage compares windowed and bounded results for decreasing
+timestamps, duplicate Steps, tied finite extrema, identical observations, and
+signed zero (where `+0.0` and `-0.0` are numerically equivalent). The focused
+Reader parity test also verifies source count, point budget, Invalid evidence,
+and repeated requests.
+
+On the same million-observation invalid fixture and corrected release binary,
+Overview hot-request diagnostics were approximately 170--176 ms and 531 MiB RSS
+with the old plan, versus 121--123 ms and 218 MiB RSS with the bounded plan.
+A single bounded ABBA retained the direction (baseline medians 176.8/169.8 ms;
+candidate 122.7/120.6 ms), but was **INCONCLUSIVE** under the unchanged 2%
+within-capture relative-MAD rule: one baseline capture was 4.12% MAD. The
+candidate is therefore recorded as a measured optimization direction, not a
+formal performance PASS or universal memory guarantee. Raw identity, manifest,
+and captures remain in `.tmp/v5-invalid-step-overview-only/` and
+`.tmp/v5-invalid-step-corrected/`.
