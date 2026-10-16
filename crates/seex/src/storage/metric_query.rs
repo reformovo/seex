@@ -576,7 +576,7 @@ pub fn percent_encode_metric_key(value: &str) -> String {
     encoded
 }
 
-fn ensure_lttb_extension_loaded(connection: &Connection) -> Result<(), StorageError> {
+pub(crate) fn ensure_lttb_extension_loaded(connection: &Connection) -> Result<(), StorageError> {
     if lttb_function_available(connection) {
         return Ok(());
     }

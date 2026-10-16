@@ -103,13 +103,7 @@ fn check_batch_row_count(consumed: u64, expected: usize) -> Result<(), StorageEr
 }
 
 fn ensure_lttb_detail_extension(connection: &Connection) -> Result<(), StorageError> {
-    let Some(path) = std::env::var_os("SEEX_LTTB_EXTENSION_PATH") else {
-        return Err(batch_decode_error(
-            "SEEX_LTTB_EXTENSION_PATH is required for LTTB detail",
-        ));
-    };
-    let path = crate::storage::sql::string_literal(path.to_string_lossy().as_ref());
-    connection.execute_batch(&format!("LOAD {path};"))?;
+    crate::storage::metric_query::ensure_lttb_extension_loaded(connection)?;
     let available: bool = connection.query_row(
         "SELECT count(*) > 0 FROM duckdb_functions() WHERE function_name = 'lttb_indices'",
         [],
