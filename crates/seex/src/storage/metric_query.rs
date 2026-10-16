@@ -692,6 +692,28 @@ mod tests {
         )?;
         load_lttb_extension_from_path(&connection, Path::new(&extension))?;
         let reader = ProjectMetricReader::new(&connection);
+        for function in ["lttb", "lttb_sorted", "minmax_lttb", "minmax_lttb_sorted"] {
+            for (label, predicate) in [
+                ("overview", ""),
+                ("detail", "AND step >= 450000 AND step < 550000"),
+            ] {
+                let started = std::time::Instant::now();
+                let call = if function.starts_with("minmax") {
+                    format!("{function}(step, value_f64, 1024, NULL)")
+                } else {
+                    format!("{function}(step, value_f64, 1024)")
+                };
+                let sql = format!(
+                    "SELECT list_count({call}) FROM dl.metric_points WHERE run_id='run-0' AND metric_key='loss' {predicate}"
+                );
+                let points: u64 = connection.query_row(&sql, [], |row| row.get(0))?;
+                assert!(points > 0 && points <= 1024);
+                println!(
+                    "lttb_function,function={function},range={label},points={points},elapsed_ns={}",
+                    started.elapsed().as_nanos()
+                );
+            }
+        }
         for (label, start, end) in [
             ("overview", None, None),
             ("detail", Some(450_000), Some(550_000)),
