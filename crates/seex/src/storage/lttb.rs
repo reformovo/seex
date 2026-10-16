@@ -27,6 +27,8 @@ pub(crate) struct OrderedLttb<T> {
     buffer: std::collections::VecDeque<T>,
     selected: Vec<T>,
     peak: usize,
+    every: f64,
+    origin: Option<i64>,
 }
 
 impl<T: Point> OrderedLttb<T> {
@@ -40,6 +42,12 @@ impl<T: Point> OrderedLttb<T> {
             buffer: std::collections::VecDeque::new(),
             selected: Vec::new(),
             peak: 0,
+            every: if budget > 2 {
+                (count.saturating_sub(2)) as f64 / (budget - 2) as f64
+            } else {
+                0.0
+            },
+            origin: None,
         }
     }
 
@@ -57,10 +65,12 @@ impl<T: Point> OrderedLttb<T> {
         if !point.value().is_finite() {
             return Err(SelectionError::NonFiniteValue { index: self.seen });
         }
-        if self.last_axis.is_some_and(|axis| point.axis() < axis) {
+        let axis = point.axis();
+        if self.last_axis.is_some_and(|last| axis < last) {
             return Err(SelectionError::UnsortedAxis { index: self.seen });
         }
-        self.last_axis = Some(point.axis());
+        self.origin.get_or_insert(axis);
+        self.last_axis = Some(axis);
         self.seen += 1;
         if self.count <= self.budget
             || (self.seen == 1 && self.budget > 0)
@@ -70,12 +80,12 @@ impl<T: Point> OrderedLttb<T> {
         } else if self.budget > 2 {
             self.buffer.push_back(point);
             self.peak = self.peak.max(self.buffer.len());
-            let every = (self.count - 2) as f64 / (self.budget - 2) as f64;
-            let start = (self.bucket as f64 * every).floor() as usize + 1;
-            let next = ((self.bucket + 1) as f64 * every).floor() as usize + 1;
-            let end = (((self.bucket + 2) as f64 * every).floor() as usize + 1).min(self.count);
+            let start = (self.bucket as f64 * self.every).floor() as usize + 1;
+            let next = ((self.bucket + 1) as f64 * self.every).floor() as usize + 1;
+            let end =
+                (((self.bucket + 2) as f64 * self.every).floor() as usize + 1).min(self.count);
             if self.seen == end {
-                let origin = self.selected[0].axis();
+                let origin = self.origin.expect("first point establishes origin");
                 let length = (end - next) as f64;
                 let average_x = self
                     .buffer
