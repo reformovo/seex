@@ -10,6 +10,7 @@ mod alignment_query;
 pub mod bootstrap;
 pub mod config;
 mod lock;
+pub(crate) mod lttb;
 mod metric_query;
 mod project;
 mod query;
