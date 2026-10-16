@@ -747,7 +747,7 @@ Viewer strategy changed. Raw output and extension identity are under
 
 ### LTTB correctness and simplification follow-up
 
-The adapter now uses aggregate-local `ORDER BY step, occurrence`, the caller's
+The coordinate-reconstruction adapter used aggregate-local `ORDER BY step, occurrence`, the caller's
 budget minus real neighbor slots, and HUGEINT Step translation before sampling.
 An actual-extension test reproduced lost reconstruction matches above 2^53;
 translation fixes large offsets and Step spans above 2^53 fail explicitly.
@@ -764,3 +764,24 @@ This does not support the old speedup claim; it is not a formal regression
 classification or visual-quality acceptance. No ABBA was run for this version.
 Raw output, source patch and binary/extension identities are local ignored
 artifacts under `.tmp/v5-lttb-acceptance/`.
+
+### Index-based LTTB reconstruction
+
+The opt-in adapter was simplified to use `lttb_indices`. The extension returns
+zero-based positions in its NaN-filtered, stable-x-sorted sequence, not raw input
+identifiers. SQL therefore removes NaN before numbering and materializes the
+numbered relation once. Aggregate-local `ORDER BY step, ordinal` aligns both
+sequences, including duplicate Steps; returned indices join that same relation.
+The ordinal is query-local and never persisted. Source count still includes
+all observations and real neighbors. Step translation/span protection remains
+because the experiment has not established full-range area-arithmetic precision.
+
+This removes the per-coordinate occurrence window and selected-coordinate
+count/group/join, without introducing another strategy. The actual-extension
+acceptance also verifies interleaved NaN so index compaction cannot select the
+wrong observation. Same-binary first-plus-three-hot-request diagnostics on the
+16-curve fixture measured screen at 903--934 ms and indices at 913--961 ms;
+peak process RSS was approximately 229/211 MiB. This is a promising memory
+observation, not a demonstrated latency improvement or formal ABBA. No default
+strategy changed and visual quality remains unaccepted. Raw requests, source
+patch and binary/extension hashes are under `.tmp/v5-lttb-indices/`.

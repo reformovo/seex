@@ -111,14 +111,14 @@ fn ensure_lttb_detail_extension(connection: &Connection) -> Result<(), StorageEr
     let path = crate::storage::sql::string_literal(path.to_string_lossy().as_ref());
     connection.execute_batch(&format!("LOAD {path};"))?;
     let available: bool = connection.query_row(
-        "SELECT count(*) > 0 FROM duckdb_functions() WHERE function_name = 'lttb_sorted'",
+        "SELECT count(*) > 0 FROM duckdb_functions() WHERE function_name = 'lttb_indices'",
         [],
         |row| row.get(0),
     )?;
     if available {
         Ok(())
     } else {
-        Err(batch_decode_error("lttb_sorted was not registered"))
+        Err(batch_decode_error("lttb_indices was not registered"))
     }
 }
 
@@ -315,29 +315,24 @@ fn aligned_points_sql(
 
 fn lttb_step_selection() -> &'static str {
     "screen_limit AS (SELECT ?::UBIGINT AS bucket_count, ?::BIGINT AS max_points),
-     normalized AS (
-         SELECT *, row_number() OVER (PARTITION BY step, value_f64 ORDER BY step) AS occurrence,
+     normalized AS MATERIALIZED (
+         SELECT *, row_number() OVER (ORDER BY step) - 1 AS ordinal,
              CASE WHEN max(step::HUGEINT) OVER () - min(step::HUGEINT) OVER () > 9007199254740992
                   THEN error('LTTB experiment Step span exceeds exact coordinate range')
                   ELSE step::HUGEINT - min(step::HUGEINT) OVER () END AS lttb_step
-         FROM inside
+         FROM inside WHERE NOT isnan(value_f64)
      ),
      sampled AS (
-         SELECT unnest(lttb_sorted(lttb_step, value_f64,
+         SELECT unnest(lttb_indices(lttb_step, value_f64,
                     (SELECT max_points FROM screen_limit)
                     - (SELECT count(*) FROM left_neighbor)
                     - (SELECT count(*) FROM right_neighbor)
-                    ORDER BY step, occurrence)) AS point
+                    ORDER BY step, ordinal)) AS ordinal
          FROM normalized
      ),
-     sampled_counts AS (
-         SELECT point.x AS lttb_step, point.y AS value_f64, count(*)::UBIGINT AS selected_count
-         FROM sampled GROUP BY point.x, point.y
-     ),
      selected AS (
-         SELECT normalized.* EXCLUDE (occurrence, lttb_step)
-         FROM normalized JOIN sampled_counts USING (lttb_step, value_f64)
-         WHERE normalized.occurrence <= sampled_counts.selected_count
+         SELECT normalized.* EXCLUDE (ordinal, lttb_step)
+         FROM normalized JOIN sampled USING (ordinal)
          UNION ALL SELECT * FROM left_neighbor
          UNION ALL SELECT * FROM right_neighbor
      )"
@@ -1116,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a locally maintained lttb_sorted DuckDB extension"]
+    #[ignore = "requires a locally maintained lttb_indices DuckDB extension"]
     fn lttb_detail_retains_real_observations_and_neighbors() -> Result<(), Box<dyn Error>> {
         let connection = Connection::open_in_memory_with_flags(
             duckdb::Config::default().allow_unsigned_extensions()?,
@@ -1156,7 +1151,7 @@ mod tests {
                     AlignmentPlan::NarrowStep,
                     ScreenStrategy::Lttb,
                 );
-                assert!(sql.contains("ORDER BY step, occurrence"));
+                assert!(sql.contains("ORDER BY step, ordinal"));
                 let mut statement = connection.prepare(&sql)?;
                 let rows = statement.query_map(
                     duckdb::params_from_iter(values.iter().map(|v| v.as_ref())),
@@ -1234,6 +1229,22 @@ mod tests {
         );
         for budget in [4, 8] {
             assert_eq!(run(2, 4, budget)?.0, 8);
+        }
+        // Indices refer to the filtered, sorted sequence, not the pre-NaN input positions.
+        connection.execute_batch(
+            "UPDATE dl.metric_points SET value_f64=CASE WHEN step=2
+            THEN 'NaN'::DOUBLE ELSE step::DOUBLE END;",
+        )?;
+        let (count, filtered) = run(2, 4, 100)?;
+        assert_eq!(count, 8);
+        assert_eq!(filtered.len(), 7);
+        assert!(!filtered.iter().any(|point| point.step == 2));
+        for budget in [4, 5] {
+            let (count, filtered) = run(2, 4, budget)?;
+            assert_eq!(count, 8);
+            assert!(!filtered.iter().any(|point| point.value_f64.is_nan()));
+            assert_eq!(filtered.first().map(|p| p.step), Some(1));
+            assert_eq!(filtered.last().map(|p| p.step), Some(5));
         }
         connection.execute_batch(
             "UPDATE dl.metric_points SET value_f64=1.0;
