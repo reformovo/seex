@@ -834,6 +834,11 @@ returned 16,384 points with source count 16,000,016. Hot Overview requests were
 approximately 1.206--1.233 s with about 218 MiB process RSS, versus the
 extension-based unified LTTB diagnostic at roughly 3.20--3.25 s and 630 MiB.
 Detail is not routed through this path yet; its native diagnostic remains about
-1.245--1.277 s and 230 MiB. This is a diagnostic, not an ABBA; the native
-selector is not default and its Arrow integration still needs exact-equivalence
-coverage against the extension on larger shape cases.
+1.245--1.277 s and 230 MiB. A formal bounded ABBA over the complete 16-curve
+Overview measured the current Arrow+screen baseline at 1.087/1.088 s and the
+native selector at 1.212/1.223 s. All captures had <1% relative MAD; the gate
+classified the optimization as a reliable **11.9% regression**. The paired RSS
+diagnostic was approximately 235 MiB baseline versus 229 MiB native, so the
+small memory reduction does not offset the latency regression. The native
+selector remains opt-in and is not a production default. Raw manifest, captures,
+RSS and identity remain under `.tmp/v5-native-overview-abba/`.
