@@ -890,6 +890,20 @@ fn in_half_open_range(value: i64, bounds: Option<AxisBounds>) -> bool {
     bounds.is_none_or(|bounds| bounds.contains(value))
 }
 
+#[cfg(test)]
+pub(crate) fn bound_quality_samples(
+    points: Vec<AlignedMetricPoint>,
+    start: i64,
+    end: i64,
+    budget: usize,
+) -> Vec<AlignedMetricPoint> {
+    bounded_desktop_points(
+        points,
+        Some(AxisBounds::new(Some(start), Some(end))),
+        budget,
+    )
+}
+
 fn bounded_desktop_points(
     points: Vec<AlignedMetricPoint>,
     bounds: Option<AxisBounds>,

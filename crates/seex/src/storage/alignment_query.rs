@@ -1265,6 +1265,141 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "actual-extension shape-quality experiment; writes ignored CSV artifacts"]
+    fn lttb_shape_quality_experiment() -> Result<(), Box<dyn Error>> {
+        use std::io::Write;
+        let output = std::path::PathBuf::from(std::env::var("SEEX_LTTB_QUALITY_OUTPUT")?);
+        if !output.ends_with(".tmp/v5-lttb-quality") {
+            return Err("quality output must be .tmp/v5-lttb-quality".into());
+        }
+        std::fs::create_dir_all(&output)?;
+        let connection = Connection::open_in_memory_with_flags(
+            duckdb::Config::default().allow_unsigned_extensions()?,
+        )?;
+        ensure_lttb_detail_extension(&connection)?;
+        connection.execute_batch("CREATE SCHEMA dl;")?;
+        for (name, expression) in [
+            ("smooth", "sin(step::DOUBLE / 300)"),
+            (
+                "spikes",
+                "CASE WHEN step IN (1234, 2811) THEN 100.0 ELSE 0.0 END",
+            ),
+            (
+                "troughs",
+                "CASE WHEN step IN (1234, 2811) THEN -100.0 ELSE 0.0 END",
+            ),
+            ("step", "CASE WHEN step < 2048 THEN 0.0 ELSE 1.0 END"),
+            (
+                "oscillation",
+                "sin(step::DOUBLE / 7) + 0.2 * sin(step::DOUBLE / 2)",
+            ),
+            ("duplicates", "sin(step::DOUBLE / 300)"),
+        ] {
+            connection.execute_batch(&format!(
+                "CREATE OR REPLACE TABLE dl.metric_points AS
+                 SELECT 'run-1' AS run_id, 'loss' AS metric_key, 'loss' AS metric_key_encoded,
+                        step::BIGINT AS step, epoch_ms(step) AS timestamp,
+                        ({expression})::DOUBLE AS value_f64, epoch_ms(step) AS ingested_at
+                 FROM range(0,4096) generated(step);"
+            ))?;
+            if name == "duplicates" {
+                connection.execute_batch(
+                    "INSERT INTO dl.metric_points VALUES
+                     ('run-1','loss','loss',2048,epoch_ms(5000),8.0,epoch_ms(5000)),
+                     ('run-1','loss','loss',2048,epoch_ms(5001),-8.0,epoch_ms(5001)),
+                     ('run-1','loss','loss',2048,epoch_ms(5001),-8.0,epoch_ms(5001));",
+                )?;
+            }
+            let source = connection
+                .prepare(
+                    "SELECT step, epoch_ms(timestamp), value_f64, epoch_ms(ingested_at), step
+                 FROM dl.metric_points WHERE step BETWEEN 99 AND 3997 ORDER BY step, timestamp",
+                )?
+                .query_map([], stored_bounded_alignment_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            let source_count = source.len() as u64;
+            let mut csv = std::fs::File::create(output.join(format!("{name}.csv")))?;
+            writeln!(csv, "strategy,step,timestamp,value,ingested_at")?;
+            for point in &source {
+                writeln!(
+                    csv,
+                    "source,{},{},{},{}",
+                    point.step, point.timestamp_millis, point.value_f64, point.ingested_at_millis
+                )?;
+            }
+            for strategy in [ScreenStrategy::Default, ScreenStrategy::Lttb] {
+                let mut screen = query(
+                    AlignmentAxis::Step,
+                    AlignmentReduction::screen_budget(64, 1)?,
+                );
+                screen.viewport = AlignmentViewport::new(100, 3996)?;
+                let values = query_values(
+                    AlignmentSource::Project,
+                    &screen,
+                    None,
+                    Some((16, 64)),
+                    AlignmentPlan::NarrowStep,
+                )?;
+                let sql = aligned_points_sql(
+                    AlignmentSource::Project,
+                    AlignmentAxis::Step,
+                    true,
+                    AlignmentPlan::NarrowStep,
+                    strategy,
+                );
+                let mut statement = connection.prepare(&sql)?;
+                let mut selected = Vec::new();
+                for row in statement.query_map(
+                    duckdb::params_from_iter(values.iter().map(|v| v.as_ref())),
+                    stored_alignment_row,
+                )? {
+                    let (point, count) = row?;
+                    assert_eq!(count, source_count);
+                    selected.extend(point);
+                }
+                // Apply the same final neighbor/budget handling as Reader.
+                let aligned = selected
+                    .into_iter()
+                    .map(|p| p.into_aligned_metric_point(&screen.run_id, &screen.metric_key))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let selected = crate::reader::bound_quality_samples(aligned, 100, 3997, 64);
+                assert!(!selected.is_empty() && selected.len() <= 64);
+                assert_eq!(selected.first().map(|p| p.point.step.value()), Some(99));
+                assert_eq!(selected.last().map(|p| p.point.step.value()), Some(3997));
+                let mut remaining = source.iter().collect::<Vec<_>>();
+                for point in &selected {
+                    let p = &point.point;
+                    let index = remaining
+                        .iter()
+                        .position(|original| {
+                            original.step == p.step.value()
+                                && original.timestamp_millis == p.timestamp.timestamp_millis()
+                                && original.value_f64 == p.value_f64
+                                && original.ingested_at_millis == p.ingested_at.timestamp_millis()
+                        })
+                        .expect(
+                            "quality samples must preserve whole observations and multiplicity",
+                        );
+                    remaining.remove(index);
+                    writeln!(
+                        csv,
+                        "{strategy:?},{},{},{},{}",
+                        p.step.value(),
+                        p.timestamp.timestamp_millis(),
+                        p.value_f64,
+                        p.ingested_at.timestamp_millis()
+                    )?;
+                }
+                println!(
+                    "quality_case={name},strategy={strategy:?},source_count={source_count},selected={}",
+                    selected.len()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn grouped_detail_matches_windowed_observations() -> Result<(), Box<dyn Error>> {
         let connection = connection()?;
         connection.execute_batch(

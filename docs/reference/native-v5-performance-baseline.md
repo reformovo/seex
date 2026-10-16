@@ -785,3 +785,36 @@ peak process RSS was approximately 229/211 MiB. This is a promising memory
 observation, not a demonstrated latency improvement or formal ABBA. No default
 strategy changed and visual quality remains unaccepted. Raw requests, source
 patch and binary/extension hashes are under `.tmp/v5-lttb-indices/`.
+
+### Shape-quality diagnostic
+
+An ignored actual-extension test compares six finite synthetic shapes at the
+same 64-point cap: smooth sine, two isolated spikes, two isolated troughs,
+a step change, high-frequency oscillation, and duplicate-Step extrema. It
+reuses Reader's final neighbor/budget handling through a test-only adapter,
+checks source count, neighbors and whole-observation multiplicity, and writes
+per-case CSVs. Each input has 4096 observations (duplicate case adds three);
+this is a quality experiment, not a performance workload or GPUI screenshot.
+
+| Shape | Screen/LTTB points | Screen/LTTB linear MAE |
+| --- | ---: | ---: |
+| Smooth | 38 / 64 | 0.02584 / 0.00230 |
+| Isolated spikes | 36 / 64 | 6.1586 / 1.6423 |
+| Isolated troughs | 36 / 64 | 6.1586 / 1.6423 |
+| Step change | 34 / 64 | 0.03105 / 0 |
+| Oscillation | 64 / 64 | 0.80708 / 0.75868 |
+| Duplicate-Step extrema | 38 / 64 | not defined |
+
+MAE means absolute error of the selected polyline evaluated at source x inside
+the viewport; it is not a general perceptual score. Duplicate x is excluded
+from that metric because it is not a single-valued function. Both samplers
+retained the two isolated events and the duplicate-Step +/-8 extrema in these
+cases, but sampling does not promise retention of every repeated observation.
+The screen step transition is visibly broadened; LTTB retained its adjacent
+boundary samples. Both misrepresent high-frequency oscillation at this budget.
+
+Same-budget is not same-output-count: screen deduplicates bucket roles and
+returns fewer points on several shapes, so the lower LTTB errors do not isolate
+algorithm quality at equal point count. No universal superiority or default
+strategy acceptance follows. Same-scale source/screen/LTTB plots, CSVs, metrics,
+source patch and identities remain locally in `.tmp/v5-lttb-quality/`.
