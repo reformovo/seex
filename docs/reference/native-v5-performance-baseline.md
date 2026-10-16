@@ -729,6 +729,11 @@ against Viewer screen reduction, but does not authorize replacing the default:
 repeated-Step mapping, NaN/Inf, signed-zero, neighbor retention, visual quality,
 and RSS still require a separate strategy acceptance experiment.
 
+The following early measurements are historical only: the `_sorted` direct
+calls did not guarantee ordered aggregate input, and the initial Viewer adapter
+hard-coded 1024 without reserving neighbor slots. They are not valid evidence
+for recommending a sorted-LTTB Viewer strategy.
+
 An opt-in Viewer Detail experiment then loaded the same v1.5.4-compatible local
 extension through `SEEX_LTTB_EXTENSION_PATH` and used `lttb_sorted` for the
 narrow Step path. On the 16-curve million-observation panel fixture, source
@@ -739,3 +744,23 @@ about 227 MiB. This is a diagnostic first-plus-three-hot-request observation,
 not an ABBA or quality-equivalence claim. LTTB remained opt-in; no default
 Viewer strategy changed. Raw output and extension identity are under
 `.tmp/v5-lttb-experiment/`.
+
+### LTTB correctness and simplification follow-up
+
+The adapter now uses aggregate-local `ORDER BY step, occurrence`, the caller's
+budget minus real neighbor slots, and HUGEINT Step translation before sampling.
+An actual-extension test reproduced lost reconstruction matches above 2^53;
+translation fixes large offsets and Step spans above 2^53 fail explicitly.
+The test covers budgets 4/5/8/100, identical and distinct repeated observations,
+full payload multiplicity, real neighbors, empty input, Inf, and all-NaN input
+with retained source count. Signed zero is numerically equivalent, not promised
+bit-identical. No default strategy changed.
+
+Unused input-count windows and the redundant ordered CTE were removed, as was
+temporary full-SQL error logging. On the corrected adapter, a same-binary
+first-plus-three-hot-request diagnostic measured screen at 903--938 ms and
+LTTB at 1064--1076 ms, with approximately 226/233 MiB process RSS respectively.
+This does not support the old speedup claim; it is not a formal regression
+classification or visual-quality acceptance. No ABBA was run for this version.
+Raw output, source patch and binary/extension identities are local ignored
+artifacts under `.tmp/v5-lttb-acceptance/`.

@@ -193,18 +193,10 @@ fn execute_aligned_metric(
     let values = query_values(source, query, run_start_millis, screen_limits, plan)?;
     let started = std::time::Instant::now();
     let mut statement = connection.prepare(&sql)?;
-    let rows = match statement.query_map(
+    let rows = statement.query_map(
         duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
         stored_alignment_row,
-    ) {
-        Ok(rows) => rows,
-        Err(error) => {
-            if strategy == ScreenStrategy::Lttb {
-                eprintln!("lttb_detail_sql_error={error};sql={sql}");
-            }
-            return Err(error.into());
-        }
-    };
+    )?;
     crate::storage::bootstrap::record_write_timing("aligned_execute", started.elapsed());
     let started = std::time::Instant::now();
     let mut points = Vec::new();
@@ -322,26 +314,29 @@ fn aligned_points_sql(
 }
 
 fn lttb_step_selection() -> &'static str {
-    "inside_numbered AS (
-         SELECT *, count(*) OVER ()::UBIGINT AS inside_count
+    "screen_limit AS (SELECT ?::UBIGINT AS bucket_count, ?::BIGINT AS max_points),
+     normalized AS (
+         SELECT *, row_number() OVER (PARTITION BY step, value_f64 ORDER BY step) AS occurrence,
+             CASE WHEN max(step::HUGEINT) OVER () - min(step::HUGEINT) OVER () > 9007199254740992
+                  THEN error('LTTB experiment Step span exceeds exact coordinate range')
+                  ELSE step::HUGEINT - min(step::HUGEINT) OVER () END AS lttb_step
          FROM inside
      ),
-     screen_limit AS (SELECT ?::UBIGINT AS bucket_count, ?::UBIGINT AS max_points),
-     normalized AS (
-         SELECT *, row_number() OVER (PARTITION BY step, value_f64 ORDER BY step) AS occurrence
-         FROM inside_numbered
-     ),
      sampled AS (
-         SELECT unnest(lttb_sorted(step, value_f64, 1024)) AS point
+         SELECT unnest(lttb_sorted(lttb_step, value_f64,
+                    (SELECT max_points FROM screen_limit)
+                    - (SELECT count(*) FROM left_neighbor)
+                    - (SELECT count(*) FROM right_neighbor)
+                    ORDER BY step, occurrence)) AS point
          FROM normalized
      ),
      sampled_counts AS (
-         SELECT point.x AS step, point.y AS value_f64, count(*)::UBIGINT AS selected_count
+         SELECT point.x AS lttb_step, point.y AS value_f64, count(*)::UBIGINT AS selected_count
          FROM sampled GROUP BY point.x, point.y
      ),
      selected AS (
-         SELECT normalized.* EXCLUDE (inside_count, occurrence)
-         FROM normalized JOIN sampled_counts USING (step, value_f64)
+         SELECT normalized.* EXCLUDE (occurrence, lttb_step)
+         FROM normalized JOIN sampled_counts USING (lttb_step, value_f64)
          WHERE normalized.occurrence <= sampled_counts.selected_count
          UNION ALL SELECT * FROM left_neighbor
          UNION ALL SELECT * FROM right_neighbor
@@ -1117,6 +1112,144 @@ mod tests {
             connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?,
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires a locally maintained lttb_sorted DuckDB extension"]
+    fn lttb_detail_retains_real_observations_and_neighbors() -> Result<(), Box<dyn Error>> {
+        let connection = Connection::open_in_memory_with_flags(
+            duckdb::Config::default().allow_unsigned_extensions()?,
+        )?;
+        connection.execute_batch(
+            "CREATE SCHEMA dl;
+             CREATE TABLE dl.metric_points AS
+             SELECT 'run-1' AS run_id, 'loss' AS metric_key, 'loss' AS metric_key_encoded,
+                    step::BIGINT AS step, epoch_ms(1000+step) AS timestamp,
+                    step::DOUBLE AS value_f64, epoch_ms(2000+step) AS ingested_at
+             FROM range(0, 7) generated(step);
+             INSERT INTO dl.metric_points VALUES ('run-1','loss','loss',3,epoch_ms(1030),-1.0,epoch_ms(3000));"
+        )?;
+        ensure_lttb_detail_extension(&connection)?;
+        connection.execute_batch(
+            "INSERT INTO dl.metric_points SELECT * FROM dl.metric_points WHERE step=3;",
+        )?;
+        let run =
+            |start, end, budget| -> Result<(u64, Vec<StoredAlignedPoint>), Box<dyn Error>> {
+                let mut screen = query(
+                    AlignmentAxis::Step,
+                    AlignmentReduction::screen_budget(budget, 1)?,
+                );
+                screen.viewport = AlignmentViewport::new(start, end)?;
+                let limits = screen.reduction.max_points().unwrap();
+                let values = query_values(
+                    AlignmentSource::Project,
+                    &screen,
+                    None,
+                    Some(((limits / 4).max(1), limits)),
+                    AlignmentPlan::NarrowStep,
+                )?;
+                let sql = aligned_points_sql(
+                    AlignmentSource::Project,
+                    AlignmentAxis::Step,
+                    true,
+                    AlignmentPlan::NarrowStep,
+                    ScreenStrategy::Lttb,
+                );
+                assert!(sql.contains("ORDER BY step, occurrence"));
+                let mut statement = connection.prepare(&sql)?;
+                let rows = statement.query_map(
+                    duckdb::params_from_iter(values.iter().map(|v| v.as_ref())),
+                    stored_alignment_row,
+                )?;
+                let mut points = Vec::new();
+                let mut count = 0;
+                for row in rows {
+                    let (point, source) = row?;
+                    count = source;
+                    points.extend(point);
+                }
+                assert!(points.len() <= limits);
+                let mut statement = connection.prepare(
+                    "SELECT step, epoch_ms(timestamp), value_f64, epoch_ms(ingested_at), step
+                 FROM dl.metric_points ORDER BY step",
+                )?;
+                let mut available = statement
+                    .query_map([], stored_bounded_alignment_row)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                for selected in &points {
+                    let index = available.iter().position(|original|
+                    original.step == selected.step
+                    && original.timestamp_millis == selected.timestamp_millis
+                    && original.ingested_at_millis == selected.ingested_at_millis
+                    && (original.value_f64 == selected.value_f64
+                        || (original.value_f64.is_nan() && selected.value_f64.is_nan()))
+                ).expect("selected payload must be a real observation with available multiplicity");
+                    available.remove(index);
+                }
+                Ok((count, points))
+            };
+        let (count, points) = run(2, 4, 100)?;
+        assert_eq!(count, 8);
+        let steps = points.iter().map(|p| p.step).collect::<Vec<_>>();
+        assert_eq!(steps, vec![1, 2, 3, 3, 3, 3, 4, 5]);
+        for budget in [4, 5, 8] {
+            let (count, points) = run(2, 4, budget)?;
+            assert_eq!(count, 8);
+            assert_eq!(points.first().map(|p| p.step), Some(1));
+            assert_eq!(points.last().map(|p| p.step), Some(5));
+        }
+        connection.execute_batch("UPDATE dl.metric_points SET step=step+9007199254740993;")?;
+        let (_, large) = run(9007199254740995, 9007199254740997, 100)?;
+        assert_eq!(
+            large
+                .iter()
+                .map(|p| p.step - 9007199254740993)
+                .collect::<Vec<_>>(),
+            steps
+        );
+        connection.execute_batch(
+            "UPDATE dl.metric_points SET step=step-9007199254740993, value_f64='NaN'::DOUBLE;",
+        )?;
+        let (count, empty) = run(2, 4, 100)?;
+        assert_eq!(count, 8);
+        assert_eq!(
+            empty.len(),
+            2,
+            "NaN sampling may be empty, but neighbors and count survive"
+        );
+        connection.execute_batch(
+            "UPDATE dl.metric_points SET value_f64=CASE WHEN step=2 THEN '-0.0'::DOUBLE
+                WHEN step=4 THEN 'Infinity'::DOUBLE ELSE 0.0 END;",
+        )?;
+        // DuckDB may canonicalize signed zero; this strategy promises numeric, not bitwise, y identity.
+        let (count, mixed) = run(2, 4, 100)?;
+        assert_eq!(count, 8);
+        assert_eq!(mixed.len(), 8);
+        assert!(mixed.iter().any(|p| p.step == 2 && p.value_f64 == 0.0));
+        assert!(
+            mixed
+                .iter()
+                .any(|p| p.step == 4 && p.value_f64 == f64::INFINITY)
+        );
+        for budget in [4, 8] {
+            assert_eq!(run(2, 4, budget)?.0, 8);
+        }
+        connection.execute_batch(
+            "UPDATE dl.metric_points SET value_f64=1.0;
+            UPDATE dl.metric_points SET step=9007199254741000 WHERE step=6;",
+        )?;
+        assert!(
+            run(0, i64::MAX, 100)
+                .err()
+                .expect("oversized span must fail")
+                .to_string()
+                .contains("Step span exceeds exact coordinate range")
+        );
+        connection.execute_batch("DELETE FROM dl.metric_points;")?;
+        let (count, empty) = run(2, 4, 100)?;
+        assert_eq!(count, 0);
+        assert!(empty.is_empty());
         Ok(())
     }
 
