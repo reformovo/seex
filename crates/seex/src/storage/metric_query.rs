@@ -674,6 +674,57 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires the maintained local lttb extension and million-point fixture"]
+    fn lttb_million_point_strategy_experiment() -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::path::PathBuf::from(std::env::var("SEEX_LTTB_ROOT")?);
+        let extension = std::env::var("SEEX_LTTB_EXTENSION_PATH")?;
+        if !Path::new(&extension).is_file() || !root.ends_with(".tmp/v5-panel-million/store") {
+            return Err("set a local lttb extension and the million-point fixture".into());
+        }
+        let connection = crate::storage::bootstrap::open_existing_native_connection_with_config(
+            crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
+                crate::storage::bootstrap::CatalogBackend::Sqlite,
+                &root,
+                None,
+                None,
+                None,
+            ),
+        )?;
+        load_lttb_extension_from_path(&connection, Path::new(&extension))?;
+        let reader = ProjectMetricReader::new(&connection);
+        for (label, start, end) in [
+            ("overview", None, None),
+            ("detail", Some(450_000), Some(550_000)),
+        ] {
+            let query = MetricQuery::new(
+                RunId::from_string("run-0"),
+                MetricKey::from_string("loss"),
+                start.map(Step::new),
+                end.map(Step::new),
+                ReductionPolicy::lttb(1024)?,
+            )?;
+            let started = std::time::Instant::now();
+            let result = reader.query_metric(&query)?;
+            assert!(result.points.len() <= 1024 && !result.points.is_empty());
+            assert_eq!(
+                result.source_row_count,
+                if label == "overview" {
+                    1_000_001
+                } else {
+                    100_004
+                }
+            );
+            println!(
+                "lttb_request,range={label},points={},source_count={},elapsed_ns={}",
+                result.points.len(),
+                result.source_row_count,
+                started.elapsed().as_nanos()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn lttb_auto_install_is_opt_in() {
         assert!(!lttb_auto_install_allowed(None));
         assert!(!lttb_auto_install_allowed(Some(OsStr::new("0"))));
