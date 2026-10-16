@@ -23,6 +23,13 @@ enum AlignmentPlan {
     NarrowStep,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScreenStrategy {
+    Default,
+    Grouped,
+    Lttb,
+}
+
 pub(crate) fn query_aligned_metric(
     connection: &Connection,
     source: AlignmentSource<'_>,
@@ -178,18 +185,11 @@ fn execute_aligned_metric(
             Some(((max_points / EXTREMA_PER_BUCKET).max(1), max_points))
         }
     };
-    let lttb = std::env::var_os("SEEX_DIAGNOSTIC_LTTB_DETAIL").is_some();
-    if lttb {
+    let strategy = screen_strategy(query.axis, plan, screen_limits.is_some());
+    if strategy == ScreenStrategy::Lttb {
         ensure_lttb_detail_extension(connection)?;
     }
-    let sql = aligned_points_sql(
-        source,
-        query.axis,
-        screen_limits.is_some(),
-        plan,
-        std::env::var_os("SEEX_DIAGNOSTIC_GROUPED_DETAIL").is_some(),
-        lttb,
-    );
+    let sql = aligned_points_sql(source, query.axis, screen_limits.is_some(), plan, strategy);
     let values = query_values(source, query, run_start_millis, screen_limits, plan)?;
     let started = std::time::Instant::now();
     let mut statement = connection.prepare(&sql)?;
@@ -199,7 +199,7 @@ fn execute_aligned_metric(
     ) {
         Ok(rows) => rows,
         Err(error) => {
-            if lttb {
+            if strategy == ScreenStrategy::Lttb {
                 eprintln!("lttb_detail_sql_error={error};sql={sql}");
             }
             return Err(error.into());
@@ -231,25 +231,29 @@ pub(crate) fn validate_alignment_identity(query: &AlignmentQuery) -> Result<(), 
     Ok(())
 }
 
+fn screen_strategy(axis: AlignmentAxis, plan: AlignmentPlan, reduced: bool) -> ScreenStrategy {
+    if !reduced || axis != AlignmentAxis::Step || !matches!(plan, AlignmentPlan::NarrowStep) {
+        return ScreenStrategy::Default;
+    }
+    if std::env::var_os("SEEX_DIAGNOSTIC_LTTB_DETAIL").is_some() {
+        ScreenStrategy::Lttb
+    } else if std::env::var_os("SEEX_DIAGNOSTIC_GROUPED_DETAIL").is_some() {
+        ScreenStrategy::Grouped
+    } else {
+        ScreenStrategy::Default
+    }
+}
+
 fn aligned_points_sql(
     source: AlignmentSource<'_>,
     axis: AlignmentAxis,
     screen_reduced: bool,
     plan: AlignmentPlan,
-    grouped: bool,
-    lttb: bool,
+    strategy: ScreenStrategy,
 ) -> String {
-    let selection = if lttb
-        && screen_reduced
-        && axis == AlignmentAxis::Step
-        && matches!(plan, AlignmentPlan::NarrowStep)
-    {
+    let selection = if strategy == ScreenStrategy::Lttb {
         lttb_step_selection()
-    } else if grouped
-        && screen_reduced
-        && axis == AlignmentAxis::Step
-        && matches!(plan, AlignmentPlan::NarrowStep)
-    {
+    } else if strategy == ScreenStrategy::Grouped {
         grouped_step_selection()
     } else if screen_reduced {
         "inside_numbered AS (
@@ -1152,8 +1156,11 @@ mod tests {
                         AlignmentAxis::Step,
                         true,
                         AlignmentPlan::NarrowStep,
-                        grouped,
-                        false,
+                        if grouped {
+                            ScreenStrategy::Grouped
+                        } else {
+                            ScreenStrategy::Default
+                        },
                     );
                     let mut statement = connection.prepare(&sql)?;
                     let rows = statement.query_map(
@@ -1246,8 +1253,7 @@ mod tests {
             AlignmentAxis::Step,
             true,
             AlignmentPlan::Full,
-            false,
-            false,
+            ScreenStrategy::Default,
         );
 
         assert_eq!(sql.matches("FROM dl.metric_points").count(), 1);
@@ -1290,8 +1296,7 @@ mod tests {
             AlignmentAxis::Step,
             true,
             AlignmentPlan::NarrowStep,
-            false,
-            false,
+            ScreenStrategy::Default,
         );
         assert_eq!(sql.matches("dl.metric_points").count(), 2);
         assert!(sql.contains("coalesce(step_bounds.left_step"));
