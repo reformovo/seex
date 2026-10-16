@@ -6,6 +6,140 @@
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum SelectionError {
     NonFiniteValue { index: usize },
+    UnsortedAxis { index: usize },
+    CountMismatch { expected: usize, actual: usize },
+    ArithmeticOverflow,
+}
+
+pub(crate) trait Point {
+    fn axis(&self) -> i64;
+    fn value(&self) -> f64;
+}
+
+/// Ordered finite input with known length. Keeps output plus two adjacent buckets,
+/// O(budget + count/budget) points, not constant memory for very small budgets.
+pub(crate) struct OrderedLttb<T> {
+    count: usize,
+    budget: usize,
+    seen: usize,
+    bucket: usize,
+    last_axis: Option<i64>,
+    buffer: std::collections::VecDeque<T>,
+    selected: Vec<T>,
+    peak: usize,
+}
+
+impl<T: Point> OrderedLttb<T> {
+    pub(crate) fn new(count: usize, budget: usize) -> Self {
+        Self {
+            count,
+            budget,
+            seen: 0,
+            bucket: 0,
+            last_axis: None,
+            buffer: std::collections::VecDeque::new(),
+            selected: Vec::new(),
+            peak: 0,
+        }
+    }
+
+    pub(crate) fn peak_buffered(&self) -> usize {
+        self.peak
+    }
+
+    pub(crate) fn push(&mut self, point: T) -> Result<(), SelectionError> {
+        if self.seen == self.count {
+            return Err(SelectionError::CountMismatch {
+                expected: self.count,
+                actual: self.seen + 1,
+            });
+        }
+        if !point.value().is_finite() {
+            return Err(SelectionError::NonFiniteValue { index: self.seen });
+        }
+        if self.last_axis.is_some_and(|axis| point.axis() < axis) {
+            return Err(SelectionError::UnsortedAxis { index: self.seen });
+        }
+        self.last_axis = Some(point.axis());
+        self.seen += 1;
+        if self.count <= self.budget
+            || (self.seen == 1 && self.budget > 0)
+            || (self.budget == 2 && self.seen == self.count)
+        {
+            self.selected.push(point);
+        } else if self.budget > 2 {
+            self.buffer.push_back(point);
+            self.peak = self.peak.max(self.buffer.len());
+            let every = (self.count - 2) as f64 / (self.budget - 2) as f64;
+            let start = (self.bucket as f64 * every).floor() as usize + 1;
+            let next = ((self.bucket + 1) as f64 * every).floor() as usize + 1;
+            let end = (((self.bucket + 2) as f64 * every).floor() as usize + 1).min(self.count);
+            if self.seen == end {
+                let origin = self.selected[0].axis();
+                let length = (end - next) as f64;
+                let average_x = self
+                    .buffer
+                    .iter()
+                    .skip(next - start)
+                    .map(|p| relative_axis(p.axis(), origin))
+                    .sum::<f64>()
+                    / length;
+                let average_y = self
+                    .buffer
+                    .iter()
+                    .skip(next - start)
+                    .map(Point::value)
+                    .sum::<f64>()
+                    / length;
+                if !average_x.is_finite() || !average_y.is_finite() {
+                    return Err(SelectionError::ArithmeticOverflow);
+                }
+                let previous = self.selected.last().expect("first point retained");
+                let mut best = 0;
+                let mut area = f64::NEG_INFINITY;
+                for (index, point) in self.buffer.iter().take(next - start).enumerate() {
+                    let candidate = triangle_area(
+                        relative_axis(previous.axis(), origin),
+                        previous.value(),
+                        relative_axis(point.axis(), origin),
+                        point.value(),
+                        average_x,
+                        average_y,
+                    );
+                    if !candidate.is_finite() {
+                        return Err(SelectionError::ArithmeticOverflow);
+                    }
+                    if candidate > area {
+                        area = candidate;
+                        best = index;
+                    }
+                }
+                for index in 0..(next - start) {
+                    let point = self.buffer.pop_front().expect("current bucket buffered");
+                    if index == best {
+                        self.selected.push(point);
+                    }
+                }
+                self.bucket += 1;
+                if self.seen == self.count {
+                    self.selected
+                        .push(self.buffer.pop_back().expect("last point buffered"));
+                    self.buffer.clear();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> Result<Vec<T>, SelectionError> {
+        if self.seen != self.count {
+            return Err(SelectionError::CountMismatch {
+                expected: self.count,
+                actual: self.seen,
+            });
+        }
+        Ok(self.selected)
+    }
 }
 
 /// Selects at most `max_points` input positions using Largest Triangle Three
@@ -99,6 +233,69 @@ fn triangle_area(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl Point for (i64, f64, usize) {
+        fn axis(&self) -> i64 {
+            self.0
+        }
+        fn value(&self) -> f64 {
+            self.1
+        }
+    }
+
+    #[test]
+    fn ordered_stream_matches_reference_and_bounds_buffers() {
+        for count in 0..80 {
+            let axes = (0..count)
+                .map(|i| 9_007_199_254_740_993 + (i / 3) as i64)
+                .collect::<Vec<_>>();
+            let values = (0..count)
+                .map(|i| ((i * i % 97) as f64).sin())
+                .collect::<Vec<_>>();
+            for budget in 0..85 {
+                let mut stream = OrderedLttb::new(count, budget);
+                for index in 0..count {
+                    stream.push((axes[index], values[index], index)).unwrap();
+                }
+                if count > budget && budget > 2 {
+                    assert!(
+                        stream.peak_buffered()
+                            <= 2 * ((count - 2) as f64 / (budget - 2) as f64).ceil() as usize + 1
+                    );
+                }
+                let selected = stream
+                    .finish()
+                    .unwrap()
+                    .into_iter()
+                    .map(|p| p.2)
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    selected,
+                    select_indices(&axes, &values, budget).unwrap(),
+                    "N={count}, K={budget}"
+                );
+            }
+        }
+        assert!(matches!(
+            OrderedLttb::<(i64, f64, usize)>::new(1, 1).finish(),
+            Err(SelectionError::CountMismatch { .. })
+        ));
+        let mut stream = OrderedLttb::new(2, 2);
+        stream.push((1, 0.0, 0)).unwrap();
+        assert_eq!(
+            stream.push((0, 1.0, 1)),
+            Err(SelectionError::UnsortedAxis { index: 1 })
+        );
+        assert_eq!(
+            stream.push((2, f64::NAN, 1)),
+            Err(SelectionError::NonFiniteValue { index: 1 })
+        );
+        stream.push((2, 1.0, 1)).unwrap();
+        assert!(matches!(
+            stream.push((3, 1.0, 2)),
+            Err(SelectionError::CountMismatch { .. })
+        ));
+    }
 
     #[test]
     fn preserves_endpoints_and_budget() {
