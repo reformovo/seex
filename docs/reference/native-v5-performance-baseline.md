@@ -818,3 +818,22 @@ returns fewer points on several shapes, so the lower LTTB errors do not isolate
 algorithm quality at equal point count. No universal superiority or default
 strategy acceptance follows. Same-scale source/screen/LTTB plots, CSVs, metrics,
 source patch and identities remain locally in `.tmp/v5-lttb-quality/`.
+
+### Native two-bucket LTTB stream
+
+A Seex-native ordered LTTB selector now has standalone reference-equivalence
+and bounded-buffer coverage. It consumes ordered observations and retains only
+the current/next bucket plus selected points; unsorted axes, non-finite values,
+and count mismatches are explicit errors. On 1,000,001 generated points with a
+1,024-point budget, the selector buffered at most 1,957 points; this is
+algorithm-only memory, not Reader RSS.
+
+An opt-in `SEEX_DIAGNOSTIC_NATIVE_LTTB` path feeds the existing bounded Overview
+Arrow result into this selector. On the 16-curve million-point fixture it
+returned 16,384 points with source count 16,000,016. Hot Overview requests were
+approximately 1.206--1.233 s with about 218 MiB process RSS, versus the
+extension-based unified LTTB diagnostic at roughly 3.20--3.25 s and 630 MiB.
+Detail is not routed through this path yet; its native diagnostic remains about
+1.245--1.277 s and 230 MiB. This is a diagnostic, not an ABBA; the native
+selector is not default and its Arrow integration still needs exact-equivalence
+coverage against the extension on larger shape cases.

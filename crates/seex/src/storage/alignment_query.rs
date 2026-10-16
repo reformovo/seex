@@ -6,6 +6,7 @@ use crate::model::run::RunId;
 use duckdb::Connection;
 
 use crate::storage::StorageError;
+use crate::storage::lttb::{OrderedLttb, Point};
 use crate::storage::metric_query::percent_encode_metric_key;
 use crate::storage::time::timestamp_from_millis;
 
@@ -75,24 +76,106 @@ pub(crate) fn query_bounded_full_aligned_metric(
         Box::new(query.viewport.end()),
     ]);
     let mut statement = connection.prepare(&sql)?;
-    let mut reducer = ScreenReducer::new(max_points, source_row_count);
     let batches = statement.query_arrow(duckdb::params_from_iter(
         values.iter().map(|value| value.as_ref()),
     ))?;
-    for batch in batches {
-        reduce_batch(&batch, &mut reducer)?;
-    }
-    check_batch_row_count(reducer.ordinal, statement.row_count())?;
-    let points = reducer
-        .finish()
-        .into_iter()
-        .map(|point| point.into_aligned_metric_point(&query.run_id, &query.metric_key))
-        .collect::<Result<Vec<_>, _>>()?;
+    let points = if std::env::var_os("SEEX_DIAGNOSTIC_NATIVE_LTTB").is_some() {
+        let mut reducer =
+            OrderedLttb::<StoredAlignedPoint>::new(source_row_count as usize, max_points);
+        let mut consumed = 0_u64;
+        for batch in batches {
+            consumed += reduce_batch_native(&batch, &mut reducer)?;
+        }
+        check_batch_row_count(consumed, statement.row_count())?;
+        reducer
+            .finish()
+            .map_err(native_lttb_error)?
+            .into_iter()
+            .map(|point| point.into_aligned_metric_point(&query.run_id, &query.metric_key))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        let mut reducer = ScreenReducer::new(max_points, source_row_count);
+        for batch in batches {
+            reduce_batch(&batch, &mut reducer)?;
+        }
+        check_batch_row_count(reducer.ordinal, statement.row_count())?;
+        reducer
+            .finish()
+            .into_iter()
+            .map(|point| point.into_aligned_metric_point(&query.run_id, &query.metric_key))
+            .collect::<Result<Vec<_>, _>>()?
+    };
     Ok(AlignmentQueryResult {
         points,
         source_row_count,
         reasons: Vec::new(),
     })
+}
+
+fn native_lttb_error(error: crate::storage::lttb::SelectionError) -> StorageError {
+    StorageError::Storage {
+        operation: "native LTTB selection",
+        name: format!("{error:?}"),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "native LTTB rejected input",
+        ),
+    }
+}
+
+impl Point for StoredAlignedPoint {
+    fn axis(&self) -> i64 {
+        self.axis_value
+    }
+    fn value(&self) -> f64 {
+        self.value_f64
+    }
+}
+
+fn reduce_batch_native(
+    batch: &duckdb::arrow::record_batch::RecordBatch,
+    reducer: &mut OrderedLttb<StoredAlignedPoint>,
+) -> Result<u64, StorageError> {
+    use duckdb::arrow::array::{Array, Float64Array, Int64Array};
+    if batch.num_columns() != 5 {
+        return Err(native_lttb_error(
+            crate::storage::lttb::SelectionError::ArithmeticOverflow,
+        ));
+    }
+    let ints = [0, 1, 3, 4].map(|i| batch.column(i).as_any().downcast_ref::<Int64Array>());
+    let [Some(step), Some(timestamp), Some(ingested), Some(axis)] = ints else {
+        return Err(native_lttb_error(
+            crate::storage::lttb::SelectionError::ArithmeticOverflow,
+        ));
+    };
+    let Some(value) = batch.column(2).as_any().downcast_ref::<Float64Array>() else {
+        return Err(native_lttb_error(
+            crate::storage::lttb::SelectionError::ArithmeticOverflow,
+        ));
+    };
+    if step.null_count()
+        + timestamp.null_count()
+        + ingested.null_count()
+        + axis.null_count()
+        + value.null_count()
+        != 0
+    {
+        return Err(native_lttb_error(
+            crate::storage::lttb::SelectionError::NonFiniteValue { index: 0 },
+        ));
+    }
+    for i in 0..batch.num_rows() {
+        reducer
+            .push(StoredAlignedPoint {
+                step: step.value(i),
+                timestamp_millis: timestamp.value(i),
+                value_f64: value.value(i),
+                ingested_at_millis: ingested.value(i),
+                axis_value: axis.value(i),
+            })
+            .map_err(native_lttb_error)?;
+    }
+    Ok(batch.num_rows() as u64)
 }
 
 fn check_batch_row_count(consumed: u64, expected: usize) -> Result<(), StorageError> {
