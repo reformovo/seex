@@ -95,6 +95,26 @@ fn check_batch_row_count(consumed: u64, expected: usize) -> Result<(), StorageEr
     Ok(())
 }
 
+fn ensure_lttb_detail_extension(connection: &Connection) -> Result<(), StorageError> {
+    let Some(path) = std::env::var_os("SEEX_LTTB_EXTENSION_PATH") else {
+        return Err(batch_decode_error(
+            "SEEX_LTTB_EXTENSION_PATH is required for LTTB detail",
+        ));
+    };
+    let path = crate::storage::sql::string_literal(path.to_string_lossy().as_ref());
+    connection.execute_batch(&format!("LOAD {path};"))?;
+    let available: bool = connection.query_row(
+        "SELECT count(*) > 0 FROM duckdb_functions() WHERE function_name = 'lttb_sorted'",
+        [],
+        |row| row.get(0),
+    )?;
+    if available {
+        Ok(())
+    } else {
+        Err(batch_decode_error("lttb_sorted was not registered"))
+    }
+}
+
 fn batch_decode_error(message: &'static str) -> StorageError {
     StorageError::Storage {
         operation: "decoding bounded query result",
@@ -158,20 +178,33 @@ fn execute_aligned_metric(
             Some(((max_points / EXTREMA_PER_BUCKET).max(1), max_points))
         }
     };
+    let lttb = std::env::var_os("SEEX_DIAGNOSTIC_LTTB_DETAIL").is_some();
+    if lttb {
+        ensure_lttb_detail_extension(connection)?;
+    }
     let sql = aligned_points_sql(
         source,
         query.axis,
         screen_limits.is_some(),
         plan,
         std::env::var_os("SEEX_DIAGNOSTIC_GROUPED_DETAIL").is_some(),
+        lttb,
     );
     let values = query_values(source, query, run_start_millis, screen_limits, plan)?;
     let started = std::time::Instant::now();
     let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(
+    let rows = match statement.query_map(
         duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
         stored_alignment_row,
-    )?;
+    ) {
+        Ok(rows) => rows,
+        Err(error) => {
+            if lttb {
+                eprintln!("lttb_detail_sql_error={error};sql={sql}");
+            }
+            return Err(error.into());
+        }
+    };
     crate::storage::bootstrap::record_write_timing("aligned_execute", started.elapsed());
     let started = std::time::Instant::now();
     let mut points = Vec::new();
@@ -204,8 +237,15 @@ fn aligned_points_sql(
     screen_reduced: bool,
     plan: AlignmentPlan,
     grouped: bool,
+    lttb: bool,
 ) -> String {
-    let selection = if grouped
+    let selection = if lttb
+        && screen_reduced
+        && axis == AlignmentAxis::Step
+        && matches!(plan, AlignmentPlan::NarrowStep)
+    {
+        lttb_step_selection()
+    } else if grouped
         && screen_reduced
         && axis == AlignmentAxis::Step
         && matches!(plan, AlignmentPlan::NarrowStep)
@@ -275,6 +315,33 @@ fn aligned_points_sql(
             AlignmentPlan::NarrowStep => narrow_step_ctes(source),
         }
     )
+}
+
+fn lttb_step_selection() -> &'static str {
+    "inside_numbered AS (
+         SELECT *, count(*) OVER ()::UBIGINT AS inside_count
+         FROM inside
+     ),
+     screen_limit AS (SELECT ?::UBIGINT AS bucket_count, ?::UBIGINT AS max_points),
+     normalized AS (
+         SELECT *, row_number() OVER (PARTITION BY step, value_f64 ORDER BY step) AS occurrence
+         FROM inside_numbered
+     ),
+     sampled AS (
+         SELECT unnest(lttb_sorted(step, value_f64, 1024)) AS point
+         FROM normalized
+     ),
+     sampled_counts AS (
+         SELECT point.x AS step, point.y AS value_f64, count(*)::UBIGINT AS selected_count
+         FROM sampled GROUP BY point.x, point.y
+     ),
+     selected AS (
+         SELECT normalized.* EXCLUDE (inside_count, occurrence)
+         FROM normalized JOIN sampled_counts USING (step, value_f64)
+         WHERE normalized.occurrence <= sampled_counts.selected_count
+         UNION ALL SELECT * FROM left_neighbor
+         UNION ALL SELECT * FROM right_neighbor
+     )"
 }
 
 fn grouped_step_selection() -> &'static str {
@@ -1086,6 +1153,7 @@ mod tests {
                         true,
                         AlignmentPlan::NarrowStep,
                         grouped,
+                        false,
                     );
                     let mut statement = connection.prepare(&sql)?;
                     let rows = statement.query_map(
@@ -1179,6 +1247,7 @@ mod tests {
             true,
             AlignmentPlan::Full,
             false,
+            false,
         );
 
         assert_eq!(sql.matches("FROM dl.metric_points").count(), 1);
@@ -1221,6 +1290,7 @@ mod tests {
             AlignmentAxis::Step,
             true,
             AlignmentPlan::NarrowStep,
+            false,
             false,
         );
         assert_eq!(sql.matches("dl.metric_points").count(), 2);

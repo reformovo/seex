@@ -728,3 +728,14 @@ The result supports a follow-up comparison of `lttb_sorted`/`minmax_lttb_sorted`
 against Viewer screen reduction, but does not authorize replacing the default:
 repeated-Step mapping, NaN/Inf, signed-zero, neighbor retention, visual quality,
 and RSS still require a separate strategy acceptance experiment.
+
+An opt-in Viewer Detail experiment then loaded the same v1.5.4-compatible local
+extension through `SEEX_LTTB_EXTENSION_PATH` and used `lttb_sorted` for the
+narrow Step path. On the 16-curve million-observation panel fixture, source
+count was 1,600,064 and the experiment returned 16,384 points (1,024 per
+curve). Hot requests were approximately 838--851 ms versus the screen-path
+baseline of about 1.24--1.26 s; process RSS was approximately 233 MiB versus
+about 227 MiB. This is a diagnostic first-plus-three-hot-request observation,
+not an ABBA or quality-equivalence claim. LTTB remained opt-in; no default
+Viewer strategy changed. Raw output and extension identity are under
+`.tmp/v5-lttb-experiment/`.
