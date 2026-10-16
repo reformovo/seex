@@ -32,10 +32,19 @@ pub(crate) struct OrderedLttb<T> {
     next_axis_sum: f64,
     next_value_sum: f64,
     next_count: usize,
+    current_start: usize,
+    next_start: usize,
+    next_end: usize,
 }
 
 impl<T: Point> OrderedLttb<T> {
     pub(crate) fn new(count: usize, budget: usize) -> Self {
+        let every = if budget > 2 {
+            (count.saturating_sub(2)) as f64 / (budget - 2) as f64
+        } else {
+            0.0
+        };
+        let (current_start, next_start, next_end) = bucket_bounds(count, every, 0);
         Self {
             count,
             budget,
@@ -45,15 +54,14 @@ impl<T: Point> OrderedLttb<T> {
             buffer: std::collections::VecDeque::new(),
             selected: Vec::new(),
             peak: 0,
-            every: if budget > 2 {
-                (count.saturating_sub(2)) as f64 / (budget - 2) as f64
-            } else {
-                0.0
-            },
+            every,
             origin: None,
             next_axis_sum: 0.0,
             next_value_sum: 0.0,
             next_count: 0,
+            current_start,
+            next_start,
+            next_end,
         }
     }
 
@@ -87,10 +95,9 @@ impl<T: Point> OrderedLttb<T> {
             self.buffer.push_back(point);
             self.peak = self.peak.max(self.buffer.len());
             let point_index = self.seen - 1;
-            let start = (self.bucket as f64 * self.every).floor() as usize + 1;
-            let next = ((self.bucket + 1) as f64 * self.every).floor() as usize + 1;
-            let end =
-                (((self.bucket + 2) as f64 * self.every).floor() as usize + 1).min(self.count);
+            let start = self.current_start;
+            let next = self.next_start;
+            let end = self.next_end;
             if point_index >= next && point_index < end {
                 let origin = self.origin.expect("first point establishes origin");
                 let queued = self.buffer.back().expect("point was just buffered");
@@ -133,6 +140,8 @@ impl<T: Point> OrderedLttb<T> {
                     }
                 }
                 self.bucket += 1;
+                (self.current_start, self.next_start, self.next_end) =
+                    bucket_bounds(self.count, self.every, self.bucket);
                 self.next_axis_sum = 0.0;
                 self.next_value_sum = 0.0;
                 self.next_count = 0;
@@ -235,6 +244,13 @@ pub(crate) fn select_indices(
     }
     selected.push(count - 1);
     Ok(selected)
+}
+
+fn bucket_bounds(count: usize, every: f64, bucket: usize) -> (usize, usize, usize) {
+    let start = (bucket as f64 * every).floor() as usize + 1;
+    let next = ((bucket + 1) as f64 * every).floor() as usize + 1;
+    let end = (((bucket + 2) as f64 * every).floor() as usize + 1).min(count);
+    (start, next, end)
 }
 
 fn relative_axis(axis: i64, origin: i64) -> f64 {
