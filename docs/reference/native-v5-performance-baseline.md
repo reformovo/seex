@@ -667,3 +667,32 @@ Overview source count and was corrected. Neither failed attempt supplies
 performance evidence. Logs, sample arrays, source and binary identity are
 retained locally under `.tmp/v5-batch-detail/`; the next optimization boundary
 is narrow SQL work, not bounded result decoding.
+
+### Grouped Detail candidate: latency/memory tradeoff
+
+Instrumenting the same complete panel request attributed approximately
+798--827 ms to aligned SQL preparation/execution, but only 1.7--1.8 ms to
+consuming the already-reduced result. Copying the Overview Arrow decoder would
+therefore address little of the measured Detail cost.
+
+An opt-in `SEEX_DIAGNOSTIC_GROUPED_DETAIL` candidate replaces four bucket-local
+ranking windows with ordered first/last/min/max aggregates over whole observation
+payloads. A query-local ordinal deduplicates roles, not repeated observations;
+it is never persisted. Budget-fitting sequences, neighbors, source count and
+qualification remain unchanged. Tests compare complete payload multisets for
+duplicate observations, small/large budgets, single-Step and out-of-range
+viewports, and missing metrics.
+
+One completed bounded ABBA used the same binary, store and complete 16-curve
+Detail request: baseline medians 1.264/1.287 s, candidate 1.162/1.164 s, paired
+improvements 8.09%/9.57%, combined 8.84%. All capture relative MADs were below
+2%; the latency-only gate returned PASS. No RSS metric was protected by this
+gate. Separate diagnostic process peaks increased from approximately 227 MiB
+to 267 MiB. Removing a redundant reference to the wide payload CTE did not
+remove that cost. This is not an across-the-board performance improvement.
+
+The candidate remains opt-in, unaccepted as a default pending the explicit
+latency/memory tradeoff decision and wider semantic coverage. It changes no
+stored facts, partitioning, connection lifetime or public API. Both diagnostic
+versions, patches, binary identities, raw logs and the single completed ABBA
+are local ignored artifacts under `.tmp/v5-detail-window/`.

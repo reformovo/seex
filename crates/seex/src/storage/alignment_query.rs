@@ -158,13 +158,22 @@ fn execute_aligned_metric(
             Some(((max_points / EXTREMA_PER_BUCKET).max(1), max_points))
         }
     };
-    let sql = aligned_points_sql(source, query.axis, screen_limits.is_some(), plan);
+    let sql = aligned_points_sql(
+        source,
+        query.axis,
+        screen_limits.is_some(),
+        plan,
+        std::env::var_os("SEEX_DIAGNOSTIC_GROUPED_DETAIL").is_some(),
+    );
     let values = query_values(source, query, run_start_millis, screen_limits, plan)?;
+    let started = std::time::Instant::now();
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(
         duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
         stored_alignment_row,
     )?;
+    crate::storage::bootstrap::record_write_timing("aligned_execute", started.elapsed());
+    let started = std::time::Instant::now();
     let mut points = Vec::new();
     let mut source_row_count = 0;
     for row in rows {
@@ -174,6 +183,7 @@ fn execute_aligned_metric(
         }
         source_row_count = count;
     }
+    crate::storage::bootstrap::record_write_timing("aligned_consume", started.elapsed());
     Ok(AlignmentQueryResult {
         points,
         source_row_count,
@@ -193,8 +203,15 @@ fn aligned_points_sql(
     axis: AlignmentAxis,
     screen_reduced: bool,
     plan: AlignmentPlan,
+    grouped: bool,
 ) -> String {
-    let selection = if screen_reduced {
+    let selection = if grouped
+        && screen_reduced
+        && axis == AlignmentAxis::Step
+        && matches!(plan, AlignmentPlan::NarrowStep)
+    {
+        grouped_step_selection()
+    } else if screen_reduced {
         "inside_numbered AS (
              SELECT *, row_number() OVER (ORDER BY step) - 1 AS ordinal,
                     count(*) OVER ()::UBIGINT AS inside_count
@@ -258,6 +275,43 @@ fn aligned_points_sql(
             AlignmentPlan::NarrowStep => narrow_step_ctes(source),
         }
     )
+}
+
+fn grouped_step_selection() -> &'static str {
+    "inside_numbered AS (
+         SELECT *, row_number() OVER (ORDER BY step) - 1 AS ordinal,
+                count(*) OVER ()::UBIGINT AS inside_count FROM inside
+     ),
+     inside_bucketed AS (
+         SELECT *, floor(ordinal::DOUBLE * ?::DOUBLE / inside_count::DOUBLE)::UBIGINT AS bucket
+         FROM inside_numbered
+     ),
+     screen_limit AS (SELECT ?::UBIGINT AS max_points),
+     payloads AS (
+         SELECT *, struct_pack(step := step, \"timestamp\" := timestamp, value_f64 := value_f64,
+             ingested_at := ingested_at, axis_value := axis_value,
+             previous_axis_value := previous_axis_value, ordinal := ordinal) AS payload
+         FROM inside_bucketed
+     ),
+     reduced AS (
+         SELECT first(payload ORDER BY axis_value, step) AS first_point,
+                first(payload ORDER BY axis_value DESC, step DESC) AS last_point,
+                first(payload ORDER BY value_f64, axis_value, step) AS min_point,
+                first(payload ORDER BY value_f64 DESC, axis_value, step) AS max_point
+         FROM payloads WHERE inside_count > (SELECT max_points FROM screen_limit)
+         GROUP BY bucket
+     ),
+     picked AS (
+         SELECT DISTINCT unnest([first_point, last_point, min_point, max_point]) AS point FROM reduced
+     ),
+     selected AS (
+         SELECT point.* EXCLUDE (ordinal) FROM picked
+         UNION ALL
+         SELECT * EXCLUDE (ordinal, inside_count) FROM inside_numbered
+         WHERE inside_count <= (SELECT max_points FROM screen_limit)
+         UNION ALL SELECT * FROM left_neighbor
+         UNION ALL SELECT * FROM right_neighbor
+     )"
 }
 
 fn bounded_full_sql(source: AlignmentSource<'_>, axis: AlignmentAxis) -> String {
@@ -996,6 +1050,76 @@ mod tests {
     }
 
     #[test]
+    fn grouped_detail_matches_windowed_observations() -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        connection.execute_batch(
+            "INSERT INTO dl.metric_points SELECT * FROM dl.metric_points WHERE step=3;",
+        )?;
+        for (start, end, key) in [
+            (0, 6, "loss"),
+            (2, 4, "loss"),
+            (3, 3, "loss"),
+            (-10, -5, "loss"),
+            (20, 30, "loss"),
+            (2, 4, "missing"),
+        ] {
+            for width in [1, 2, 100] {
+                let mut screen = query(
+                    AlignmentAxis::Step,
+                    AlignmentReduction::screen_budget(width, 1)?,
+                );
+                screen.viewport = AlignmentViewport::new(start, end)?;
+                screen.metric_key = MetricKey::from_string(key);
+                let max = screen.reduction.max_points().unwrap();
+                let values = query_values(
+                    AlignmentSource::Project,
+                    &screen,
+                    None,
+                    Some(((max / 4).max(1), max)),
+                    AlignmentPlan::NarrowStep,
+                )?;
+                let mut results = Vec::new();
+                for grouped in [false, true] {
+                    let sql = aligned_points_sql(
+                        AlignmentSource::Project,
+                        AlignmentAxis::Step,
+                        true,
+                        AlignmentPlan::NarrowStep,
+                        grouped,
+                    );
+                    let mut statement = connection.prepare(&sql)?;
+                    let rows = statement.query_map(
+                        duckdb::params_from_iter(values.iter().map(|v| v.as_ref())),
+                        |row| {
+                            let (point, count) = stored_alignment_row(row)?;
+                            Ok((
+                                point.map(|p| {
+                                    (
+                                        p.step,
+                                        p.timestamp_millis,
+                                        p.value_f64.to_bits(),
+                                        p.ingested_at_millis,
+                                        p.axis_value,
+                                    )
+                                }),
+                                count,
+                            ))
+                        },
+                    )?;
+                    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
+                    rows.sort();
+                    results.push(rows);
+                }
+                assert_eq!(
+                    results[0], results[1],
+                    "viewport [{start},{end}], width {width}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn bounded_reducer_preserves_same_step_extrema_without_repeating_roles() {
         let point = |value| StoredAlignedPoint {
             step: 3,
@@ -1054,6 +1178,7 @@ mod tests {
             AlignmentAxis::Step,
             true,
             AlignmentPlan::Full,
+            false,
         );
 
         assert_eq!(sql.matches("FROM dl.metric_points").count(), 1);
@@ -1096,6 +1221,7 @@ mod tests {
             AlignmentAxis::Step,
             true,
             AlignmentPlan::NarrowStep,
+            false,
         );
         assert_eq!(sql.matches("dl.metric_points").count(), 2);
         assert!(sql.contains("coalesce(step_bounds.left_step"));
