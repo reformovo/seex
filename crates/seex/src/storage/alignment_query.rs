@@ -75,35 +75,47 @@ pub(crate) fn query_bounded_full_aligned_metric(
         Box::new(query.viewport.start()) as Box<dyn duckdb::ToSql>,
         Box::new(query.viewport.end()),
     ]);
+    let started = std::time::Instant::now();
     let mut statement = connection.prepare(&sql)?;
     let batches = statement.query_arrow(duckdb::params_from_iter(
         values.iter().map(|value| value.as_ref()),
     ))?;
+    crate::storage::bootstrap::record_write_timing("bounded_execute", started.elapsed());
     let points = if std::env::var_os("SEEX_DIAGNOSTIC_NATIVE_LTTB").is_some() {
         let mut reducer =
             OrderedLttb::<StoredAlignedPoint>::new(source_row_count as usize, max_points);
         let mut consumed = 0_u64;
+        let started = std::time::Instant::now();
         for batch in batches {
             consumed += reduce_batch_native(&batch, &mut reducer)?;
         }
         check_batch_row_count(consumed, statement.row_count())?;
-        reducer
+        crate::storage::bootstrap::record_write_timing("bounded_consume_native", started.elapsed());
+        let started = std::time::Instant::now();
+        let points = reducer
             .finish()
             .map_err(native_lttb_error)?
             .into_iter()
             .map(|point| point.into_aligned_metric_point(&query.run_id, &query.metric_key))
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::storage::bootstrap::record_write_timing("bounded_convert_native", started.elapsed());
+        points
     } else {
         let mut reducer = ScreenReducer::new(max_points, source_row_count);
+        let started = std::time::Instant::now();
         for batch in batches {
             reduce_batch(&batch, &mut reducer)?;
         }
         check_batch_row_count(reducer.ordinal, statement.row_count())?;
-        reducer
+        crate::storage::bootstrap::record_write_timing("bounded_consume_screen", started.elapsed());
+        let started = std::time::Instant::now();
+        let points = reducer
             .finish()
             .into_iter()
             .map(|point| point.into_aligned_metric_point(&query.run_id, &query.metric_key))
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::storage::bootstrap::record_write_timing("bounded_convert_screen", started.elapsed());
+        points
     };
     Ok(AlignmentQueryResult {
         points,

@@ -18,13 +18,18 @@ pub(crate) trait Point {
 
 /// Ordered finite input with known length. Keeps output plus two adjacent buckets,
 /// O(budget + count/budget) points, not constant memory for very small budgets.
+struct Buffered<T> {
+    point: T,
+    relative_axis: f64,
+}
+
 pub(crate) struct OrderedLttb<T> {
     count: usize,
     budget: usize,
     seen: usize,
     bucket: usize,
     last_axis: Option<i64>,
-    buffer: std::collections::VecDeque<T>,
+    buffer: std::collections::VecDeque<Buffered<T>>,
     selected: Vec<T>,
     peak: usize,
     every: f64,
@@ -92,17 +97,20 @@ impl<T: Point> OrderedLttb<T> {
         {
             self.selected.push(point);
         } else if self.budget > 2 {
-            self.buffer.push_back(point);
+            let origin = self.origin.expect("first point establishes origin");
+            self.buffer.push_back(Buffered {
+                relative_axis: relative_axis(point.axis(), origin),
+                point,
+            });
             self.peak = self.peak.max(self.buffer.len());
             let point_index = self.seen - 1;
             let start = self.current_start;
             let next = self.next_start;
             let end = self.next_end;
             if point_index >= next && point_index < end {
-                let origin = self.origin.expect("first point establishes origin");
                 let queued = self.buffer.back().expect("point was just buffered");
-                self.next_axis_sum += relative_axis(queued.axis(), origin);
-                self.next_value_sum += queued.value();
+                self.next_axis_sum += queued.relative_axis;
+                self.next_value_sum += queued.point.value();
                 self.next_count += 1;
             }
             if self.seen == end {
@@ -116,12 +124,13 @@ impl<T: Point> OrderedLttb<T> {
                 let previous = self.selected.last().expect("first point retained");
                 let mut best = 0;
                 let mut area = f64::NEG_INFINITY;
+                let previous_axis = relative_axis(previous.axis(), origin);
                 for (index, point) in self.buffer.iter().take(next - start).enumerate() {
                     let candidate = triangle_area(
-                        relative_axis(previous.axis(), origin),
+                        previous_axis,
                         previous.value(),
-                        relative_axis(point.axis(), origin),
-                        point.value(),
+                        point.relative_axis,
+                        point.point.value(),
                         average_x,
                         average_y,
                     );
@@ -136,7 +145,7 @@ impl<T: Point> OrderedLttb<T> {
                 for index in 0..(next - start) {
                     let point = self.buffer.pop_front().expect("current bucket buffered");
                     if index == best {
-                        self.selected.push(point);
+                        self.selected.push(point.point);
                     }
                 }
                 self.bucket += 1;
@@ -147,7 +156,7 @@ impl<T: Point> OrderedLttb<T> {
                 self.next_count = 0;
                 if self.seen == self.count {
                     self.selected
-                        .push(self.buffer.pop_back().expect("last point buffered"));
+                        .push(self.buffer.pop_back().expect("last point buffered").point);
                     self.buffer.clear();
                 }
             }
