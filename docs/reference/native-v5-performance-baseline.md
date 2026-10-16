@@ -728,4 +728,3 @@ The result supports a follow-up comparison of `lttb_sorted`/`minmax_lttb_sorted`
 against Viewer screen reduction, but does not authorize replacing the default:
 repeated-Step mapping, NaN/Inf, signed-zero, neighbor retention, visual quality,
 and RSS still require a separate strategy acceptance experiment.
-
