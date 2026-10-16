@@ -733,7 +733,7 @@ mod tests {
                 if label == "overview" {
                     1_000_001
                 } else {
-                    100_004
+                    100_001
                 }
             );
             println!(

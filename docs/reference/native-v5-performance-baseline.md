@@ -694,5 +694,38 @@ remove that cost. This is not an across-the-board performance improvement.
 The candidate remains opt-in, unaccepted as a default pending the explicit
 latency/memory tradeoff decision and wider semantic coverage. It changes no
 stored facts, partitioning, connection lifetime or public API. Both diagnostic
-versions, patches, binary identities, raw logs and the single completed ABBA
+Both diagnostic versions, patches, binary identities, raw logs and the single completed ABBA
 are local ignored artifacts under `.tmp/v5-detail-window/`.
+
+## Independent LTTB extension strategy experiment
+
+The maintained `reformovo/duckdb-lttb` extension was built from commit
+`33e4c2682250082de97664a98b099a80e7932e6a` against DuckDB v1.5.4 using
+`OVERRIDE_GIT_DESCRIBE=v1.5.4`. The first build produced a v0.0.1 ABI and was
+correctly rejected by Seex; no incompatible binary was used.
+
+The independent ignored experiment then loaded the matching local extension and
+measured direct extension calls plus Seex's existing `ReductionPolicy::Lttb`
+reconstruction on the same million-point fixture. It did not modify Viewer
+`query_curves`, which continues to use the screen first/last/min/max strategy.
+
+| Function/path | Overview | 10% Step range |
+| --- | ---: | ---: |
+| `lttb` direct | 30.8 ms | 10.0 ms |
+| `lttb_sorted` direct | **14.6 ms** | **9.1 ms** |
+| `minmax_lttb` direct | 16.1 ms | 9.2 ms |
+| `minmax_lttb_sorted` direct | 15.9 ms | **8.9 ms** |
+| Seex `ReductionPolicy::Lttb` end-to-end | 104.6 ms | 36.6 ms |
+
+All direct calls returned 1024 points. Public MetricQuery source counts were
+1,000,001 for Overview and 100,001 for the range; Viewer Detail's separate
+neighbor contract is not part of this public LTTB experiment. The measurements
+are one diagnostic run, not an ABBA and not a quality-equivalence claim. The
+extension path, DuckDB version identity, raw output and fixture remain under
+`.tmp/v5-lttb-experiment/`.
+
+The result supports a follow-up comparison of `lttb_sorted`/`minmax_lttb_sorted`
+against Viewer screen reduction, but does not authorize replacing the default:
+repeated-Step mapping, NaN/Inf, signed-zero, neighbor retention, visual quality,
+and RSS still require a separate strategy acceptance experiment.
+
