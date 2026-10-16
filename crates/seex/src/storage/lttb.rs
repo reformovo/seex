@@ -29,6 +29,9 @@ pub(crate) struct OrderedLttb<T> {
     peak: usize,
     every: f64,
     origin: Option<i64>,
+    next_axis_sum: f64,
+    next_value_sum: f64,
+    next_count: usize,
 }
 
 impl<T: Point> OrderedLttb<T> {
@@ -48,6 +51,9 @@ impl<T: Point> OrderedLttb<T> {
                 0.0
             },
             origin: None,
+            next_axis_sum: 0.0,
+            next_value_sum: 0.0,
+            next_count: 0,
         }
     }
 
@@ -80,30 +86,26 @@ impl<T: Point> OrderedLttb<T> {
         } else if self.budget > 2 {
             self.buffer.push_back(point);
             self.peak = self.peak.max(self.buffer.len());
+            let point_index = self.seen - 1;
             let start = (self.bucket as f64 * self.every).floor() as usize + 1;
             let next = ((self.bucket + 1) as f64 * self.every).floor() as usize + 1;
             let end =
                 (((self.bucket + 2) as f64 * self.every).floor() as usize + 1).min(self.count);
-            if self.seen == end {
+            if point_index >= next && point_index < end {
                 let origin = self.origin.expect("first point establishes origin");
-                let length = (end - next) as f64;
-                let average_x = self
-                    .buffer
-                    .iter()
-                    .skip(next - start)
-                    .map(|p| relative_axis(p.axis(), origin))
-                    .sum::<f64>()
-                    / length;
-                let average_y = self
-                    .buffer
-                    .iter()
-                    .skip(next - start)
-                    .map(Point::value)
-                    .sum::<f64>()
-                    / length;
+                let queued = self.buffer.back().expect("point was just buffered");
+                self.next_axis_sum += relative_axis(queued.axis(), origin);
+                self.next_value_sum += queued.value();
+                self.next_count += 1;
+            }
+            if self.seen == end {
+                let length = self.next_count as f64;
+                let average_x = self.next_axis_sum / length;
+                let average_y = self.next_value_sum / length;
                 if !average_x.is_finite() || !average_y.is_finite() {
                     return Err(SelectionError::ArithmeticOverflow);
                 }
+                let origin = self.origin.expect("first point establishes origin");
                 let previous = self.selected.last().expect("first point retained");
                 let mut best = 0;
                 let mut area = f64::NEG_INFINITY;
@@ -131,6 +133,9 @@ impl<T: Point> OrderedLttb<T> {
                     }
                 }
                 self.bucket += 1;
+                self.next_axis_sum = 0.0;
+                self.next_value_sum = 0.0;
+                self.next_count = 0;
                 if self.seen == self.count {
                     self.selected
                         .push(self.buffer.pop_back().expect("last point buffered"));
