@@ -511,6 +511,40 @@ impl Reader {
         self.query_metric_impl(run_id, metric_key, query, true, true)
     }
 
+    /// Request-scoped connection; Storage failures discard and retry the full panel once.
+    #[doc(hidden)]
+    pub fn query_metrics_for_desktop(
+        &self,
+        run_ids: &[RunId],
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+        overview: bool,
+        is_superseded: &mut dyn FnMut() -> bool,
+    ) -> SdkResult<Option<Vec<MetricSeries>>> {
+        if run_ids.len() > 16 {
+            return Err(Error::UnsupportedQuery);
+        }
+        if run_ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        if is_superseded() {
+            return Ok(None);
+        }
+        self.with_fresh_query_reader(|reader| {
+            let mut results = Vec::with_capacity(run_ids.len());
+            for run_id in run_ids {
+                if is_superseded() {
+                    return Ok(None);
+                }
+                results.push(reader.query_metric_once(run_id, metric_key, query, true, overview)?);
+            }
+            if is_superseded() {
+                return Ok(None);
+            }
+            Ok(Some(results))
+        })
+    }
+
     fn query_metric_impl(
         &self,
         run_id: &RunId,
@@ -519,30 +553,36 @@ impl Reader {
         retain_neighbors: bool,
         force_full_step: bool,
     ) -> SdkResult<MetricSeries> {
-        let first_reader = self.fresh_query_reader()?;
-        let first = first_reader.query_metric_once(
-            run_id,
-            metric_key,
-            query,
-            retain_neighbors,
-            force_full_step,
-        );
-        if !matches!(first, Err(Error::Storage)) {
-            self.remember_query_diagnostics(&first_reader);
-            return first;
+        self.with_fresh_query_reader(|reader| {
+            reader
+                .query_metric_once(run_id, metric_key, query, retain_neighbors, force_full_step)
+                .map(Some)
+        })?
+        .ok_or(Error::Storage)
+    }
+
+    fn with_fresh_query_reader<T>(
+        &self,
+        mut operation: impl FnMut(&Self) -> SdkResult<Option<T>>,
+    ) -> SdkResult<Option<T>> {
+        for attempt in 0..2 {
+            let reader = match self.fresh_query_reader() {
+                Err(Error::Storage) if attempt == 0 => continue,
+                result => result?,
+            };
+            if attempt != 0 {
+                reader.diagnostics.borrow_mut().volatile.clear();
+            }
+            match operation(&reader) {
+                Err(Error::Storage) if attempt == 0 => continue,
+                Ok(Some(value)) => {
+                    self.remember_query_diagnostics(&reader);
+                    return Ok(Some(value));
+                }
+                result => return result,
+            }
         }
-        let retry_reader = self.fresh_query_reader()?;
-        let result = retry_reader.query_metric_once(
-            run_id,
-            metric_key,
-            query,
-            retain_neighbors,
-            force_full_step,
-        );
-        if result.is_ok() {
-            self.remember_query_diagnostics(&retry_reader);
-        }
-        result
+        Err(Error::Storage)
     }
 
     fn remember_query_diagnostics(&self, query_reader: &Self) {
@@ -1324,6 +1364,77 @@ mod tests {
             reader.runs_page(&project, None, MAX_RUN_PAGE_SIZE + 1),
             Err(Error::UnsupportedQuery)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_query_retries_the_whole_operation_and_publishes_only_success()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = crate::Client::builder(root.path()).open()?;
+        for id in ["a", "b"] {
+            let run = client.start_run(crate::RunOptions::new("panel").id(id))?;
+            run.log_with([("loss", 1.0)], crate::LogOptions::new().step(0))?;
+            run.finish()?;
+        }
+        let reader = Reader::builder(root.path()).open()?;
+        let key = MetricKey::from_string("loss");
+        let query = MetricQuery::new(MetricRange::All(MetricAxis::Step), 8)?;
+        let mut calls = Vec::new();
+        let mut attempts = 0;
+        let result = reader
+            .with_fresh_query_reader(|fresh| {
+                attempts += 1;
+                assert_eq!(
+                    fresh.diagnostics_loads.get(),
+                    0,
+                    "failed-attempt cache must not escape"
+                );
+                let mut output = Vec::new();
+                for id in ["a", "b"] {
+                    calls.push(id);
+                    if attempts == 1 && id == "b" {
+                        return Err(Error::Storage);
+                    }
+                    output.push(fresh.query_metric_once(
+                        &RunId::from_string(id),
+                        &key,
+                        &query,
+                        true,
+                        true,
+                    )?);
+                }
+                Ok(Some(output))
+            })?
+            .unwrap();
+        assert_eq!(calls, vec!["a", "b", "a", "b"]);
+        assert_eq!(result.len(), 2);
+        assert_eq!(reader.diagnostics_loads.get(), 2);
+        let cached = reader.diagnostics.borrow().finished.len();
+        let mut calls = 0;
+        let error = reader.with_fresh_query_reader::<()>(|fresh| {
+            calls += 1;
+            fresh.diagnostics.borrow_mut().finished.clear();
+            Err(Error::Storage)
+        });
+        assert_eq!(error, Err(Error::Storage));
+        assert_eq!(calls, 2);
+        assert_eq!(reader.diagnostics.borrow().finished.len(), cached);
+        let cancelled = reader.with_fresh_query_reader::<()>(|fresh| {
+            fresh.diagnostics.borrow_mut().finished.clear();
+            Ok(None)
+        })?;
+        assert!(cancelled.is_none());
+        assert_eq!(reader.diagnostics.borrow().finished.len(), cached);
+        let mut calls = 0;
+        assert_eq!(
+            reader.with_fresh_query_reader::<()>(|_| {
+                calls += 1;
+                Err(Error::UnsupportedQuery)
+            }),
+            Err(Error::UnsupportedQuery)
+        );
+        assert_eq!(calls, 1);
         Ok(())
     }
 

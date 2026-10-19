@@ -93,7 +93,14 @@ different Runs alongside read-only Readers. A Run has one advisory-locked writer
 Catalog/DuckLake write transactions hold a cross-process catalog lock; metric
 admission remains an in-process bounded queue. Writer connections enable WAL
 and use a 30-second metadata busy timeout. Reader connections attach DuckLake
-in read-only mode and refresh stale snapshots before retrying a query.
+in read-only mode and reopen on storage failure. Desktop curve panels use one
+fresh connection per request, shared sequentially by at most 16 requested curves
+and released when the request ends. This is not a cross-request connection cache.
+A storage failure discards the whole panel attempt before one fresh retry; partial
+results and diagnostics from failed or superseded attempts are not published.
+Each SQL statement retains its own snapshot semantics; a panel is not promised
+to be one transaction-wide DuckLake snapshot. Single-curve reads retain fresh
+request connections, and writer lock/attach/recovery rules are unchanged.
 
 Opening an existing DELETE-journal catalog through a writer migrates it to WAL.
 Migration failure is a storage error; Seex does not silently fall back to DELETE

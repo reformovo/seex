@@ -201,6 +201,116 @@ fn step_overview_keeps_invalid_timestamp_evidence_and_observations()
 }
 
 #[test]
+fn panel_queries_match_single_curve_order_and_cancel_without_partial_results()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let reader = &fixture.native;
+    let client = crate::Client::builder(fixture._root.path()).open()?;
+    let run = client.start_run(crate::RunOptions::new("project-1").id("run-2"))?;
+    run.log_with([("loss", 5.0)], crate::LogOptions::new().step(0))?;
+    run.finish()?;
+    let ids = [
+        RunId::from_string("run-2"),
+        fixture.run_id.clone(),
+        RunId::from_string("run-2"),
+    ];
+    let key = MetricKey::from_string("loss");
+    for overview in [false, true] {
+        let query = MetricQuery::new(
+            MetricRange::Steps {
+                start: Step::new(2),
+                end: Step::new(4),
+            },
+            8,
+        )?;
+        let actual = reader
+            .query_metrics_for_desktop(&ids, &key, &query, overview, &mut || false)?
+            .unwrap();
+        for (id, series) in ids.iter().zip(actual) {
+            let expected = if overview {
+                reader.query_metric_overview_for_desktop(id, &key, &query)?
+            } else {
+                reader.query_metric_for_desktop(id, &key, &query)?
+            };
+            assert_eq!(series.source_count(), expected.source_count());
+            assert_eq!(series.completeness(), expected.completeness());
+            assert_eq!(series.reasons(), expected.reasons());
+            let payloads = |s: &crate::MetricSeries| {
+                let mut rows = s
+                    .samples()
+                    .iter()
+                    .map(|p| format!("{:?}", p.point))
+                    .collect::<Vec<_>>();
+                rows.sort();
+                rows
+            };
+            assert_eq!(payloads(&series), payloads(&expected));
+        }
+    }
+    let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), 8)?;
+    let panel = |ids: &[RunId], cancel: &mut dyn FnMut() -> bool| {
+        reader.query_metrics_for_desktop(ids, &key, &query, true, cancel)
+    };
+    let mut checks = 0;
+    let cancelled = panel(&ids, &mut || {
+        checks += 1;
+        checks >= 3
+    })?;
+    assert!(cancelled.is_none());
+    assert!(panel(&[], &mut || false)?.unwrap().is_empty());
+    let too_many = vec![fixture.run_id.clone(); 17];
+    assert_eq!(
+        panel(&too_many, &mut || false).unwrap_err(),
+        Error::UnsupportedQuery
+    );
+    Ok(())
+}
+
+#[test]
+fn panel_reopens_after_external_inline_flush() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let reader = &fixture.native;
+    let client = crate::Client::builder(fixture._root.path()).open()?;
+    let run = client.start_run(crate::RunOptions::new("project-1").id("live"))?;
+    for step in 0..3 {
+        run.log_with([("loss", step as f64)], crate::LogOptions::new().step(step))?;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while client.diagnostics().pending_reports != 0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let ids = [
+        RunId::from_string("live"),
+        fixture.run_id.clone(),
+        RunId::from_string("live"),
+    ];
+    let key = MetricKey::from_string("loss");
+    let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), 8)?;
+    let mut checks = 0;
+    let during = reader
+        .query_metrics_for_desktop(&ids, &key, &query, true, &mut || {
+            checks += 1;
+            if checks == 3 {
+                run.finish().expect("external finish/flush must succeed");
+            }
+            false
+        })?
+        .unwrap();
+    assert_eq!(
+        during.iter().map(|s| s.source_count()).collect::<Vec<_>>(),
+        vec![3, 10, 3]
+    );
+    let after = reader
+        .query_metrics_for_desktop(&ids, &key, &query, true, &mut || false)?
+        .unwrap();
+    assert_eq!(after[0].source_count(), 3);
+    let status = after[0].completeness();
+    assert_eq!(status, crate::EvidenceCompleteness::Complete);
+    Ok(())
+}
+
+#[test]
 fn native_ranges_are_strictly_bounded() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::open()?;
     let queries = [

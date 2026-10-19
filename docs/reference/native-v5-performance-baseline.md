@@ -842,3 +842,45 @@ diagnostic was approximately 235 MiB baseline versus 229 MiB native, so the
 small memory reduction does not offset the latency regression. The native
 selector remains opt-in and is not a production default. Raw manifest, captures,
 RSS and identity remain under `.tmp/v5-native-overview-abba/`.
+
+### Request-scoped Reader reuse after native LTTB unification
+
+After the native selector became the default, stage diagnosis at `b584b12`
+showed 16 fresh connection opens per 16-curve panel (roughly 434--443 ms).
+This optimization opens one fresh read-only Reader for the panel, queries its
+curves sequentially, then releases it. SQL, native LTTB, source counts and point
+budgets do not change. It is neither persistent connection caching nor parallel
+querying and does not move writer attach outside its catalog lock.
+
+The Reader owns a single fresh/retry executor used by both single-curve and
+panel reads. Storage failure retries the entire operation once; failure,
+cancellation and non-storage errors do not publish partial diagnostics/results.
+Tests check request order, duplicate Runs, empty/oversized panels, cancellation,
+and reads across an external inline flush. A deterministic second-curve Storage
+failure verifies execution order `a,b,a,b` and that failed-attempt cache is not
+published. The real flush case succeeded without reproducing a storage retry;
+it is not a crash/failover or exhaustive multi-writer validation.
+
+One combined ABBA on the same 16 Finished curves, 1,000,001 observations each,
+used the default native LTTB on both sides:
+
+| Complete request median | A1 | B1 | B2 | A2 |
+| --- | ---: | ---: | ---: | ---: |
+| Overview | 1.200 s | 0.674 s | 0.680 s | 1.212 s |
+| Closed 10% Detail | 1.058 s | 0.529 s | 0.523 s | 1.075 s |
+
+Gate **PASS**: Overview primary improved 43.8%; Detail protection improved
+50.7%. Every capture used ten internally calibrated samples >=25 ms, every
+relative MAD was below 2%, and the full gate wall time was 81.00 s. No retry,
+threshold change or selected rerun was used. The baseline is the frozen
+`b584b12` binary, candidate identity includes its source patch. No external
+LTTB configuration was supplied. Raw manifest, requests, hashes and result are
+local ignored artifacts under `.tmp/v5-panel-request-abba/`.
+
+Separate paired process-RSS diagnostics measured Overview about 237/238 MiB and
+Detail about 195/218 MiB for baseline/candidate. RSS was not protected by the
+timing gate: Detail's approximately 23 MiB increase is a measured tradeoff,
+not a memory-preservation PASS. Stage logs under `.tmp/v5-panel-request-reader/`
+confirm connection opens fell from 16 to 1 while SQL count stayed 16. A panel
+still has per-SQL snapshots, not one atomic multi-curve snapshot, and active-SQL
+interrupt delivery was not changed; cancellation is checked between curves.

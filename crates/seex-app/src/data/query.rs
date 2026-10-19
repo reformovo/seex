@@ -277,9 +277,37 @@ fn query_curves(
         .map(|run| run.run_id.clone())
         .collect::<Vec<_>>();
     let runs = session.reader().runs_for_desktop(&run_ids)?;
+    let runs = runs
+        .into_iter()
+        .filter(|run| {
+            selection.runs.iter().any(|selected| {
+                selected.source_id == selection.source_id
+                    && selected.project_id == run.project_id
+                    && selected.run_id == run.run_id
+            })
+        })
+        .collect::<Vec<_>>();
+    let query = MetricQuery::new(
+        desktop_metric_range(selection.axis, viewport),
+        point_budget as usize,
+    )?;
+    let requested = runs
+        .iter()
+        .map(|run| run.run_id.clone())
+        .collect::<Vec<_>>();
+    let Some(evidence) = session.reader().query_metrics_for_desktop(
+        &requested,
+        &selection.metric_key,
+        &query,
+        force_full_step,
+        is_superseded,
+    )?
+    else {
+        return Ok(None);
+    };
     let mut real_bounds: Option<(i64, i64)> = None;
     let mut series = Vec::with_capacity(selection.runs.len());
-    for run in runs {
+    for (run, evidence) in runs.into_iter().zip(evidence) {
         if is_superseded() {
             return Ok(None);
         }
@@ -289,21 +317,6 @@ fn query_curves(
                 && selected.run_id == run.run_id
         }) else {
             continue;
-        };
-        let query = MetricQuery::new(
-            desktop_metric_range(selection.axis, viewport),
-            point_budget as usize,
-        )?;
-        let evidence = if force_full_step {
-            session.reader().query_metric_overview_for_desktop(
-                &run.run_id,
-                &selection.metric_key,
-                &query,
-            )?
-        } else {
-            session
-                .reader()
-                .query_metric_for_desktop(&run.run_id, &selection.metric_key, &query)?
         };
         let drawable = matches!(
             evidence.completeness(),
