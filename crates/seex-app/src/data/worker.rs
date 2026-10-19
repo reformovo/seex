@@ -12,7 +12,7 @@ use std::thread::{self, JoinHandle};
 ))]
 use std::time::{Duration, Instant};
 
-#[cfg(all(feature = "desktop", target_os = "macos"))]
+#[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
 use seex::MetricKey;
 use seex::ReaderInterrupt;
 
@@ -246,7 +246,7 @@ struct RequestKey {
     metric_key: Option<String>,
 }
 
-#[cfg(all(feature = "desktop", target_os = "macos"))]
+#[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
 impl RequestKey {
     fn metric(source_id: DataSourceId, kind: ReadKind, metric_key: &MetricKey) -> Self {
         Self {
@@ -336,14 +336,14 @@ impl RequestRegistry {
     #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     fn cancel(&mut self, identity: &RequestIdentity) -> Vec<ReaderInterrupt> {
         let value = (identity.generation, identity.token);
-        if self
-            .latest
-            .get(&identity.key)
-            .is_some_and(|latest| value <= *latest)
-        {
+        let Some(latest) = self.latest.get(&identity.key).copied() else {
+            return Vec::new();
+        };
+        if value <= latest {
             return Vec::new();
         }
-        self.latest.insert(identity.key.clone(), value);
+        // Absence invalidates queued/running tokens without retaining a tombstone.
+        self.latest.remove(&identity.key);
         self.active
             .remove(&identity.key)
             .filter(|active| (active.generation, active.token) < value)
@@ -366,6 +366,13 @@ impl RequestRegistry {
             .is_some_and(|active| (active.generation, active.token) == value)
         {
             self.active.remove(&identity.key);
+        }
+    }
+
+    fn release(&mut self, identity: &RequestIdentity) {
+        let value = (identity.generation, identity.token);
+        if self.latest.get(&identity.key) == Some(&value) {
+            self.latest.remove(&identity.key);
         }
     }
 
@@ -550,7 +557,7 @@ impl ReadWorker {
             .map_err(|_| WorkerClosed)
     }
 
-    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     pub(crate) fn cancel(
         &self,
         source_id: DataSourceId,
@@ -821,11 +828,13 @@ fn worker_loop(
         ) else {
             continue;
         };
-        let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
-        if !registry.is_current(&identity) {
+        let mut registry_guard = registry.lock().unwrap_or_else(|error| error.into_inner());
+        if !registry_guard.is_current(&identity) {
             continue;
         }
-        if !events.send(event) {
+        let delivered = events.send(event);
+        registry_guard.release(&identity);
+        if !delivered {
             return;
         }
     }
@@ -1080,7 +1089,7 @@ mod tests {
         // Characterize the defect rather than asserting a nonexistent bound.
         assert_eq!(peak_pending, METRICS);
         assert_eq!(outstanding.load(Ordering::Acquire), METRICS);
-        assert_eq!(registry.latest.len(), METRICS);
+        assert_eq!(registry.latest.len(), WINDOW);
         let mut executed = 0;
         let mut cancelled = 0;
         while let Some(request) = pending.take_next() {
@@ -1089,6 +1098,7 @@ mod tests {
                 assert!(registry.begin(&identity, Vec::new()));
                 assert_eq!(registry.active.len(), 1);
                 registry.finish(&identity);
+                registry.release(&identity);
                 executed += 1;
             } else {
                 cancelled += 1;
@@ -1097,8 +1107,8 @@ mod tests {
         assert_eq!((executed, cancelled), (WINDOW, METRICS - WINDOW));
         assert_eq!(outstanding.load(Ordering::Acquire), 0);
         assert!(registry.active.is_empty());
-        // Even after stop/drain, completion/cancellation tombstones remain.
-        assert_eq!(registry.latest.len(), METRICS);
+        // Cancellation tombstones and completed identities are released on drain.
+        assert!(registry.latest.is_empty());
         eprintln!(
             "worker boundary: metrics={METRICS} window={WINDOW} peak_pending={peak_pending} \
              active_peak=1 executed={executed} cancelled={cancelled} drained_pending=0 \
@@ -1267,6 +1277,102 @@ mod tests {
 
         assert!(registry.cancel(&cancellation).is_empty());
         assert!(!registry.is_current(&identity));
+        assert!(registry.active.is_empty());
+        assert!(registry.latest.is_empty());
+    }
+
+    #[test]
+    fn cancelled_worker_transport_drains_without_opening_storage() {
+        let root = tempfile::tempdir().unwrap(); // No native store: no SQL should execute.
+        let gate = Arc::new(ReadConcurrencyGate::new(1));
+        let pause = gate.acquire();
+        let worker = ReadWorker::spawn_with_gate(root.path(), Arc::clone(&gate)).unwrap();
+        let source = DataSourceId::new("source").unwrap();
+        for metric in 0..10_000 {
+            let name = format!("metric-{metric}");
+            worker
+                .submit(source.clone(), Generation(metric), overview_request(&name))
+                .unwrap();
+            worker.cancel(
+                source.clone(),
+                Generation(metric),
+                ReadKind::Overview,
+                &MetricKey::from_string(name),
+            );
+            assert!(worker.registry.lock().unwrap().latest.is_empty());
+        }
+        // Tokens remain queued, but cancellation metadata no longer follows history.
+        assert_eq!(worker.outstanding.load(Ordering::Acquire), 10_000);
+        drop(pause);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while worker.outstanding.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled transport did not drain"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(worker.events.as_ref().unwrap().0.lock().queue.is_empty());
+        assert!(worker.registry.lock().unwrap().active.is_empty());
+    }
+
+    #[test]
+    fn worker_publishes_failure_before_releasing_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = ReadWorker::spawn(root.path()).unwrap();
+        worker
+            .submit(
+                DataSourceId::new("source").unwrap(),
+                Generation(1),
+                overview_request("loss"),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut events = worker.events.as_ref().unwrap().0.lock();
+            if let Some(event) = events.queue.pop_front() {
+                assert_eq!(event.generation, Generation(1));
+                assert!(event.result.is_err()); // Empty directory, no native store.
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker did not publish failure"
+            );
+            drop(events);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(worker.registry.lock().unwrap().latest.is_empty());
+    }
+
+    #[test]
+    fn completed_request_releases_registry_identity() {
+        let identity = RequestIdentity {
+            key: RequestKey {
+                source_id: DataSourceId::new("source").unwrap(),
+                kind: ReadKind::Overview,
+                metric_key: Some("loss".to_owned()),
+            },
+            generation: Generation(1),
+            token: RequestToken(1),
+        };
+        let mut registry = RequestRegistry::default();
+        registry.mark_latest(&identity);
+        assert!(registry.begin(&identity, Vec::new()));
+        registry.finish(&identity);
+        // Retry teardown must not invalidate the identity before publication.
+        assert!(registry.is_current(&identity));
+        let newer = RequestIdentity {
+            key: identity.key.clone(),
+            generation: Generation(2),
+            token: RequestToken(2),
+        };
+        registry.mark_latest(&newer);
+        registry.release(&identity);
+        registry.cancel(&identity); // Delayed cancellation must preserve newer work.
+        assert!(registry.is_current(&newer));
+        registry.release(&newer);
+        assert!(registry.latest.is_empty());
         assert!(registry.active.is_empty());
     }
 

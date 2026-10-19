@@ -101,7 +101,8 @@ Two unit tests in `data::worker::tests` characterize the current implementation:
 cargo test -p seex-app --no-default-features --lib data::worker::tests -- --nocapture
 ```
 
-The first uses production `PendingRequests` and `RequestRegistry`, with dequeue
+The original evidence commit is `5987c18`. The first uses production
+`PendingRequests` and `RequestRegistry`, with dequeue
 paused to model arbitrarily slow reads. A six-identity window (four rows plus two
 Overview prefetch rows) visits all 10,000 metrics, jumps to tail, reverses through
 middle to head, then drains. It does **not** run the desktop scheduler, request
@@ -110,19 +111,47 @@ transport, SQL, or real reader threads. Observed/asserted counts:
 - Pending requests peak at **10,000**, despite only six retained identities.
 - Cancellation leaves queued work resident; drain discards **9,994**, executes six
   synthetic registrations (active peak one), and releases all request tickets.
-- `latest` retains **10,000 entries after drain**; only worker teardown clears it.
+- Before the lifecycle fix, `latest` retained **10,000 entries after drain**;
+  after the fix, the worker transport probe drains with zero registry entries.
 - Separately, the production completion channel retains **10,000 error-only events**
   when its consumer is paused. No payload-size or normal desktop-rate claim follows.
 
 A debug diagnostic captured enqueue/coalescing/cancellation at 662.506 ms on this
 machine; it is not a calibrated benchmark or full-list UI traversal measurement.
-These tests deliberately assert the existing defect, not the desired resource
-contract. No production behavior or performance comparison changed. Curves/points
-are not allocated by these probes. Retained panel payloads/points, stale completion
-repopulation, full-list traversal/cloning, transport backlog, worker concurrency
-under slow native reads, desktop frames, and RSS remain to be measured. The next
-small change should address the demonstrated cancellation queue/registry lifetime
-with regression bounds, separately from SQL work and GUI qualification.
+The probes now assert registry cleanup while continuing to expose the queued-work
+and completion-channel defects. Cancellation removes the current identity, rather
+than storing a tombstone; absence invalidates old tokens. Completion releases only
+the matching identity after publication. Retry teardown still retains the identity,
+and delayed cleanup/cancellation cannot remove a newer identity.
+
+`cancelled_worker_transport_drains_without_opening_storage` additionally pauses a
+real worker's gate, submits/cancels 10,000 distinct metrics through its transport,
+asserts zero registry entries after each cancellation, and releases the gate to
+drain all tickets without events. `worker_publishes_failure_before_releasing_identity`
+checks the non-cancelled error publication path. No valid store or curve payloads
+are allocated. Retained panel payloads/points, stale completion repopulation,
+full-list traversal/cloning, worker concurrency under slow native reads, desktop
+frames, and RSS remain unmeasured. Pending requests still reach 10,000, so this is
+**not** a bounded scheduling contract.
+
+### Registry cancellation comparison
+
+One preservation A-B-B-A used the exact `python scripts/performance_gate.py run
+--manifest <manifest.json> --output <result.json>` entry point. A standalone Rust
+harness compiled the verbatim registry methods from `5987c18` and this change with
+`rustc -O --cfg test`; key/interrupt types were minimal stand-ins. Each iteration
+marks and cancels 10,000 distinct keys, including allocation and registry drop.
+This isolates registry lifecycle, not transport, SQL, chart rendering, or RSS.
+Each capture has ten internally calibrated samples >=25 ms; the gate enforced the
+120-second workload deadline. Metric: `viewer.registry_cancel_10000` (`ns/op`).
+
+A/B/B/A medians: **1.0493 / 0.6015 / 0.6063 / 1.0509 ms** per iteration;
+relative MAD: **0.456 / 0.637 / 0.667 / 0.453%**. Preservation classification: pass;
+combined change -42.49%. This is not a query-latency improvement claim. No retries.
+Raw harness/result files were captured in per-turn scratch (not durable fixtures):
+- Baseline harness SHA-256: `ff9259535e7eea2da6348399eb41d2a4916a5d22b6540c985a04284e6824f813`.
+- Candidate harness SHA-256: `150acd0c0346c368076843b26fdff32e77e5145799613bf588d7275dcf8c6cd6`.
+- Result SHA-256: `08e25fc0b087237bac24c1adafa75e2172771b53d442ebf715d90cb2886b8fd9`.
 
 ## Next optimization roadmap
 
