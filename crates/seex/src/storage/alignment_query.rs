@@ -147,8 +147,8 @@ fn aligned_points_sql(
     plan: AlignmentPlan,
 ) -> String {
     let stats = if reduced {
-        ", (SELECT count(*)::UBIGINT FROM inside WHERE isfinite(value_f64)) AS finite_count,
-           ((SELECT count(*) FROM left_neighbor) + (SELECT count(*) FROM right_neighbor))::UBIGINT AS neighbor_count"
+        ", count(*) FILTER (WHERE in_view AND isfinite(value_f64))::UBIGINT AS finite_count,
+           count(*) FILTER (WHERE NOT in_view)::UBIGINT AS neighbor_count"
     } else {
         ""
     };
@@ -174,8 +174,9 @@ fn aligned_points_sql(
              QUALIFY row_number() OVER (ORDER BY axis_value, step) = 1
          ),
          visible_source AS (
-             SELECT * FROM inside UNION ALL SELECT * FROM left_neighbor
-             UNION ALL SELECT * FROM right_neighbor
+             SELECT *, true AS in_view FROM inside
+             UNION ALL SELECT *, false AS in_view FROM left_neighbor
+             UNION ALL SELECT *, false AS in_view FROM right_neighbor
          ),
          source_stats AS (SELECT count(*)::UBIGINT AS source_row_count {stats} FROM visible_source)
          SELECT selected.step, epoch_ms(selected.timestamp), selected.value_f64,
@@ -424,6 +425,71 @@ mod tests {
             viewport: AlignmentViewport::new(2, 4).expect("test viewport should be valid"),
             reduction,
         }
+    }
+
+    #[test]
+    fn fused_stats_preserve_observations_and_counts() -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        connection.execute_batch(
+            "INSERT INTO dl.metric_points SELECT * FROM dl.metric_points WHERE step=3;
+             UPDATE dl.metric_points SET value_f64=CASE WHEN step=1 THEN 'NaN'::DOUBLE
+                 WHEN step=2 THEN 'Infinity'::DOUBLE WHEN step=4 THEN '-0.0'::DOUBLE ELSE value_f64 END;"
+        )?;
+        for plan in [AlignmentPlan::WholeSeries, AlignmentPlan::NarrowStep] {
+            for (start, end, key, expected) in [
+                (0, 6, "loss", (10, 8, 0)),
+                (2, 4, "loss", (8, 5, 2)),
+                (3, 3, "loss", (6, 4, 2)),
+                (-10, -5, "loss", (1, 0, 1)),
+                (20, 30, "loss", (1, 0, 1)),
+                (2, 4, "missing", (0, 0, 0)),
+            ] {
+                let mut query = query(AlignmentAxis::Step, AlignmentReduction::Full);
+                query.viewport = AlignmentViewport::new(start, end)?;
+                query.metric_key = MetricKey::from_string(key);
+                let values = query_values(AlignmentSource::Project, &query, None, plan)?;
+                let mut payloads = Vec::new();
+                for reduced in [false, true] {
+                    let sql = aligned_points_sql(
+                        AlignmentSource::Project,
+                        AlignmentAxis::Step,
+                        reduced,
+                        plan,
+                    );
+                    let mut statement = connection.prepare(&sql)?;
+                    let rows = statement.query_map(
+                        duckdb::params_from_iter(values.iter().map(|v| v.as_ref())),
+                        |row| {
+                            let (point, total) = stored_alignment_row(row)?;
+                            assert_eq!(total, expected.0);
+                            if reduced {
+                                assert_eq!(
+                                    (total, row.get::<_, u64>(6)?, row.get::<_, u64>(7)?),
+                                    expected
+                                );
+                            }
+                            Ok(point.map(|p| {
+                                (
+                                    p.step,
+                                    p.timestamp_millis,
+                                    p.value_f64.to_bits(),
+                                    p.ingested_at_millis,
+                                    p.axis_value,
+                                )
+                            }))
+                        },
+                    )?;
+                    let mut rows = rows.collect::<Result<Vec<_>, _>>()?;
+                    rows.sort();
+                    payloads.push(rows);
+                }
+                assert_eq!(
+                    payloads[0], payloads[1],
+                    "viewport [{start},{end}] metric {key}"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]

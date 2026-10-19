@@ -884,3 +884,29 @@ not a memory-preservation PASS. Stage logs under `.tmp/v5-panel-request-reader/`
 confirm connection opens fell from 16 to 1 while SQL count stayed 16. A panel
 still has per-SQL snapshots, not one atomic multi-curve snapshot, and active-SQL
 interrupt delivery was not changed; cancellation is checked between curves.
+
+### Alignment statistics SQL simplification
+
+A follow-up labels viewport rows versus neighbors in the temporary visible
+relation and computes total, finite-inside and neighbor counts in one aggregate.
+It replaces scalar count subqueries, not facts, predicates, ordering or native
+LTTB. Regression coverage independently checks the three counts and compares
+full observation multisets for both plans, duplicate Steps, NaN/Inf/signed zero,
+closed single-Step/out-of-range viewports and missing metrics.
+
+A retained million-point SQL profile had 3 versus 6 CTEs, 7 versus 13 CTE scans,
+and 1 versus 7 ungrouped aggregates. Both plans still had two DuckLake scans:
+one emitted 100004 viewport/neighbor rows from 8 files, the boundary scan
+emitted 1000001 Steps from 62 files. These plan counters do not establish
+reduced device I/O; sequential profiles shared cache and memory high-water state.
+
+One combined ABBA (58.37 s) returned **INCONCLUSIVE** because the two baseline
+Overview medians drifted slightly beyond the 2% rule; all within-capture MADs
+were below 2%. Detail baseline medians were 515/536 ms, candidate 522/524 ms:
+paired directions differed and combined improvement was only about 0.5%, below
+the 5% objective. Separate RSS diagnostics were approximately 211/219 MiB.
+There is no demonstrated latency or memory improvement. The production change
+is retained as a smaller, coherent statistics rule, not as a performance PASS.
+Temporary profiling code and the archived SQL oracle were removed from the
+source tree; raw SQL, profiles, captured binaries, patches, identities and the
+single comparison are ignored local artifacts under `.tmp/v5-detail-stats/`.
