@@ -936,3 +936,19 @@ protected by the timing gate and no memory-improvement claim is made. The
 small production rewrite is retained for readability and simpler planning.
 Temporary profiling tests were removed; source patches, binary identities,
 SQL profiles, raw captures and result remain locally in `.tmp/v5-neighbor-limit/`.
+
+### Remove redundant single-row bounds grouping
+
+The narrow Step `step_bounds` CTE receives one requested `(start_step,end_step)`
+row. Its aggregate therefore no longer groups by those request constants. The
+scalar aggregate still returns one NULL-bound row for an empty series, so the
+existing `coalesce` range behavior and missing-metric metadata row remain valid.
+The change removes a redundant grouping operation without changing either
+fact scan, neighbor selection, source/finite/neighbor counts, or native LTTB.
+
+Acceptance coverage passes empty/out-of-range, duplicate boundary Steps,
+non-finite values, missing metrics, Full and reduced plans. A 16-curve million-
+observation Detail diagnostic returned the same source count and point budget
+with hot requests around 497--517 ms. This is a SQL simplification/plan cleanup,
+not a classified performance gain; no ABBA was run because the edit removes a
+constant-key group rather than changing the measured hot algorithm.

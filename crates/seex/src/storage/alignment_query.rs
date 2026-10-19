@@ -245,7 +245,6 @@ fn narrow_step_ctes(source: AlignmentSource<'_>) -> String {
              FROM requested CROSS JOIN {relation} AS points
              WHERE points.run_id = ? AND points.metric_key = ?
                    AND points.metric_key_encoded = ?
-             GROUP BY requested.start_step, requested.end_step
          ),
          effective AS (
              SELECT points.step, points.timestamp, points.value_f64, points.ingested_at
