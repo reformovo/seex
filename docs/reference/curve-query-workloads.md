@@ -91,6 +91,39 @@ drains and offscreen payload release; residency should follow visible-plus-prefe
 Measure full-list traversal/cloning separately. No 10,000-panel or GUI frame test is included.
 Backpressure, cancellation, and stale completions remain unverified at this scale.
 
+### First worker-boundary probe (headless)
+
+Two unit tests in `data::worker::tests` characterize the current implementation:
+`ten_thousand_metric_scroll_exposes_cancelled_queue_and_registry_growth` and
+`completed_event_queue_grows_when_consumer_is_paused`. Run with:
+
+```sh
+cargo test -p seex-app --no-default-features --lib data::worker::tests -- --nocapture
+```
+
+The first uses production `PendingRequests` and `RequestRegistry`, with dequeue
+paused to model arbitrarily slow reads. A six-identity window (four rows plus two
+Overview prefetch rows) visits all 10,000 metrics, jumps to tail, reverses through
+middle to head, then drains. It does **not** run the desktop scheduler, request
+transport, SQL, or real reader threads. Observed/asserted counts:
+
+- Pending requests peak at **10,000**, despite only six retained identities.
+- Cancellation leaves queued work resident; drain discards **9,994**, executes six
+  synthetic registrations (active peak one), and releases all request tickets.
+- `latest` retains **10,000 entries after drain**; only worker teardown clears it.
+- Separately, the production completion channel retains **10,000 error-only events**
+  when its consumer is paused. No payload-size or normal desktop-rate claim follows.
+
+A debug diagnostic captured enqueue/coalescing/cancellation at 662.506 ms on this
+machine; it is not a calibrated benchmark or full-list UI traversal measurement.
+These tests deliberately assert the existing defect, not the desired resource
+contract. No production behavior or performance comparison changed. Curves/points
+are not allocated by these probes. Retained panel payloads/points, stale completion
+repopulation, full-list traversal/cloning, transport backlog, worker concurrency
+under slow native reads, desktop frames, and RSS remain to be measured. The next
+small change should address the demonstrated cancellation queue/registry lifetime
+with regression bounds, separately from SQL work and GUI qualification.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

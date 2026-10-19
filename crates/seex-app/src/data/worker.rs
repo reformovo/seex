@@ -1032,6 +1032,100 @@ mod tests {
         );
     }
 
+    /// Boundary probe, not a desktop/SQL benchmark: pause dequeue while the
+    /// viewport advances, then release it and discard cancelled identities.
+    #[test]
+    fn ten_thousand_metric_scroll_exposes_cancelled_queue_and_registry_growth() {
+        const METRICS: usize = 10_000;
+        const WINDOW: usize = 6; // Four visible rows plus two Overview prefetch rows.
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let mut pending = PendingRequests::default();
+        let mut registry = RequestRegistry::default();
+        let mut retained = Vec::<RequestIdentity>::new();
+        let mut generation = 0;
+        let mut peak_pending = 0;
+        let started = std::time::Instant::now();
+        // Visit every identity, jump to tail, reverse, and return to the head.
+        let starts = (0..METRICS)
+            .step_by(WINDOW)
+            .chain([METRICS - WINDOW, METRICS / 2, 0]);
+        for start in starts {
+            for identity in retained.drain(..) {
+                let cancellation = RequestIdentity {
+                    key: identity.key,
+                    generation: identity.generation,
+                    token: RequestToken(identity.token.0 + 1),
+                };
+                assert!(registry.cancel(&cancellation).is_empty());
+            }
+            for metric in start..(start + WINDOW).min(METRICS) {
+                generation += 1;
+                let request = TaggedRequest {
+                    source_id: DataSourceId::new("source").unwrap(),
+                    generation: Generation(generation),
+                    token: RequestToken(generation * 2),
+                    request: overview_request(&format!("metric-{metric}")),
+                    _ticket: RequestTicket::tracked(Arc::clone(&outstanding)),
+                };
+                let identity = RequestIdentity::new(&request);
+                registry.mark_latest(&identity);
+                pending.push(request);
+                retained.push(identity);
+            }
+            peak_pending = peak_pending.max(pending.overview.len());
+            assert!(retained.len() <= WINDOW);
+            assert!(registry.active.is_empty()); // Controlled reader is paused.
+        }
+        let enqueue_elapsed = started.elapsed();
+        // Characterize the defect rather than asserting a nonexistent bound.
+        assert_eq!(peak_pending, METRICS);
+        assert_eq!(outstanding.load(Ordering::Acquire), METRICS);
+        assert_eq!(registry.latest.len(), METRICS);
+        let mut executed = 0;
+        let mut cancelled = 0;
+        while let Some(request) = pending.take_next() {
+            let identity = RequestIdentity::new(&request);
+            if registry.is_current(&identity) {
+                assert!(registry.begin(&identity, Vec::new()));
+                assert_eq!(registry.active.len(), 1);
+                registry.finish(&identity);
+                executed += 1;
+            } else {
+                cancelled += 1;
+            }
+        }
+        assert_eq!((executed, cancelled), (WINDOW, METRICS - WINDOW));
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
+        assert!(registry.active.is_empty());
+        // Even after stop/drain, completion/cancellation tombstones remain.
+        assert_eq!(registry.latest.len(), METRICS);
+        eprintln!(
+            "worker boundary: metrics={METRICS} window={WINDOW} peak_pending={peak_pending} \
+             active_peak=1 executed={executed} cancelled={cancelled} drained_pending=0 \
+             retained_registry={} enqueue_cancel_ms={:.3}; no curve payloads allocated",
+            registry.latest.len(),
+            enqueue_elapsed.as_secs_f64() * 1_000.,
+        );
+    }
+
+    #[test]
+    fn completed_event_queue_grows_when_consumer_is_paused() {
+        let (sender, receiver) = read_event_channel();
+        for generation in 0..10_000 {
+            assert!(sender.send(super::ReadEvent {
+                source_id: DataSourceId::new("source").unwrap(),
+                generation: Generation(generation),
+                kind: ReadKind::Overview,
+                result: Err(super::WorkerError::SessionUnavailable),
+            }));
+        }
+        let mut state = receiver.0.lock();
+        assert_eq!(state.queue.len(), 10_000);
+        state.queue.clear();
+        assert!(state.queue.is_empty());
+        // Error-only events deliberately measure slots, not curve points/RSS.
+    }
+
     #[test]
     fn pending_curve_requests_coalesce_per_metric_panel() {
         #[cfg(feature = "test-support")]
