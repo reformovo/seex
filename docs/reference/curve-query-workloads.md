@@ -93,8 +93,8 @@ Backpressure, cancellation, and stale completions remain unverified at this scal
 
 ### First worker-boundary probe (headless)
 
-Two unit tests in `data::worker::tests` characterize the current implementation:
-`ten_thousand_metric_scroll_exposes_cancelled_queue_and_registry_growth` and
+Initial unit tests in `data::worker::tests` characterized the pre-fix implementation:
+`ten_thousand_metric_scroll_keeps_only_retained_pending_requests` (renamed after fixes) and
 `completed_event_queue_grows_when_consumer_is_paused`. Run with:
 
 ```sh
@@ -131,7 +131,7 @@ drain all tickets without events. `worker_publishes_failure_before_releasing_ide
 checks the non-cancelled error publication path. No valid store or curve payloads
 are allocated. Retained panel payloads/points, stale completion repopulation,
 full-list traversal/cloning, worker concurrency under slow native reads, desktop
-frames, and RSS remain unmeasured. Pending requests still reach 10,000, so this is
+frames, and RSS remain unmeasured. At `54b4213`, pending requests still reached 10,000, so that was
 **not** a bounded scheduling contract.
 
 ### Registry cancellation comparison
@@ -152,6 +152,26 @@ Raw harness/result files were captured in per-turn scratch (not durable fixtures
 - Baseline harness SHA-256: `ff9259535e7eea2da6348399eb41d2a4916a5d22b6540c985a04284e6824f813`.
 - Candidate harness SHA-256: `150acd0c0346c368076843b26fdff32e77e5145799613bf588d7275dcf8c6cd6`.
 - Result SHA-256: `08e25fc0b087237bac24c1adafa75e2172771b53d442ebf715d90cb2886b8fd9`.
+
+### Cancellable request queue
+The shared mutex/condition-variable queue now coalesces on submit and removes
+cancelled pending identities immediately; waiting workers release the queue lock.
+Sender teardown clears queued tickets and wakes waiters. Priority is unchanged.
+The 10,000-identity scroll/tail/reversal probe now peaks at six pending requests.
+The gate-paused real-worker probe asserts outstanding <=1 after every cancellation,
+then drains without events. Neither is a hard cap for arbitrary submitters; callers
+must cancel offscreen work. Completion events, payload/points, UI and RSS remain open.
+One bounded preservation ABBA used the same gate entry point, extracting production
+registry/queue methods from `54b4213` and this change (`rustc -O --cfg test`, stand-in
+payload types). A paused consumer traverses 10,000 identities with a six-key window,
+then drains 10,000 baseline requests versus six candidate requests. No SQL/GUI timing.
+`viewer.cancel_queue_scroll_10000` A/B/B/A medians: **214.812 / 3.037 / 3.131 / 216.786 ms**;
+MAD **0.361 / 0.706 / 0.503 / 0.449%**. Ten calibrated samples >=25 ms each, <=120 s;
+preservation pass, no retries. `test-support` validation is blocked by missing MetalToolchain.
+Raw scratch is ephemeral; SHA-256 identities:
+- Baseline harness: `3f5b5ee264de1b312e39b3559afcfd3310d52745e617016264bfd1b442cbd5f1`.
+- Candidate harness: `864011da1ae2b587c2e85e8500d78ba58a0ad99bc447df77e498ea7991e28fdd`.
+- Result: `399081c0b55bba41aaa5be7daf8d0d193f74df8b60929fff4a58578d3cc42f73`.
 
 ## Next optimization roadmap
 

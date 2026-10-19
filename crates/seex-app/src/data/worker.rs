@@ -2,7 +2,6 @@ use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
 use std::thread::{self, JoinHandle};
@@ -401,7 +400,7 @@ impl Drop for RequestTicket {
 
 /// Handle for a bounded set of background readers with thread-owned sessions.
 pub struct ReadWorker {
-    requests: Option<Sender<TaggedRequest>>,
+    requests: Option<RequestSender>,
     events: Option<ReadEventReceiver>,
     threads: Vec<JoinHandle<()>>,
     outstanding: Arc<AtomicUsize>,
@@ -477,19 +476,20 @@ impl ReadWorker {
         gate: Arc<ReadConcurrencyGate>,
     ) -> Result<Self, std::io::Error> {
         let sessions = Arc::new(ReadSessionPool::new(root_path.to_path_buf()));
-        let (request_tx, request_rx) = mpsc::channel();
+        let (request_tx, requests) = request_channel();
         let (event_tx, event_rx) = read_event_channel();
         let worker_count = gate.limit.min(MAX_WORKERS_PER_SOURCE);
         #[cfg(feature = "test-support")]
         let superseded_reads = Arc::new(AtomicUsize::new(0));
-        let requests = Arc::new(Mutex::new(RequestQueue {
-            receiver: request_rx,
-            pending: PendingRequests {
-                #[cfg(feature = "test-support")]
-                superseded_reads: Some(Arc::clone(&superseded_reads)),
-                ..PendingRequests::default()
-            },
-        }));
+        #[cfg(feature = "test-support")]
+        {
+            requests
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pending
+                .superseded_reads = Some(Arc::clone(&superseded_reads));
+        }
         let events = Arc::new(event_tx);
         let outstanding = Arc::new(AtomicUsize::new(0));
         let registry = Arc::new(Mutex::new(RequestRegistry::default()));
@@ -540,11 +540,12 @@ impl ReadWorker {
             request,
             _ticket: ticket,
         };
-        let interrupts = self
+        // Serialize registration and enqueue with cancellation (registry -> queue).
+        let mut registry = self
             .registry
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .mark_latest(&RequestIdentity::new(&tagged));
+            .unwrap_or_else(|error| error.into_inner());
+        let interrupts = registry.mark_latest(&RequestIdentity::new(&tagged));
         if let Some(interrupts) = interrupts {
             for interrupt in interrupts {
                 interrupt.interrupt();
@@ -575,6 +576,15 @@ impl ReadWorker {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .cancel(&identity);
+        if let Some(sender) = &self.requests {
+            sender
+                .0
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pending
+                .cancel(&identity);
+        }
         for interrupt in interrupts {
             interrupt.interrupt();
         }
@@ -714,6 +724,25 @@ impl PendingRequests {
         }
     }
 
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    fn cancel(&mut self, identity: &RequestIdentity) {
+        let retained = |request: &TaggedRequest| {
+            let candidate = RequestIdentity::new(request);
+            candidate.key != identity.key
+                || (candidate.generation, candidate.token) >= (identity.generation, identity.token)
+        };
+        if self
+            .discover
+            .as_ref()
+            .is_some_and(|request| !retained(request))
+        {
+            self.discover = None;
+        }
+        self.overview.retain(&retained);
+        self.detail.retain(&retained);
+        self.inspector.retain(retained);
+    }
+
     fn take_next(&mut self) -> Option<TaggedRequest> {
         self.discover
             .take()
@@ -764,33 +793,80 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) -
     }
 }
 
-struct RequestQueue {
-    receiver: Receiver<TaggedRequest>,
+#[derive(Default)]
+struct RequestQueueState {
     pending: PendingRequests,
+    closed: bool,
 }
 
-fn next_request(queue: &Mutex<RequestQueue>) -> Option<TaggedRequest> {
-    let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
-    loop {
-        while let Ok(request) = queue.receiver.try_recv() {
-            queue.pending.push(request);
+#[derive(Default)]
+struct RequestQueue {
+    state: Mutex<RequestQueueState>,
+    available: Condvar,
+}
+
+struct RequestSender(Arc<RequestQueue>);
+
+fn request_channel() -> (RequestSender, Arc<RequestQueue>) {
+    let queue = Arc::new(RequestQueue::default());
+    (RequestSender(Arc::clone(&queue)), queue)
+}
+
+impl RequestSender {
+    fn send(&self, request: TaggedRequest) -> Result<(), WorkerClosed> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.closed {
+            return Err(WorkerClosed);
         }
-        if let Some(request) = queue.pending.take_next() {
+        state.pending.push(request);
+        drop(state);
+        self.0.available.notify_one();
+        Ok(())
+    }
+}
+
+impl Drop for RequestSender {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.closed = true;
+        state.pending = PendingRequests::default();
+        drop(state);
+        self.0.available.notify_all();
+    }
+}
+
+fn next_request(queue: &RequestQueue) -> Option<TaggedRequest> {
+    let mut state = queue
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    loop {
+        if let Some(request) = state.pending.take_next() {
             return Some(request);
         }
-        let request = queue.receiver.recv().ok()?;
-        queue.pending.push(request);
+        if state.closed {
+            return None;
+        }
+        state = queue
+            .available
+            .wait(state)
+            .unwrap_or_else(|error| error.into_inner());
     }
 }
 
-fn request_is_superseded(queue: &Mutex<RequestQueue>, identity: &RequestIdentity) -> bool {
-    let Ok(mut queue) = queue.try_lock() else {
+fn request_is_superseded(queue: &RequestQueue, identity: &RequestIdentity) -> bool {
+    let Ok(state) = queue.state.try_lock() else {
         return false;
     };
-    while let Ok(request) = queue.receiver.try_recv() {
-        queue.pending.push(request);
-    }
-    queue.pending.has_newer(identity)
+    state.pending.has_newer(identity)
 }
 
 fn request_is_current(registry: &Mutex<RequestRegistry>, identity: &RequestIdentity) -> bool {
@@ -802,7 +878,7 @@ fn request_is_current(registry: &Mutex<RequestRegistry>, identity: &RequestIdent
 
 fn worker_loop(
     sessions: Arc<ReadSessionPool>,
-    requests: Arc<Mutex<RequestQueue>>,
+    requests: Arc<RequestQueue>,
     events: Arc<ReadEventSender>,
     gate: Arc<ReadConcurrencyGate>,
     registry: Arc<Mutex<RequestRegistry>>,
@@ -968,8 +1044,8 @@ mod tests {
     use super::{
         DataSourceId, DiscoveryRequest, Generation, OverviewRequest, PendingRequests,
         ReadConcurrencyGate, ReadKind, ReadRequest, ReadSessionPool, ReadWorker, RequestIdentity,
-        RequestKey, RequestQueue, RequestRegistry, RequestTicket, RequestToken, TaggedRequest,
-        execute, next_request, read_event_channel, request_is_superseded,
+        RequestKey, RequestRegistry, RequestTicket, RequestToken, TaggedRequest, execute,
+        next_request, read_event_channel, request_channel, request_is_superseded,
     };
 
     fn overview_request(metric: &str) -> ReadRequest {
@@ -986,7 +1062,7 @@ mod tests {
 
     #[test]
     fn dropping_worker_does_not_wait_for_running_thread() {
-        let (request_tx, _request_rx) = mpsc::channel();
+        let (request_tx, _request_rx) = request_channel();
         let (_event_tx, event_rx) = read_event_channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::channel();
@@ -1044,7 +1120,7 @@ mod tests {
     /// Boundary probe, not a desktop/SQL benchmark: pause dequeue while the
     /// viewport advances, then release it and discard cancelled identities.
     #[test]
-    fn ten_thousand_metric_scroll_exposes_cancelled_queue_and_registry_growth() {
+    fn ten_thousand_metric_scroll_keeps_only_retained_pending_requests() {
         const METRICS: usize = 10_000;
         const WINDOW: usize = 6; // Four visible rows plus two Overview prefetch rows.
         let outstanding = Arc::new(AtomicUsize::new(0));
@@ -1066,6 +1142,7 @@ mod tests {
                     token: RequestToken(identity.token.0 + 1),
                 };
                 assert!(registry.cancel(&cancellation).is_empty());
+                pending.cancel(&cancellation);
             }
             for metric in start..(start + WINDOW).min(METRICS) {
                 generation += 1;
@@ -1086,9 +1163,8 @@ mod tests {
             assert!(registry.active.is_empty()); // Controlled reader is paused.
         }
         let enqueue_elapsed = started.elapsed();
-        // Characterize the defect rather than asserting a nonexistent bound.
-        assert_eq!(peak_pending, METRICS);
-        assert_eq!(outstanding.load(Ordering::Acquire), METRICS);
+        assert_eq!(peak_pending, WINDOW);
+        assert_eq!(outstanding.load(Ordering::Acquire), WINDOW);
         assert_eq!(registry.latest.len(), WINDOW);
         let mut executed = 0;
         let mut cancelled = 0;
@@ -1104,7 +1180,7 @@ mod tests {
                 cancelled += 1;
             }
         }
-        assert_eq!((executed, cancelled), (WINDOW, METRICS - WINDOW));
+        assert_eq!((executed, cancelled), (WINDOW, 0));
         assert_eq!(outstanding.load(Ordering::Acquire), 0);
         assert!(registry.active.is_empty());
         // Cancellation tombstones and completed identities are released on drain.
@@ -1172,7 +1248,7 @@ mod tests {
 
     #[test]
     fn request_queue_serves_distinct_metrics_to_parallel_consumers() {
-        let (request_tx, request_rx) = mpsc::channel();
+        let (request_tx, queue) = request_channel();
         for (generation, metric) in [(1, "loss"), (2, "accuracy")] {
             request_tx
                 .send(TaggedRequest {
@@ -1184,10 +1260,6 @@ mod tests {
                 })
                 .expect("test request queue should remain open");
         }
-        let queue = Arc::new(Mutex::new(RequestQueue {
-            receiver: request_rx,
-            pending: PendingRequests::default(),
-        }));
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let (acquired_tx, acquired_rx) = mpsc::channel();
         let consumers = (0..2)
@@ -1226,7 +1298,7 @@ mod tests {
 
     #[test]
     fn queued_newer_generation_supersedes_before_execution() {
-        let (request_tx, request_rx) = mpsc::channel();
+        let (request_tx, queue) = request_channel();
         let current = TaggedRequest {
             source_id: DataSourceId::new("source").expect("test alias should be valid"),
             generation: Generation(1),
@@ -1244,12 +1316,9 @@ mod tests {
                 _ticket: RequestTicket::default(),
             })
             .expect("test queue should remain open");
-        let queue = Mutex::new(RequestQueue {
-            receiver: request_rx,
-            pending: PendingRequests::default(),
-        });
 
         assert!(request_is_superseded(&queue, &identity));
+        queue.state.lock().unwrap().pending.cancel(&identity);
         assert_eq!(
             next_request(&queue).map(|request| request.generation),
             Some(Generation(2))
@@ -1300,9 +1369,10 @@ mod tests {
                 &MetricKey::from_string(name),
             );
             assert!(worker.registry.lock().unwrap().latest.is_empty());
+            assert!(worker.outstanding.load(Ordering::Acquire) <= 1);
         }
-        // Tokens remain queued, but cancellation metadata no longer follows history.
-        assert_eq!(worker.outstanding.load(Ordering::Acquire), 10_000);
+        // At most one request has left the cancellable queue and is gate-blocked.
+        assert!(worker.outstanding.load(Ordering::Acquire) <= 1);
         drop(pause);
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while worker.outstanding.load(Ordering::Acquire) != 0 {
@@ -1462,7 +1532,7 @@ mod tests {
 
     #[test]
     fn event_receiver_can_only_be_taken_once() {
-        let (request_tx, _request_rx) = mpsc::channel();
+        let (request_tx, _request_rx) = request_channel();
         let (_event_tx, event_rx) = read_event_channel();
         let mut worker = ReadWorker {
             requests: Some(request_tx),
