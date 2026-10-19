@@ -49,6 +49,45 @@ fn request(curves: usize) -> OverviewRequest {
     }
 }
 
+fn expected_source_count(start: i64, end: i64) -> u64 {
+    // Fixture has Steps 0..POINTS-1 plus a repeated midpoint. Counts include
+    // one actual neighbor on each available side, even for an empty viewport.
+    let inside = (i128::from(end.min(POINTS - 1)) - i128::from(start.max(0)) + 1).max(0) as u64;
+    inside
+        + u64::from(start <= POINTS / 2 && POINTS / 2 <= end)
+        + u64::from(start > 0)
+        + u64::from(end < POINTS - 1)
+}
+
+fn detail_case(name: &str) -> Result<(i64, i64, u64), Box<dyn Error>> {
+    let (start, end) = match name {
+        "full" => (0, POINTS),
+        "prefix" => (0, 2048),
+        "middle" => (450_000, 550_000),
+        "window" => (500_000, 502_048),
+        "small" => (0, 511),
+        "small-middle" => (500_000, 500_511),
+        "tail" => (999_000, 1_100_000),
+        "empty" => (2_000_000, 3_000_000),
+        value => return Err(format!("unsupported panel detail range: {value}").into()),
+    };
+    Ok((start, end, expected_source_count(start, end)))
+}
+
+fn detail_range() -> Result<(i64, i64, u64), Box<dyn Error>> {
+    detail_case(&env::var("SEEX_PANEL_DETAIL_RANGE").unwrap_or("middle".into()))
+}
+
+fn panel_curves() -> Result<usize, Box<dyn Error>> {
+    let curves = env::var("SEEX_PANEL_CURVES")
+        .unwrap_or("16".into())
+        .parse()?;
+    if !matches!(curves, 1 | 16) {
+        return Err("panel curves must be 1 or 16".into());
+    }
+    Ok(curves)
+}
+
 fn is_detail(value: &str) -> Result<bool, Box<dyn Error>> {
     match value {
         "overview" => Ok(false),
@@ -70,6 +109,20 @@ fn panel_contract_and_values() {
     assert_eq!(is_detail("overview").unwrap(), false);
     assert_eq!(is_detail("detail").unwrap(), true);
     assert!(is_detail("typo").is_err());
+    for (case, count) in [
+        ("full", 1_000_001),
+        ("prefix", 2050),
+        ("middle", 100_004),
+        ("window", 2052),
+        ("small", 513),
+        ("small-middle", 515),
+        ("tail", 1001),
+        ("empty", 1),
+    ] {
+        assert_eq!(detail_case(case).unwrap().2, count, "{case}");
+    }
+    assert!(detail_case("typo").is_err());
+    assert_eq!(expected_source_count(-100, -1), 1);
     let mut state = 0x5eec_u64;
     for _ in 0..1000 {
         assert!((0.0..1.0).contains(&value(&mut state)));
@@ -118,31 +171,40 @@ fn panel_gate() -> Result<(), Box<dyn Error>> {
     }
     let session = ReadSession::open_existing(&root()?)?;
     let detail = is_detail(&env::var("SEEX_PANEL_RANGE").unwrap_or("overview".into()))?;
-    let request = request(16);
+    let (range_start, range_end, expected_source_count) = if detail {
+        detail_range()?
+    } else {
+        (0, POINTS, (POINTS + 1) as u64)
+    };
+    let curves = panel_curves()?;
+    let request = request(curves);
     let run = || -> Result<(), Box<dyn Error>> {
         let snapshot = if detail {
             session.query_detail(&DetailRequest {
                 selection: request.selection.clone(),
-                viewport: seex::AlignmentViewport::new(450_000, 550_000)?,
+                viewport: seex::AlignmentViewport::new(range_start, range_end)?,
                 logical_width: 1024,
             })?
         } else {
             session.query_overview(&request)?
         };
-        assert_eq!(snapshot.series.len(), 16);
+        assert_eq!(snapshot.series.len(), curves);
         for curve in &snapshot.series {
-            assert_eq!(
-                curve.source_row_count,
-                if detail { 100_004 } else { (POINTS + 1) as u64 }
-            );
+            assert_eq!(curve.source_row_count, expected_source_count);
             assert_eq!(curve.completeness, EvidenceCompleteness::Complete);
-            assert!(
-                curve.returned_point_count > 0
-                    && curve.returned_point_count <= MAX_CHART_POINTS as u64
+            assert_eq!(
+                curve.returned_point_count,
+                expected_source_count.min(MAX_CHART_POINTS as u64)
             );
         }
         Ok(())
     };
+    let first = Instant::now();
+    run()?;
+    println!(
+        "\npanel_first_request,curves={curves},range=[{range_start},{range_end}],source_per_curve={expected_source_count},elapsed_ns={}",
+        first.elapsed().as_nanos()
+    );
     let mut iterations = 1_u64;
     loop {
         let started = Instant::now();
@@ -169,7 +231,7 @@ fn panel_gate() -> Result<(), Box<dyn Error>> {
         samples.push(elapsed.as_nanos() as f64 / iterations as f64);
     }
     println!(
-        "\nSEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"query\",\"metric\":\"panel.curves16.{}\",\"unit\":\"ns/op\",\"direction\":\"lower\",\"batch_iterations\":{iterations},\"samples\":{samples:?}}}",
+        "\nSEEX_BENCH {{\"schema_version\":3,\"record_type\":\"metric\",\"domain\":\"query\",\"metric\":\"panel.curves{curves}.{}\",\"unit\":\"ns/op\",\"direction\":\"lower\",\"batch_iterations\":{iterations},\"samples\":{samples:?}}}",
         if detail { "detail" } else { "overview" }
     );
     Ok(())
@@ -181,19 +243,21 @@ fn query_panel() -> Result<(), Box<dyn Error>> {
     if cfg!(debug_assertions) {
         return Err("panel diagnostic requires release".into());
     }
-    let curves: usize = env::var("SEEX_PANEL_CURVES")?.parse()?;
-    if !matches!(curves, 1 | 16) {
-        return Err("panel curves must be 1 or 16".into());
-    }
+    let curves = panel_curves()?;
     let session = ReadSession::open_existing(&root()?)?;
     let request = request(curves);
     let detail = is_detail(&env::var("SEEX_PANEL_RANGE").unwrap_or("overview".into()))?;
+    let (range_start, range_end, expected_source_count) = if detail {
+        detail_range()?
+    } else {
+        (0, POINTS, (POINTS + 1) as u64)
+    };
     for index in 0..4 {
         let started = Instant::now();
         let snapshot = if detail {
             session.query_detail(&DetailRequest {
                 selection: request.selection.clone(),
-                viewport: seex::AlignmentViewport::new(450_000, 550_000)?,
+                viewport: seex::AlignmentViewport::new(range_start, range_end)?,
                 logical_width: 1024,
             })?
         } else {
@@ -202,15 +266,12 @@ fn query_panel() -> Result<(), Box<dyn Error>> {
         let elapsed = started.elapsed().as_nanos();
         assert_eq!(snapshot.series.len(), curves);
         for curve in &snapshot.series {
-            assert_eq!(
-                curve.source_row_count,
-                if detail { 100_004 } else { (POINTS + 1) as u64 }
-            );
+            assert_eq!(curve.source_row_count, expected_source_count);
             assert_eq!(curve.completeness, EvidenceCompleteness::Complete);
             assert!(curve.reasons.is_empty());
-            assert!(
-                curve.returned_point_count > 0
-                    && curve.returned_point_count <= MAX_CHART_POINTS as u64
+            assert_eq!(
+                curve.returned_point_count,
+                expected_source_count.min(MAX_CHART_POINTS as u64)
             );
             assert_eq!(
                 curve
