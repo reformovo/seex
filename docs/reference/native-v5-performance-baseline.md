@@ -910,3 +910,29 @@ is retained as a smaller, coherent statistics rule, not as a performance PASS.
 Temporary profiling code and the archived SQL oracle were removed from the
 source tree; raw SQL, profiles, captured binaries, patches, identities and the
 single comparison are ignored local artifacts under `.tmp/v5-detail-stats/`.
+
+### Express single-neighbor selection with Top-N
+
+Neighbor extraction now uses `ORDER BY axis_value, step LIMIT 1` (descending
+for the left neighbor), rather than `QUALIFY row_number() OVER (...) = 1`.
+This expresses the one-observation requirement directly. It changes neither
+`step_bounds` nor its full-partition scan. Equal-Step neighbors remain
+unspecified whole observations; tests do not invent a payload tie order.
+Regression coverage checks both reading plans, Full and reduced budgets,
+nearest-neighbor axes, counts and observation multiplicity with duplicate
+boundary Steps, NaN/Inf, single-Step/out-of-range views and missing metrics.
+
+The retained SQL profiles replace two WINDOW nodes with two TOP_N nodes.
+Both still scan 8 payload files and 62 boundary files; no I/O improvement is
+claimed. Separate diagnostic executions have different cache/high-water state,
+so their individual latency/buffer figures are not a performance comparison.
+
+A single combined **preservation** ABBA returned PASS in 57.99 s. Detail
+baseline medians were 517/527 ms, candidate 523/518 ms; Overview was 673/679 ms
+versus 676/676 ms. Every capture relative MAD stayed below 2%, with ten internally
+calibrated samples >=25 ms. This is performance preservation, not a speedup.
+Paired process-RSS diagnostics were approximately 216/223 MiB: RSS was not
+protected by the timing gate and no memory-improvement claim is made. The
+small production rewrite is retained for readability and simpler planning.
+Temporary profiling tests were removed; source patches, binary identities,
+SQL profiles, raw captures and result remain locally in `.tmp/v5-neighbor-limit/`.

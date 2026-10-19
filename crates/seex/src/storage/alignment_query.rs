@@ -167,11 +167,11 @@ fn aligned_points_sql(
          inside AS (SELECT * FROM ordered WHERE axis_value >= ? AND axis_value <= ?),
          left_neighbor AS (
              SELECT * FROM ordered WHERE axis_value < ?
-             QUALIFY row_number() OVER (ORDER BY axis_value DESC, step DESC) = 1
+             ORDER BY axis_value DESC, step DESC LIMIT 1
          ),
          right_neighbor AS (
              SELECT * FROM ordered WHERE axis_value > ?
-             QUALIFY row_number() OVER (ORDER BY axis_value, step) = 1
+             ORDER BY axis_value, step LIMIT 1
          ),
          visible_source AS (
              SELECT *, true AS in_view FROM inside
@@ -593,6 +593,99 @@ mod tests {
 
         assert_eq!(sql.matches("FROM dl.metric_points").count(), 1);
         assert!(sql.contains("ordered AS MATERIALIZED"));
+    }
+
+    #[test]
+    fn neighbors_are_real_nearest_observations_with_ties_and_empty_ranges()
+    -> Result<(), Box<dyn Error>> {
+        let connection = connection()?;
+        connection.execute_batch(
+            "INSERT INTO dl.metric_points SELECT * FROM dl.metric_points WHERE step IN (1,3,5);
+             INSERT INTO dl.metric_points VALUES
+                ('run-1','loss','loss',1,epoch_ms(1111),'NaN'::DOUBLE,epoch_ms(9111)),
+                ('run-1','loss','loss',5,epoch_ms(1555),'Infinity'::DOUBLE,epoch_ms(9555));",
+        )?;
+        let source = connection.prepare(
+            "SELECT step,epoch_ms(timestamp),value_f64,epoch_ms(ingested_at),step FROM dl.metric_points ORDER BY step"
+        )?.query_map([],stored_bounded_alignment_row)?.collect::<Result<Vec<_>,_>>()?;
+        let reader = ProjectMetricReader::new(&connection);
+        for (start, end, key) in [
+            (2, 4, "loss"),
+            (3, 3, "loss"),
+            (-10, -5, "loss"),
+            (20, 30, "loss"),
+            (0, 6, "loss"),
+            (2, 4, "missing"),
+        ] {
+            let candidates = if key == "loss" {
+                source.as_slice()
+            } else {
+                &[]
+            };
+            let left = candidates
+                .iter()
+                .filter(|p| p.step < start)
+                .map(|p| p.step)
+                .max();
+            let right = candidates
+                .iter()
+                .filter(|p| p.step > end)
+                .map(|p| p.step)
+                .min();
+            let count = candidates
+                .iter()
+                .filter(|p| p.step >= start && p.step <= end)
+                .count()
+                + usize::from(left.is_some())
+                + usize::from(right.is_some());
+            for reduction in [
+                AlignmentReduction::Full,
+                AlignmentReduction::screen_budget(4, 1)?,
+                AlignmentReduction::screen_budget(100, 1)?,
+            ] {
+                let mut query = query(AlignmentAxis::Step, reduction);
+                query.viewport = AlignmentViewport::new(start, end)?;
+                query.metric_key = MetricKey::from_string(key);
+                for narrow in [false, true] {
+                    let result = if narrow {
+                        reader.query_narrow_step_metric(&query)?
+                    } else {
+                        reader.query_aligned_metric(&query)?
+                    };
+                    assert_eq!(result.source_row_count, count as u64);
+                    if let Some(budget) = reduction.max_points() {
+                        assert!(result.points.len() <= budget);
+                    } else {
+                        assert_eq!(result.points.len(), count);
+                    }
+                    let lefts = result
+                        .points
+                        .iter()
+                        .filter(|p| p.axis_value < start)
+                        .map(|p| p.axis_value)
+                        .collect::<Vec<_>>();
+                    let rights = result
+                        .points
+                        .iter()
+                        .filter(|p| p.axis_value > end)
+                        .map(|p| p.axis_value)
+                        .collect::<Vec<_>>();
+                    assert_eq!(lefts, left.into_iter().collect::<Vec<_>>());
+                    assert_eq!(rights, right.into_iter().collect::<Vec<_>>());
+                    let mut available = candidates.iter().collect::<Vec<_>>();
+                    for selected in result.points {
+                        let point = selected.point;
+                        let index = available.iter().position(|p|p.step==point.step.value()
+                            && p.timestamp_millis==point.timestamp.timestamp_millis()
+                            && p.ingested_at_millis==point.ingested_at.timestamp_millis()
+                            && (p.value_f64==point.value_f64 || (p.value_f64.is_nan()&&point.value_f64.is_nan())))
+                            .expect("neighbor ties must select a whole real observation, never fabricate payload");
+                        available.remove(index);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]
