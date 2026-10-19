@@ -37,6 +37,11 @@ with seex.init(project="training", dir="runs", id="baseline") as run:
     run.log({"train/loss": 0.125})  # Implicitly advances to step 1.
 ```
 
+Reduced curve queries use the Seex-native LTTB selector. Full reads, scalar
+summaries, and reporting remain full-fidelity. Reduced reads require no external
+DuckDB extension; non-finite observations remain part of source counts and make
+the series ineligible for bounded sampling.
+
 The `seex` command only launches the native Viewer:
 
 ```console
