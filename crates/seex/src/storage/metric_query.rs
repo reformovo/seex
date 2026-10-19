@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult};
 use crate::model::metric::{
     MetricAggregate, MetricKey, MetricPoint, MetricQuery, MetricQueryResult, ReductionPolicy, Step,
@@ -15,10 +13,6 @@ use crate::storage::alignment_query::{
 use crate::storage::rows::StoredMetricAggregate;
 use crate::storage::sql::string_literal as sql_string_literal;
 use crate::storage::{MetricReader, StorageError};
-
-const EXTREMA_PER_BUCKET: usize = 4;
-const LTTB_AUTO_INSTALL_ENV: &str = "SEEX_LTTB_AUTO_INSTALL";
-const LTTB_EXTENSION_PATH_ENV: &str = "SEEX_LTTB_EXTENSION_PATH";
 
 #[derive(Clone, Copy)]
 pub(crate) enum MetricSource<'a> {
@@ -293,99 +287,62 @@ pub(crate) fn query_metric(
         return Err(StorageError::InvalidIdentity);
     }
 
-    match query.reduction {
-        ReductionPolicy::Full => execute_query(connection, source, query, QueryShape::Full),
-        ReductionPolicy::ScreenBudget { .. } => {
-            let max_points = query
-                .reduction
-                .max_points()
-                .expect("screen budgets always have a point limit");
-            let bucket_count = (max_points / EXTREMA_PER_BUCKET).max(1);
-            execute_query(
-                connection,
-                source,
-                query,
-                QueryShape::Screen { bucket_count },
-            )
-        }
-        ReductionPolicy::Lttb { max_points } => {
-            let source_row_count = count_effective(connection, source, query)?;
-            if source_row_count <= max_points as u64 {
-                return execute_query(connection, source, query, QueryShape::Full);
-            }
-            let max_points = i64::try_from(max_points)
-                .map_err(|_| StorageError::QueryMaxPointsTooLarge { max_points })?;
-            ensure_lttb_extension_loaded(connection)?;
-            execute_query(connection, source, query, QueryShape::Lttb { max_points })
-        }
-    }
-}
-
-enum QueryShape {
-    Full,
-    Screen { bucket_count: usize },
-    Lttb { max_points: i64 },
-}
-
-fn execute_query(
-    connection: &Connection,
-    source: MetricSource<'_>,
-    query: &MetricQuery,
-    shape: QueryShape,
-) -> Result<MetricQueryResult, StorageError> {
-    let sql = match shape {
-        QueryShape::Full => full_query_sql(source),
-        QueryShape::Screen { .. } => screen_query_sql(source),
-        QueryShape::Lttb { .. } => lttb_query_sql(source),
-    };
-    let mut values = query_params(source, query);
-    match shape {
-        QueryShape::Full => {}
-        QueryShape::Screen { bucket_count } => {
-            values.push(Box::new(i64::try_from(bucket_count).map_err(|_| {
-                StorageError::QueryMaxPointsTooLarge {
-                    max_points: bucket_count.saturating_mul(EXTREMA_PER_BUCKET),
+    if let Some(budget) = query.reduction.max_points() {
+        let sql = format!(
+            "{}, source_stats AS (
+                 SELECT count(*)::UBIGINT AS total,
+                        count(*) FILTER (WHERE isfinite(value_f64))::UBIGINT AS finite_count
+                 FROM effective
+             )
+             SELECT points.step, epoch_ms(points.timestamp), points.value_f64,
+                    epoch_ms(points.ingested_at), points.step,
+                    source_stats.total, source_stats.finite_count, 0::UBIGINT
+             FROM source_stats LEFT JOIN effective AS points ON true ORDER BY points.step",
+            effective_cte(source)
+        );
+        let values = query_params(source, query);
+        let selected = crate::storage::sampling::select(
+            &mut connection.prepare(&sql)?,
+            &values,
+            budget,
+            None,
+        )?;
+        let points = selected
+            .points
+            .into_iter()
+            .map(|p| {
+                StoredPoint {
+                    run_id: query.run_id.as_str().to_owned(),
+                    metric_key: query.metric_key.as_str().to_owned(),
+                    step: p.step,
+                    timestamp_millis: p.timestamp_millis,
+                    value_f64: p.value_f64,
+                    ingested_at_millis: p.ingested_at_millis,
                 }
-            })?));
-        }
-        QueryShape::Lttb { max_points } => values.push(Box::new(max_points)),
+                .into_metric_point()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(MetricQueryResult {
+            points,
+            source_row_count: selected.source_count,
+        });
     }
-
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(
-        duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
-        stored_point_from_row,
-    )?;
+    let mut statement = connection.prepare(&full_query_sql(source))?;
+    let values = query_params(source, query);
     let mut points = Vec::new();
     let mut source_row_count = 0;
-    for row in rows {
-        let (point, row_count) = row?;
+    for row in statement.query_map(
+        duckdb::params_from_iter(values.iter().map(|v| v.as_ref())),
+        stored_point_from_row,
+    )? {
+        let (point, count) = row?;
         points.push(point.into_metric_point()?);
-        source_row_count = row_count;
+        source_row_count = count;
     }
     Ok(MetricQueryResult {
         points,
         source_row_count,
     })
-}
-
-fn count_effective(
-    connection: &Connection,
-    source: MetricSource<'_>,
-    query: &MetricQuery,
-) -> Result<u64, StorageError> {
-    let sql = format!(
-        "{} SELECT count(*)::UBIGINT FROM effective",
-        effective_cte(source)
-    );
-    let values = query_params(source, query);
-    connection
-        .query_row(
-            &sql,
-            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
-            |row| row.get(0),
-        )
-        .map_err(StorageError::from)
 }
 
 fn query_params(source: MetricSource<'_>, query: &MetricQuery) -> Vec<Box<dyn duckdb::ToSql>> {
@@ -433,71 +390,6 @@ fn full_query_sql(source: MetricSource<'_>) -> String {
          SELECT run_id, metric_key, step, epoch_ms(timestamp), value_f64,
                 epoch_ms(ingested_at), count(*) OVER ()::UBIGINT
          FROM effective ORDER BY step",
-        effective_cte(source)
-    )
-}
-
-fn screen_query_sql(source: MetricSource<'_>) -> String {
-    format!(
-        "{},
-         numbered AS (
-             SELECT *, row_number() OVER (ORDER BY step) - 1 AS ordinal,
-                    count(*) OVER ()::UBIGINT AS source_row_count
-             FROM effective
-         ),
-         bucketed AS (
-             SELECT *, floor(
-                 ordinal::DOUBLE * ?::DOUBLE / source_row_count::DOUBLE
-             )::UBIGINT AS bucket
-             FROM numbered
-         ),
-         candidates AS (
-             SELECT *,
-                    row_number() OVER (PARTITION BY bucket ORDER BY step) AS first_rank,
-                    row_number() OVER (PARTITION BY bucket ORDER BY step DESC) AS last_rank,
-                    row_number() OVER (PARTITION BY bucket ORDER BY value_f64, step) AS min_rank,
-                    row_number() OVER (PARTITION BY bucket ORDER BY value_f64 DESC, step) AS max_rank
-             FROM bucketed
-         )
-         SELECT run_id, metric_key, step, epoch_ms(timestamp), value_f64,
-                epoch_ms(ingested_at), source_row_count
-         FROM candidates
-         WHERE first_rank = 1 OR last_rank = 1 OR min_rank = 1 OR max_rank = 1
-         ORDER BY step",
-        effective_cte(source)
-    )
-}
-
-// LTTB returns coordinates, not row identity. Match both coordinates and cap
-// each match to the sampled multiplicity: joining only on Step would fan out
-// duplicates, while assembling fields independently could fabricate a point.
-fn lttb_query_sql(source: MetricSource<'_>) -> String {
-    format!(
-        "{},
-         normalized AS MATERIALIZED (
-             SELECT *, CAST(step AS HUGEINT) -
-                       min(CAST(step AS HUGEINT)) OVER () AS lttb_step,
-                    row_number() OVER (PARTITION BY step, value_f64) AS occurrence
-             FROM effective
-         ),
-         sampled AS (
-             SELECT unnest(lttb(lttb_step, value_f64, ?)) AS point,
-                    count(*)::UBIGINT AS source_row_count
-             FROM normalized
-         ),
-         sampled_counts AS (
-             SELECT point.x AS x, point.y AS y, count(*) AS selected_count,
-                    max(source_row_count) AS source_row_count
-             FROM sampled GROUP BY point.x, point.y
-         )
-         SELECT normalized.run_id, normalized.metric_key, normalized.step,
-                epoch_ms(normalized.timestamp), normalized.value_f64,
-                epoch_ms(normalized.ingested_at), sampled_counts.source_row_count
-         FROM sampled_counts
-         JOIN normalized ON normalized.lttb_step = sampled_counts.x
-                        AND normalized.value_f64 = sampled_counts.y
-                        AND normalized.occurrence <= sampled_counts.selected_count
-         ORDER BY normalized.step",
         effective_cte(source)
     )
 }
@@ -576,222 +468,9 @@ pub fn percent_encode_metric_key(value: &str) -> String {
     encoded
 }
 
-pub(crate) fn ensure_lttb_extension_loaded(connection: &Connection) -> Result<(), StorageError> {
-    if lttb_function_available(connection) {
-        return Ok(());
-    }
-    let (loaded, installed) = lttb_extension_state(connection);
-    if loaded {
-        return Ok(());
-    }
-    if let Some(path) = std::env::var_os(LTTB_EXTENSION_PATH_ENV) {
-        return load_lttb_extension_from_path(connection, Path::new(&path));
-    }
-
-    let load_error = match installed {
-        true => match connection.execute_batch("LOAD lttb;") {
-            Ok(()) if lttb_function_available(connection) => return Ok(()),
-            Ok(()) => None,
-            Err(source) => Some(source.to_string()),
-        },
-        false => None,
-    };
-    if lttb_auto_install_allowed(std::env::var_os(LTTB_AUTO_INSTALL_ENV).as_deref()) {
-        return install_and_load_lttb_extension(connection);
-    }
-
-    let mut message = format!(
-        "lttb is not loaded and Seex will not download it automatically; \
-         set {LTTB_AUTO_INSTALL_ENV}=1 to allow INSTALL lttb FROM community, \
-         or set {LTTB_EXTENSION_PATH_ENV} to a local lttb.duckdb_extension"
-    );
-    if let Some(load_error) = load_error {
-        message.push_str("; LOAD lttb failed: ");
-        message.push_str(&load_error);
-    }
-    Err(StorageError::LttbExtensionUnavailable { message })
-}
-
-fn install_and_load_lttb_extension(connection: &Connection) -> Result<(), StorageError> {
-    match connection.execute_batch("INSTALL lttb FROM community; LOAD lttb;") {
-        Ok(()) if lttb_function_available(connection) => Ok(()),
-        Ok(()) => Err(StorageError::LttbExtensionUnavailable {
-            message: "INSTALL/LOAD lttb did not register lttb".to_owned(),
-        }),
-        Err(source) => Err(StorageError::LttbExtensionUnavailable {
-            message: source.to_string(),
-        }),
-    }
-}
-
-fn load_lttb_extension_from_path(connection: &Connection, path: &Path) -> Result<(), StorageError> {
-    let path = sql_string_literal(path.to_string_lossy().as_ref());
-    match connection.execute_batch(&format!("LOAD {path};")) {
-        Ok(()) if lttb_function_available(connection) => Ok(()),
-        Ok(()) => Err(StorageError::LttbExtensionUnavailable {
-            message: "LOAD lttb from SEEX_LTTB_EXTENSION_PATH did not register lttb".to_owned(),
-        }),
-        Err(source) => Err(StorageError::LttbExtensionUnavailable {
-            message: source.to_string(),
-        }),
-    }
-}
-
-fn lttb_function_available(connection: &Connection) -> bool {
-    connection
-        .query_row(
-            "SELECT count(*) > 0
-             FROM duckdb_functions()
-             WHERE function_name = 'lttb'",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .unwrap_or(false)
-}
-
-fn lttb_extension_state(connection: &Connection) -> (bool, bool) {
-    connection
-        .query_row(
-            "SELECT loaded, installed
-             FROM duckdb_extensions()
-             WHERE extension_name = 'lttb'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap_or((false, false))
-}
-
-fn lttb_auto_install_allowed(value: Option<&std::ffi::OsStr>) -> bool {
-    value
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|value| matches!(value, "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
-
     use super::*;
-
-    #[test]
-    #[ignore = "requires the maintained local lttb extension and million-point fixture"]
-    fn lttb_million_point_strategy_experiment() -> Result<(), Box<dyn std::error::Error>> {
-        let root = std::path::PathBuf::from(std::env::var("SEEX_LTTB_ROOT")?);
-        let extension = std::env::var("SEEX_LTTB_EXTENSION_PATH")?;
-        if !Path::new(&extension).is_file() || !root.ends_with(".tmp/v5-panel-million/store") {
-            return Err("set a local lttb extension and the million-point fixture".into());
-        }
-        let connection = crate::storage::bootstrap::open_existing_native_connection_with_config(
-            crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
-                crate::storage::bootstrap::CatalogBackend::Sqlite,
-                &root,
-                None,
-                None,
-                None,
-            ),
-        )?;
-        load_lttb_extension_from_path(&connection, Path::new(&extension))?;
-        let reader = ProjectMetricReader::new(&connection);
-        for function in ["lttb", "lttb_sorted", "minmax_lttb", "minmax_lttb_sorted"] {
-            for (label, predicate) in [
-                ("overview", ""),
-                ("detail", "AND step >= 450000 AND step < 550000"),
-            ] {
-                let started = std::time::Instant::now();
-                let call = if function.starts_with("minmax") {
-                    format!("{function}(step, value_f64, 1024, NULL)")
-                } else {
-                    format!("{function}(step, value_f64, 1024)")
-                };
-                let sql = format!(
-                    "SELECT list_count({call}) FROM dl.metric_points WHERE run_id='run-0' AND metric_key='loss' {predicate}"
-                );
-                let points: u64 = connection.query_row(&sql, [], |row| row.get(0))?;
-                assert!(points > 0 && points <= 1024);
-                println!(
-                    "lttb_function,function={function},range={label},points={points},elapsed_ns={}",
-                    started.elapsed().as_nanos()
-                );
-            }
-        }
-        for (label, start, end) in [
-            ("overview", None, None),
-            ("detail", Some(450_000), Some(550_000)),
-        ] {
-            let query = MetricQuery::new(
-                RunId::from_string("run-0"),
-                MetricKey::from_string("loss"),
-                start.map(Step::new),
-                end.map(Step::new),
-                ReductionPolicy::lttb(1024)?,
-            )?;
-            let started = std::time::Instant::now();
-            let result = reader.query_metric(&query)?;
-            assert!(result.points.len() <= 1024 && !result.points.is_empty());
-            assert_eq!(
-                result.source_row_count,
-                if label == "overview" {
-                    1_000_001
-                } else {
-                    100_001
-                }
-            );
-            println!(
-                "lttb_request,range={label},points={},source_count={},elapsed_ns={}",
-                result.points.len(),
-                result.source_row_count,
-                started.elapsed().as_nanos()
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn lttb_auto_install_is_opt_in() {
-        assert!(!lttb_auto_install_allowed(None));
-        assert!(!lttb_auto_install_allowed(Some(OsStr::new("0"))));
-        assert!(lttb_auto_install_allowed(Some(OsStr::new("true"))));
-    }
-
-    #[test]
-    fn lttb_install_check_does_not_download_the_extension() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let home = tempfile::tempdir()?;
-        let config =
-            duckdb::Config::default().with("home_directory", home.path().to_string_lossy())?;
-        let connection = Connection::open_in_memory_with_flags(config)?;
-
-        assert_eq!(lttb_extension_state(&connection), (false, false));
-        assert!(!lttb_function_available(&connection));
-        assert!(!home.path().join(".duckdb/extensions").exists());
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "network-dependent release LTTB acceptance"]
-    fn lttb_online_and_explicit_offline_paths() -> Result<(), Box<dyn std::error::Error>> {
-        let online_home = tempfile::tempdir()?;
-        let online_config = duckdb::Config::default()
-            .with("home_directory", online_home.path().to_string_lossy())?;
-        let online = Connection::open_in_memory_with_flags(online_config)?;
-        install_and_load_lttb_extension(&online)?;
-        let extension_path: String = online.query_row(
-            "SELECT install_path FROM duckdb_extensions() WHERE extension_name = 'lttb'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert!(Path::new(&extension_path).is_file());
-
-        let offline_home = tempfile::tempdir()?;
-        let offline_config = duckdb::Config::default()
-            .with("home_directory", offline_home.path().to_string_lossy())?
-            .allow_unsigned_extensions()?;
-        let offline = Connection::open_in_memory_with_flags(offline_config)?;
-        load_lttb_extension_from_path(&offline, Path::new(&extension_path))?;
-
-        assert_eq!(lttb_extension_state(&offline), (true, false));
-        Ok(())
-    }
 
     #[test]
     fn diagnostics_cover_all_observations() -> Result<(), Box<dyn std::error::Error>> {
@@ -837,79 +516,5 @@ mod tests {
         assert!(result.points.iter().any(|p| p.value_f64 == 2.0));
         assert!(result.points.iter().any(|p| p.value_f64.is_nan()));
         Ok(())
-    }
-
-    #[test]
-    fn lttb_duplicate_axes_join_only_selected_observation_multiplicities()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let connection = Connection::open_in_memory()?;
-        connection.execute_batch(
-            "CREATE SCHEMA dl;
-             CREATE TABLE dl.metric_points AS
-             SELECT 'run-1' AS run_id, 'loss' AS metric_key, 'loss' AS metric_key_encoded,
-                    3::BIGINT AS step, epoch_ms(i) AS timestamp,
-                    CASE WHEN i < 3 THEN 1.0 ELSE 9.0 END::DOUBLE AS value_f64,
-                    epoch_ms(i + 100) AS ingested_at FROM range(1, 5) AS t(i);
-             -- Deterministic sampler isolates the reconstruction join from the
-             -- network-loaded extension. Select two identical (x, y) occurrences.
-             CREATE MACRO lttb(x, y, n) AS
-                 list_slice(list(struct_pack(x := x, y := y) ORDER BY y), 1, n);",
-        )?;
-        let query = MetricQuery::new(
-            RunId::from_string("run-1"),
-            MetricKey::from_string("loss"),
-            None,
-            None,
-            ReductionPolicy::lttb(3)?,
-        )?;
-        let directory = tempfile::tempdir()?;
-        let path = directory.path().join("points.parquet");
-        connection.execute_batch(&format!(
-            "COPY dl.metric_points TO {} (FORMAT PARQUET)",
-            sql_string_literal(&path.to_string_lossy())
-        ))?;
-        let location = path.to_string_lossy();
-        for source in [MetricSource::Project, MetricSource::Parquet(&location)] {
-            let selected = execute_query(
-                &connection,
-                source,
-                &query,
-                QueryShape::Lttb { max_points: 2 },
-            )?;
-            assert_eq!(selected.source_row_count, 4);
-            assert_eq!(selected.points.len(), 2);
-            assert!(selected.points.iter().all(|p| p.value_f64 == 1.0));
-            let mixed = execute_query(
-                &connection,
-                source,
-                &query,
-                QueryShape::Lttb { max_points: 3 },
-            )?;
-            assert_eq!(mixed.points.len(), 3);
-            assert_eq!(
-                mixed.points.iter().filter(|p| p.value_f64 == 9.0).count(),
-                1
-            );
-            assert!(
-                selected
-                    .points
-                    .iter()
-                    .all(|p| p.ingested_at.timestamp_millis()
-                        == p.timestamp.timestamp_millis() + 100)
-            );
-            assert_ne!(selected.points[0].timestamp, selected.points[1].timestamp);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn project_and_parquet_sources_share_effective_query_shape() {
-        let project = full_query_sql(MetricSource::Project);
-        let parquet = full_query_sql(MetricSource::Parquet("points.parquet"));
-
-        assert!(project.contains("FROM dl.metric_points"));
-        assert!(parquet.contains("FROM read_parquet"));
-        assert!(project.contains("metric_key_encoded = ?"));
-        assert!(parquet.contains("metric_key_encoded = ?"));
     }
 }

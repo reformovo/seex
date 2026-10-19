@@ -15,6 +15,7 @@ mod metric_query;
 mod project;
 mod query;
 pub mod rows;
+mod sampling;
 mod schema;
 mod sql;
 pub mod time;
