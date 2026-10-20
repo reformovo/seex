@@ -661,6 +661,88 @@ fn deactivating_a_view_cancels_every_panel_generation() {
 }
 
 #[test]
+fn ten_thousand_panel_identity_scroll_keeps_payloads_to_retained_window() {
+    let mut views = AnalysisViews::default();
+    let panel_ids = (0..10_000)
+        .map(|index| views.select_active_metric(MetricKey::from_string(format!("metric-{index}"))))
+        .collect::<Vec<_>>();
+    let viewport = AlignmentViewport::new(0, 100).expect("viewport should be valid");
+    let snapshot = || CurveSnapshot {
+        viewport,
+        point_budget: 2,
+        real_range: Some(viewport),
+        series: Vec::new(),
+    };
+    for (generation, panel_id) in panel_ids.iter().take(8).enumerate() {
+        views.begin_active_panel_detail(panel_id, Generation(generation as u64 + 1), viewport, 800);
+        assert!(views.complete_active_panel_read(
+            ReadKind::Detail,
+            panel_completion(
+                panel_id,
+                Generation(generation as u64 + 1),
+                PanelReadMode::Replace,
+                Vec::new(),
+                Some(snapshot()),
+                Vec::new(),
+            ),
+        ));
+        views.begin_active_panel_overview(panel_id, Generation(generation as u64 + 10_001), 800);
+        assert!(views.complete_active_panel_read(
+            ReadKind::Overview,
+            panel_completion(
+                panel_id,
+                Generation(generation as u64 + 10_001),
+                PanelReadMode::Replace,
+                Vec::new(),
+                Some(snapshot()),
+                Vec::new(),
+            ),
+        ));
+    }
+    let retained = panel_ids[..6].to_vec();
+    assert!(views.evict_hidden_panel_details(&retained));
+    assert_eq!(
+        views
+            .active()
+            .panels
+            .iter()
+            .filter(|panel| panel.detail.is_some())
+            .count(),
+        6
+    );
+    assert!(views.evict_unretained_panel_overviews(&retained));
+    assert_eq!(
+        views
+            .active()
+            .panels
+            .iter()
+            .filter(|panel| panel.overview.is_some())
+            .count(),
+        6
+    );
+    let evicted = &panel_ids[9_999];
+    views.begin_active_panel_detail(evicted, Generation(20_000), viewport, 800);
+    assert!(!views.complete_active_panel_read(
+        ReadKind::Detail,
+        panel_completion(
+            evicted,
+            Generation(19_999),
+            PanelReadMode::Replace,
+            Vec::new(),
+            Some(snapshot()),
+            Vec::new(),
+        ),
+    ));
+    assert!(
+        views
+            .active_panel(evicted)
+            .expect("evicted panel remains")
+            .detail
+            .is_none()
+    );
+}
+
+#[test]
 fn hidden_panel_details_are_evicted() {
     let mut views = AnalysisViews::default();
     let first_panel = views.select_active_metric(MetricKey::from_string("loss"));

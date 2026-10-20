@@ -188,6 +188,15 @@ queue for requests that remain current and are never consumed; a separate
 backpressure policy would need to preserve panel completeness while bounding that
 case. No curve payloads or points are allocated.
 
+### Panel payload residency probe
+`workbench::view::tests::ten_thousand_panel_identity_scroll_keeps_payloads_to_retained_window`
+creates 10,000 metric identities but only eight synthetic, empty curve snapshots.
+It retains six panels, evicts hidden Detail and unretained Overview state, and sends
+an older Detail completion to the evicted tail panel. Results: **6 Detail payloads,
+6 Overview payloads, 0 stale repopulation**. Each snapshot has zero series and zero
+points; this proves ownership/eviction behavior, not chart memory or RSS. The full
+10,000-panel identity construction and traversal remains separate from query timing.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
