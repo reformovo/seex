@@ -453,6 +453,29 @@ It proves actual SQL execution and connection recovery on the fresh-handle path;
 it does **not** run the native curve query or the complete app worker loop, so
 end-to-end worker-permit release/reuse during interrupted SQL remains unverified.
 
+### Worker cancellation of executing SQL and queued-request slot reuse
+SDK feature `test-query-probe` is opt-in and enabled only through seex-app's
+dev-dependency. Normal builds have no probe branch, state, or watchdog. It matches
+one unique test Run/key and inserts a one-shot long sequence aggregate inside the
+actual fresh curve-query path, after the real interrupt registration. The guard
+observes sequence advancement through a second connection, not a sleep. Guard
+cleanup interrupts only on drop; an associated watchdog handles early-failure
+races and cannot satisfy the test's interrupt assertion before guard drop.
+`cancel_executing_sql_releases_worker_slot_for_queued_curve` uses real ReadWorker
+transport, executor, registry and cancellation with a single reader/permit. After
+SQL advancement is observed, it queues a different metric (outstanding=2, active=1),
+cancels the old request, requires an explicit SQL INTERRUPT result, and receives
+only the new generation's successful nonempty curve. Outstanding tickets, active
+permits, registry entries and completion queue drain; the reader thread joins.
+This is end-to-end worker slot reuse with an injected executing SQL probe, not
+proof of interrupt latency for the production LTTB/neighbor SQL operators. No
+runtime dependency, Python API, production SQL or connection-cache change; no ABBA
+because normal-build behavior is unchanged. The probe feature must remain opt-in
+and its global arming should only be used by serialized integration tests.
+Reproduce with `cargo test -p seex-app --no-default-features --lib
+ data::worker::tests::cancel_executing_sql_releases_worker_slot_for_queued_curve
+ -- --exact --nocapture` (app dev-dependency enables the SDK probe).
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

@@ -28,6 +28,7 @@ toml_edit = "0.25.12"
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit"], optional = true }
 
 [dev-dependencies]
+seex = { path = "../seex", features = ["test-query-probe"] }
 tempfile = "3"
 
 [lib]

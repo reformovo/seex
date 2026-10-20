@@ -83,6 +83,73 @@ impl ReaderInterrupt {
     }
 }
 
+#[cfg(feature = "test-query-probe")]
+static QUERY_PROBE: std::sync::Mutex<Option<QueryProbe>> = std::sync::Mutex::new(None);
+#[cfg(feature = "test-query-probe")]
+struct QueryProbe {
+    run_id: RunId,
+    metric_key: MetricKey,
+    started: std::sync::mpsc::Sender<(ProjectConnection, ReaderInterrupt)>,
+    result: std::sync::mpsc::Sender<bool>,
+    cleanup: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Opt-in integration probe; never available in a default SDK build.
+#[cfg(feature = "test-query-probe")]
+#[doc(hidden)]
+pub struct ExecutingQueryProbe {
+    started: std::sync::mpsc::Receiver<(ProjectConnection, ReaderInterrupt)>,
+    result: std::sync::mpsc::Receiver<bool>,
+    interrupt: Option<ReaderInterrupt>,
+    cleanup: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+#[cfg(feature = "test-query-probe")]
+impl ExecutingQueryProbe {
+    pub fn wait_until_running(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let deadline = std::time::Instant::now() + timeout;
+        let (observer, interrupt) = self.started.recv_timeout(timeout)?;
+        self.interrupt = Some(interrupt);
+        loop {
+            let value: Option<i64> = observer.query_row(
+                "SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seex_worker_probe'",
+                [], |row| row.get(0))?;
+            if value.is_some_and(|v| v > 0) {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("SQL probe never advanced".into());
+            }
+            std::thread::yield_now();
+        }
+    }
+    pub fn wait_interrupted(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<bool, std::sync::mpsc::RecvTimeoutError> {
+        self.result.recv_timeout(timeout)
+    }
+}
+#[cfg(feature = "test-query-probe")]
+impl Drop for ExecutingQueryProbe {
+    fn drop(&mut self) {
+        self.cleanup
+            .store(true, std::sync::atomic::Ordering::Release);
+        if let Some(handle) = &self.interrupt {
+            handle.interrupt();
+        }
+        let mut slot = QUERY_PROBE.lock().unwrap();
+        if slot
+            .as_ref()
+            .is_some_and(|p| std::sync::Arc::ptr_eq(&p.cleanup, &self.cleanup))
+        {
+            slot.take();
+        }
+    }
+}
+
 /// One Run's summary and objective evidence for the Desktop inspector.
 #[doc(hidden)]
 pub struct DesktopMetricEvidence {
@@ -265,6 +332,84 @@ struct DiagnosticsCache {
 }
 
 impl Reader {
+    /// Arm a one-shot probe for exactly one Run/key in serialized integration tests.
+    #[cfg(feature = "test-query-probe")]
+    #[doc(hidden)]
+    pub fn arm_executing_query_probe(run_id: RunId, metric_key: MetricKey) -> ExecutingQueryProbe {
+        let (started_tx, started) = std::sync::mpsc::channel();
+        let (result_tx, result) = std::sync::mpsc::channel();
+        let mut slot = QUERY_PROBE.lock().unwrap();
+        assert!(slot.is_none(), "query probe already armed");
+        let cleanup = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        *slot = Some(QueryProbe {
+            run_id: run_id.clone(),
+            metric_key: metric_key.clone(),
+            started: started_tx,
+            result: result_tx,
+            cleanup: cleanup.clone(),
+        });
+        ExecutingQueryProbe {
+            started,
+            result,
+            interrupt: None,
+            cleanup,
+        }
+    }
+
+    #[cfg(feature = "test-query-probe")]
+    fn execute_armed_probe(&self, run_id: &RunId, metric_key: &MetricKey) -> SdkResult<()> {
+        let probe = {
+            let mut slot = QUERY_PROBE.lock().unwrap();
+            if slot
+                .as_ref()
+                .is_some_and(|p| &p.run_id == run_id && &p.metric_key == metric_key)
+            {
+                slot.take()
+            } else {
+                None
+            }
+        };
+        let Some(probe) = probe else {
+            return Ok(());
+        };
+        let connection = self.native()?;
+        connection
+            .execute_batch("CREATE SEQUENCE memory.main.seex_worker_probe;")
+            .map_err(|_| Error::Storage)?;
+        probe
+            .started
+            .send((
+                connection.try_clone().map_err(|_| Error::Storage)?,
+                self.interrupt_handle().ok_or(Error::Storage)?,
+            ))
+            .map_err(|_| Error::Storage)?;
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finished = done.clone();
+        let cleanup = probe.cleanup.clone();
+        let handle = self.interrupt_handle().ok_or(Error::Storage)?;
+        let watchdog = std::thread::spawn(move || {
+            while !finished.load(std::sync::atomic::Ordering::Acquire) {
+                if cleanup.load(std::sync::atomic::Ordering::Acquire) {
+                    handle.interrupt();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        });
+        let result = connection.query_row(
+            "SELECT sum(sin(i::DOUBLE) + nextval('memory.main.seex_worker_probe')::DOUBLE)
+             FROM range(1000000000) AS data(i)",
+            [],
+            |row| row.get::<_, f64>(0),
+        );
+        done.store(true, std::sync::atomic::Ordering::Release);
+        watchdog.join().expect("probe cleanup watchdog panicked");
+        let interrupted = result
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.to_string().to_uppercase().contains("INTERRUPT"));
+        let _ = probe.result.send(interrupted);
+        result.map(|_| ()).map_err(|_| Error::Storage)
+    }
     pub fn builder(root_path: impl AsRef<Path>) -> ReaderBuilder {
         ReaderBuilder::new(root_path.as_ref().to_owned())
     }
@@ -655,6 +800,8 @@ impl Reader {
         retain_neighbors: bool,
         force_full_step: bool,
     ) -> SdkResult<MetricSeries> {
+        #[cfg(feature = "test-query-probe")]
+        self.execute_armed_probe(run_id, metric_key)?;
         let started = std::time::Instant::now();
         let metadata = self.metadata(run_id)?;
         crate::storage::bootstrap::record_write_timing("reader_metadata", started.elapsed());

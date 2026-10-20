@@ -6,6 +6,10 @@ description = "Unified Rust SDK facade for Seex."
 license = "MIT"
 repository = "https://github.com/reformovo/seex"
 
+[features]
+# Opt-in deterministic app/SDK integration probes, never enabled by default.
+test-query-probe = []
+
 [dependencies]
 chrono = "0.4"
 duckdb = { version = "~1.10504.0", features = ["bundled"] }

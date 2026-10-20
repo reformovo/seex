@@ -1605,6 +1605,91 @@ mod tests {
     }
 
     #[test]
+    fn cancel_executing_sql_releases_worker_slot_for_queued_curve() {
+        let root = tempfile::tempdir().unwrap();
+        let client = seex::Client::builder(root.path()).open().unwrap();
+        let run = client
+            .start_run(seex::RunOptions::new("project").id("worker-sql-probe"))
+            .unwrap();
+        run.log_with(
+            [("loss", 1.), ("next", 2.)],
+            seex::LogOptions::new().step(0),
+        )
+        .unwrap();
+        run.finish().unwrap();
+        client.shutdown().unwrap();
+        let source = DataSourceId::new("source").unwrap();
+        let request = |metric| {
+            let mut request = overview_request(metric);
+            if let ReadRequest::Overview(curve) = &mut request {
+                curve.selection.runs.push(crate::domain::RunRef::new(
+                    source.clone(),
+                    seex::ProjectId::from_string("project"),
+                    run.run_id().clone(),
+                ));
+            }
+            request
+        };
+        let mut probe = seex::Reader::arm_executing_query_probe(
+            run.run_id().clone(),
+            MetricKey::from_string("loss"),
+        );
+        let gate = Arc::new(ReadConcurrencyGate::new(1));
+        let mut worker = ReadWorker::spawn_with_gate(root.path(), gate.clone()).unwrap();
+        worker
+            .submit(source.clone(), Generation(1), request("loss"))
+            .unwrap();
+        probe.wait_until_running(Duration::from_secs(10)).unwrap();
+        worker
+            .submit(source.clone(), Generation(2), request("next"))
+            .unwrap();
+        assert_eq!(worker.outstanding.load(Ordering::Acquire), 2);
+        assert_eq!(*gate.active.lock().unwrap(), 1);
+        worker.cancel(
+            source.clone(),
+            Generation(1),
+            ReadKind::Overview,
+            &MetricKey::from_string("loss"),
+        );
+        // This must be the worker interrupt, not the guard's failure-cleanup path.
+        assert!(probe.wait_interrupted(Duration::from_secs(10)).unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let idle = worker.outstanding.load(Ordering::Acquire) == 0
+                && *gate.active.lock().unwrap() == 0;
+            if idle && worker.event_sender.0.lock().queue.len() == 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queued curve did not complete"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        let event = worker.event_sender.0.lock().queue.pop_front().unwrap();
+        assert_eq!(event.generation, Generation(2));
+        assert_eq!(event.metric_key.as_deref(), Some("next"));
+        let super::ReadSnapshot::Overview(snapshot) = event.result.unwrap() else {
+            panic!("expected curve");
+        };
+        assert_eq!(snapshot.series[0].returned_point_count, 1);
+        assert!(
+            snapshot.series[0]
+                .chart_series
+                .as_ref()
+                .is_some_and(|s| !s.points().is_empty())
+        );
+        assert!(worker.registry.lock().unwrap().active.is_empty());
+        assert!(worker.registry.lock().unwrap().latest.is_empty());
+        assert!(worker.event_sender.0.lock().queue.is_empty());
+        worker.requests.take();
+        for reader in worker.threads.drain(..) {
+            reader.join().unwrap();
+        }
+        drop(probe);
+    }
+
+    #[test]
     fn cancel_registered_read_suppresses_completion_and_preserves_return_request() {
         let root = tempfile::tempdir().unwrap();
         let client = seex::Client::builder(root.path()).open().unwrap();
