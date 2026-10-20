@@ -315,6 +315,13 @@ impl PanelReadCoordinator {
     }
 
     pub fn apply(&mut self, event: ReadEvent) -> PanelReadOutcome {
+        #[cfg(feature = "test-support")]
+        crate::data::worker::trace_read(
+            &event.source_id,
+            event.generation,
+            event.kind,
+            "event_apply",
+        );
         let lookup = (event.generation, event.kind);
         let Some(key) = self.inflight.get(&lookup).cloned() else {
             #[cfg(feature = "test-support")]

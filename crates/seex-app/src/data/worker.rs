@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "test-support")]
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
@@ -25,6 +27,59 @@ use crate::domain::DataSourceId;
 /// Monotonically increasing identity for one read request.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Generation(pub u64);
+
+#[cfg(feature = "test-support")]
+#[derive(Clone, Debug)]
+pub(crate) struct ReadTraceEvent {
+    pub source_id: DataSourceId,
+    pub generation: Generation,
+    pub kind: ReadKind,
+    pub phase: &'static str,
+    pub at: std::time::Instant,
+}
+#[cfg(feature = "test-support")]
+#[derive(Default)]
+struct ReadTrace {
+    events: Vec<ReadTraceEvent>,
+    dropped: usize,
+}
+#[cfg(feature = "test-support")]
+static READ_TRACE: OnceLock<Mutex<ReadTrace>> = OnceLock::new();
+#[cfg(feature = "test-support")]
+pub(crate) fn reset_read_trace() {
+    *READ_TRACE
+        .get_or_init(|| Mutex::new(ReadTrace::default()))
+        .lock()
+        .unwrap() = ReadTrace::default();
+}
+#[cfg(feature = "test-support")]
+pub(crate) fn read_trace() -> (Vec<ReadTraceEvent>, usize) {
+    let state = READ_TRACE.get().unwrap().lock().unwrap();
+    (state.events.clone(), state.dropped)
+}
+#[cfg(feature = "test-support")]
+pub(crate) fn trace_read(
+    source_id: &DataSourceId,
+    generation: Generation,
+    kind: ReadKind,
+    phase: &'static str,
+) {
+    let Some(state) = READ_TRACE.get() else {
+        return;
+    }; // Explicit opt-in only.
+    let mut state = state.lock().unwrap();
+    if state.events.len() == 8192 {
+        state.dropped += 1;
+        return;
+    }
+    state.events.push(ReadTraceEvent {
+        source_id: source_id.clone(),
+        generation,
+        kind,
+        phase,
+        at: std::time::Instant::now(),
+    });
+}
 
 /// Independent result streams routed by source and panel coordinators.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -155,6 +210,13 @@ impl ReadEventSender {
             if !state.receiver_alive {
                 return false;
             }
+            #[cfg(feature = "test-support")]
+            trace_read(
+                &event.source_id,
+                event.generation,
+                event.kind,
+                "event_queued",
+            );
             state.queue.push_back(event);
             #[cfg(feature = "test-support")]
             {
@@ -606,6 +668,13 @@ impl ReadWorker {
             request,
             _ticket: ticket,
         };
+        #[cfg(feature = "test-support")]
+        trace_read(
+            &tagged.source_id,
+            generation,
+            tagged.request.kind(),
+            "enqueue",
+        );
         // Serialize registration and enqueue with cancellation (registry -> queue).
         let mut registry = self
             .registry
@@ -637,6 +706,13 @@ impl ReadWorker {
             generation,
             token: RequestToken(self.next_token.fetch_add(1, Ordering::Relaxed)),
         };
+        #[cfg(feature = "test-support")]
+        trace_read(
+            &identity.key.source_id,
+            identity.generation,
+            identity.key.kind,
+            "cancel_called",
+        );
         let interrupts = self
             .registry
             .lock()
@@ -994,6 +1070,13 @@ fn worker_loop(
         let _permit = gate.acquire();
         if request_is_superseded(&requests, &identity) || !request_is_current(&registry, &identity)
         {
+            #[cfg(feature = "test-support")]
+            trace_read(
+                &identity.key.source_id,
+                identity.generation,
+                identity.key.kind,
+                "discarded",
+            );
             continue;
         }
         let Some(event) = execute(
@@ -1029,6 +1112,13 @@ fn execute(
     registry: &Mutex<RequestRegistry>,
     mut is_superseded: impl FnMut() -> bool,
 ) -> Option<ReadEvent> {
+    #[cfg(feature = "test-support")]
+    trace_read(
+        &identity.key.source_id,
+        identity.generation,
+        identity.key.kind,
+        "start",
+    );
     let TaggedRequest {
         source_id,
         generation,
@@ -1086,6 +1176,13 @@ fn execute(
             return result;
         }
     })();
+    #[cfg(feature = "test-support")]
+    trace_read(
+        &identity.key.source_id,
+        identity.generation,
+        identity.key.kind,
+        "finish",
+    );
     let current = request_is_current(registry, identity);
     if registered {
         registry

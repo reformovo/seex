@@ -1,4 +1,5 @@
 //! Explicit opt-in native-window diagnostic. No TestPlatform or user configuration.
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -254,6 +255,73 @@ fn native_fixture_keeps_dense_and_sparse_metric_timestamps_step_ordered() {
     }
 }
 
+#[cfg(feature = "test-support")]
+fn print_read_trace(since: Option<Instant>, stage: usize) {
+    let (events, dropped) = crate::data::worker::read_trace();
+    let event_count = events.len();
+    let mut grouped = HashMap::<
+        (
+            crate::domain::DataSourceId,
+            u64,
+            crate::data::worker::ReadKind,
+        ),
+        HashMap<&'static str, Instant>,
+    >::new();
+    for event in events {
+        grouped
+            .entry((event.source_id, event.generation.0, event.kind))
+            .or_default()
+            .insert(event.phase, event.at);
+    }
+    grouped.retain(|_, phases| {
+        since.is_none_or(|since| phases.get("enqueue").is_some_and(|at| *at >= since))
+    });
+    let phase_names = [
+        "enqueue",
+        "start",
+        "finish",
+        "event_queued",
+        "event_apply",
+        "cancel_called",
+        "discarded",
+    ];
+    let phases: [usize; 7] = std::array::from_fn(|i| {
+        grouped
+            .values()
+            .filter(|p| p.contains_key(phase_names[i]))
+            .count()
+    });
+    let mut queue_start = Vec::new();
+    let mut worker = Vec::new();
+    let mut apply = Vec::new();
+    for phases in grouped.values() {
+        if let (Some(enqueue), Some(start)) = (phases.get("enqueue"), phases.get("start")) {
+            queue_start.push((*start - *enqueue).as_secs_f64() * 1000.);
+        }
+        if let (Some(start), Some(finish)) = (phases.get("start"), phases.get("finish")) {
+            worker.push((*finish - *start).as_secs_f64() * 1000.);
+        }
+        if let (Some(queued), Some(applied)) =
+            (phases.get("event_queued"), phases.get("event_apply"))
+        {
+            apply.push((*applied - *queued).as_secs_f64() * 1000.);
+        }
+    }
+    let counts = [queue_start.len(), worker.len(), apply.len()];
+    let median = |values: &mut Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        values.get(values.len().saturating_sub(1) / 2).copied()
+    };
+    println!(
+        "SEEX_READ_TRACE stage={stage} events={} dropped={dropped} source_generations={} phase_counts={phases:?} samples_queue_worker_apply={counts:?} queue_to_start_median_ms={:?} worker_median_ms={:?} event_to_apply_median_ms={:?}",
+        event_count,
+        grouped.len(),
+        median(&mut queue_start),
+        median(&mut worker),
+        median(&mut apply)
+    );
+}
+
 fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Window) {
     window.refresh();
     window.on_next_frame(move |window, cx: &mut App| {
@@ -270,6 +338,8 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                     advance = true;
                 }
                 1 if viewer.available_metric_keys(cx).len() == state.metric_count => {
+                    #[cfg(feature = "test-support")]
+                    crate::data::worker::reset_read_trace();
                     viewer.dispatch_workbench_command(command::WorkbenchCommand::SelectMetrics(viewer.available_metric_keys(cx)), cx);
                     advance = true;
                 }
@@ -355,6 +425,7 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
         });
         if advance {
             if matches!(state.stage, 6 | 7) {
+                print_read_trace(Some(state.since), state.stage);
                 for trace in &mut state.traces { trace.finish("stage_end"); }
                 let counts: [usize; 4] = std::array::from_fn(|i| state.traces.iter().filter(|t| t.observed[i].is_some()).count());
                 println!("SEEX_MOTION_SUMMARY stage={} targets={} observed_visible_pending_data_paint={counts:?}", state.stage, state.traces.len());
@@ -376,6 +447,8 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
             window.root::<ViewerApp>().flatten().unwrap().read_with(cx, report_unready);
         }
         if timed_out || state.stage == 9 {
+            #[cfg(feature = "test-support")]
+            print_read_trace(None, state.stage);
             println!("SEEX_NATIVE_RESULT ok={} stage={} status={}", !timed_out, state.stage, state.status);
             cx.quit();
         } else {

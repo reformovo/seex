@@ -626,7 +626,48 @@ pass. They locate most sampled target failures before usable Overview arrival,
 not specifically in paint; queueing/connection/SQL/event-apply shares remain
 unknown. Next capture actual per-generation enqueue/start/finish/apply events.
 The trace unit test verifies first observations, censored outcomes, and no invented
-pending event for cached curves. No production scheduling change or RSS capture.
+pending event for cached curves. No production scheduling change or RSS capture. Event traces are only armed by the
+native profile after metric selection; normal test-support runs that do not arm
+trace have no collection. The cap/drop counter makes missing samples explicit.
+
+### Per-generation read timeline
+Test-support event traces now include source, generation, kind and enqueue/start/
+finish/event-queued/event-apply/cancel/discard phases, capped at 8,192 events with
+a reported drop count. The native profile groups only matching source+generation+
+kind events and reports complete-sample counts; incomplete phases are not put into
+medians. This is diagnostic wall time, not SQL-only time: fresh connection open,
+metadata/diagnostics, query, worker overlap and UI apply are included in the
+corresponding intervals. The event is stamped inside the completion queue lock
+before wakeup; apply is stamped at coordinator entry.
+
+Valid-order release native traces (500 / 10,000) showed:
+
+| Motion phase | Metrics | Complete timeline samples | Queue→start median ms | Worker start→finish median ms | Event queue→apply median ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Forward | 500 | 131 / 127 / 2 | 22.17 | 66.19 | 0.013 |
+| Reverse | 500 | 156 / 152 / 0 | 24.11 | 62.31 | — |
+| Forward | 10,000 | 126 / 122 / 0 | 21.41 | 66.20 | — |
+| Reverse | 10,000 | 145 / 141 / 0 | 17.34 | 66.99 | — |
+| Final stable | 500 | 369 / 369 / 83 | 17.58 | 66.10 | 0.018 |
+| Final stable | 10,000 | 355 / 355 / 81 | 14.89 | 69.25 | 0.259 |
+
+No trace events were dropped. Motion observed complete data/paint for only 5/59
+forward and 0/59 reverse targets at 500; 3/60 and 0/60 at 10,000. Thus most
+motion misses are requests still in queue/worker or not yet applied when targets
+leave the viewport; the tiny apply medians are based on few complete samples and
+are not a general UI latency result. Next production decision requires a larger
+per-generation sample policy or controlled input rate, not immediate SQL batching.
+
+
+### Per-generation motion-stage timestamps
+The native profile now records test-support events for each generation: enqueue,
+worker start, worker finish, completion enqueue, and coordinator apply. It reports
+medians for enqueue→start, start→finish, and completion→apply at final exit. These
+are wall-clock observations from one process, not SQL-only timings; fresh connection
+open, query stages, event pumping and chart paint overlap them. Missing phases are
+excluded from that median and must be reported by event count. This instrumentation
+is the next step for distinguishing visible-target misses caused by queueing,
+worker/SQL, or event application; it is not enabled in normal builds.
 
 ## Next optimization roadmap
 
