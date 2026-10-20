@@ -1027,7 +1027,17 @@ fn execute(
             #[cfg(feature = "test-support")]
             pause_registered_read_for_test(kind);
             active_session.reader().refresh_diagnostics(generation.0);
-            let result = execute_read(active_session, &request, &mut is_superseded);
+            let result = execute_read(
+                active_session,
+                &request,
+                &mut is_superseded,
+                &mut |handle| {
+                    registry
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .begin(identity, vec![handle])
+                },
+            );
             if !retried_storage_error
                 && result.as_ref().is_err_and(is_retryable_storage_error)
                 && !is_superseded()
@@ -1081,17 +1091,20 @@ fn execute_read(
     session: &ReadSession,
     request: &ReadRequest,
     is_superseded: &mut impl FnMut() -> bool,
+    register: &mut dyn FnMut(ReaderInterrupt) -> bool,
 ) -> Result<Option<ReadSnapshot>, WorkerError> {
     Ok(Some(match request {
         ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(request)?),
         ReadRequest::Overview(request) => {
-            let Some(snapshot) = session.query_overview_until(request, is_superseded)? else {
+            let Some(snapshot) = session.query_overview_until(request, is_superseded, register)?
+            else {
                 return Ok(None);
             };
             ReadSnapshot::Overview(snapshot)
         }
         ReadRequest::Detail(request) => {
-            let Some(snapshot) = session.query_detail_until(request, is_superseded)? else {
+            let Some(snapshot) = session.query_detail_until(request, is_superseded, register)?
+            else {
                 return Ok(None);
             };
             ReadSnapshot::Detail(snapshot)

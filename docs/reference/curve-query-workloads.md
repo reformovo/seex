@@ -409,6 +409,35 @@ arrives before registration. Cleanup/late cancellation must not target a new
 request. Validate actual executing SQL and subsequent worker-slot reuse separately;
 no runtime dependency, connection cache, or storage-layout change is implied.
 
+### Fresh curve-query interrupt registration
+The curve worker now registers the **fresh attempt's** `ReaderInterrupt` before
+SQL via a doc-hidden desktop Rust entry point; the existing SDK entry point stays
+available and Python API is unchanged. The worker accepts registration only while
+the request generation/token is current, replacing its active handle with that
+specific connection. Retry attempts must register their own new handles. Rejected
+registration executes no SQL; cancellation observed after a query error returns
+None rather than retrying the interrupted curve SQL. Ordinary storage-error retries
+and request-scoped fresh connections are preserved, with no connection cache.
+Reader tests check handle identity before SQL, retry replacement, first-registration
+rejection and retry-registration rejection. Existing worker generation/late-cleanup
+regressions and the 128-metric Detail reversal integration passed (36 View snapshots,
+2,082 points after drain). The earlier connection-affinity gap describes pre-fix code.
+Deterministic in-progress SQL interruption/slot reuse remains a separate acceptance
+step; inspector/discovery query cancellation is not covered by this curve fix.
+One bounded ABBA used `python scripts/performance_gate.py run --manifest
+<manifest.json> --output <result.json>`, ten calibrated samples >=25 ms, <=120 s,
+no retries. Real release SDK binaries, same dependency feature set: baseline was
+linked before the production edit; candidate registers the fresh handle into a
+mutex slot, not a complete worker registry. A prepared one-Run/4,096-observation
+local fixture is outside timing, budget 64, full Step range, one curve. Each request
+asserts 64 returned points; sessions are reused, fresh query connections are not.
+`query.fresh_interrupt_route` A/B/B/A medians **42.689/43.000/42.529/42.572 ms**;
+MAD **0.568/0.991/1.600/1.600%**. Preservation pass, combined change **+0.31%**,
+not a speedup or cancellation-latency comparison. Ephemeral scratch SHA-256:
+- Baseline binary: `e32150901a73e7adaa8cca1e36207ad6024c47537cf70311e49facae18484952`.
+- Candidate binary: `600037f6c54137537053f7b5b5225b3fa7387bcfca75504080a4566c397adafd`.
+- Result: `f0dafe431bc12d9456daa71da613b3d40dcb38b394a92f86dd49522e9443b83c`.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

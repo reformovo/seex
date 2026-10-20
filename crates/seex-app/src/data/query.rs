@@ -141,7 +141,7 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_overview(&self, request: &OverviewRequest) -> Result<CurveSnapshot, QueryError> {
-        self.query_overview_until(request, &mut || false)
+        self.query_overview_until(request, &mut || false, &mut |_| true)
             .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
     }
 
@@ -149,6 +149,7 @@ impl ReadSession {
         &self,
         request: &OverviewRequest,
         is_superseded: &mut dyn FnMut() -> bool,
+        register: &mut dyn FnMut(seex::ReaderInterrupt) -> bool,
     ) -> Result<Option<CurveSnapshot>, QueryError> {
         let viewport = match request.selection.axis {
             CurveAxis::Step => AlignmentViewport::new(0, i64::MAX)?,
@@ -161,6 +162,7 @@ impl ReadSession {
             overview_budget(request.logical_width),
             true,
             is_superseded,
+            register,
         )
     }
 
@@ -170,7 +172,7 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_detail(&self, request: &DetailRequest) -> Result<CurveSnapshot, QueryError> {
-        self.query_detail_until(request, &mut || false)
+        self.query_detail_until(request, &mut || false, &mut |_| true)
             .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
     }
 
@@ -178,6 +180,7 @@ impl ReadSession {
         &self,
         request: &DetailRequest,
         is_superseded: &mut dyn FnMut() -> bool,
+        register: &mut dyn FnMut(seex::ReaderInterrupt) -> bool,
     ) -> Result<Option<CurveSnapshot>, QueryError> {
         query_curves(
             self,
@@ -186,6 +189,7 @@ impl ReadSession {
             detail_budget(request.logical_width),
             false,
             is_superseded,
+            register,
         )
     }
 
@@ -261,6 +265,7 @@ fn query_curves(
     point_budget: u32,
     force_full_step: bool,
     is_superseded: &mut dyn FnMut() -> bool,
+    register: &mut dyn FnMut(seex::ReaderInterrupt) -> bool,
 ) -> Result<Option<CurveSnapshot>, QueryError> {
     if selection.runs.len() > crate::domain::MAX_SELECTED_RUNS {
         return Err(QueryError::TooManyCurves {
@@ -295,12 +300,13 @@ fn query_curves(
         .iter()
         .map(|run| run.run_id.clone())
         .collect::<Vec<_>>();
-    let Some(evidence) = session.reader().query_metrics_for_desktop(
+    let Some(evidence) = session.reader().query_metrics_for_desktop_with_interrupt(
         &requested,
         &selection.metric_key,
         &query,
         force_full_step,
         is_superseded,
+        register,
     )?
     else {
         return Ok(None);

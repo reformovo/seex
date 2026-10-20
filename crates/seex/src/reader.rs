@@ -521,6 +521,28 @@ impl Reader {
         overview: bool,
         is_superseded: &mut dyn FnMut() -> bool,
     ) -> SdkResult<Option<Vec<MetricSeries>>> {
+        self.query_metrics_for_desktop_with_interrupt(
+            run_ids,
+            metric_key,
+            query,
+            overview,
+            is_superseded,
+            &mut |_| true,
+        )
+    }
+
+    /// Desktop-only registration of each request-scoped connection before SQL.
+    /// Returning false rejects an already-cancelled attempt without executing it.
+    #[doc(hidden)]
+    pub fn query_metrics_for_desktop_with_interrupt(
+        &self,
+        run_ids: &[RunId],
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+        overview: bool,
+        is_superseded: &mut dyn FnMut() -> bool,
+        register: &mut dyn FnMut(ReaderInterrupt) -> bool,
+    ) -> SdkResult<Option<Vec<MetricSeries>>> {
         if run_ids.len() > 16 {
             return Err(Error::UnsupportedQuery);
         }
@@ -530,13 +552,18 @@ impl Reader {
         if is_superseded() {
             return Ok(None);
         }
-        self.with_fresh_query_reader(|reader| {
+        self.with_fresh_query_reader_registered(register, |reader| {
             let mut results = Vec::with_capacity(run_ids.len());
             for run_id in run_ids {
                 if is_superseded() {
                     return Ok(None);
                 }
-                results.push(reader.query_metric_once(run_id, metric_key, query, true, overview)?);
+                let result = reader.query_metric_once(run_id, metric_key, query, true, overview);
+                // An interrupt maps to Storage too; cancellation must not retry SQL.
+                if is_superseded() {
+                    return Ok(None);
+                }
+                results.push(result?);
             }
             if is_superseded() {
                 return Ok(None);
@@ -563,6 +590,14 @@ impl Reader {
 
     fn with_fresh_query_reader<T>(
         &self,
+        operation: impl FnMut(&Self) -> SdkResult<Option<T>>,
+    ) -> SdkResult<Option<T>> {
+        self.with_fresh_query_reader_registered(&mut |_| true, operation)
+    }
+
+    fn with_fresh_query_reader_registered<T>(
+        &self,
+        register: &mut dyn FnMut(ReaderInterrupt) -> bool,
         mut operation: impl FnMut(&Self) -> SdkResult<Option<T>>,
     ) -> SdkResult<Option<T>> {
         for attempt in 0..2 {
@@ -572,6 +607,9 @@ impl Reader {
             };
             if attempt != 0 {
                 reader.diagnostics.borrow_mut().volatile.clear();
+            }
+            if !register(reader.interrupt_handle().ok_or(Error::Storage)?) {
+                return Ok(None);
             }
             match operation(&reader) {
                 Err(Error::Storage) if attempt == 0 => continue,
@@ -1364,6 +1402,71 @@ mod tests {
             reader.runs_page(&project, None, MAX_RUN_PAGE_SIZE + 1),
             Err(Error::UnsupportedQuery)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_attempt_registers_before_sql_and_replaces_handle_on_retry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = crate::Client::builder(root.path()).open()?;
+        let run = client.start_run(crate::RunOptions::new("project").id("run"))?;
+        run.finish()?;
+        client.shutdown()?;
+        let reader = Reader::builder(root.path()).open()?;
+        let session = reader.interrupt_handle().unwrap();
+        let handles = RefCell::new(Vec::<ReaderInterrupt>::new());
+        let result = reader.with_fresh_query_reader_registered(
+            &mut |handle| {
+                assert!(!session.0.same_connection(&handle.0));
+                assert!(
+                    handles
+                        .borrow()
+                        .iter()
+                        .all(|old| !old.0.same_connection(&handle.0))
+                );
+                handles.borrow_mut().push(handle);
+                true
+            },
+            |fresh| {
+                let handle = fresh.interrupt_handle().unwrap();
+                assert!(
+                    handles
+                        .borrow()
+                        .last()
+                        .unwrap()
+                        .0
+                        .same_connection(&handle.0)
+                );
+                if handles.borrow().len() == 1 {
+                    return Err(Error::Storage);
+                }
+                let value = fresh
+                    .native()?
+                    .query_row("SELECT 7", [], |row| row.get::<_, i32>(0))
+                    .map_err(|_| Error::Storage)?;
+                Ok(Some(value))
+            },
+        )?;
+        assert_eq!(result, Some(7));
+        assert_eq!(handles.borrow().len(), 2);
+        let rejected = reader.with_fresh_query_reader_registered::<()>(&mut |_| false, |_| {
+            panic!("cancelled registration must not execute SQL")
+        })?;
+        assert_eq!(rejected, None);
+        let calls = Cell::new(0);
+        let cancelled_retry = reader.with_fresh_query_reader_registered::<()>(
+            &mut |_| {
+                calls.set(calls.get() + 1);
+                calls.get() == 1
+            },
+            |_| {
+                assert_eq!(calls.get(), 1);
+                Err(Error::Storage)
+            },
+        )?;
+        assert_eq!(cancelled_retry, None);
+        assert_eq!(calls.get(), 2);
         Ok(())
     }
 
