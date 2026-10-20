@@ -369,6 +369,28 @@ prove an in-progress DuckDB query is interrupted. It is TestPlatform, not native
 frame/RSS, and no ABBA was run. Two initial one-point harness attempts did not
 trigger Detail (`entered=0`); these were fixture precondition failures.
 
+### 10,000-identity in-flight reversal extension
+`SEEX_DETAIL_REVERSAL_METRICS=10000` now extends the same diagnostic, retaining the
+128 default as a small regression run. Tail/middle/head/tail/head jumps occur
+without waiting for the paused Detail; actual target arrival and View payload/point
+bounds are asserted at every stop and again after complete drain. Only one metric
+has 4,096 observations; no million-point curves are prepared.
+The final 10,000 capture passed: `entered=1`, 2,855 ms after pause release to drain,
+39.23 s total including fixture/setup. Each jump observed one selected Overview
+payload with 1,024 points. After drain: **36 View snapshots, 2,082 actual chart
+points**, a nonempty new-generation Detail, zero source errors/pending reads, and
+zero outstanding/active/completion depths. The 128 run also passed with the same
+final snapshot/point counts and 1,018 ms drain. These are functional diagnostic
+samples, not calibrated timings or performance improvements. An earlier 10,000
+run without the final residency assertion passed at 1,840 ms; the initial attempt
+failed fixture preparation because one log mapping exceeded the 8,192-key limit.
+Fixture writes now use 1,024-key batches without changing SDK limits.
+This verifies sampled **View-owned** residency, not all chart/projection owners,
+true historical queue peaks, running SQL interruption, native frames, or RSS.
+Run with the existing release/test-support command, exact filter
+`desktop::app::tests::performance::cancelled_detail_reversal_integration`,
+`--ignored --exact --nocapture --test-threads=1`.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

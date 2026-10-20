@@ -366,17 +366,23 @@ fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
 #[ignore = "diagnostic cancelled Detail reversal integration profile"]
 fn cancelled_detail_reversal_integration(cx: &mut TestAppContext) {
     assert!(!cfg!(debug_assertions), "requires --release");
-    let metric_count = 128;
+    let metric_count = benchmark_count("SEEX_DETAIL_REVERSAL_METRICS", 128);
+    assert!(
+        metric_count >= 128,
+        "needs separated head/middle/tail windows"
+    );
     let root = tempfile::tempdir().unwrap();
     let client = seex::Client::builder(root.path()).open().unwrap();
     let run = client
         .start_run(seex::RunOptions::new("project").id("run"))
         .unwrap();
-    run.log_with(
-        (0..metric_count).map(|i| (format!("metric-{i:04}"), 1.)),
-        seex::LogOptions::new().step(0),
-    )
-    .unwrap();
+    for start in (0..metric_count).step_by(1024) {
+        run.log_with(
+            (start..(start + 1024).min(metric_count)).map(|i| (format!("metric-{i:04}"), 1.)),
+            seex::LogOptions::new().step(0),
+        )
+        .unwrap();
+    }
     for step in 1..4096 {
         run.log_with(
             [("metric-0000", (step as f64).sin())],
@@ -433,7 +439,7 @@ fn cancelled_detail_reversal_integration(cx: &mut TestAppContext) {
                 .unwrap()
         })
         .unwrap();
-    for target in [127, 64, 0] {
+    for target in [metric_count - 1, metric_count / 2, 0, metric_count - 1, 0] {
         window
             .update(&mut visual, |viewer, _, cx| {
                 viewer.workspace.update(cx, |workspace, cx| {
@@ -449,13 +455,34 @@ fn cancelled_detail_reversal_integration(cx: &mut TestAppContext) {
         window
             .read_with(&visual, |viewer, cx| {
                 let workspace = viewer.workspace.read(cx);
-                assert!(workspace.track_viewport.borrow().visible.contains(&target));
+                let viewport = workspace.track_viewport.borrow();
+                assert!(viewport.visible.contains(&target));
+                let snapshot = viewer.session_snapshot(cx);
+                let active = snapshot.views.active();
                 if target != 0 {
-                    let snapshot = viewer.session_snapshot(cx);
-                    let panel = &snapshot.views.active().panels[0];
-                    assert!(panel.detail_generation.is_none());
-                    assert!(panel.detail.is_none());
+                    assert!(active.panels[0].detail_generation.is_none());
+                    assert!(active.panels[0].detail.is_none());
                 }
+                let mut payloads = 0;
+                let mut points = 0;
+                for (index, panel) in active.panels.iter().enumerate() {
+                    let retained = viewport.overview.contains(&index)
+                        || active.selected_panel_id.as_ref() == Some(&panel.panel_id);
+                    for (curve, allowed) in [(&panel.overview, retained),
+                        (&panel.detail, viewport.visible.contains(&index))] {
+                        if let Some(curve) = curve {
+                            assert!(allowed, "offscreen View payload at {index}");
+                            payloads += 1;
+                            points += curve.series.iter().filter_map(|c| c.chart_series.as_ref())
+                                .map(|s| s.points().len()).sum::<usize>();
+                        }
+                    }
+                }
+                let max_payloads = viewport.overview.len() + 1 + viewport.visible.len();
+                assert!(payloads <= max_payloads);
+                // Only the first metric is dense; at most Overview + Detail for it.
+                assert!(points <= max_payloads + 2 * seex::MAX_CHART_POINTS);
+                println!("SEEX_REVERSAL_WINDOW metrics={metric_count} target={target} view_payloads={payloads} view_points={points}");
             })
             .unwrap();
     }
@@ -493,10 +520,30 @@ fn cancelled_detail_reversal_integration(cx: &mut TestAppContext) {
                 .filter(|p| !p.source_errors.is_empty())
                 .count();
             assert_eq!(failures, 0);
+            let workspace = viewer.workspace.read(cx);
+            let viewport = workspace.track_viewport.borrow();
+            let mut payloads = 0;
+            let mut points = 0;
+            for (index, panel) in active.panels.iter().enumerate() {
+                let retained = viewport.overview.contains(&index)
+                    || active.selected_panel_id.as_ref() == Some(&panel.panel_id);
+                for (curve, allowed) in [(&panel.overview, retained),
+                    (&panel.detail, viewport.visible.contains(&index))] {
+                    if let Some(curve) = curve {
+                        assert!(allowed, "offscreen payload after drain at {index}");
+                        payloads += 1;
+                        points += curve.series.iter().filter_map(|c| c.chart_series.as_ref())
+                            .map(|s| s.points().len()).sum::<usize>();
+                    }
+                }
+            }
+            let limit = viewport.overview.len() + 1 + viewport.visible.len();
+            assert!(payloads <= limit && points <= limit + 2 * seex::MAX_CHART_POINTS);
+            println!("SEEX_REVERSAL_DRAIN metrics={metric_count} view_payloads={payloads} view_points={points}");
         })
         .unwrap();
     println!(
-        "SEEX_ACTIVE_DETAIL_REVERSAL entered={} drain_ms={}",
+        "SEEX_ACTIVE_DETAIL_REVERSAL metrics={metric_count} entered={} drain_ms={}",
         entered,
         started.elapsed().as_millis()
     );
