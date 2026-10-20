@@ -68,6 +68,7 @@ pub(in crate::desktop) fn run(root: PathBuf) {
                         status: String::new(),
                         reported_unready: false,
                         invalid_evidence: false,
+                        traces: Vec::new(),
                     },
                     window,
                 );
@@ -91,6 +92,74 @@ struct State {
     status: String,
     reported_unready: bool,
     invalid_evidence: bool,
+    traces: Vec<MotionTrace>,
+}
+
+struct MotionTrace {
+    target: usize,
+    started: Instant,
+    // First frame observing visible, pending, complete data, and current paint.
+    observed: [Option<Duration>; 4],
+    done: bool,
+}
+impl MotionTrace {
+    fn observe(&mut self, states: [bool; 4], elapsed: Duration) {
+        if self.done {
+            return;
+        }
+        for (i, ready) in states.into_iter().enumerate() {
+            if ready && self.observed[i].is_none() {
+                self.observed[i] = Some(elapsed);
+            }
+        }
+    }
+    fn finish(&mut self, reason: &str) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        println!(
+            "SEEX_MOTION_TRACE target={} reason={reason} observed_ms={:?} age_ms={}",
+            self.target,
+            self.observed.map(|v| v.map(|d| d.as_secs_f64() * 1000.)),
+            self.started.elapsed().as_millis()
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn motion_trace_preserves_missing_events_and_first_observations() {
+    let mut trace = MotionTrace {
+        target: 4,
+        started: Instant::now(),
+        observed: [None; 4],
+        done: false,
+    };
+    trace.observe([true, true, false, false], Duration::from_millis(16));
+    trace.observe([true, true, false, false], Duration::from_millis(32));
+    trace.finish("left_viewport");
+    trace.observe([true; 4], Duration::from_millis(48));
+    assert_eq!(
+        trace.observed,
+        [
+            Some(Duration::from_millis(16)),
+            Some(Duration::from_millis(16)),
+            None,
+            None
+        ]
+    );
+    let mut cached = MotionTrace {
+        target: 0,
+        started: Instant::now(),
+        observed: [None; 4],
+        done: false,
+    };
+    cached.observe([true, false, true, true], Duration::from_millis(16));
+    assert!(
+        cached.observed[1].is_none(),
+        "must not fabricate a pending time for cached data"
+    );
 }
 
 fn report_unready(viewer: &ViewerApp, cx: &App) {
@@ -245,6 +314,21 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                 6 | 7 => {
                     let workspace = viewer.workspace.read(cx);
                     let viewport = workspace.track_viewport.borrow().visible.clone();
+                    for trace in state.traces.iter_mut().filter(|t| !t.done) {
+                        if !viewport.contains(&trace.target) {
+                            if trace.observed[0].is_some() { trace.finish("left_viewport"); }
+                            continue;
+                        }
+                        let panel = &snapshot.views.active().panels[trace.target];
+                        let pending = panel.is_pending(crate::data::worker::ReadKind::Overview);
+                        let loaded = panel.source_errors.is_empty() && panel.overview.as_ref().is_some_and(|s|
+                            snapshot.views.active().runs.iter().all(|r| s.series.iter().any(|c|
+                                &c.run_ref == r && c.completeness == seex::EvidenceCompleteness::Complete
+                                && c.chart_series.as_ref().is_some_and(|s| s.points().len() >= 2))));
+                        let painted = workspace.track_charts.get(&panel.panel_id).is_some_and(|c| c.read(cx).painted_current());
+                        trace.observe([true, pending, loaded, painted], trace.started.elapsed());
+                        if loaded && painted { trace.finish("painted"); }
+                    }
                     let painted = !viewport.is_empty() && snapshot.views.active().panels[viewport].iter().all(|p|
                         workspace.track_charts.get(&p.panel_id).is_some_and(|c| c.read(cx).painted_current()));
                     state.unready_frames += usize::from(!painted);
@@ -256,6 +340,7 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                         state.motion_steps += 1;
                         let forward = state.motion_steps * 4 % n.saturating_sub(14).max(1);
                         let target = if state.stage == 6 || state.motion_steps % 2 == 0 { forward } else { n - 1 - forward };
+                        state.traces.push(MotionTrace { target, started: Instant::now(), observed: [None; 4], done: false });
                         viewer.workspace.update(cx, |workspace, cx| {
                             workspace.metric_scroll.scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.) });
                             cx.notify();
@@ -269,6 +354,12 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
             }
         });
         if advance {
+            if matches!(state.stage, 6 | 7) {
+                for trace in &mut state.traces { trace.finish("stage_end"); }
+                let counts: [usize; 4] = std::array::from_fn(|i| state.traces.iter().filter(|t| t.observed[i].is_some()).count());
+                println!("SEEX_MOTION_SUMMARY stage={} targets={} observed_visible_pending_data_paint={counts:?}", state.stage, state.traces.len());
+                state.traces.clear();
+            }
             state.frames.sort_by(f64::total_cmp);
             let n = state.frames.len();
             println!("SEEX_NATIVE_PHASE stage={} elapsed_ms={} frames={n} callback_p95_ms={} callback_max_ms={} motion_steps={} unready_motion_frames={}", state.stage, state.since.elapsed().as_millis(), state.frames[(n * 95).div_ceil(100).saturating_sub(1)], state.frames[n - 1], state.motion_steps, state.unready_frames);

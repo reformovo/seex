@@ -599,6 +599,35 @@ scrolling-performance pass; no RSS was captured in this final attribution run.
 The next performance question is visible-curve catch-up during movement, not a
 proven final-row clipping defect. Original raw probes remain ephemeral scratch.
 
+The native trace records first observations per logical target (not every panel
+entering the viewport), retaining missing events as None. It observes visible,
+Overview-pending, Complete per-Run Overview with >=2 points, and current chart paint.
+It reports painted/left-viewport/stage-end outcomes; it does not overwrite first
+observations or fabricate pending timestamps for cached data. Times are callback
+observations, **not** exact enqueue, worker start, SQL finish, or event-apply times.
+An initial 500 capture reused the old timestamp-order fixture (no Invalid surfaced
+in that run); valid-order/preflight-Complete fixtures were then used for both scales:
+
+| Metrics / motion | Targets visible | Pending observed | Complete data observed | Current paint observed | Painted / left / stage-end outcomes |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 500 forward | 59 | 54 | 5 | 5 | 5 / 53 / 1 |
+| 500 reverse | 59 | 58 | 0 | 0 | 0 / 58 / 1 |
+| 10,000 forward | 60 | 57 | 3 | 3 | 3 / 56 / 1 |
+| 10,000 reverse | 60 | 59 | 0 | 0 | 0 / 59 / 1 |
+
+Most incomplete targets left after about 66 ms. Visible/pending were first seen
+about 16–18 ms after setting the logical target. Successful data/paint observations
+were on the same callback and may be cached; neither gives an uncached latency
+estimate. At 10,000, the initial readiness took 10,349 ms with a **7,816 ms callback
+outlier**, not discarded. Both final stops passed loaded=14/painted=14/queues zero
+(700/1,216 ms final drain at 500/10,000). These single instrumented diagnostics,
+with per-target log overhead, are not ABBA, wheel-input validation or a performance
+pass. They locate most sampled target failures before usable Overview arrival,
+not specifically in paint; queueing/connection/SQL/event-apply shares remain
+unknown. Next capture actual per-generation enqueue/start/finish/apply events.
+The trace unit test verifies first observations, censored outcomes, and no invented
+pending event for cached curves. No production scheduling change or RSS capture.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
