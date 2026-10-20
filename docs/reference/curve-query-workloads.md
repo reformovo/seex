@@ -196,8 +196,11 @@ an older Detail completion to the evicted tail panel. Results: **6 Detail payloa
 6 Overview payloads, 0 stale repopulation**. Each snapshot has zero series and zero
 points; this proves ownership/eviction behavior, not chart memory or RSS. The full
 10,000-panel identity construction and traversal remains separate from query timing.
-The same test now prints diagnostic timings for identity creation and one full panel
-slice clone; these are profile observations only and are not calibrated ABBA metrics.
+The same test now uses the internal batch-selection path and prints diagnostic
+timings for identity creation and one full panel slice clone; these are profile
+observations only and are not calibrated ABBA metrics. The batch path preserves
+metric order, deduplicates input keys, and selects the final key like repeated
+single selection.
 
 ### Combined headless scheduler pressure probe
 `data::worker::tests::ten_thousand_scroll_cancel_drain_keeps_worker_queues_bounded`

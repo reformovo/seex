@@ -43,6 +43,7 @@ pub(crate) enum WorkbenchCommand {
         selected: bool,
     },
     SelectMetric(MetricKey),
+    SelectMetrics(Vec<MetricKey>),
     SelectPanel(MetricPanelId),
     RemoveMetric(MetricPanelId),
     ResizeMetric {
@@ -72,6 +73,26 @@ pub(crate) struct CommandEffect {
 }
 
 impl WorkbenchSession {
+    fn apply_metric_selection(
+        &mut self,
+        metric_keys: impl IntoIterator<Item = MetricKey>,
+    ) -> CommandEffect {
+        let previous = self.views.active().selected_panel_id.clone();
+        let previous_len = self.views.active().panels.len();
+        let panel_id = self
+            .views
+            .select_active_metrics(metric_keys)
+            .last()
+            .cloned();
+        let selected_panel_changed = panel_id.as_ref() != previous.as_ref();
+        CommandEffect {
+            changed: selected_panel_changed || self.views.active().panels.len() != previous_len,
+            selected_panel_changed,
+            panel_id,
+            ..CommandEffect::default()
+        }
+    }
+
     pub(crate) fn apply_command(&mut self, command: WorkbenchCommand) -> CommandEffect {
         let selection = self.snapshot();
         let effect = match command {
@@ -256,16 +277,9 @@ impl WorkbenchSession {
                     ..CommandEffect::default()
                 }
             }
-            WorkbenchCommand::SelectMetric(metric_key) => {
-                let previous = self.views.active().selected_panel_id.clone();
-                let panel_id = self.views.select_active_metric(metric_key);
-                let selected_panel_changed = previous.as_ref() != Some(&panel_id);
-                CommandEffect {
-                    changed: selected_panel_changed,
-                    selected_panel_changed,
-                    panel_id: Some(panel_id),
-                    ..CommandEffect::default()
-                }
+            WorkbenchCommand::SelectMetric(metric_key) => self.apply_metric_selection([metric_key]),
+            WorkbenchCommand::SelectMetrics(metric_keys) => {
+                self.apply_metric_selection(metric_keys)
             }
             WorkbenchCommand::SelectPanel(panel_id) => {
                 let previous = self.views.active().selected_panel_id.clone();
@@ -433,7 +447,7 @@ impl ViewerApp {
                     self.request_inspector(cx);
                 }
             }
-            WorkbenchCommand::SelectMetric(_) => {
+            WorkbenchCommand::SelectMetric(_) | WorkbenchCommand::SelectMetrics(_) => {
                 let Some(_) = effect.panel_id else {
                     return;
                 };

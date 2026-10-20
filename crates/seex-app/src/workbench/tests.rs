@@ -45,6 +45,21 @@ fn closing_the_last_view_creates_a_new_empty_view() {
 }
 
 #[test]
+fn batch_metric_selection_preserves_order_deduplicates_and_selects_last() {
+    let mut views = AnalysisViews::default();
+    let selected = views.select_active_metrics([
+        MetricKey::from_string("loss"),
+        MetricKey::from_string("accuracy"),
+        MetricKey::from_string("loss"),
+    ]);
+    assert_eq!(views.active().panels.len(), 2);
+    assert_eq!(selected.len(), 2);
+    assert_eq!(views.active().selected_panel_id, selected.last().cloned());
+    assert_eq!(views.active().panels[0].metric_key.as_str(), "loss");
+    assert_eq!(views.active().panels[1].metric_key.as_str(), "accuracy");
+}
+
+#[test]
 fn run_limit_allows_removal_and_is_independent_per_view() {
     let mut views = AnalysisViews::default();
     let run = |index: usize| {
@@ -666,9 +681,9 @@ fn deactivating_a_view_cancels_every_panel_generation() {
 fn ten_thousand_panel_identity_scroll_keeps_payloads_to_retained_window() {
     let mut views = AnalysisViews::default();
     let started = Instant::now();
-    let panel_ids = (0..10_000)
-        .map(|index| views.select_active_metric(MetricKey::from_string(format!("metric-{index}"))))
-        .collect::<Vec<_>>();
+    let panel_ids = views.select_active_metrics(
+        (0..10_000).map(|index| MetricKey::from_string(format!("metric-{index}"))),
+    );
     let identity_elapsed = started.elapsed();
     let started = Instant::now();
     let cloned_panels = views.active().panels.to_vec();

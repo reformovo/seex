@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -605,21 +605,43 @@ impl AnalysisViews {
     }
 
     pub fn select_active_metric(&mut self, metric_key: MetricKey) -> MetricPanelId {
-        let existing = self
+        self.select_active_metrics([metric_key])
+            .into_iter()
+            .next()
+            .expect("single metric selection must produce one panel")
+    }
+
+    pub(crate) fn select_active_metrics(
+        &mut self,
+        metric_keys: impl IntoIterator<Item = MetricKey>,
+    ) -> Vec<MetricPanelId> {
+        let mut existing = self
             .active()
             .panels
             .iter()
-            .find(|panel| panel.metric_key == metric_key)
-            .map(|panel| panel.panel_id.clone());
-        if let Some(panel_id) = existing {
-            select_panel(self.active_mut(), &panel_id);
-            return panel_id;
+            .map(|panel| (panel.metric_key.clone(), panel.panel_id.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut selected = Vec::new();
+        let mut seen = HashSet::new();
+        for metric_key in metric_keys {
+            if !seen.insert(metric_key.clone()) {
+                continue;
+            }
+            let panel_id = if let Some(panel_id) = existing.get(&metric_key) {
+                panel_id.clone()
+            } else {
+                let panel = MetricPanel::new(metric_key.clone());
+                let panel_id = panel.panel_id.clone();
+                self.active_mut().panels.push(panel);
+                existing.insert(metric_key, panel_id.clone());
+                panel_id
+            };
+            selected.push(panel_id);
         }
-        let panel = MetricPanel::new(metric_key);
-        let panel_id = panel.panel_id.clone();
-        self.active_mut().panels.push(panel);
-        select_panel(self.active_mut(), &panel_id);
-        panel_id
+        if let Some(panel_id) = selected.last() {
+            select_panel(self.active_mut(), panel_id);
+        }
+        selected
     }
 
     pub fn remove_active_panel(&mut self, panel_id: &MetricPanelId) -> bool {
