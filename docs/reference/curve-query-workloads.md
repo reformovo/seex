@@ -353,6 +353,22 @@ visible two points, and rejects an old completion after eviction without a new
 pending generation. No production changes or timing comparison; dense native
 Detail reads, rapid GUI reversal, all-owner residency and native frames/RSS remain open.
 
+### Dense Detail reversal integration
+`cancelled_detail_reversal_integration` is an ignored release/TestPlatform
+scenario with 128 metric identities. `metric-0000` has 4,096 observations so
+Overview is downsampled and a selected zoom requests nonempty Detail; the other
+metrics have one observation. A test-only pause confirms the Detail request reaches
+active identity registration (`entered=1`) before the query body, then tail/middle/
+head logical jumps are issued while that old Detail generation is paused. Releasing
+it drains in **1,017 ms** in the final assertion-complete diagnostic (earlier
+instrumentation-only run: 2,271 ms; intermediate assertion run: 1,064 ms). It asserts arrival at each target, clears the
+old offscreen Detail generation/payload, and returns a nonempty Detail with a new
+revision and no source errors; pending Detail and worker depths drain to zero.
+The pause is before SQL execution: it does not
+prove an in-progress DuckDB query is interrupted. It is TestPlatform, not native
+frame/RSS, and no ABBA was run. Two initial one-point harness attempts did not
+trigger Detail (`entered=0`); these were fixture precondition failures.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

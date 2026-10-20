@@ -248,6 +248,44 @@ impl Drop for ReadEventReceiver {
     }
 }
 
+// Process-global pause for serialized opt-in Detail integration tests, before SQL.
+#[cfg(feature = "test-support")]
+static TEST_READ_PAUSE: (Mutex<(bool, usize)>, Condvar) = (Mutex::new((false, 0)), Condvar::new());
+#[cfg(feature = "test-support")]
+pub(crate) struct TestReadPause;
+#[cfg(feature = "test-support")]
+impl TestReadPause {
+    pub(crate) fn arm() -> Self {
+        let mut state = TEST_READ_PAUSE.0.lock().unwrap();
+        assert!(!state.0, "read pause already armed");
+        *state = (true, 0);
+        Self
+    }
+    pub(crate) fn entered(&self) -> usize {
+        TEST_READ_PAUSE.0.lock().unwrap().1
+    }
+}
+#[cfg(feature = "test-support")]
+impl Drop for TestReadPause {
+    fn drop(&mut self) {
+        TEST_READ_PAUSE.0.lock().unwrap().0 = false;
+        TEST_READ_PAUSE.1.notify_all();
+    }
+}
+#[cfg(feature = "test-support")]
+fn pause_registered_read_for_test(kind: ReadKind) {
+    if kind != ReadKind::Detail {
+        return;
+    }
+    let mut state = TEST_READ_PAUSE.0.lock().unwrap();
+    if state.0 {
+        state.1 += 1;
+        while state.0 {
+            state = TEST_READ_PAUSE.1.wait(state).unwrap();
+        }
+    }
+}
+
 struct TaggedRequest {
     source_id: DataSourceId,
     generation: Generation,
@@ -986,6 +1024,8 @@ fn execute(
                 return Ok(None);
             }
             registered = true;
+            #[cfg(feature = "test-support")]
+            pause_registered_read_for_test(kind);
             active_session.reader().refresh_diagnostics(generation.0);
             let result = execute_read(active_session, &request, &mut is_superseded);
             if !retried_storage_error

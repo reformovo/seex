@@ -363,6 +363,146 @@ fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+#[ignore = "diagnostic cancelled Detail reversal integration profile"]
+fn cancelled_detail_reversal_integration(cx: &mut TestAppContext) {
+    assert!(!cfg!(debug_assertions), "requires --release");
+    let metric_count = 128;
+    let root = tempfile::tempdir().unwrap();
+    let client = seex::Client::builder(root.path()).open().unwrap();
+    let run = client
+        .start_run(seex::RunOptions::new("project").id("run"))
+        .unwrap();
+    run.log_with(
+        (0..metric_count).map(|i| (format!("metric-{i:04}"), 1.)),
+        seex::LogOptions::new().step(0),
+    )
+    .unwrap();
+    for step in 1..4096 {
+        run.log_with(
+            [("metric-0000", (step as f64).sin())],
+            seex::LogOptions::new().step(step),
+        )
+        .unwrap();
+    }
+    run.finish().unwrap();
+    client.shutdown().unwrap();
+    let project_id = seex::ProjectId::from_string("project");
+    let run_id = run.run_id().clone();
+    cx.executor().allow_parking();
+    let (window, mut visual) = open_viewer_with_configured_source(cx, root.path().to_owned());
+    visual.simulate_resize(size(px(2_560.), px(1_800.)));
+    wait_for_viewer(window, &visual, source_catalog_loaded);
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            let source_id = first_source_id(viewer, cx);
+            viewer.toggle_run(RunRef::new(source_id, project_id, run_id), cx);
+        })
+        .unwrap();
+    wait_for_benchmark(window, &visual, |viewer, cx| {
+        viewer.available_metric_keys(cx).len() == metric_count
+    });
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            viewer.dispatch_workbench_command(
+                WorkbenchCommand::SelectMetrics(viewer.available_metric_keys(cx)),
+                cx,
+            );
+            viewer.select_metric(seex::MetricKey::from_string("metric-0000"), cx);
+        })
+        .unwrap();
+    wait_for_benchmark(window, &visual, |viewer, cx| {
+        let snapshot = viewer.session_snapshot(cx);
+        let active = snapshot.views.active();
+        let dense = active.panels[0].overview.as_ref();
+        active.panels[..33]
+            .iter()
+            .all(|panel| panel.overview.is_some())
+            && dense.is_some_and(|s| s.series[0].downsampled())
+    });
+    let pause = crate::data::worker::TestReadPause::arm();
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            zoom_session_navigation(viewer, 2., cx);
+        })
+        .unwrap();
+    wait_for_viewer(window, &visual, |_, _| pause.entered() > 0);
+    let old_generation = window
+        .read_with(&visual, |viewer, cx| {
+            viewer.session_snapshot(cx).views.active().panels[0]
+                .detail_generation
+                .unwrap()
+        })
+        .unwrap();
+    for target in [127, 64, 0] {
+        window
+            .update(&mut visual, |viewer, _, cx| {
+                viewer.workspace.update(cx, |workspace, cx| {
+                    workspace.metric_scroll.scroll_to(ListOffset {
+                        item_ix: target,
+                        offset_in_item: px(0.),
+                    });
+                    cx.notify();
+                });
+            })
+            .unwrap();
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |viewer, cx| {
+                let workspace = viewer.workspace.read(cx);
+                assert!(workspace.track_viewport.borrow().visible.contains(&target));
+                if target != 0 {
+                    let snapshot = viewer.session_snapshot(cx);
+                    let panel = &snapshot.views.active().panels[0];
+                    assert!(panel.detail_generation.is_none());
+                    assert!(panel.detail.is_none());
+                }
+            })
+            .unwrap();
+    }
+    let entered = pause.entered();
+    drop(pause);
+    let started = Instant::now();
+    wait_for_viewer(window, &visual, |viewer, cx| {
+        let snapshot = viewer.session_snapshot(cx);
+        let pending = snapshot
+            .views
+            .active()
+            .panels
+            .iter()
+            .any(|p| p.is_pending(ReadKind::Detail) || p.is_pending(ReadKind::Overview));
+        !pending && viewer.session.read(cx).sources.queue_depths() == [0; 3]
+    });
+    window
+        .read_with(&visual, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let active = snapshot.views.active();
+            let panel = &active.panels[0];
+            assert!(
+                panel.detail_revision > old_generation.0,
+                "cancelled generation was accepted"
+            );
+            let detail = panel
+                .detail
+                .as_ref()
+                .expect("returned dense metric needs Detail");
+            let series = detail.series[0].chart_series.as_ref().unwrap();
+            assert!(!series.points().is_empty());
+            let failures = active
+                .panels
+                .iter()
+                .filter(|p| !p.source_errors.is_empty())
+                .count();
+            assert_eq!(failures, 0);
+        })
+        .unwrap();
+    println!(
+        "SEEX_ACTIVE_DETAIL_REVERSAL entered={} drain_ms={}",
+        entered,
+        started.elapsed().as_millis()
+    );
+}
+
+#[gpui::test]
 #[ignore = "hardware-sensitive compact dual-View RSS benchmark"]
 fn compact_dual_view_peak_rss(cx: &mut TestAppContext) {
     assert!(
