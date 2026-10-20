@@ -171,7 +171,7 @@ payload types). A paused consumer traverses 10,000 identities with a six-key win
 then drains 10,000 baseline requests versus six candidate requests. No SQL/GUI timing.
 `viewer.cancel_queue_scroll_10000` A/B/B/A medians: **214.812 / 3.037 / 3.131 / 216.786 ms**;
 MAD **0.361 / 0.706 / 0.503 / 0.449%**. Ten calibrated samples >=25 ms each, <=120 s;
-preservation pass, no retries. `test-support` validation is blocked by missing MetalToolchain.
+preservation pass, no retries. Earlier `test-support` validation was blocked by missing MetalToolchain; it was installed before the P3 desktop attempt.
 Raw scratch is ephemeral; SHA-256 identities:
 - Baseline harness: `3f5b5ee264de1b312e39b3559afcfd3310d52745e617016264bfd1b442cbd5f1`.
 - Candidate harness: `864011da1ae2b587c2e85e8500d78ba58a0ad99bc447df77e498ea7991e28fdd`.
@@ -205,6 +205,21 @@ identity, and then releases the gate to drain. At every iteration request depth 
 `<= 1`, cancelled completion depth is zero, and final registry/event queues are
 empty. This combines transport cancellation and event cleanup, but still uses no
 valid store, SQL, curve payload, points, desktop scheduler, frame timing, or RSS.
+
+### P3 desktop result
+MetalToolchain was installed and the desktop/test-support target compiled:
+`cargo test -p seex-app --features test-support --lib --no-run` passed. A temporary
+release GPUI workload created a one-point fixture with 10,000 metric identities,
+selected the Run, selected all metrics, and waited for first visible Overview settle.
+It did not reach the scroll phase before the 120-second settle deadline.
+`/usr/bin/time -l` reported approximately **2.56 GiB RSS high-water** on the failed
+run; this is diagnostic only, not a successful GUI benchmark or an RSS budget.
+The first attempt failed earlier during a compact settle path after about 44 seconds
+and measured approximately 2.55 GiB; the harness was corrected to use a 10,000-metric
+settle predicate before the second attempt. The temporary test was not retained
+because it cannot pass its declared workload contract. This is actual desktop
+evidence that current 10,000-panel construction/settling is not qualified; headless
+bounds must not be substituted for frame/RSS support.
 
 ## Next optimization roadmap
 
