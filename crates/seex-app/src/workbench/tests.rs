@@ -1,8 +1,10 @@
 use std::time::Instant;
 
 use seex::AlignmentAxis;
-use seex_plot::AxisRange;
+use seex::{EvidenceCompleteness, Run, RunStatus};
+use seex_plot::{AxisRange, DataPoint, Series, SeriesId};
 
+use crate::data::query::CurveSeriesSnapshot;
 use crate::domain::SourceAlias;
 use crate::workbench::panel_reads::PanelReadTag;
 use crate::workbench::toml_document::{
@@ -10,6 +12,39 @@ use crate::workbench::toml_document::{
 };
 
 use super::*;
+
+fn populated_curve_snapshot(run_ref: RunRef, viewport: seex::AlignmentViewport) -> CurveSnapshot {
+    let timestamp = "2026-01-01T00:00:00Z"
+        .parse()
+        .expect("timestamp should parse");
+    let series = Series::new(
+        SeriesId::new(run_ref.cache_key()).expect("series id should be valid"),
+        vec![DataPoint::new(1., 1.), DataPoint::new(2., 2.)],
+    )
+    .expect("series should be valid");
+    CurveSnapshot {
+        viewport,
+        point_budget: 2,
+        real_range: Some(viewport),
+        series: vec![CurveSeriesSnapshot {
+            run: Run {
+                run_id: run_ref.run_id.clone(),
+                project_id: run_ref.project_id.clone(),
+                name: "run".to_owned(),
+                status: RunStatus::Finished,
+                created_at: timestamp,
+                started_at: timestamp,
+                finished_at: Some(timestamp),
+            },
+            run_ref,
+            completeness: EvidenceCompleteness::Complete,
+            reasons: Vec::new(),
+            source_row_count: 2,
+            returned_point_count: 2,
+            chart_series: Some(series),
+        }],
+    }
+}
 
 fn panel_completion(
     panel_id: &MetricPanelId,
@@ -675,6 +710,64 @@ fn deactivating_a_view_cancels_every_panel_generation() {
     assert!(panel.source_errors.is_empty());
     assert!(panel.inspector_errors.is_empty());
     assert!(views.active().timeline_extents.is_empty());
+}
+
+#[test]
+fn nonempty_detail_payloads_are_evicted_and_stale_results_do_not_repopulate() {
+    let mut views = AnalysisViews::default();
+    let first = views.select_active_metric(MetricKey::from_string("first"));
+    let second = views.select_active_metric(MetricKey::from_string("second"));
+    let run = RunRef::new(
+        DataSourceId::new("source").expect("source should be valid"),
+        ProjectId::from_string("project"),
+        RunId::from_string("run"),
+    );
+    let viewport = AlignmentViewport::new(0, 10).expect("viewport should be valid");
+    for (panel, generation) in [(&first, 1), (&second, 2)] {
+        views.begin_active_panel_detail(panel, Generation(generation), viewport, 800);
+        assert!(views.complete_active_panel_read(
+            ReadKind::Detail,
+            panel_completion(
+                panel,
+                Generation(generation),
+                PanelReadMode::Replace,
+                vec![run.clone()],
+                Some(populated_curve_snapshot(run.clone(), viewport)),
+                Vec::new(),
+            ),
+        ));
+    }
+    let points = |views: &AnalysisViews, panel| {
+        views
+            .active_panel(panel)
+            .unwrap()
+            .detail
+            .as_ref()
+            .unwrap()
+            .series
+            .iter()
+            .filter_map(|curve| curve.chart_series.as_ref())
+            .map(|series| series.points().len())
+            .sum::<usize>()
+    };
+    assert_eq!(points(&views, &first), 2);
+    let released = Arc::downgrade(views.active_panel(&first).unwrap().detail.as_ref().unwrap());
+    assert!(views.evict_hidden_panel_details(std::slice::from_ref(&second)));
+    assert!(released.upgrade().is_none());
+    assert!(views.active_panel(&first).unwrap().detail.is_none());
+    assert_eq!(points(&views, &second), 2);
+    assert!(!views.complete_active_panel_read(
+        ReadKind::Detail,
+        panel_completion(
+            &first,
+            Generation(1),
+            PanelReadMode::Replace,
+            vec![run.clone()],
+            Some(populated_curve_snapshot(run, viewport)),
+            Vec::new(),
+        ),
+    ));
+    assert!(views.active_panel(&first).unwrap().detail.is_none());
 }
 
 #[test]

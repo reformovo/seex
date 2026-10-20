@@ -338,6 +338,21 @@ The diagnostic now uses explicit `ListOffset` instead of unmeasured row-height
 summaries, and asserts arrival. Those failed attempts are harness evidence, not
 read-drain failures or a production scrolling fix.
 
+### Cooperative cancellation after active registration and nonempty Detail eviction
+`cancel_registered_read_suppresses_completion_and_preserves_return_request` uses a
+real local store and `execute`, pausing at the first query cancellation callback
+only after active identity registration. It cancels the old identity, registers a
+new generation for the same metric, and releases the pause. The old execute returns
+no event, its tracked ticket drains, and the new generation remains current and
+successfully reads a curve. This is cooperative cancellation **before the curve SQL
+starts**, not evidence of interrupting in-progress DuckDB SQL or a GUI reversal.
+`nonempty_detail_payloads_are_evicted_and_stale_results_do_not_repopulate` populates
+two synthetic Detail snapshots with two actual chart points each. Eviction drops
+the offscreen snapshot's last strong owner (Weak upgrade fails), preserves the
+visible two points, and rejects an old completion after eviction without a new
+pending generation. No production changes or timing comparison; dense native
+Detail reads, rapid GUI reversal, all-owner residency and native frames/RSS remain open.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

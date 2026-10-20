@@ -1552,6 +1552,92 @@ mod tests {
     }
 
     #[test]
+    fn cancel_registered_read_suppresses_completion_and_preserves_return_request() {
+        let root = tempfile::tempdir().unwrap();
+        let client = seex::Client::builder(root.path()).open().unwrap();
+        let run = client
+            .start_run(seex::RunOptions::new("project").id("run"))
+            .unwrap();
+        run.log_with([("loss", 1.)], seex::LogOptions::new().step(0))
+            .unwrap();
+        run.finish().unwrap();
+        client.shutdown().unwrap();
+        let sessions = ReadSessionPool::new(root.path().to_owned());
+        let source = DataSourceId::new("source").unwrap();
+        let mut request = overview_request("loss");
+        if let ReadRequest::Overview(request) = &mut request {
+            request.selection.runs.push(crate::domain::RunRef::new(
+                source.clone(),
+                seex::ProjectId::from_string("project"),
+                run.run_id().clone(),
+            ));
+        }
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let tagged = TaggedRequest {
+            source_id: source.clone(),
+            generation: Generation(1),
+            token: RequestToken(1),
+            request: request.clone(),
+            _ticket: RequestTicket::tracked(Arc::clone(&outstanding)),
+        };
+        let old = RequestIdentity::new(&tagged);
+        let cancel = RequestIdentity {
+            key: old.key.clone(),
+            generation: old.generation,
+            token: RequestToken(2),
+        };
+        let returned = TaggedRequest {
+            source_id: source,
+            generation: Generation(2),
+            token: RequestToken(3),
+            request,
+            _ticket: RequestTicket::default(),
+        };
+        let current = RequestIdentity::new(&returned);
+        let registry = Mutex::new(RequestRegistry::default());
+        registry.lock().unwrap().mark_latest(&old);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            let registry = &registry;
+            let sessions = &sessions;
+            let reader = scope.spawn(move || {
+                let mut paused = false;
+                execute(sessions, &mut None, tagged, &old, registry, || {
+                    if !paused {
+                        paused = true;
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    }
+                    !super::request_is_current(registry, &old)
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(registry.lock().unwrap().active.len(), 1);
+            for interrupt in registry.lock().unwrap().cancel(&cancel) {
+                interrupt.interrupt();
+            }
+            registry.lock().unwrap().mark_latest(&current);
+            release_tx.send(()).unwrap();
+            assert!(reader.join().unwrap().is_none());
+        });
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
+        assert!(registry.lock().unwrap().active.is_empty());
+        assert!(registry.lock().unwrap().is_current(&current));
+        let event = execute(&sessions, &mut None, returned, &current, &registry, || {
+            false
+        })
+        .unwrap();
+        assert_eq!(event.generation, Generation(2));
+        let super::ReadSnapshot::Overview(snapshot) = event.result.unwrap() else {
+            panic!("expected Overview");
+        };
+        assert_eq!(snapshot.series.len(), 1);
+        registry.lock().unwrap().release(&current);
+        assert!(registry.lock().unwrap().latest.is_empty());
+    }
+
+    #[test]
     fn superseded_storage_error_emits_no_event() {
         let root = tempfile::tempdir().expect("test directory should initialize");
         let sessions = ReadSessionPool::new(root.path().to_owned());
