@@ -501,6 +501,12 @@ No production-build counters/hooks, scheduling change, benchmark or ABBA; this
 extends owner-lifetime evidence, not a full-process memory bound.
 
 ### Native macOS window diagnostic (not TestPlatform)
+**Historical readiness caveat:** the following original capture checked snapshot
+presence and drain, not nonempty current chart paint. Most metrics had only one
+point, which need not produce a polyline. Those callback/RSS numbers are startup/
+state-drain observations, not evidence of fully loaded/drawn curve scrolling.
+See the stricter loading/paint validation below; do not reuse the earlier timing
+as time-to-visible-curves or claim low callback latency implies loaded charts.
 An explicit `test-support` entry now uses `Application::new()` with a native
 1200x800 window. Set `SEEX_NATIVE_PROFILE_ROOT` to a prepared isolated local store,
 `SEEX_NATIVE_PROFILE_HOME` to a home inside that fixture root, and
@@ -531,6 +537,37 @@ then reentrant WindowHandle update inside a frame callback. Both call sites were
 corrected; their startup RSS is excluded, and no library/UI workaround was applied.
 Next qualify sustained scrolling/in-flight reversal and per-phase callback latency;
 these successful logical jumps do not establish broad 10,000-panel desktop support.
+
+### Explicit curve-loaded/painted readiness before native measurement
+The native diagnostic now requires the target viewport, Complete per-Run evidence,
+at least two actual chart points per visible curve, no source errors/pending reads,
+zero worker depths, and a nonempty native paint submission for each current chart
+revision **and viewport**, stable for two consecutive callbacks at that target.
+Paint completion is instrumented in the canvas paint callback, not projection warmup.
+A unit test rejects absent/empty paint, old revisions and mismatched viewports.
+It is not a GPU/presentation fence. Two-point fixtures (Steps 0/100) replace the
+single-point baseline; metric-0000 still has 4,096 observations. Motion phases use
+four-row logical steps every third callback for three seconds, followed by three
+seconds of alternating head/tail offsets and final head load/paint/drain. This is
+synthetic logical input, not OS wheel events. Motion need not wait for reads;
+`unready_motion_frames` reports frames not having all visible current charts painted.
+
+At 500, revision-paint validation passed: initial/tail/middle/head readiness
+1,806/449/6,834/1,683 ms. Middle had a **6,645.96 ms** callback outlier (not removed).
+Motion callback p95 was 16.68/16.68 ms, but **177/180** and **180/180** callbacks
+were not all-charts-painted. Final loaded/painted drain took 1,600 ms. Sampled app
+RSS maximum 307,314,688 bytes. These are not successful loaded-curve scrolling rates.
+At 10,000 the first strict run timed out at initial readiness (32.56 s process,
+RSS 336,363,520 bytes), before motion. A diagnostic rerun adding timeout status
+completed (motion unready 177/180 and 180/180, final drain 2,583 ms, RSS 395,739,136
+bytes). After additionally enforcing viewport identity and two target-local ready
+frames, final validation again failed initial readiness: **loaded=14, painted=13,
+visible=0..14, depths=[0,0,0]**, 21.30 s process, RSS 330,596,352 bytes. Keep all
+these outcomes; no best-run selection or calibrated ABBA comparison is justified.
+The missing paint's cause is unresolved (do not infer a query backlog or fix by
+loosening readiness). Ten-thousand-panel fully loaded/drawn native scrolling is
+**not qualified**. Old callback-only successes must not override this result.
+Normal builds have no paint instrumentation; no production scheduling/SQL change.
 
 ## Next optimization roadmap
 
