@@ -134,8 +134,17 @@ impl ReadSession {
             let Some(run) = known_runs.get(&(project_id, run_id)) else {
                 continue;
             };
-            for metric_key in self.reader.series_keys_page(run, None, 100)? {
-                metric_keys.insert(metric_key.as_str().to_owned(), metric_key);
+            let mut after = None::<String>;
+            loop {
+                let page = self.reader.series_keys_page(run, after.as_deref(), 100)?;
+                let complete = page.len() < 100;
+                after = page.last().map(|key| key.as_str().to_owned());
+                for metric_key in page {
+                    metric_keys.insert(metric_key.as_str().to_owned(), metric_key);
+                }
+                if complete {
+                    break;
+                }
             }
         }
         Ok(CatalogSnapshot {
@@ -247,6 +256,55 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["run-2", "run-1"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_reads_all_metric_pages_and_unions_selected_runs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = Client::builder(root.path()).open()?;
+        let mut runs = Vec::new();
+        for (id, count) in [
+            ("empty", 0),
+            ("page", 100),
+            ("boundary", 101),
+            ("many", 250),
+        ] {
+            let run = client.start_run(RunOptions::new("project").id(id))?;
+            if count > 0 {
+                let metrics = (0..count).map(|index| (format!("metric-{index:04}"), 1.));
+                run.log_with(metrics, LogOptions::new().step(0))?;
+            }
+            run.finish()?;
+            runs.push((run.run_id().clone(), count));
+        }
+        client.shutdown()?;
+        let session = ReadSession::open_existing(root.path())?;
+        for (run_id, count) in &runs {
+            let snapshot = session.discover(&DiscoveryRequest {
+                project_id: Some(ProjectId::from_string("project")),
+                selected_run_ids: vec![run_id.clone()],
+                ..DiscoveryRequest::default()
+            })?;
+            assert_eq!(snapshot.metric_keys.len(), *count);
+            assert_eq!(
+                snapshot
+                    .metric_keys
+                    .iter()
+                    .map(|key| key.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+                (0..*count)
+                    .map(|index| format!("metric-{index:04}"))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let union = session.discover(&DiscoveryRequest {
+            project_id: Some(ProjectId::from_string("project")),
+            selected_run_ids: runs.into_iter().map(|(id, _)| id).collect(),
+            ..DiscoveryRequest::default()
+        })?;
+        assert_eq!(union.metric_keys.len(), 250);
         Ok(())
     }
 

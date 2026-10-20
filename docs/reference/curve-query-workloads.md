@@ -225,7 +225,7 @@ valid store, SQL, curve payload, points, desktop scheduler, frame timing, or RSS
 ### P3 diagnostic correction
 The following earlier attempts used GPUI `TestAppContext`/`TestPlatform`, **not a
 native rendered window**. Withdraw their interpretation as actual desktop/frame
-measurements. Stage logging now shows discovery stops at **100 available metrics**
+measurements. Before the pagination fix, stage logging showed discovery stopped at **100 available metrics**
 for fixtures of 250 and 500: `ReadSession::discover` reads only
 `series_keys_page(run, None, 100)`. Neither reaches panel selection. Earlier
 500/10,000 timeouts therefore do not establish Overview/layout saturation.
@@ -255,6 +255,29 @@ bounds must not be substituted for frame/RSS support. After `a36422a` introduced
 batch metric selection, the same release GPUI workload still failed the 120-second
 first-Overview settle and measured approximately **2.52 GiB RSS high-water**. It did
 not reach scrolling, so batch selection is not sufficient evidence of desktop support.
+
+### Complete metric discovery
+`ReadSession::discover` now follows the existing exclusive keyset cursor with
+100-key pages until a short page; the sorted cross-Run union is unchanged. Tests
+cover 0, 100, 101, and 250 keys, exact identities/order, and overlapping Runs.
+No curve payloads are loaded; total key metadata still scales with discovered keys.
+The same GPUI TestPlatform diagnostic now passes 100/250/500 discovery and visible
+Overview readiness. Selection: **3/4/4 ms**; since-selection readiness:
+**2,433/1,115/1,275 ms**. Reconcile totals: **2.71/3.89/5.95 ms**; all three
+plan 36 Overviews. These are single diagnostic captures, not latency comparisons;
+readiness still has two pending Overviews and is not complete worker drain.
+One bounded ABBA used the exact `python scripts/performance_gate.py run --manifest
+<manifest.json> --output <result.json>` entry point, extracting the complete source
+module from `8ac286d` and this change, linked to the real release Seex SDK. A prepared
+one-Run, 100-key local store is outside timing; sessions are reused in each process.
+`viewer.discovery_100` A/B/B/A medians: **2.787/3.952/3.961/2.743 ms**;
+MAD **1.46/1.19/0.80/1.67%**. Ten calibrated samples >=25 ms, <=120 s, no retries.
+Classification: **regression, +43.1%**. The exact-page case needs an additional empty
+page query to prove completeness; this is a correctness tradeoff, not a speedup.
+Scratch raw/harness files are ephemeral; SHA-256 identities:
+- Baseline: `105f338e4b33baf9c580094c4a03ff4c0dbd8c46d213d7229af0ec3a6017fc52`.
+- Candidate: `eb51228d7f52b14cc05f2f855956a6f1802e9d0e83c1ac036bf1947bd5337a9a`.
+- Result: `c2378ebf1d90cc08cbfb91d0c5c99f635f67ae5eabe9006bbed91c50b4fe647d`.
 
 ## Next optimization roadmap
 
