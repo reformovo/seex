@@ -673,6 +673,7 @@ impl Reader {
             overview,
             is_superseded,
             &mut |_| true,
+            &mut |_| {},
         )
     }
 
@@ -687,6 +688,7 @@ impl Reader {
         overview: bool,
         is_superseded: &mut dyn FnMut() -> bool,
         register: &mut dyn FnMut(ReaderInterrupt) -> bool,
+        trace: &mut dyn FnMut(&'static str),
     ) -> SdkResult<Option<Vec<MetricSeries>>> {
         if run_ids.len() > 16 {
             return Err(Error::UnsupportedQuery);
@@ -697,7 +699,7 @@ impl Reader {
         if is_superseded() {
             return Ok(None);
         }
-        self.with_fresh_query_reader_registered(register, |reader| {
+        self.with_fresh_query_reader_registered(register, trace, |reader| {
             let mut results = Vec::with_capacity(run_ids.len());
             for run_id in run_ids {
                 if is_superseded() {
@@ -737,15 +739,17 @@ impl Reader {
         &self,
         operation: impl FnMut(&Self) -> SdkResult<Option<T>>,
     ) -> SdkResult<Option<T>> {
-        self.with_fresh_query_reader_registered(&mut |_| true, operation)
+        self.with_fresh_query_reader_registered(&mut |_| true, &mut |_| {}, operation)
     }
 
     fn with_fresh_query_reader_registered<T>(
         &self,
         register: &mut dyn FnMut(ReaderInterrupt) -> bool,
+        trace: &mut dyn FnMut(&'static str),
         mut operation: impl FnMut(&Self) -> SdkResult<Option<T>>,
     ) -> SdkResult<Option<T>> {
         for attempt in 0..2 {
+            trace("fresh_open_start");
             let reader = match self.fresh_query_reader() {
                 Err(Error::Storage) if attempt == 0 => continue,
                 result => result?,
@@ -753,9 +757,11 @@ impl Reader {
             if attempt != 0 {
                 reader.diagnostics.borrow_mut().volatile.clear();
             }
+            trace("fresh_open_finish");
             if !register(reader.interrupt_handle().ok_or(Error::Storage)?) {
                 return Ok(None);
             }
+            trace("query_start");
             match operation(&reader) {
                 Err(Error::Storage) if attempt == 0 => continue,
                 Ok(Some(value)) => {

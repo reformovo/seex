@@ -664,10 +664,14 @@ The native profile now records test-support events for each generation: enqueue,
 worker start, worker finish, completion enqueue, and coordinator apply. It reports
 medians for enqueue→start, start→finish, and completion→apply at final exit. These
 are wall-clock observations from one process, not SQL-only timings; fresh connection
-open, query stages, event pumping and chart paint overlap them. Missing phases are
-excluded from that median and must be reported by event count. This instrumentation
-is the next step for distinguishing visible-target misses caused by queueing,
-worker/SQL, or event application; it is not enabled in normal builds.
+open, query stages, event pumping and chart paint overlap them. Missing phases are excluded from that median and must be reported by event count.
+The trace cap is 8,192 events with an explicit dropped count; phase counts are
+reported for each stage. Reader integration currently labels fresh connection
+open and query start/finish around the complete fresh operation; it does not split
+metadata, diagnostics, bounds, native LTTB or Arrow consumption into separate
+stamps. This instrumentation is the next step for distinguishing visible-target
+misses caused by queueing, worker/SQL, or event application; it is not enabled in
+normal builds.
 
 ## Next optimization roadmap
 

@@ -1156,6 +1156,17 @@ fn execute(
                         .unwrap_or_else(|error| error.into_inner())
                         .begin(identity, vec![handle])
                 },
+                &mut |phase| {
+                    #[cfg(feature = "test-support")]
+                    trace_read(
+                        &identity.key.source_id,
+                        identity.generation,
+                        identity.key.kind,
+                        phase,
+                    );
+                    #[cfg(not(feature = "test-support"))]
+                    let _ = phase;
+                },
             );
             if !retried_storage_error
                 && result.as_ref().is_err_and(is_retryable_storage_error)
@@ -1218,18 +1229,21 @@ fn execute_read(
     request: &ReadRequest,
     is_superseded: &mut impl FnMut() -> bool,
     register: &mut dyn FnMut(ReaderInterrupt) -> bool,
+    trace: &mut dyn FnMut(&'static str),
 ) -> Result<Option<ReadSnapshot>, WorkerError> {
     Ok(Some(match request {
         ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(request)?),
         ReadRequest::Overview(request) => {
-            let Some(snapshot) = session.query_overview_until(request, is_superseded, register)?
+            let Some(snapshot) =
+                session.query_overview_until(request, is_superseded, register, trace)?
             else {
                 return Ok(None);
             };
             ReadSnapshot::Overview(snapshot)
         }
         ReadRequest::Detail(request) => {
-            let Some(snapshot) = session.query_detail_until(request, is_superseded, register)?
+            let Some(snapshot) =
+                session.query_detail_until(request, is_superseded, register, trace)?
             else {
                 return Ok(None);
             };
