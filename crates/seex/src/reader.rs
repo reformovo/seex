@@ -1406,6 +1406,86 @@ mod tests {
     }
 
     #[test]
+    fn registered_fresh_handle_interrupts_executing_sql_and_next_attempt_succeeds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let root = tempfile::tempdir()?;
+        let client = crate::Client::builder(root.path()).open()?;
+        let run = client.start_run(crate::RunOptions::new("project").id("run"))?;
+        run.finish()?;
+        client.shutdown()?;
+        let reader = Reader::builder(root.path()).open()?;
+        let (registered_tx, registered_rx) = mpsc::channel();
+        let (observer_tx, observer_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let query = std::thread::spawn(move || {
+            reader.with_fresh_query_reader_registered(&mut |handle| {
+                registered_tx.send(handle).unwrap();
+                true
+            }, |fresh| {
+                let connection = fresh.native()?;
+                connection.execute_batch("CREATE SEQUENCE memory.main.seex_interrupt_progress;")
+                    .map_err(|_| Error::Storage)?;
+                observer_tx.send(connection.try_clone().unwrap()).unwrap();
+                let result = connection.query_row(
+                    "SELECT sum(sin(i::DOUBLE) + nextval('memory.main.seex_interrupt_progress')::DOUBLE)
+                     FROM range(1000000000) AS data(i)", [], |row| row.get::<_, f64>(0));
+                let reused: i32 = connection.query_row("SELECT 7", [], |row| row.get(0)).unwrap();
+                result_tx.send((result, reused)).unwrap();
+                Ok(Some(())) // Do not retry the deliberately interrupted probe SQL.
+            })
+        });
+        struct InterruptOnDrop(ReaderInterrupt);
+        impl Drop for InterruptOnDrop {
+            fn drop(&mut self) {
+                self.0.interrupt();
+            }
+        }
+        // Ensure a failed progress assertion also cancels the long probe query.
+        let cleanup = InterruptOnDrop(registered_rx.recv_timeout(Duration::from_secs(10))?);
+        let handle = &cleanup.0;
+        let observer = observer_rx.recv_timeout(Duration::from_secs(10))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let progress: Option<i64> = observer.query_row(
+                "SELECT last_value FROM duckdb_sequences() WHERE sequence_name = 'seex_interrupt_progress'",
+                [], |row| row.get(0))?;
+            if progress.is_some_and(|value| value > 0) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "query never advanced its sequence"
+            );
+            std::thread::yield_now();
+        }
+        handle.interrupt();
+        let (result, reused) = result_rx.recv_timeout(Duration::from_secs(10))?;
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .to_uppercase()
+                .contains("INTERRUPT")
+        );
+        assert_eq!(reused, 7);
+        assert_eq!(query.join().expect("query thread panicked")?, Some(()));
+        // A dropped old connection's handle must not interrupt a later fresh one.
+        let next = Reader::builder(root.path()).open()?;
+        let value = next.with_fresh_query_reader_registered(&mut |_| true, |fresh| {
+            handle.interrupt();
+            let value: i32 = fresh
+                .native()?
+                .query_row("SELECT 9", [], |row| row.get(0))
+                .map_err(|_| Error::Storage)?;
+            Ok(Some(value))
+        })?;
+        assert_eq!(value, Some(9));
+        Ok(())
+    }
+
+    #[test]
     fn fresh_attempt_registers_before_sql_and_replaces_handle_on_retry()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;

@@ -438,6 +438,21 @@ not a speedup or cancellation-latency comparison. Ephemeral scratch SHA-256:
 - Candidate binary: `600037f6c54137537053f7b5b5225b3fa7387bcfca75504080a4566c397adafd`.
 - Result: `f0dafe431bc12d9456daa71da613b3d40dcb38b394a92f86dd49522e9443b83c`.
 
+### Executing SQL interruption without a sleep-based start assumption
+`registered_fresh_handle_interrupts_executing_sql_and_next_attempt_succeeds` uses
+`with_fresh_query_reader_registered` against a local fixture. The fresh connection
+creates a probe sequence in its in-memory catalog and runs a long aggregate that
+advances that sequence. A separate connection to the same database observes
+`duckdb_sequences().last_value > 0` before the registered handle is interrupted.
+The query must return an explicit INTERRUPT error (not just any Storage failure),
+then the same connection must successfully run `SELECT 7`. After that connection
+exits, calling the old handle must not affect a later fresh `SELECT 9`.
+Progress/result waits have 10-second deadlines and failure cleanup interrupts the
+probe too. This is safe Rust, no dependency/production SQL change, and no benchmark.
+It proves actual SQL execution and connection recovery on the fresh-handle path;
+it does **not** run the native curve query or the complete app worker loop, so
+end-to-end worker-permit release/reuse during interrupted SQL remains unverified.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
