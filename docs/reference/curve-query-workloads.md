@@ -201,8 +201,7 @@ timings for identity creation and one full panel slice clone; these are profile
 observations only and are not calibrated ABBA metrics. The batch path preserves
 metric order, deduplicates input keys, and selects the final key like repeated
 single selection. The profile improved identity construction from about 750 ms to
-about 14 ms in this test, but the desktop failure shows later scheduling/layout
-cost dominates the 10,000-panel workload.
+about 14 ms in this test. Earlier timeouts do not establish a scheduling/layout bottleneck.
 
 A release GPUI staircase using the batch path tested 100 and then 500 metrics,
 with `/usr/bin/time -l` around each process. At 100: fixture **562 ms**, discovery
@@ -211,9 +210,8 @@ Overview retained **34**, Detail retained **0**, RSS high-water approximately
 **191 MiB**. At 500, the first visible Overview settle did not complete within
 **120 s**; RSS high-water was approximately **232 MiB**. The 1,000/2,500/5,000/
 10,000 levels were not run after the first failure. These are diagnostic desktop
-observations, not an ABBA or an SLO. The boundary is now below 500 panels, so the
-next profile must split Overview scheduling and per-panel event/merge work before
-any Detail SQL optimization.
+observations, not an ABBA or an SLO. The phase interpretation above is superseded
+by the diagnostic correction below: 500 never reached panel selection.
 
 ### Combined headless scheduler pressure probe
 `data::worker::tests::ten_thousand_scroll_cancel_drain_keeps_worker_queues_bounded`
@@ -224,7 +222,23 @@ identity, and then releases the gate to drain. At every iteration request depth 
 empty. This combines transport cancellation and event cleanup, but still uses no
 valid store, SQL, curve payload, points, desktop scheduler, frame timing, or RSS.
 
-### P3 desktop result
+### P3 diagnostic correction
+The following earlier attempts used GPUI `TestAppContext`/`TestPlatform`, **not a
+native rendered window**. Withdraw their interpretation as actual desktop/frame
+measurements. Stage logging now shows discovery stops at **100 available metrics**
+for fixtures of 250 and 500: `ReadSession::discover` reads only
+`series_keys_page(run, None, 100)`. Neither reaches panel selection. Earlier
+500/10,000 timeouts therefore do not establish Overview/layout saturation.
+`overview_schedule_diagnostic` (ignored, release, `test-support`, one test thread)
+logs discovery and selection separately, with a 15-second diagnostic deadline.
+At 100 it settles in 1,066 ms after selection: 103 reconcile calls, 3,333 visible
+panel visits, 36 Overview plans, 22,900 row visits, 2.88 ms cumulative reconcile.
+Counters are process-global; they do not count Detail plans or full layout time.
+RSS below includes fixture/test/Cargo processes, not retained chart allocations;
+values previously labelled GiB/MiB were decimal GB/MB approximations. No native
+frame-latency or isolated application-RSS result exists yet.
+
+### Earlier GPUI test-platform attempts (superseded interpretation)
 MetalToolchain was installed and the desktop/test-support target compiled:
 `cargo test -p seex-app --features test-support --lib --no-run` passed. A temporary
 release GPUI workload created a one-point fixture with 10,000 metric identities,

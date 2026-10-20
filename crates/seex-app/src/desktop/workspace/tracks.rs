@@ -1,4 +1,6 @@
 use std::ops::Range;
+#[cfg(feature = "test-support")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::workbench::panel_reads::{MetricPanelId, PanelReadMode};
 
@@ -7,6 +9,46 @@ pub(crate) const METRIC_TRACK_SEPARATOR_WIDTH: f32 = 1.;
 pub(crate) const BRUSH_ROW_HEIGHT: f32 = 40.;
 pub(crate) const BRUSH_CONTENT_TOP_PADDING: f32 = 6.;
 const MAX_PROGRESSIVE_OVERVIEWS: usize = 4;
+
+#[cfg(feature = "test-support")]
+static SCHEDULE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+static SCHEDULE_PANEL_SCANS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+static SCHEDULE_REQUESTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+static ROW_SCANS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+static SCHEDULE_NS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "test-support")]
+struct ScheduleTimer(std::time::Instant);
+#[cfg(feature = "test-support")]
+impl Drop for ScheduleTimer {
+    fn drop(&mut self) {
+        SCHEDULE_NS.fetch_add(self.0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn reset_schedule_diagnostics() {
+    SCHEDULE_CALLS.store(0, Ordering::Relaxed);
+    SCHEDULE_PANEL_SCANS.store(0, Ordering::Relaxed);
+    SCHEDULE_REQUESTS.store(0, Ordering::Relaxed);
+    ROW_SCANS.store(0, Ordering::Relaxed);
+    SCHEDULE_NS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn schedule_diagnostics() -> (u64, u64, u64, u64, u64) {
+    (
+        SCHEDULE_CALLS.load(Ordering::Relaxed),
+        SCHEDULE_PANEL_SCANS.load(Ordering::Relaxed),
+        SCHEDULE_REQUESTS.load(Ordering::Relaxed),
+        ROW_SCANS.load(Ordering::Relaxed),
+        SCHEDULE_NS.load(Ordering::Relaxed),
+    )
+}
 
 pub(crate) fn detail_query_width(logical_width: u32, interactive: bool) -> u32 {
     if interactive {
@@ -622,6 +664,10 @@ impl super::AnalysisWorkspace {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Vec<ScheduledPanelRead> {
+        #[cfg(feature = "test-support")]
+        SCHEDULE_CALLS.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "test-support")]
+        let _timer = ScheduleTimer(std::time::Instant::now());
         let state = self.track_viewport.borrow().clone();
         if state.visible.is_empty() || state.logical_width_bits == 0 {
             return Vec::new();
@@ -632,6 +678,8 @@ impl super::AnalysisWorkspace {
         let panel_count = session.views.active().panels.len();
         let scheduled = state.visible.start.min(panel_count)..state.visible.end.min(panel_count);
         let panels = session.views.active().panels[scheduled].to_vec();
+        #[cfg(feature = "test-support")]
+        SCHEDULE_PANEL_SCANS.fetch_add(panels.len() as u64, Ordering::Relaxed);
         let mut prefetched = session.views.active().panels
             [state.overview.start.min(panel_count)..state.overview.end.min(panel_count)]
             .iter()
@@ -781,19 +829,25 @@ impl super::AnalysisWorkspace {
                 .filter(|panel| resolved_count(panel) == 0 && !panel.is_pending(ReadKind::Overview))
                 .collect::<Vec<_>>();
             candidates.sort_by_key(|panel| interactive_panel != Some(&panel.panel_id));
-            return candidates
+            let requests = candidates
                 .into_iter()
                 .take(available_slots)
                 .filter_map(schedule_overview)
-                .collect();
+                .collect::<Vec<_>>();
+            #[cfg(feature = "test-support")]
+            SCHEDULE_REQUESTS.fetch_add(requests.len() as u64, Ordering::Relaxed);
+            return requests;
         }
         if prefetched.iter().any(|panel| resolved_count(panel) == 0) {
-            return prefetched
+            let requests = prefetched
                 .iter()
                 .filter(|panel| resolved_count(panel) == 0 && !panel.is_pending(ReadKind::Overview))
                 .take(available_slots)
                 .filter_map(schedule_overview)
-                .collect();
+                .collect::<Vec<_>>();
+            #[cfg(feature = "test-support")]
+            SCHEDULE_REQUESTS.fetch_add(requests.len() as u64, Ordering::Relaxed);
+            return requests;
         }
         let coverage_incomplete = coverage_panels
             .iter()
@@ -838,6 +892,8 @@ impl super::AnalysisWorkspace {
                     .take(available_slots.saturating_sub(requests.len()))
                     .filter_map(schedule_overview),
             );
+            #[cfg(feature = "test-support")]
+            SCHEDULE_REQUESTS.fetch_add(requests.len() as u64, Ordering::Relaxed);
             return requests;
         }
         let Some(detail_viewport) = self
@@ -943,6 +999,11 @@ impl super::AnalysisWorkspace {
             .active_navigation()
             .and_then(|navigation| navigation.brush())
             .map(|brush| brush.selected());
+        #[cfg(feature = "test-support")]
+        ROW_SCANS.fetch_add(
+            session.views.active().panels.len() as u64,
+            Ordering::Relaxed,
+        );
         self.track_rows = session
             .views
             .active()

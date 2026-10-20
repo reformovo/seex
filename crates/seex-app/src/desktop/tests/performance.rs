@@ -183,6 +183,108 @@ fn scroll_metric_tracks(
 }
 
 #[gpui::test]
+#[ignore = "diagnostic overview scheduling profile"]
+fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
+    assert!(!cfg!(debug_assertions), "requires --release");
+    let metric_count = benchmark_count("SEEX_DESKTOP_PROFILE_METRICS", 100);
+    let started = Instant::now();
+    let (root, project_id, run_id) = fixture_with_runs(metric_count, 1);
+    println!(
+        "SEEX_STAGE fixture metrics={metric_count} ms={}",
+        started.elapsed().as_millis()
+    );
+    cx.executor().allow_parking();
+    let (window, mut visual) = open_viewer_with_configured_source(cx, root.path().to_owned());
+    visual.simulate_resize(size(px(2_560.), px(1_800.)));
+    wait_for_viewer(window, &visual, source_catalog_loaded);
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            let source_id = first_source_id(viewer, cx);
+            viewer.toggle_run(RunRef::new(source_id, project_id, run_id), cx);
+        })
+        .expect("Viewer should remain open");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        visual.run_until_parked();
+        let available = window
+            .read_with(&visual, |viewer, cx| viewer.available_metric_keys(cx).len())
+            .unwrap();
+        if available == metric_count {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "discovery did not settle: expected={metric_count} available={available}; no panel selection performed"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    println!("SEEX_STAGE discovery_ready metrics={metric_count}");
+    super::super::workspace::reset_schedule_diagnostics();
+    let selected = Instant::now();
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            viewer.dispatch_workbench_command(
+                WorkbenchCommand::SelectMetrics(viewer.available_metric_keys(cx)),
+                cx,
+            );
+        })
+        .expect("Viewer should remain open");
+    println!(
+        "SEEX_STAGE selection metrics={metric_count} ms={}",
+        selected.elapsed().as_millis()
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        visual.run_until_parked();
+        let state = window
+            .read_with(&visual, |viewer, cx| {
+                let snapshot = viewer.session_snapshot(cx);
+                let active = snapshot.views.active();
+                let visible = viewer
+                    .workspace
+                    .read(cx)
+                    .track_viewport
+                    .borrow()
+                    .visible
+                    .clone();
+                (
+                    active.panels.len(),
+                    visible.len(),
+                    active.panels[visible]
+                        .iter()
+                        .filter(|panel| panel.overview.is_some())
+                        .count(),
+                    active
+                        .panels
+                        .iter()
+                        .filter(|panel| panel.is_pending(ReadKind::Overview))
+                        .count(),
+                    active
+                        .panels
+                        .iter()
+                        .filter(|panel| !panel.source_errors.is_empty())
+                        .count(),
+                )
+            })
+            .unwrap();
+        let diagnostics = super::super::workspace::schedule_diagnostics();
+        if state.0 == metric_count && state.1 > 0 && state.1 == state.2 {
+            println!(
+                "SEEX_STAGE settled metrics={metric_count} since_selection_ms={} state={state:?} diagnostics={diagnostics:?}",
+                selected.elapsed().as_millis()
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Overview did not settle: state={state:?} diagnostics={diagnostics:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[gpui::test]
 #[ignore = "hardware-sensitive compact dual-View RSS benchmark"]
 fn compact_dual_view_peak_rss(cx: &mut TestAppContext) {
     assert!(
