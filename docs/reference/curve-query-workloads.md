@@ -200,7 +200,9 @@ The same test now uses the internal batch-selection path and prints diagnostic
 timings for identity creation and one full panel slice clone; these are profile
 observations only and are not calibrated ABBA metrics. The batch path preserves
 metric order, deduplicates input keys, and selects the final key like repeated
-single selection.
+single selection. The profile improved identity construction from about 750 ms to
+about 14 ms in this test, but the desktop failure shows later scheduling/layout
+cost dominates the 10,000-panel workload.
 
 ### Combined headless scheduler pressure probe
 `data::worker::tests::ten_thousand_scroll_cancel_drain_keeps_worker_queues_bounded`
@@ -224,7 +226,10 @@ and measured approximately 2.55 GiB; the harness was corrected to use a 10,000-m
 settle predicate before the second attempt. The temporary test was not retained
 because it cannot pass its declared workload contract. This is actual desktop
 evidence that current 10,000-panel construction/settling is not qualified; headless
-bounds must not be substituted for frame/RSS support.
+bounds must not be substituted for frame/RSS support. After `a36422a` introduced
+batch metric selection, the same release GPUI workload still failed the 120-second
+first-Overview settle and measured approximately **2.52 GiB RSS high-water**. It did
+not reach scrolling, so batch selection is not sufficient evidence of desktop support.
 
 ## Next optimization roadmap
 
