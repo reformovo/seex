@@ -93,8 +93,9 @@ Backpressure, cancellation, and stale completions remain unverified at this scal
 
 ### First worker-boundary probe (headless)
 
-Initial unit tests in `data::worker::tests` characterized the pre-fix implementation:
-`ten_thousand_metric_scroll_keeps_only_retained_pending_requests` (renamed after fixes) and
+The initial unit tests in `data::worker::tests` characterized the pre-fix
+implementation. Their current names are
+`ten_thousand_metric_scroll_keeps_only_retained_pending_requests` and
 `completed_event_queue_grows_when_consumer_is_paused`. Run with:
 
 ```sh
@@ -106,23 +107,26 @@ The original evidence commit is `5987c18`. The first uses production
 paused to model arbitrarily slow reads. A six-identity window (four rows plus two
 Overview prefetch rows) visits all 10,000 metrics, jumps to tail, reverses through
 middle to head, then drains. It does **not** run the desktop scheduler, request
-transport, SQL, or real reader threads. Observed/asserted counts:
+transport, SQL, or real reader threads. Historical pre-fix counts from `5987c18`:
 
-- Pending requests peak at **10,000**, despite only six retained identities.
-- Cancellation leaves queued work resident; drain discards **9,994**, executes six
-  synthetic registrations (active peak one), and releases all request tickets.
-- Before the lifecycle fix, `latest` retained **10,000 entries after drain**;
-  after the fix, the worker transport probe drains with zero registry entries.
-- Separately, the production completion channel retains **10,000 error-only events**
-  when its consumer is paused. No payload-size or normal desktop-rate claim follows.
+- Pending requests peaked at **10,000**, despite only six retained identities.
+- Cancellation left queued work resident; drain discarded **9,994**, executed six
+  synthetic registrations (active peak one), and released all request tickets.
+- Before the lifecycle fix, `latest` retained **10,000 entries after drain**.
+- The production completion channel retained **10,000 error-only events** when its
+  consumer was paused. These were component-boundary observations, not payload-size
+  or normal desktop-rate claims.
 
-A debug diagnostic captured enqueue/coalescing/cancellation at 662.506 ms on this
-machine; it is not a calibrated benchmark or full-list UI traversal measurement.
-The probes now assert registry cleanup while continuing to expose the queued-work
-and completion-channel defects. Cancellation removes the current identity, rather
-than storing a tombstone; absence invalidates old tokens. Completion releases only
-the matching identity after publication. Retry teardown still retains the identity,
-and delayed cleanup/cancellation cannot remove a newer identity.
+Current post-fix counts from `e90f3b9` and `d68cc96` are recorded below; they must
+not be substituted into the historical evidence above.
+
+The historical debug diagnostic captured enqueue/coalescing/cancellation at
+662.506 ms on this machine; it is not a calibrated benchmark or full-list UI
+traversal measurement. Current probes assert registry cleanup and pending-queue
+cancellation. Cancellation removes the current identity, rather than storing a
+tombstone; absence invalidates old tokens. Completion releases only the matching
+identity after publication. Retry teardown still retains the identity, and delayed
+cleanup/cancellation cannot remove a newer identity.
 
 `cancelled_worker_transport_drains_without_opening_storage` additionally pauses a
 real worker's gate, submits/cancels 10,000 distinct metrics through its transport,
@@ -131,8 +135,8 @@ drain all tickets without events. `worker_publishes_failure_before_releasing_ide
 checks the non-cancelled error publication path. No valid store or curve payloads
 are allocated. Retained panel payloads/points, stale completion repopulation,
 full-list traversal/cloning, worker concurrency under slow native reads, desktop
-frames, and RSS remain unmeasured. At `54b4213`, pending requests still reached 10,000, so that was
-**not** a bounded scheduling contract.
+frames, and RSS remain unmeasured. At `54b4213`, pending requests still reached
+10,000; that pre-queue-fix result was **not** a bounded scheduling contract.
 
 ### Registry cancellation comparison
 
