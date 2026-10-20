@@ -619,6 +619,20 @@ impl ReadWorker {
         self.events.take()
     }
 
+    /// Outstanding tickets, shared active permits, and queued completion events.
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn queue_depths(&self) -> [usize; 3] {
+        [
+            self.outstanding.load(Ordering::Acquire),
+            *self
+                .gate
+                .active
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            self.event_sender.0.lock().queue.len(),
+        ]
+    }
+
     #[cfg(feature = "test-support")]
     pub fn resource_snapshot(&self) -> crate::performance::ReadSchedulingSnapshot {
         let concurrent_reads = *self

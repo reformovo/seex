@@ -306,6 +306,38 @@ RSS measurements were made, and transient logs are not durable repository fixtur
 Next validate selected/prefetched coverage and drain during scroll/reversal before
 optimizing row rebuilding or claiming native-window support.
 
+### Logical scroll, retained coverage, and drain
+The existing `overview_schedule_diagnostic` now visits tail, middle, then head;
+each stop must actually contain its target row, cover every Run in the selected
+and directional-prefetch Overviews, and finish with no pending Overview/Detail
+panel reads and zero worker outstanding tickets, active permits, and completions.
+The shared concurrency gate is counted once across sources. Test-only queue accessors
+are not synchronized global snapshots; peaks are sampled after the event pump.
+Every sample checks View payload residency against visible/prefetch/selected IDs and
+counts actual `Series::points()`, not just declared returned counts.
+
+| Metrics | Stop | Visible range | Drain ms | View Overview / Detail snapshots | View chart points | Sampled peak outstanding / active / completions |
+| ---: | --- | --- | ---: | --- | ---: | --- |
+| 500 | Tail | 467..500 | 998 | 33 / 0 | 33 | 6 / 4 / 0 |
+| 500 | Middle | 250..283 | 2,187 | 36 / 0 | 36 | 4 / 4 / 0 |
+| 500 | Head | 0..33 | 2,878 | 36 / 0 | 36 | 4 / 4 / 0 |
+| 10,000 | Tail | 9967..10000 | 1,571 | 33 / 0 | 33 | 6 / 4 / 0 |
+| 10,000 | Middle | 5000..5033 | 2,794 | 36 / 0 | 36 | 4 / 4 / 0 |
+| 10,000 | Head | 0..33 | 2,692 | 36 / 0 | 36 | 4 / 4 / 0 |
+
+Both passed with no View offscreen payloads or source errors. This is one fresh
+release TestPlatform process per scale, a one-Run/one-point-per-metric fixture,
+not ABBA, native frames, RSS, all-process point ownership, or a hard backlog cap.
+Each jump settles before the next: rapid reversal with in-flight reads is not
+covered, and Detail snapshots were absent in this scenario. Zero sampled completion
+depth does not mean zero historical peak. The 10,000 run took 46.96 s including
+36.53 s fixture preparation. No production scheduling change was made.
+Two earlier 500 attempts using `scroll_to_reveal_item(499)` timed out; the detailed
+failure showed visible `9..42` despite covered=true, pending=false, queues zero.
+The diagnostic now uses explicit `ListOffset` instead of unmeasured row-height
+summaries, and asserts arrival. Those failed attempts are harness evidence, not
+read-drain failures or a production scrolling fix.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

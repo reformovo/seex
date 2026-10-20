@@ -113,6 +113,20 @@ impl SourceRegistry {
         self.entries.iter().map(|entry| &entry.source)
     }
 
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn queue_depths(&self) -> [usize; 3] {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.worker.as_ref())
+            .fold([0; 3], |mut total, worker| {
+                let depths = worker.queue_depths();
+                total[0] += depths[0];
+                total[1] = total[1].max(depths[1]); // Shared gate, not per-worker capacity.
+                total[2] += depths[2];
+                total
+            })
+    }
+
     #[cfg(feature = "test-support")]
     pub fn resource_snapshot(&self) -> crate::performance::ReadSchedulingSnapshot {
         self.entries

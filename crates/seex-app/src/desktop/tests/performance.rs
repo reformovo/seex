@@ -182,6 +182,77 @@ fn scroll_metric_tracks(
     wait_for_benchmark(window, cx, active_curves_are_settled);
 }
 
+// TestPlatform state/readiness diagnostic, not a native frame/RSS measurement.
+fn scroll_and_drain(
+    window: WindowHandle<ViewerApp>,
+    cx: &mut VisualTestContext,
+    target: usize,
+    tail: bool,
+) {
+    window
+        .update(cx, |viewer, _, cx| {
+            viewer.workspace.update(cx, |workspace, cx| {
+                workspace.metric_scroll.scroll_to(ListOffset {
+                    item_ix: target,
+                    offset_in_item: px(0.),
+                });
+                cx.notify();
+            });
+        })
+        .unwrap();
+    let started = Instant::now();
+    let mut peak = [0; 3];
+    loop {
+        cx.run_until_parked();
+        let ready = window.read_with(cx, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let active = snapshot.views.active();
+            let workspace = viewer.workspace.read(cx);
+            let viewport = workspace.track_viewport.borrow();
+            let depths = viewer.session.read(cx).sources.queue_depths();
+            for i in 0..3 { peak[i] = peak[i].max(depths[i]); }
+            let arrived = viewport.visible.contains(&target)
+                && (!tail || viewport.visible.end == active.panels.len());
+            let mut counts = [0; 3];
+            let mut covered = true;
+            let mut pending = false;
+            for (index, panel) in active.panels.iter().enumerate() {
+                let retained = viewport.overview.contains(&index)
+                    || active.selected_panel_id.as_ref() == Some(&panel.panel_id);
+                covered &= !retained || panel.overview.as_ref().is_some_and(|s| {
+                    active.runs.iter().all(|r| s.series.iter().any(|c| &c.run_ref == r))
+                });
+                pending |= panel.is_pending(ReadKind::Overview) || panel.is_pending(ReadKind::Detail);
+                assert!(panel.source_errors.is_empty(), "panel read failed");
+                for (snapshot, allowed, slot) in [(&panel.overview, retained, 0),
+                    (&panel.detail, viewport.visible.contains(&index), 1)] {
+                    if let Some(snapshot) = snapshot {
+                        assert!(allowed, "offscreen payload retained at {index}");
+                        counts[slot] += 1;
+                        counts[2] += snapshot.series.iter().filter_map(|s| s.chart_series.as_ref())
+                            .map(|s| s.points().len()).sum::<usize>();
+                    }
+                }
+            }
+            let limit = viewport.overview.len() + 1;
+            assert!(counts[0] <= limit && counts[1] <= viewport.visible.len());
+            assert!(counts[2] <= limit + viewport.visible.len(), "one-point fixture exceeded residency bound");
+            let ready = arrived && covered && !pending && depths == [0; 3];
+            assert!(ready || started.elapsed() < Duration::from_secs(15), "scroll/drain timeout target={target} visible={:?} arrived={arrived} covered={covered} pending={pending} depths={depths:?} counts={counts:?}", viewport.visible);
+            if ready { println!("SEEX_SCROLL_DRAIN target={target} visible={:?} ms={} view_payloads_points={counts:?} sampled_peak={peak:?}", viewport.visible, started.elapsed().as_millis()); }
+            ready
+        }).unwrap();
+        if ready {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "scroll/drain timeout target={target} peak={peak:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[gpui::test]
 #[ignore = "diagnostic overview scheduling profile"]
 fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
@@ -281,6 +352,13 @@ fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
             "Overview did not settle: state={state:?} diagnostics={diagnostics:?}"
         );
         std::thread::sleep(Duration::from_millis(5));
+    }
+    for (target, tail) in [
+        (metric_count - 1, true),
+        (metric_count / 2, false),
+        (0, false),
+    ] {
+        scroll_and_drain(window, &mut visual, target, tail);
     }
 }
 
