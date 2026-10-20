@@ -204,6 +204,17 @@ single selection. The profile improved identity construction from about 750 ms t
 about 14 ms in this test, but the desktop failure shows later scheduling/layout
 cost dominates the 10,000-panel workload.
 
+A release GPUI staircase using the batch path tested 100 and then 500 metrics,
+with `/usr/bin/time -l` around each process. At 100: fixture **562 ms**, discovery
+**40 ms**, batch selection **3.5 ms**, first visible Overview settle **1.77 s**,
+Overview retained **34**, Detail retained **0**, RSS high-water approximately
+**191 MiB**. At 500, the first visible Overview settle did not complete within
+**120 s**; RSS high-water was approximately **232 MiB**. The 1,000/2,500/5,000/
+10,000 levels were not run after the first failure. These are diagnostic desktop
+observations, not an ABBA or an SLO. The boundary is now below 500 panels, so the
+next profile must split Overview scheduling and per-panel event/merge work before
+any Detail SQL optimization.
+
 ### Combined headless scheduler pressure probe
 `data::worker::tests::ten_thousand_scroll_cancel_drain_keeps_worker_queues_bounded`
 uses a real `ReadWorker` with a gate-paused reader. It submits 10,000 distinct
