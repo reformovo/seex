@@ -476,6 +476,30 @@ Reproduce with `cargo test -p seex-app --no-default-features --lib
  data::worker::tests::cancel_executing_sql_releases_worker_slot_for_queued_curve
  -- --exact --nocapture` (app dev-dependency enables the SDK probe).
 
+### Enqueue high-water marks and retired chart/cache owners
+Test-support now records pending queue depth immediately after coalescing/enqueue,
+completion depth immediately after enqueue, and the existing shared-permit peak.
+Marks are cumulative per open worker lifetime, not reset per jump. With one source,
+both 128 and 10,000 dense-reversal diagnostics observed **[4 pending, 4 active,
+4 completions]**. These are separate maxima, not simultaneous depths or hard caps;
+pending excludes requests already taken by readers. For multiple sources the
+accessor sums pending/completion maxima (an upper bound) and counts the shared
+active gate once. Worker tests check a two-request pending peak and preservation
+of the 10,000-event peak after cancellation empties its queue.
+After dense Detail returns and all reads drain, the diagnostic captures Weak
+references to the actual chart Detail snapshot and its ChartAdapter, confirming
+snapshot identity against the View. It then jumps to tail, drains and pumps events;
+both Weak upgrades must fail. This checks that no View/row/chart/canvas reference
+retains that snapshot or adapter, including the adapter-owned projection/path
+caches. It does not count independently cloned snapshots/Series, externally cloned
+projected paths, GPUI frame/path copies, bytes, allocator retention, or RSS.
+At 10,000, final tail View residency was **34 Overviews / 0 Details / 1,057 points**:
+the selected dense Overview (1,024 points) remains intentionally pinned. Old Detail
+and cache owner are gone. Release TestPlatform run: 1,799 ms initial reversal drain,
+1,921 ms tail drain, 40.12 s total including fixture. The 128 run also passed.
+No production-build counters/hooks, scheduling change, benchmark or ABBA; this
+extends owner-lifetime evidence, not a full-process memory bound.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

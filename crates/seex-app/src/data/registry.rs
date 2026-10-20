@@ -127,6 +127,20 @@ impl SourceRegistry {
             })
     }
 
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn queue_peaks(&self) -> [usize; 3] {
+        self.entries
+            .iter()
+            .filter_map(|e| e.worker.as_ref())
+            .fold([0; 3], |mut total, worker| {
+                let peak = worker.queue_peaks();
+                total[0] += peak[0]; // Sum of per-source maxima, not a simultaneous peak.
+                total[1] = total[1].max(peak[1]); // Shared gate.
+                total[2] += peak[2];
+                total
+            })
+    }
+
     #[cfg(feature = "test-support")]
     pub fn resource_snapshot(&self) -> crate::performance::ReadSchedulingSnapshot {
         self.entries

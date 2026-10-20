@@ -188,6 +188,7 @@ fn scroll_and_drain(
     cx: &mut VisualTestContext,
     target: usize,
     tail: bool,
+    extra_points: usize,
 ) {
     window
         .update(cx, |viewer, _, cx| {
@@ -236,7 +237,7 @@ fn scroll_and_drain(
             }
             let limit = viewport.overview.len() + 1;
             assert!(counts[0] <= limit && counts[1] <= viewport.visible.len());
-            assert!(counts[2] <= limit + viewport.visible.len(), "one-point fixture exceeded residency bound");
+            assert!(counts[2] <= limit + viewport.visible.len() + extra_points, "fixture exceeded residency bound");
             let ready = arrived && covered && !pending && depths == [0; 3];
             assert!(ready || started.elapsed() < Duration::from_secs(15), "scroll/drain timeout target={target} visible={:?} arrived={arrived} covered={covered} pending={pending} depths={depths:?} counts={counts:?}", viewport.visible);
             if ready { println!("SEEX_SCROLL_DRAIN target={target} visible={:?} ms={} view_payloads_points={counts:?} sampled_peak={peak:?}", viewport.visible, started.elapsed().as_millis()); }
@@ -358,7 +359,7 @@ fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
         (metric_count / 2, false),
         (0, false),
     ] {
-        scroll_and_drain(window, &mut visual, target, tail);
+        scroll_and_drain(window, &mut visual, target, tail, 0);
     }
 }
 
@@ -546,6 +547,49 @@ fn cancelled_detail_reversal_integration(cx: &mut TestAppContext) {
         "SEEX_ACTIVE_DETAIL_REVERSAL metrics={metric_count} entered={} drain_ms={}",
         entered,
         started.elapsed().as_millis()
+    );
+    let (snapshot_probe, adapter_probe) = window
+        .read_with(&visual, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let panel = &snapshot.views.active().panels[0];
+            let chart = viewer
+                .workspace
+                .read(cx)
+                .track_charts
+                .get(&panel.panel_id)
+                .unwrap();
+            let probes = chart.read(cx).retention_probes();
+            assert!(std::sync::Arc::ptr_eq(
+                &probes.0.upgrade().unwrap(),
+                panel.detail.as_ref().unwrap()
+            ));
+            probes
+        })
+        .unwrap();
+    scroll_and_drain(
+        window,
+        &mut visual,
+        metric_count - 1,
+        true,
+        2 * seex::MAX_CHART_POINTS,
+    );
+    visual.run_until_parked();
+    assert!(
+        snapshot_probe.upgrade().is_none(),
+        "old dense Detail snapshot still owned"
+    );
+    assert!(
+        adapter_probe.upgrade().is_none(),
+        "old chart/projection-cache owner still alive"
+    );
+    let peaks = window
+        .read_with(&visual, |viewer, cx| {
+            viewer.session.read(cx).sources.queue_peaks()
+        })
+        .unwrap();
+    assert!(peaks[0] > 0 && peaks[1] > 0 && peaks[2] > 0);
+    println!(
+        "SEEX_OWNER_RELEASE metrics={metric_count} snapshot_dropped=true adapter_dropped=true queue_peaks={peaks:?}"
     );
 }
 

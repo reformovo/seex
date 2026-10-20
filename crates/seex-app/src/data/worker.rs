@@ -110,6 +110,8 @@ pub struct WorkerClosed;
 #[derive(Default)]
 struct ReadEventState {
     queue: VecDeque<ReadEvent>,
+    #[cfg(feature = "test-support")]
+    peak: usize,
     waker: Option<Waker>,
     sender_closed: bool,
     receiver_alive: bool,
@@ -154,6 +156,10 @@ impl ReadEventSender {
                 return false;
             }
             state.queue.push_back(event);
+            #[cfg(feature = "test-support")]
+            {
+                state.peak = state.peak.max(state.queue.len());
+            }
             state.waker.take()
         };
         self.0.available.notify_one();
@@ -671,6 +677,18 @@ impl ReadWorker {
         ]
     }
 
+    /// Lifetime pending/active/completion high-water marks, not simultaneous depths.
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn queue_peaks(&self) -> [usize; 3] {
+        [
+            self.requests
+                .as_ref()
+                .map_or(0, |s| s.0.state.lock().unwrap().peak),
+            self.gate.peak.load(Ordering::Relaxed),
+            self.event_sender.0.lock().peak,
+        ]
+    }
+
     #[cfg(feature = "test-support")]
     pub fn resource_snapshot(&self) -> crate::performance::ReadSchedulingSnapshot {
         let concurrent_reads = *self
@@ -872,6 +890,8 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) -
 #[derive(Default)]
 struct RequestQueueState {
     pending: PendingRequests,
+    #[cfg(feature = "test-support")]
+    peak: usize,
     closed: bool,
 }
 
@@ -899,6 +919,15 @@ impl RequestSender {
             return Err(WorkerClosed);
         }
         state.pending.push(request);
+        #[cfg(feature = "test-support")]
+        {
+            let pending = &state.pending;
+            let depth = usize::from(pending.discover.is_some())
+                + pending.overview.len()
+                + pending.detail.len()
+                + pending.inspector.len();
+            state.peak = state.peak.max(depth);
+        }
         drop(state);
         self.0.available.notify_one();
         Ok(())
@@ -1309,6 +1338,8 @@ mod tests {
         }
         let state = receiver.0.lock();
         assert_eq!(state.queue.len(), 10_000);
+        #[cfg(feature = "test-support")]
+        assert_eq!(state.peak, 10_000);
         drop(state);
         for generation in 0..10_000 {
             sender.cancel(
@@ -1320,6 +1351,11 @@ mod tests {
         }
         let state = receiver.0.lock();
         assert!(state.queue.is_empty());
+        #[cfg(feature = "test-support")]
+        assert_eq!(
+            state.peak, 10_000,
+            "draining must not erase the high-water mark"
+        );
         // Error-only events deliberately measure slots, not curve points/RSS.
     }
 
@@ -1371,6 +1407,8 @@ mod tests {
                 })
                 .expect("test request queue should remain open");
         }
+        #[cfg(feature = "test-support")]
+        assert_eq!(queue.state.lock().unwrap().peak, 2);
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let (acquired_tx, acquired_rx) = mpsc::channel();
         let consumers = (0..2)

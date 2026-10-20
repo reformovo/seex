@@ -111,6 +111,19 @@ fn option_arc_ptr_eq<T>(left: &Option<Arc<T>>, right: &Option<Arc<T>>) -> bool {
 }
 
 impl DetailChart {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn retention_probes(
+        &self,
+    ) -> (
+        std::sync::Weak<CurveSnapshot>,
+        std::rc::Weak<std::cell::RefCell<ChartAdapter>>,
+    ) {
+        (
+            Arc::downgrade(&self.snapshot),
+            std::rc::Rc::downgrade(&self.adapter),
+        )
+    }
+
     pub fn new(
         snapshot: Arc<CurveSnapshot>,
         revision: u64,
