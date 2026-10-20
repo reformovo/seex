@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use seex::AlignmentAxis;
 use seex_plot::AxisRange;
 
@@ -663,9 +665,21 @@ fn deactivating_a_view_cancels_every_panel_generation() {
 #[test]
 fn ten_thousand_panel_identity_scroll_keeps_payloads_to_retained_window() {
     let mut views = AnalysisViews::default();
+    let started = Instant::now();
     let panel_ids = (0..10_000)
         .map(|index| views.select_active_metric(MetricKey::from_string(format!("metric-{index}"))))
         .collect::<Vec<_>>();
+    let identity_elapsed = started.elapsed();
+    let started = Instant::now();
+    let cloned_panels = views.active().panels.to_vec();
+    let clone_elapsed = started.elapsed();
+    std::hint::black_box(&cloned_panels);
+    eprintln!(
+        "panel boundary: identities={} identity_ms={:.3} full_clone_ms={:.3}",
+        panel_ids.len(),
+        identity_elapsed.as_secs_f64() * 1_000.,
+        clone_elapsed.as_secs_f64() * 1_000.,
+    );
     let viewport = AlignmentViewport::new(0, 100).expect("viewport should be valid");
     let snapshot = || CurveSnapshot {
         viewport,
