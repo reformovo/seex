@@ -279,6 +279,33 @@ Scratch raw/harness files are ephemeral; SHA-256 identities:
 - Candidate: `eb51228d7f52b14cc05f2f855956a6f1802e9d0e83c1ac036bf1947bd5337a9a`.
 - Result: `c2378ebf1d90cc08cbfb91d0c5c99f635f67ae5eabe9006bbed91c50b4fe647d`.
 
+### Post-fix 1,000–10,000 identity diagnostics
+On `fca9b6b`, the existing `overview_schedule_diagnostic` ran once per size in
+fresh release/test-support processes with `--ignored --exact --nocapture
+--test-threads=1` and `SEEX_DESKTOP_PROFILE_METRICS` set to each size below.
+This is GPUI **TestPlatform**, one Run, one observation per metric, not a native
+window measurement, ABBA, or SLO. Discovery returned all requested metric keys.
+
+| Metrics | Fixture ms | Batch selection ms | Since-selection visible readiness ms | Reconcile total ms | Full row visits |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 1,999 | 5 | 1,106 | 10.67 | 223,000 |
+| 2,500 | 5,864 | 7 | 1,188 | 23.28 | 555,000 |
+| 5,000 | 16,311 | 19 | 1,704 | 41.76 | 1,135,000 |
+| 10,000 | 35,953 | 29 | 1,881 | 75.41 | 2,160,000 |
+
+All sizes reached 33 visible panels with all 33 Overviews present, zero panel
+source errors, 103 reconcile calls, 3,333 visible panel visits, and 36 Overview
+plans. Each still had two pending Overviews at the observation point: this is
+visible readiness, **not complete coverage/drain**. Reconcile time includes work
+inside reconcile, not all layout, event processing, or row rebuilds outside it.
+Request-plan size stayed fixed while full-list row visits grew with metric count;
+this exposes list-scale CPU work but does not establish it as the dominant wait.
+Fixture preparation is outside since-selection time. Discovery elapsed time was
+not separately emitted. All four diagnostics passed; no retries or scroll/frame/
+RSS measurements were made, and transient logs are not durable repository fixtures.
+Next validate selected/prefetched coverage and drain during scroll/reversal before
+optimizing row rebuilding or claiming native-window support.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
