@@ -391,6 +391,24 @@ Run with the existing release/test-support command, exact filter
 `desktop::app::tests::performance::cancelled_detail_reversal_integration`,
 `--ignored --exact --nocapture --test-threads=1`.
 
+### SQL cancellation connection-affinity gap
+`reader::tests::fresh_query_interrupt_handle_is_not_the_session_handle` now
+characterizes a missing link: repeated handles from one Reader share the same
+DuckDB handle allocation, but both first and retry fresh query attempts have
+handles distinct from the session and from each other. Worker active registration
+currently obtains `ReadSession::interrupt_handles()` from the session Reader,
+whereas `query_metrics_for_desktop` executes through `with_fresh_query_reader`.
+The connection-bound session handle therefore is not the running curve SQL handle.
+Existing cooperative pre-SQL cancellation tests remain valid, but **do not prove
+worker cancellation interrupts SQL on a fresh query connection**.
+The direct `read_interrupt_stops_the_bound_connection_query` test passed too; its
+25 ms sleep is not deterministic query-start evidence and does not fix this gap.
+No production change was made. Next register each fresh attempt's handle against
+the request generation/token before SQL, including retries and cancellation that
+arrives before registration. Cleanup/late cancellation must not target a new
+request. Validate actual executing SQL and subsequent worker-slot reuse separately;
+no runtime dependency, connection cache, or storage-layout change is implied.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

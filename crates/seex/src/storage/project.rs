@@ -32,6 +32,11 @@ pub struct ProjectConnection {
 pub struct ReadInterrupt(Arc<duckdb::InterruptHandle>);
 
 impl ReadInterrupt {
+    #[cfg(test)]
+    pub(crate) fn same_connection(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn interrupt(&self) {
         self.0.interrupt();
     }

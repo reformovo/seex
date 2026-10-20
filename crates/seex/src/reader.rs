@@ -1368,6 +1368,51 @@ mod tests {
     }
 
     #[test]
+    fn fresh_query_interrupt_handle_is_not_the_session_handle()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = crate::Client::builder(root.path()).open()?;
+        let run = client.start_run(crate::RunOptions::new("project").id("run"))?;
+        run.log_with([("loss", 1.)], crate::LogOptions::new().step(0))?;
+        run.finish()?;
+        client.shutdown()?;
+        let reader = Reader::builder(root.path()).open()?;
+        let session = reader
+            .interrupt_handle()
+            .expect("session connection exists");
+        assert!(
+            session
+                .0
+                .same_connection(&reader.interrupt_handle().unwrap().0)
+        );
+        let mut attempts = Vec::new();
+        let result = reader.with_fresh_query_reader(|fresh| {
+            let handle = fresh.interrupt_handle().expect("query connection exists");
+            assert!(
+                handle
+                    .0
+                    .same_connection(&fresh.interrupt_handle().unwrap().0)
+            );
+            // Characterize the gap: the worker's session handle is not this handle.
+            assert!(!session.0.same_connection(&handle.0));
+            assert!(
+                attempts
+                    .iter()
+                    .all(|old: &ReaderInterrupt| !old.0.same_connection(&handle.0))
+            );
+            attempts.push(handle);
+            if attempts.len() == 1 {
+                Err(Error::Storage)
+            } else {
+                Ok(Some(()))
+            }
+        })?;
+        assert_eq!(result, Some(()));
+        assert_eq!(attempts.len(), 2);
+        Ok(())
+    }
+
+    #[test]
     fn fresh_query_retries_the_whole_operation_and_publishes_only_success()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
