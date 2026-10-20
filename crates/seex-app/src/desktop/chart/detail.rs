@@ -154,6 +154,15 @@ impl DetailChart {
     }
 
     #[cfg(feature = "test-support")]
+    pub(crate) fn paint_diagnostic(&self) -> String {
+        let adapter = self.adapter.borrow();
+        format!(
+            "revision={} viewport={:?} painted={:?} prepaint_bounds_mask={:?}",
+            self.revision, self.viewport, adapter.detail_painted, adapter.detail_prepaint
+        )
+    }
+
+    #[cfg(feature = "test-support")]
     pub(crate) fn retention_probes(
         &self,
     ) -> (

@@ -569,6 +569,36 @@ loosening readiness). Ten-thousand-panel fully loaded/drawn native scrolling is
 **not qualified**. Old callback-only successes must not override this result.
 Normal builds have no paint instrumentation; no production scheduling/SQL change.
 
+### Unpainted-panel attribution and valid native fixture order
+Test-support now retains canvas prepaint bounds and content-mask bounds; native
+diagnostics print unready panel index/ID/key, row/list bounds, evidence/reasons,
+point counts, current revision/viewport and last paint. Output occurs once per
+phase when all snapshots exist but paint is incomplete, and again on failure.
+One newly captured failure was **index 0, metric-0000**, row `(190,100,1010,52)`
+fully inside list `(190,100,1010,700)`, with **Invalid evidence, no chart series,
+no chart entity**. It was not the partially visible final row. This run later
+required external termination at 110 seconds; no performance success is claimed.
+Another run of the old fixture completed: intermittent success does not erase the
+captured invalid-data failure. Earlier failures without panel details remain
+unattributed individually.
+The old fixture wrote dense Step 100 before dense Steps 1..99. A direct SDK
+reproducer without a timestamp gap sometimes returned Complete; inserting an
+explicit 10 ms gap for this fixture-order reproduction returned **Invalid,
+DecreasingAxis**. This is a data-validity issue, not a SQL-start timing assumption.
+Correct preparation logs all initial Steps 0, then dense Steps 1..4095, then sparse
+Step 100 endpoints **excluding the dense key**. The added fixture regression checks
+Complete evidence, 4,096 dense / two sparse source points and nonempty samples.
+Native diagnostics now fail immediately on visible Invalid evidence and print
+reasons, rather than treating snapshot presence as curve readiness. Production
+validity, rendering and scheduling rules are unchanged; readiness was not loosened.
+With corrected 10,000 fixture, SDK dense preflight was Complete/reasons empty;
+initial/tail/middle/head/final readiness took **2,432/1,266/2,466/2,200/1,216 ms**,
+ending loaded=14, painted=14, queues zero. Motion still had **178/181** and
+**180/180** not-all-painted callbacks. This single diagnostic is not ABBA or a
+scrolling-performance pass; no RSS was captured in this final attribution run.
+The next performance question is visible-curve catch-up during movement, not a
+proven final-row clipping defect. Original raw probes remain ephemeral scratch.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

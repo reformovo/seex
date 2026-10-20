@@ -38,6 +38,8 @@ struct GpuiPathKey {
 pub struct ChartAdapter {
     #[cfg(feature = "test-support")]
     detail_painted: Option<(u64, Viewport, usize)>,
+    #[cfg(feature = "test-support")]
+    detail_prepaint: Option<(Bounds<Pixels>, Bounds<Pixels>)>,
     detail_projection_cache: PathCache,
     detail_gpui_paths: HashMap<String, CachedGpuiPath>,
     detail_bounds: Option<Bounds<Pixels>>,

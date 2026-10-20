@@ -22,6 +22,10 @@ pub(in crate::desktop::app) fn detail_canvas(
     let painted_adapter = std::rc::Rc::clone(&adapter);
     canvas(
         move |bounds, window, _| {
+            #[cfg(feature = "test-support")]
+            {
+                adapter.borrow_mut().detail_prepaint = Some((bounds, window.content_mask().bounds));
+            }
             let resized = adapter.borrow().detail_bounds != Some(bounds);
             let prepared = adapter.borrow_mut().prepare(
                 &snapshot,

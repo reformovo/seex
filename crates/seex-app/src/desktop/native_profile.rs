@@ -66,6 +66,8 @@ pub(in crate::desktop) fn run(root: PathBuf) {
                         motion_steps: 0,
                         unready_frames: 0,
                         status: String::new(),
+                        reported_unready: false,
+                        invalid_evidence: false,
                     },
                     window,
                 );
@@ -87,6 +89,100 @@ struct State {
     motion_steps: usize,
     unready_frames: usize,
     status: String,
+    reported_unready: bool,
+    invalid_evidence: bool,
+}
+
+fn report_unready(viewer: &ViewerApp, cx: &App) {
+    let snapshot = viewer.session_snapshot(cx);
+    let active = snapshot.views.active();
+    let workspace = viewer.workspace.read(cx);
+    let visible = workspace.track_viewport.borrow().visible.clone();
+    println!(
+        "SEEX_NATIVE_DIAGNOSTIC list_bounds={:?}",
+        workspace.metric_scroll.viewport_bounds()
+    );
+    for index in visible {
+        let panel = &active.panels[index];
+        let chart = workspace.track_charts.get(&panel.panel_id);
+        if chart.is_some_and(|chart| chart.read(cx).painted_current()) {
+            continue;
+        }
+        let points = panel.overview.as_ref().map(|s| {
+            s.series
+                .iter()
+                .map(|c| {
+                    (
+                        c.run_ref.cache_key(),
+                        c.completeness,
+                        c.reasons.clone(),
+                        c.chart_series.as_ref().map(|s| s.points().len()),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        println!(
+            "SEEX_NATIVE_UNREADY index={index} panel={} metric={} row_bounds={:?} points={points:?} detail_rev={} overview_rev={} chart={}",
+            panel.panel_id,
+            panel.metric_key.as_str(),
+            workspace.metric_scroll.bounds_for_item(index),
+            panel.detail_revision,
+            panel.overview_revision,
+            chart
+                .map(|c| c.read(cx).paint_diagnostic())
+                .unwrap_or_else(|| "missing".to_owned())
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn native_fixture_keeps_dense_and_sparse_metric_timestamps_step_ordered() {
+    let root = tempfile::tempdir().unwrap();
+    let client = seex::Client::builder(root.path()).open().unwrap();
+    let run = client
+        .start_run(seex::RunOptions::new("fixture-order").id("run"))
+        .unwrap();
+    run.log_with(
+        (0..4).map(|i| (format!("metric-{i:04}"), 1.)),
+        seex::LogOptions::new().step(0),
+    )
+    .unwrap();
+    for step in 1..4096 {
+        run.log_with(
+            [("metric-0000", (step as f64).sin())],
+            seex::LogOptions::new().step(step),
+        )
+        .unwrap();
+    }
+    // Add sparse endpoints last, excluding the already-complete dense series.
+    run.log_with(
+        (1..4).map(|i| (format!("metric-{i:04}"), 2.)),
+        seex::LogOptions::new().step(100),
+    )
+    .unwrap();
+    run.finish().unwrap();
+    client.shutdown().unwrap();
+    let reader = seex::Reader::builder(root.path()).open_local().unwrap();
+    let query =
+        seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), 1024).unwrap();
+    for i in 0..4 {
+        let series = reader
+            .query_metric_for_desktop(
+                run.run_id(),
+                &seex::MetricKey::from_string(format!("metric-{i:04}")),
+                &query,
+            )
+            .unwrap();
+        assert_eq!(
+            series.completeness(),
+            seex::EvidenceCompleteness::Complete,
+            "{:?}",
+            series.reasons()
+        );
+        assert_eq!(series.source_count(), if i == 0 { 4096 } else { 2 });
+        assert!(series.samples().len() >= 2);
+    }
 }
 
 fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Window) {
@@ -119,9 +215,15 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                         })) && workspace.track_charts.get(&p.panel_id).is_some_and(|c| c.read(cx).painted_current())
                     }) && !active.panels.iter().any(|p| p.is_pending(crate::data::worker::ReadKind::Overview) || p.is_pending(crate::data::worker::ReadKind::Detail))
                         && viewer.session.read(cx).sources.queue_depths() == [0; 3];
+                    state.invalid_evidence = active.panels[viewport.clone()].iter().filter_map(|p| p.overview.as_ref())
+                        .any(|s| s.series.iter().any(|c| c.completeness == seex::EvidenceCompleteness::Invalid));
                     let painted = active.panels[viewport.clone()].iter().filter(|p| workspace.track_charts.get(&p.panel_id).is_some_and(|c| c.read(cx).painted_current())).count();
                     let loaded = active.panels[viewport.clone()].iter().filter(|p| p.overview.is_some()).count();
                     state.status = format!("visible={viewport:?} loaded={loaded} painted={painted} depths={:?}", viewer.session.read(cx).sources.queue_depths());
+                    if loaded == viewport.len() && painted < loaded && !state.reported_unready {
+                        state.reported_unready = true;
+                        report_unready(viewer, cx);
+                    }
                     state.ready_frames = if ready { state.ready_frames + 1 } else { 0 };
                     if state.ready_frames >= 2 {
                         let n = active.panels.len();
@@ -176,8 +278,12 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
             state.ready_frames = 0;
             state.motion_steps = 0;
             state.unready_frames = 0;
+            state.reported_unready = false;
         }
-        let timed_out = state.since.elapsed() > Duration::from_secs(20);
+        let timed_out = state.since.elapsed() > Duration::from_secs(20) || state.invalid_evidence;
+        if timed_out {
+            window.root::<ViewerApp>().flatten().unwrap().read_with(cx, report_unready);
+        }
         if timed_out || state.stage == 9 {
             println!("SEEX_NATIVE_RESULT ok={} stage={} status={}", !timed_out, state.stage, state.status);
             cx.quit();
