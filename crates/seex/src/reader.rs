@@ -699,24 +699,38 @@ impl Reader {
         if is_superseded() {
             return Ok(None);
         }
-        self.with_fresh_query_reader_registered(register, trace, |reader| {
-            let mut results = Vec::with_capacity(run_ids.len());
-            for run_id in run_ids {
+        let trace = std::cell::RefCell::new(trace);
+        self.with_fresh_query_reader_registered(
+            register,
+            &mut |phase| (trace.borrow_mut())(phase),
+            |reader| {
+                let mut results = Vec::with_capacity(run_ids.len());
+                for run_id in run_ids {
+                    if is_superseded() {
+                        return Ok(None);
+                    }
+                    let result = reader.query_metric_once_traced(
+                        run_id,
+                        metric_key,
+                        query,
+                        true,
+                        overview,
+                        &mut |phase| {
+                            (trace.borrow_mut())(phase);
+                        },
+                    );
+                    // An interrupt maps to Storage too; cancellation must not retry SQL.
+                    if is_superseded() {
+                        return Ok(None);
+                    }
+                    results.push(result?);
+                }
                 if is_superseded() {
                     return Ok(None);
                 }
-                let result = reader.query_metric_once(run_id, metric_key, query, true, overview);
-                // An interrupt maps to Storage too; cancellation must not retry SQL.
-                if is_superseded() {
-                    return Ok(None);
-                }
-                results.push(result?);
-            }
-            if is_superseded() {
-                return Ok(None);
-            }
-            Ok(Some(results))
-        })
+                Ok(Some(results))
+            },
+        )
     }
 
     fn query_metric_impl(
@@ -806,15 +820,35 @@ impl Reader {
         retain_neighbors: bool,
         force_full_step: bool,
     ) -> SdkResult<MetricSeries> {
+        self.query_metric_once_traced(
+            run_id,
+            metric_key,
+            query,
+            retain_neighbors,
+            force_full_step,
+            &mut |_| {},
+        )
+    }
+
+    fn query_metric_once_traced(
+        &self,
+        run_id: &RunId,
+        metric_key: &MetricKey,
+        query: &MetricQuery,
+        retain_neighbors: bool,
+        force_full_step: bool,
+        trace: &mut dyn FnMut(&'static str),
+    ) -> SdkResult<MetricSeries> {
         #[cfg(feature = "test-query-probe")]
         self.execute_armed_probe(run_id, metric_key)?;
-        let started = std::time::Instant::now();
+        trace("metadata_start");
         let metadata = self.metadata(run_id)?;
-        crate::storage::bootstrap::record_write_timing("reader_metadata", started.elapsed());
+        trace("metadata_finish");
+
         let run_status = metadata.status;
-        let started = std::time::Instant::now();
+        trace("diagnostics_start");
         let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
-        crate::storage::bootstrap::record_write_timing("reader_diagnostics", started.elapsed());
+        trace("diagnostics_finish");
         let (axis, storage_axis, bounds) = match query.range() {
             MetricRange::All(axis) => (*axis, AlignmentAxis::Step, None),
             MetricRange::Steps { start, end } => (
@@ -865,6 +899,7 @@ impl Reader {
             .filter(|bounded| *bounded)
             .and(diagnostics.map(|diagnostics| diagnostics.effective_count));
         let connection = self.connection.as_ref().ok_or(Error::Storage)?;
+        trace("storage_start");
         let result = match (narrow_step, bounded_full_count) {
             (true, None) => {
                 ProjectMetricReader::new(connection).query_narrow_step_metric(&storage_query)
@@ -877,6 +912,7 @@ impl Reader {
             (true, Some(_)) => return Err(Error::Storage),
         }
         .map_err(public_storage_error)?;
+        trace("storage_finish");
         let neighbor_count = result
             .points
             .iter()
@@ -891,6 +927,7 @@ impl Reader {
                 .filter(|point| in_half_open_range(point.axis_value, bounds))
                 .collect()
         };
+        trace("points_start");
         let mut samples = points
             .into_iter()
             .map(|point| {
@@ -918,8 +955,10 @@ impl Reader {
             result.source_row_count.saturating_sub(neighbor_count)
         };
         let (completeness, reasons) = qualify_series(result.reasons, diagnostics, run_status);
-        MetricSeries::from_samples(axis, samples, source_count, completeness, reasons)
-            .map_err(|_| Error::Storage)
+        let series = MetricSeries::from_samples(axis, samples, source_count, completeness, reasons)
+            .map_err(|_| Error::Storage)?;
+        trace("points_finish");
+        Ok(series)
     }
 
     fn query_step_metric(
@@ -1576,7 +1615,7 @@ mod tests {
             reader.with_fresh_query_reader_registered(&mut |handle| {
                 registered_tx.send(handle).unwrap();
                 true
-            }, |fresh| {
+            }, &mut |_| {}, |fresh: &Reader| {
                 let connection = fresh.native()?;
                 connection.execute_batch("CREATE SEQUENCE memory.main.seex_interrupt_progress;")
                     .map_err(|_| Error::Storage)?;
@@ -1626,14 +1665,18 @@ mod tests {
         assert_eq!(query.join().expect("query thread panicked")?, Some(()));
         // A dropped old connection's handle must not interrupt a later fresh one.
         let next = Reader::builder(root.path()).open()?;
-        let value = next.with_fresh_query_reader_registered(&mut |_| true, |fresh| {
-            handle.interrupt();
-            let value: i32 = fresh
-                .native()?
-                .query_row("SELECT 9", [], |row| row.get(0))
-                .map_err(|_| Error::Storage)?;
-            Ok(Some(value))
-        })?;
+        let value = next.with_fresh_query_reader_registered(
+            &mut |_| true,
+            &mut |_| {},
+            |fresh: &Reader| {
+                handle.interrupt();
+                let value: i32 = fresh
+                    .native()?
+                    .query_row("SELECT 9", [], |row| row.get(0))
+                    .map_err(|_| Error::Storage)?;
+                Ok(Some(value))
+            },
+        )?;
         assert_eq!(value, Some(9));
         Ok(())
     }
@@ -1661,7 +1704,8 @@ mod tests {
                 handles.borrow_mut().push(handle);
                 true
             },
-            |fresh| {
+            &mut |_| {},
+            |fresh: &Reader| {
                 let handle = fresh.interrupt_handle().unwrap();
                 assert!(
                     handles
@@ -1683,9 +1727,10 @@ mod tests {
         )?;
         assert_eq!(result, Some(7));
         assert_eq!(handles.borrow().len(), 2);
-        let rejected = reader.with_fresh_query_reader_registered::<()>(&mut |_| false, |_| {
-            panic!("cancelled registration must not execute SQL")
-        })?;
+        let rejected =
+            reader.with_fresh_query_reader_registered::<()>(&mut |_| false, &mut |_| {}, |_| {
+                panic!("cancelled registration must not execute SQL")
+            })?;
         assert_eq!(rejected, None);
         let calls = Cell::new(0);
         let cancelled_retry = reader.with_fresh_query_reader_registered::<()>(
@@ -1693,6 +1738,7 @@ mod tests {
                 calls.set(calls.get() + 1);
                 calls.get() == 1
             },
+            &mut |_| {},
             |_| {
                 assert_eq!(calls.get(), 1);
                 Err(Error::Storage)
