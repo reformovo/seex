@@ -1074,9 +1074,10 @@ mod tests {
 
     use super::{
         DataSourceId, DiscoveryRequest, Generation, OverviewRequest, PendingRequests,
-        ReadConcurrencyGate, ReadKind, ReadRequest, ReadSessionPool, ReadWorker, RequestIdentity,
-        RequestKey, RequestRegistry, RequestTicket, RequestToken, TaggedRequest, execute,
-        next_request, read_event_channel, request_channel, request_is_superseded,
+        ReadConcurrencyGate, ReadEvent, ReadKind, ReadRequest, ReadSessionPool, ReadWorker,
+        RequestIdentity, RequestKey, RequestRegistry, RequestTicket, RequestToken, TaggedRequest,
+        WorkerError, execute, next_request, read_event_channel, request_channel,
+        request_is_superseded,
     };
 
     fn overview_request(metric: &str) -> ReadRequest {
@@ -1391,6 +1392,53 @@ mod tests {
         assert!(!registry.is_current(&identity));
         assert!(registry.active.is_empty());
         assert!(registry.latest.is_empty());
+    }
+
+    #[test]
+    fn ten_thousand_scroll_cancel_drain_keeps_worker_queues_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let gate = Arc::new(ReadConcurrencyGate::new(1));
+        let pause = gate.acquire();
+        let worker = ReadWorker::spawn_with_gate(root.path(), Arc::clone(&gate)).unwrap();
+        let source = DataSourceId::new("source").unwrap();
+        for metric in 0..10_000 {
+            let name = format!("metric-{metric}");
+            let generation = Generation(metric as u64 + 1);
+            worker
+                .submit(source.clone(), generation, overview_request(&name))
+                .unwrap();
+            worker.event_sender.send(ReadEvent {
+                source_id: source.clone(),
+                generation,
+                kind: ReadKind::Overview,
+                metric_key: Some(name.clone()),
+                result: Err(WorkerError::SessionUnavailable),
+            });
+            worker.cancel(
+                source.clone(),
+                generation,
+                ReadKind::Overview,
+                &MetricKey::from_string(name),
+            );
+            let request_depth = worker.outstanding.load(Ordering::Acquire);
+            let event_depth = worker.event_sender.0.lock().queue.len();
+            assert!(request_depth <= 1, "request depth grew to {request_depth}");
+            assert_eq!(
+                event_depth, 0,
+                "cancelled event remained at iteration {metric}"
+            );
+        }
+        drop(pause);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while worker.outstanding.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled work did not drain"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(worker.event_sender.0.lock().queue.is_empty());
+        assert!(worker.registry.lock().unwrap().latest.is_empty());
     }
 
     #[test]

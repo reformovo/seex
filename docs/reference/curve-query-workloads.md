@@ -197,6 +197,15 @@ an older Detail completion to the evicted tail panel. Results: **6 Detail payloa
 points; this proves ownership/eviction behavior, not chart memory or RSS. The full
 10,000-panel identity construction and traversal remains separate from query timing.
 
+### Combined headless scheduler pressure probe
+`data::worker::tests::ten_thousand_scroll_cancel_drain_keeps_worker_queues_bounded`
+uses a real `ReadWorker` with a gate-paused reader. It submits 10,000 distinct
+metric identities, injects one error-only completion per identity, cancels each
+identity, and then releases the gate to drain. At every iteration request depth is
+`<= 1`, cancelled completion depth is zero, and final registry/event queues are
+empty. This combines transport cancellation and event cleanup, but still uses no
+valid store, SQL, curve payload, points, desktop scheduler, frame timing, or RSS.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
