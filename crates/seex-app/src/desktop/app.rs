@@ -53,6 +53,12 @@ mod test_support;
 #[path = "tests/mod.rs"]
 mod tests;
 
+#[cfg(feature = "test-support")]
+#[path = "native_profile.rs"]
+mod native_profile;
+#[cfg(feature = "test-support")]
+pub(super) use native_profile::run as run_native_profile;
+
 pub(super) use assets::ViewerAssets;
 use inspector::*;
 use interaction::WorkbenchInteraction;

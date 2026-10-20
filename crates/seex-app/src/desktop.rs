@@ -37,6 +37,11 @@ actions!(
 pub(super) const SELECTABLE_CONTEXT: &str = "ViewerSelectable";
 
 pub fn run(project_path: Option<PathBuf>) {
+    #[cfg(feature = "test-support")]
+    if let Some(root) = std::env::var_os("SEEX_NATIVE_PROFILE_ROOT") {
+        app::run_native_profile(PathBuf::from(root));
+        return;
+    }
     let app = Application::new().with_assets(ViewerAssets);
     let reopen_project_path = project_path.clone();
     app.on_reopen(move |cx| {

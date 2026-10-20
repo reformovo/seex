@@ -500,6 +500,38 @@ and cache owner are gone. Release TestPlatform run: 1,799 ms initial reversal dr
 No production-build counters/hooks, scheduling change, benchmark or ABBA; this
 extends owner-lifetime evidence, not a full-process memory bound.
 
+### Native macOS window diagnostic (not TestPlatform)
+An explicit `test-support` entry now uses `Application::new()` with a native
+1200x800 window. Set `SEEX_NATIVE_PROFILE_ROOT` to a prepared isolated local store,
+`SEEX_NATIVE_PROFILE_HOME` to a home inside that fixture root, and
+`SEEX_NATIVE_PROFILE_METRICS` to the exact count; run the release `seex-app` binary.
+No default CLI/API or scheduling change. Build and fixture preparation precede
+measurement; no user's ordinary home configuration is used. The profile selects
+one Run/all metrics, waits for visible Overviews and full pending/worker drain,
+then logically jumps tail/middle/head, asserting target arrival at every stop.
+It requests redraws and records after-frame callback intervals across the run,
+not GPU time or display-presentation latency. No continuous wheel-input workload.
+An external `ps -o rss= -p <app-pid>` sampler polled about every 50 ms (plus command
+cost), tracking only that application process, not Cargo or fixture construction.
+RSS is the maximum sampled resident set, not OS peak footprint or allocation bytes.
+One Run: one point per metric except metric-0000 with 4,096 observations.
+
+| Metrics | Initial drain ms | Tail ms | Middle ms | Head ms | Callback count | Callback p95 / max ms | Sampled max RSS bytes |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |
+| 500 | 3,416 | 1,099 | 2,183 | 2,250 | 540 | 17.18 / 186.62 | 279,953,408 |
+| 10,000 | 2,136 | 748 | 1,358 | 1,507 | 341 | 30.38 / 155.77 | 357,498,880 |
+
+Native result markers reported success; process times 10.07/8.37 s, RSS samples
+164/138. The 500 capture preceded adding an explicit discovery cardinality guard;
+its logged panel count was 500. These are single diagnostic observations, not
+ABBA, comparable scalability ratios, or a frame/RSS SLO. The sampler and raw fixture
+are ephemeral scratch artifacts, not repository fixtures. Two earlier native
+harness startups aborted before workload: animation-frame request outside render,
+then reentrant WindowHandle update inside a frame callback. Both call sites were
+corrected; their startup RSS is excluded, and no library/UI workaround was applied.
+Next qualify sustained scrolling/in-flight reversal and per-phase callback latency;
+these successful logical jumps do not establish broad 10,000-panel desktop support.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
