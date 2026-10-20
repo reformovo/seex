@@ -173,6 +173,17 @@ Raw scratch is ephemeral; SHA-256 identities:
 - Candidate harness: `864011da1ae2b587c2e85e8500d78ba58a0ad99bc447df77e498ea7991e28fdd`.
 - Result: `399081c0b55bba41aaa5be7daf8d0d193f74df8b60929fff4a58578d3cc42f73`.
 
+### Completion-event cancellation
+`ReadEvent` now carries the metric identity used by the request registry. Worker
+cancellation removes matching, not-newer events that are still waiting in the
+completion channel. This preserves events for newer generations and avoids
+silently dropping unrelated source responses. A headless probe enqueues 10,000
+error-only events for distinct metrics, cancels each identity, and asserts the
+completion queue reaches zero. This bounds the cancelled-event path, not the
+queue for requests that remain current and are never consumed; a separate
+backpressure policy would need to preserve panel completeness while bounding that
+case. No curve payloads or points are allocated.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

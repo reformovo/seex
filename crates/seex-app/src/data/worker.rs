@@ -98,6 +98,7 @@ pub struct ReadEvent {
     pub source_id: DataSourceId,
     pub generation: Generation,
     pub kind: ReadKind,
+    pub metric_key: Option<String>,
     pub result: Result<ReadSnapshot, WorkerError>,
 }
 
@@ -129,6 +130,23 @@ impl ReadEventChannel {
 struct ReadEventSender(Arc<ReadEventChannel>);
 
 impl ReadEventSender {
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    fn cancel(
+        &self,
+        source_id: &DataSourceId,
+        generation: Generation,
+        kind: ReadKind,
+        metric_key: &MetricKey,
+    ) {
+        let mut state = self.0.lock();
+        state.queue.retain(|event| {
+            event.source_id != *source_id
+                || event.kind != kind
+                || event.metric_key.as_deref() != Some(metric_key.as_str())
+                || event.generation > generation
+        });
+    }
+
     fn send(&self, event: ReadEvent) -> bool {
         let waker = {
             let mut state = self.0.lock();
@@ -402,6 +420,8 @@ impl Drop for RequestTicket {
 pub struct ReadWorker {
     requests: Option<RequestSender>,
     events: Option<ReadEventReceiver>,
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    event_sender: Arc<ReadEventSender>,
     threads: Vec<JoinHandle<()>>,
     outstanding: Arc<AtomicUsize>,
     registry: Arc<Mutex<RequestRegistry>>,
@@ -509,6 +529,8 @@ impl ReadWorker {
         Ok(Self {
             requests: Some(request_tx),
             events: Some(event_rx),
+            #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+            event_sender: Arc::clone(&events),
             threads,
             outstanding,
             registry,
@@ -567,7 +589,7 @@ impl ReadWorker {
         metric_key: &MetricKey,
     ) {
         let identity = RequestIdentity {
-            key: RequestKey::metric(source_id, kind, metric_key),
+            key: RequestKey::metric(source_id.clone(), kind, metric_key),
             generation,
             token: RequestToken(self.next_token.fetch_add(1, Ordering::Relaxed)),
         };
@@ -576,6 +598,8 @@ impl ReadWorker {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .cancel(&identity);
+        self.event_sender
+            .cancel(&source_id, generation, kind, metric_key);
         if let Some(sender) = &self.requests {
             sender
                 .0
@@ -984,10 +1008,17 @@ fn execute(
         Ok(None) => return None,
         Err(error) => Err(error),
     };
+    let metric_key = match &request {
+        ReadRequest::Overview(request) => Some(request.selection.metric_key.as_str().to_owned()),
+        ReadRequest::Detail(request) => Some(request.selection.metric_key.as_str().to_owned()),
+        ReadRequest::Inspector(request) => Some(request.metric_key.as_str().to_owned()),
+        ReadRequest::Discover(_) => None,
+    };
     Some(ReadEvent {
         source_id,
         generation,
         kind,
+        metric_key,
         result,
     })
 }
@@ -1063,7 +1094,7 @@ mod tests {
     #[test]
     fn dropping_worker_does_not_wait_for_running_thread() {
         let (request_tx, _request_rx) = request_channel();
-        let (_event_tx, event_rx) = read_event_channel();
+        let (event_tx, event_rx) = read_event_channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::channel();
         let thread = thread::spawn(move || {
@@ -1073,6 +1104,8 @@ mod tests {
         let worker = ReadWorker {
             requests: Some(request_tx),
             events: Some(event_rx),
+            #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+            event_sender: Arc::new(event_tx),
             threads: vec![thread],
             outstanding: Arc::new(AtomicUsize::new(1)),
             registry: Arc::new(Mutex::new(RequestRegistry::default())),
@@ -1202,12 +1235,22 @@ mod tests {
                 source_id: DataSourceId::new("source").unwrap(),
                 generation: Generation(generation),
                 kind: ReadKind::Overview,
+                metric_key: Some(format!("metric-{generation}")),
                 result: Err(super::WorkerError::SessionUnavailable),
             }));
         }
-        let mut state = receiver.0.lock();
+        let state = receiver.0.lock();
         assert_eq!(state.queue.len(), 10_000);
-        state.queue.clear();
+        drop(state);
+        for generation in 0..10_000 {
+            sender.cancel(
+                &DataSourceId::new("source").unwrap(),
+                Generation(generation),
+                ReadKind::Overview,
+                &MetricKey::from_string(format!("metric-{generation}")),
+            );
+        }
+        let state = receiver.0.lock();
         assert!(state.queue.is_empty());
         // Error-only events deliberately measure slots, not curve points/RSS.
     }
@@ -1533,10 +1576,12 @@ mod tests {
     #[test]
     fn event_receiver_can_only_be_taken_once() {
         let (request_tx, _request_rx) = request_channel();
-        let (_event_tx, event_rx) = read_event_channel();
+        let (event_tx, event_rx) = read_event_channel();
         let mut worker = ReadWorker {
             requests: Some(request_tx),
             events: Some(event_rx),
+            #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+            event_sender: Arc::new(event_tx),
             threads: Vec::new(),
             outstanding: Arc::new(AtomicUsize::new(0)),
             registry: Arc::new(Mutex::new(RequestRegistry::default())),

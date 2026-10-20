@@ -443,6 +443,7 @@ mod tests {
             source_id: first.clone(),
             generation: Generation(1),
             kind: ReadKind::Catalog,
+            metric_key: None,
             result: Ok(ReadSnapshot::Catalog(CatalogSnapshot {
                 projects: Vec::new(),
                 runs: Vec::new(),

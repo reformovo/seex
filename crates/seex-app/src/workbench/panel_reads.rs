@@ -603,6 +603,7 @@ mod tests {
             source_id,
             generation: Generation(generation),
             kind: ReadKind::Detail,
+            metric_key: Some("loss".to_owned()),
             result: result.map(ReadSnapshot::Detail),
         }
     }
