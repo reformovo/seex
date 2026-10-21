@@ -741,8 +741,27 @@ MAD **1.173/0.383/2.368/0.936%**. Ten calibrated samples >=25 ms, <=120 s, no re
 Classification **inconclusive** (candidate noise above limit), not preservation or
 acceleration. Ephemeral result SHA-256:
 `7aa161c8e0a2c152b147d7449e3ff05c098de6460e14d1187bba182b0a9bed2f`.
-Next profile connection-open subphases; do not add connection caching or remove
-fresh request snapshots merely to avoid open cost.
+### Connection-open subphase attribution
+The existing `SEEX_WRITE_TIMING=1` bootstrap timings were joined with the sampled
+Reader trace (no new instrumentation): DuckDB open, DuckLake attach, catalog
+adapter, format validate, and overall reader connection open. Valid-order native
+runs used stride 8; stage sample sets remain non-identical and must not be summed.
+
+| Metrics | DuckDB open median / p95 ms | DuckLake attach median / p95 ms | Adapter median / p95 ms | Format validate median / p95 ms | Reader open median / p95 ms |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 500 | 2.54 / 9.78 (n=351) | **53.03 / 82.10** (351) | 0.079 / 0.256 (351) | 1.62 / 14.00 (351) | **60.97 / 93.68** (350) |
+| 10,000 | 2.59 / 10.62 (345) | **51.15 / 78.57** (344) | 0.080 / 0.200 (344) | 1.41 / 9.12 (345) | **56.58 / 86.44** (344) |
+
+The existing `native_execute` / `native_consume` timing emits only when storage
+operations are reached and is not paired one-to-one with sampled generations;
+it is not used to derive the rows above. DuckLake attach dominates ordinary fresh
+open by these observations, but no cache or reuse is approved: request-scoped
+fresh snapshots and cancellation ownership remain product constraints. This is
+profiling evidence, not ABBA or an optimization result. A 10,000 run completed
+with valid data/paint/queues, but this instrumentation can alter scheduling; no
+RSS/frame claim follows. Next compare attach cost against an explicitly isolated
+fresh connection operation, then decide whether any non-caching reduction exists.
+
 
 ## Next optimization roadmap
 
