@@ -673,6 +673,41 @@ stamps. This instrumentation is the next step for distinguishing visible-target
 misses caused by queueing, worker/SQL, or event application; it is not enabled in
 normal builds.
 
+### Sampled Reader stage capture
+Trace now selects whole generations by a deterministic mixed-generation hash,
+`SEEX_READ_TRACE_STRIDE` (default 8, 1 selects all), before locking/allocating an
+event. Selected events use a preallocated 4,096-slot cap with dropped accounting.
+This reduces collection, not a measured instrumentation speedup. Summary cohorts
+are Overview-only, keyed by source/generation/kind; repeated start/end events
+(retries or multiple curves), missing and reversed pairs are excluded and counted.
+Empty sets report None, not zero. Sampling tests cover disabled/stride-1/stable
+selection; pair tests reject missing, repeated and reversed timestamps.
+Valid-order, dense-preflight-Complete 500/10,000 native captures both completed
+loaded=14/painted=14/queues zero with 441/420 retained events and no drops.
+
+| All captured Overview generations | 500 median / p95 ms (n) | 10,000 median / p95 ms (n) |
+| --- | --- | --- |
+| enqueue→worker start | 11.27 / 44.10 (43) | 6.86 / 40.47 (38) |
+| worker start→finish | 67.65 / 131.77 (43) | 72.36 / 1,172.17 (38) |
+| fresh open | 61.23 / 80.24 (43) | 54.77 / 1,111.12 (38) |
+| metadata | 0.606 / 3.493 (12) | 0.733 / 1.363 (12) |
+| diagnostics | 26.33 / 37.57 (12) | 74.59 / 113.82 (12) |
+| storage operator envelope | 9.56 / 50.99 (12) | 63.56 / 99.32 (12) |
+| points conversion | 0.00054 / 0.00083 (12) | 0.00071 / 0.00108 (12) |
+| queued event→coordinator entry | 0.015 / 34.25 (11) | 0.016 / 5.93 (10) |
+
+In forward/reverse cohorts, fresh-open medians were 62.66/61.23 ms at 500 and
+57.92/55.21 ms at 10,000; most cancelled attempts never reached metadata. Inner
+phase sample sets differ from outer ones: **do not sum medians or compute stage
+shares**. Kind/source pairing does not correlate requests to a particular motion
+target or paint event yet. The 10,000 fresh-open long tail is retained. No retry,
+RSS or ABBA; no native LTTB/neighbor-operator decomposition. Scratch log SHA-256:
+500 `0677e43d0ad143f7145298c6de311a2d5614cbc090bce82f1c13f820a9be6cb7`;
+10,000 `87a7b4285dea76e71bac8a0d86dd7718713386aca8ba555b5bcee39127c67d3c`.
+Prior unsampled timeout remains unclassified; success here does not prove trace
+caused it. Next investigate connection-open/cancellation cost without connection
+caching, retaining explicit loaded/painted and unfinished-request criteria.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

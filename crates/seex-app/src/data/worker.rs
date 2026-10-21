@@ -46,16 +46,40 @@ struct ReadTrace {
 #[cfg(feature = "test-support")]
 static READ_TRACE: OnceLock<Mutex<ReadTrace>> = OnceLock::new();
 #[cfg(feature = "test-support")]
+static READ_TRACE_STRIDE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "test-support")]
+fn trace_selected(generation: Generation, stride: u64) -> bool {
+    stride != 0
+        && generation
+            .0
+            .wrapping_mul(0x9e3779b97f4a7c15)
+            .rotate_left(23)
+            % stride
+            == 0
+}
+#[cfg(feature = "test-support")]
 pub(crate) fn reset_read_trace() {
+    let stride = std::env::var("SEEX_READ_TRACE_STRIDE")
+        .map_or(8, |s| s.parse::<u64>().expect("positive trace stride"));
+    assert!(stride > 0, "trace stride must be positive");
+    READ_TRACE_STRIDE.store(0, Ordering::Release);
     *READ_TRACE
         .get_or_init(|| Mutex::new(ReadTrace::default()))
         .lock()
-        .unwrap() = ReadTrace::default();
+        .unwrap() = ReadTrace {
+        events: Vec::with_capacity(4096),
+        dropped: 0,
+    };
+    READ_TRACE_STRIDE.store(stride, Ordering::Release);
 }
 #[cfg(feature = "test-support")]
-pub(crate) fn read_trace() -> (Vec<ReadTraceEvent>, usize) {
+pub(crate) fn read_trace() -> (Vec<ReadTraceEvent>, usize, u64) {
     let state = READ_TRACE.get().unwrap().lock().unwrap();
-    (state.events.clone(), state.dropped)
+    (
+        state.events.clone(),
+        state.dropped,
+        READ_TRACE_STRIDE.load(Ordering::Acquire),
+    )
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn trace_read(
@@ -64,11 +88,11 @@ pub(crate) fn trace_read(
     kind: ReadKind,
     phase: &'static str,
 ) {
-    let Some(state) = READ_TRACE.get() else {
+    if !trace_selected(generation, READ_TRACE_STRIDE.load(Ordering::Acquire)) {
         return;
-    }; // Explicit opt-in only.
-    let mut state = state.lock().unwrap();
-    if state.events.len() == 8192 {
+    }
+    let mut state = READ_TRACE.get().unwrap().lock().unwrap();
+    if state.events.len() == 4096 {
         state.dropped += 1;
         return;
     }
@@ -1286,6 +1310,23 @@ mod tests {
         WorkerError, execute, next_request, read_event_channel, request_channel,
         request_is_superseded,
     };
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn trace_sampling_is_generation_stable_and_disabled_at_zero() {
+        let selected: Vec<_> = (1..1024)
+            .map(|g| super::trace_selected(Generation(g), 8))
+            .collect();
+        assert!(selected.iter().any(|v| *v) && selected.iter().any(|v| !v));
+        for generation in 1..1024 {
+            assert!(!super::trace_selected(Generation(generation), 0));
+            assert!(super::trace_selected(Generation(generation), 1));
+            assert_eq!(
+                super::trace_selected(Generation(generation), 8),
+                selected[generation as usize - 1]
+            );
+        }
+    }
 
     fn overview_request(metric: &str) -> ReadRequest {
         ReadRequest::Overview(OverviewRequest {

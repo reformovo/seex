@@ -255,9 +255,37 @@ fn native_fixture_keeps_dense_and_sparse_metric_timestamps_step_ordered() {
     }
 }
 
+fn single_stage_ms(
+    a: Option<&Vec<Instant>>,
+    b: Option<&Vec<Instant>>,
+) -> Result<f64, &'static str> {
+    let (a, b) = a.zip(b).ok_or("missing")?;
+    if a.len() != 1 || b.len() != 1 {
+        return Err("repeated");
+    }
+    b[0].checked_duration_since(a[0])
+        .map(|d| d.as_secs_f64() * 1000.)
+        .ok_or("reversed")
+}
+
+#[cfg(test)]
+#[test]
+fn stage_pair_rejects_missing_repeated_and_reversed_events() {
+    let t = Instant::now();
+    let start = vec![t];
+    let end = vec![t + Duration::from_millis(2)];
+    assert_eq!(single_stage_ms(Some(&start), Some(&end)), Ok(2.));
+    assert_eq!(single_stage_ms(None, Some(&end)), Err("missing"));
+    assert_eq!(
+        single_stage_ms(Some(&vec![t, t]), Some(&end)),
+        Err("repeated")
+    );
+    assert_eq!(single_stage_ms(Some(&end), Some(&start)), Err("reversed"));
+}
+
 #[cfg(feature = "test-support")]
 fn print_read_trace(since: Option<Instant>, stage: usize) {
-    let (events, dropped) = crate::data::worker::read_trace();
+    let (events, dropped, stride) = crate::data::worker::read_trace();
     let event_count = events.len();
     let mut grouped = HashMap::<
         (
@@ -265,16 +293,23 @@ fn print_read_trace(since: Option<Instant>, stage: usize) {
             u64,
             crate::data::worker::ReadKind,
         ),
-        HashMap<&'static str, Instant>,
+        HashMap<&'static str, Vec<Instant>>,
     >::new();
     for event in events {
         grouped
             .entry((event.source_id, event.generation.0, event.kind))
             .or_default()
-            .insert(event.phase, event.at);
+            .entry(event.phase)
+            .or_default()
+            .push(event.at);
     }
-    grouped.retain(|_, phases| {
-        since.is_none_or(|since| phases.get("enqueue").is_some_and(|at| *at >= since))
+    grouped.retain(|(_, _, kind), phases| {
+        *kind == crate::data::worker::ReadKind::Overview
+            && since.is_none_or(|since| {
+                phases
+                    .get("enqueue")
+                    .is_some_and(|at| at.first().is_some_and(|at| *at >= since))
+            })
     });
     let phase_names = [
         "enqueue",
@@ -291,35 +326,38 @@ fn print_read_trace(since: Option<Instant>, stage: usize) {
             .filter(|p| p.contains_key(phase_names[i]))
             .count()
     });
-    let mut queue_start = Vec::new();
-    let mut worker = Vec::new();
-    let mut apply = Vec::new();
-    for phases in grouped.values() {
-        if let (Some(enqueue), Some(start)) = (phases.get("enqueue"), phases.get("start")) {
-            queue_start.push((*start - *enqueue).as_secs_f64() * 1000.);
-        }
-        if let (Some(start), Some(finish)) = (phases.get("start"), phases.get("finish")) {
-            worker.push((*finish - *start).as_secs_f64() * 1000.);
-        }
-        if let (Some(queued), Some(applied)) =
-            (phases.get("event_queued"), phases.get("event_apply"))
-        {
-            apply.push((*applied - *queued).as_secs_f64() * 1000.);
-        }
-    }
-    let counts = [queue_start.len(), worker.len(), apply.len()];
-    let median = |values: &mut Vec<f64>| {
-        values.sort_by(f64::total_cmp);
-        values.get(values.len().saturating_sub(1) / 2).copied()
-    };
     println!(
-        "SEEX_READ_TRACE stage={stage} events={} dropped={dropped} source_generations={} phase_counts={phases:?} samples_queue_worker_apply={counts:?} queue_to_start_median_ms={:?} worker_median_ms={:?} event_to_apply_median_ms={:?}",
-        event_count,
-        grouped.len(),
-        median(&mut queue_start),
-        median(&mut worker),
-        median(&mut apply)
+        "SEEX_READ_TRACE kind=Overview stage={stage} events={event_count} dropped={dropped} stride={stride} source_generations={} phase_counts={phases:?}",
+        grouped.len()
     );
+    for (start, end) in [
+        ("enqueue", "start"),
+        ("start", "finish"),
+        ("fresh_open_start", "fresh_open_finish"),
+        ("metadata_start", "metadata_finish"),
+        ("diagnostics_start", "diagnostics_finish"),
+        ("storage_start", "storage_finish"),
+        ("points_start", "points_finish"),
+        ("event_queued", "event_apply"),
+    ] {
+        let mut values = Vec::new();
+        let (mut missing, mut repeated, mut reversed) = (0, 0, 0);
+        for phases in grouped.values() {
+            match single_stage_ms(phases.get(start), phases.get(end)) {
+                Ok(value) => values.push(value),
+                Err("repeated") => repeated += 1,
+                Err("reversed") => reversed += 1,
+                Err(_) => missing += 1,
+            }
+        }
+        values.sort_by(f64::total_cmp);
+        let n = values.len();
+        println!(
+            "SEEX_READER_STAGE cohort={stage} pair={start}:{end} n={n} missing={missing} repeated={repeated} reversed={reversed} median_ms={:?} p95_ms={:?}",
+            values.get(n.saturating_sub(1) / 2),
+            values.get((n * 95).div_ceil(100).saturating_sub(1))
+        );
+    }
 }
 
 fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Window) {
