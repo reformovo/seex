@@ -101,6 +101,7 @@ struct MotionTrace {
     started: Instant,
     // First frame observing visible, pending, complete data, and current paint.
     observed: [Option<Duration>; 4],
+    generation: Option<u64>,
     done: bool,
 }
 impl MotionTrace {
@@ -120,8 +121,9 @@ impl MotionTrace {
         }
         self.done = true;
         println!(
-            "SEEX_MOTION_TRACE target={} reason={reason} observed_ms={:?} age_ms={}",
+            "SEEX_MOTION_TRACE target={} generation={:?} reason={reason} observed_ms={:?} age_ms={}",
             self.target,
+            self.generation,
             self.observed.map(|v| v.map(|d| d.as_secs_f64() * 1000.)),
             self.started.elapsed().as_millis()
         );
@@ -135,6 +137,7 @@ fn motion_trace_preserves_missing_events_and_first_observations() {
         target: 4,
         started: Instant::now(),
         observed: [None; 4],
+        generation: None,
         done: false,
     };
     trace.observe([true, true, false, false], Duration::from_millis(16));
@@ -154,6 +157,7 @@ fn motion_trace_preserves_missing_events_and_first_observations() {
         target: 0,
         started: Instant::now(),
         observed: [None; 4],
+        generation: None,
         done: false,
     };
     cached.observe([true, false, true, true], Duration::from_millis(16));
@@ -455,6 +459,9 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                             continue;
                         }
                         let panel = &snapshot.views.active().panels[trace.target];
+                        if trace.observed[0].is_none() {
+                            trace.generation = panel.overview_generation.map(|g| g.0).or_else(|| (panel.overview_revision > 0).then_some(panel.overview_revision));
+                        }
                         let pending = panel.is_pending(crate::data::worker::ReadKind::Overview);
                         let loaded = panel.source_errors.is_empty() && panel.overview.as_ref().is_some_and(|s|
                             snapshot.views.active().runs.iter().all(|r| s.series.iter().any(|c|
@@ -475,7 +482,7 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                         state.motion_steps += 1;
                         let forward = state.motion_steps * 4 % n.saturating_sub(14).max(1);
                         let target = if state.stage == 6 || state.motion_steps % 2 == 0 { forward } else { n - 1 - forward };
-                        state.traces.push(MotionTrace { target, started: Instant::now(), observed: [None; 4], done: false });
+                        state.traces.push(MotionTrace { target, started: Instant::now(), observed: [None; 4], generation: None, done: false });
                         viewer.workspace.update(cx, |workspace, cx| {
                             workspace.metric_scroll.scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.) });
                             cx.notify();

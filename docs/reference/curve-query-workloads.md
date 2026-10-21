@@ -790,6 +790,18 @@ stages; do not infer the next SQL change from these medians alone. The required
 fixture is now local but ignored; it is not a repository fixture or raw evidence
 commit.
 
+### Target-to-generation correlation (diagnostic infrastructure)
+Motion traces now attach the first observed Overview generation/revision to each
+logical target where it exists. This is an attribution aid only: a completed
+revision can predate the motion target, pending generations can be superseded, and
+one generation may cover more than one panel/source partition. The trace unit
+coverage still preserves missing generation and paint events; no stage is inferred
+from target index alone. Per-generation read phases are sampled separately and
+must be joined by source+generation+kind, not by timestamp nearest-neighbor.
+The next useful output is a small cohort table of target generation plus enqueue,
+worker, storage envelope, apply and paint observations; no production fix is
+justified until that join has sufficient complete rows.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
