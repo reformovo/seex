@@ -295,7 +295,6 @@ fn stage_pair_rejects_missing_repeated_and_reversed_events() {
 }
 
 #[cfg(feature = "test-support")]
-#[cfg(feature = "test-support")]
 fn print_motion_cohorts(traces: &[MotionTrace]) {
     let (events, _, _) = crate::data::worker::read_trace();
     let mut joined = 0;
