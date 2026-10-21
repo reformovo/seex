@@ -808,9 +808,12 @@ hits are noise/fixture scheduling, not a claimed improvement. A 10,000 run with
 capacity 1 completed initial/tail phases then stopped producing phase markers before
 the external 100-second limit; capacity 2 completed through the head phase then
 stopped similarly; capacity 4 was not completed before the combined tool deadline.
-These are incomplete diagnostics, not failure rates. The stop-before-20-second
-profile timeout is itself unresolved (possible main-thread/GPUI blockage), so do
-not lower production concurrency. Native read-capacity override remains test-only.
+These are incomplete diagnostics, not failure rates. A test-only watchdog was added
+for the native profile (heartbeat location, stage, idle duration, status); the
+following valid 10,000/capacity=1 rerun completed stage 0–9 with no watchdog idle
+report, so the earlier external 100-second stops are **not a reproduced application
+hang**. Do not lower production concurrency. Native read-capacity override remains
+test-only; no production behavior or tuning conclusion follows.
 
 
 

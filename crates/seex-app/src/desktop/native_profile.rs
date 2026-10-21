@@ -9,6 +9,27 @@ use gpui::{
     WindowOptions, px, size,
 };
 
+#[derive(Clone)]
+struct Heartbeat {
+    at: Instant,
+    stage: usize,
+    location: &'static str,
+    status: String,
+}
+fn pulse(
+    shared: &std::sync::Arc<std::sync::Mutex<Heartbeat>>,
+    stage: usize,
+    location: &'static str,
+    status: &str,
+) {
+    *shared.lock().unwrap() = Heartbeat {
+        at: Instant::now(),
+        stage,
+        location,
+        status: status.to_owned(),
+    };
+}
+
 pub(in crate::desktop) fn run(root: PathBuf) {
     assert!(!cfg!(debug_assertions), "native profile requires --release");
     let metric_count = std::env::var("SEEX_NATIVE_PROFILE_METRICS")
@@ -28,6 +49,30 @@ pub(in crate::desktop) fn run(root: PathBuf) {
         home.starts_with(&root),
         "profile home must be inside fixture root"
     );
+    let heartbeat = std::sync::Arc::new(std::sync::Mutex::new(Heartbeat {
+        at: Instant::now(),
+        stage: 0,
+        location: "startup",
+        status: String::new(),
+    }));
+    let watch = heartbeat.clone();
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let watchdog = std::thread::spawn(move || {
+        while stopped.recv_timeout(Duration::from_secs(1))
+            == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        {
+            let state = watch.lock().unwrap().clone();
+            if state.at.elapsed() >= Duration::from_secs(5) {
+                eprintln!(
+                    "SEEX_NATIVE_WATCHDOG stage={} location={} idle_ms={} status={}",
+                    state.stage,
+                    state.location,
+                    state.at.elapsed().as_millis(),
+                    state.status
+                );
+            }
+        }
+    });
     Application::new().with_assets(ViewerAssets).run(move |cx| {
         let handle = cx
             .open_window(
@@ -88,6 +133,7 @@ pub(in crate::desktop) fn run(root: PathBuf) {
                         reported_unready: false,
                         invalid_evidence: false,
                         traces: Vec::new(),
+                        heartbeat: heartbeat.clone(),
                     },
                     window,
                 );
@@ -95,9 +141,12 @@ pub(in crate::desktop) fn run(root: PathBuf) {
             .unwrap();
         cx.activate(true);
     });
+    let _ = stop.send(());
+    watchdog.join().expect("native watchdog panicked");
 }
 
 struct State {
+    heartbeat: std::sync::Arc<std::sync::Mutex<Heartbeat>>,
     read_capacity: usize,
     metric_count: usize,
     project_id: ProjectId,
@@ -463,12 +512,16 @@ fn print_read_trace(since: Option<Instant>, stage: usize) {
 }
 
 fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Window) {
+    pulse(&state.heartbeat, state.stage, "refresh", &state.status);
     window.refresh();
+    pulse(&state.heartbeat, state.stage, "await_frame", &state.status);
     window.on_next_frame(move |window, cx: &mut App| {
+        pulse(&state.heartbeat, state.stage, "frame_callback", &state.status);
         let now = Instant::now();
         state.frames.push(now.duration_since(state.last).as_secs_f64() * 1000.);
         state.last = now;
         let mut advance = false;
+        pulse(&state.heartbeat, state.stage, "viewer_update", &state.status);
         window.root::<ViewerApp>().flatten().unwrap().update(cx, |viewer, cx| {
             let snapshot = viewer.session_snapshot(cx);
             match state.stage {
@@ -569,7 +622,9 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                 _ => {}
             }
         });
+        pulse(&state.heartbeat, state.stage, "viewer_updated", &state.status);
         if advance {
+            pulse(&state.heartbeat, state.stage, "summarize", &state.status);
             if matches!(state.stage, 6 | 7) {
                 print_read_trace(Some(state.since), state.stage);
                 for trace in &mut state.traces { trace.finish("stage_end"); }
@@ -595,6 +650,7 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
             window.root::<ViewerApp>().flatten().unwrap().read_with(cx, report_unready);
         }
         if timed_out || state.stage == 9 {
+            pulse(&state.heartbeat, state.stage, "finalize", &state.status);
             window.root::<ViewerApp>().flatten().unwrap().read_with(cx, |viewer, cx| {
                 let peaks = viewer.session.read(cx).sources.queue_peaks();
                 assert!(peaks[1] > 0 && peaks[1] <= state.read_capacity, "capacity override did not constrain active reads");
