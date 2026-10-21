@@ -59,6 +59,18 @@ impl Default for SourceRegistry {
 
 impl SourceRegistry {
     #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn with_diagnostic_read_capacity(capacity: usize) -> Self {
+        assert!(
+            matches!(capacity, 1 | 2 | 4),
+            "diagnostic capacity must be 1, 2 or 4"
+        );
+        Self {
+            entries: Vec::new(),
+            gate: Arc::new(ReadConcurrencyGate::new(capacity)),
+        }
+    }
+
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
     pub(crate) fn shutdown_for_tests(&mut self) {
         for worker in self
             .entries
@@ -459,6 +471,23 @@ mod tests {
                 .expect("active source should remain valid")
                 .is_none()
         );
+    }
+
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    #[test]
+    fn diagnostic_capacities_start_without_sources() {
+        for capacity in [1, 2, 4] {
+            let registry = SourceRegistry::with_diagnostic_read_capacity(capacity);
+            assert_eq!(registry.sources().len(), 0);
+            assert_eq!(registry.queue_depths(), [0; 3]);
+        }
+    }
+
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    #[test]
+    #[should_panic(expected = "diagnostic capacity must be 1, 2 or 4")]
+    fn diagnostic_capacity_rejects_unsupported_value() {
+        SourceRegistry::with_diagnostic_read_capacity(3);
     }
 
     #[test]

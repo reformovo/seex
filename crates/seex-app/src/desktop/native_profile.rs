@@ -15,6 +15,12 @@ pub(in crate::desktop) fn run(root: PathBuf) {
         .expect("metric count required")
         .parse::<usize>()
         .unwrap();
+    let read_capacity = std::env::var("SEEX_NATIVE_READ_CAPACITY")
+        .map_or(4, |s| s.parse::<usize>().expect("positive capacity"));
+    assert!(
+        matches!(read_capacity, 1 | 2 | 4),
+        "capacity must be 1, 2 or 4"
+    );
     let home = PathBuf::from(
         std::env::var_os("SEEX_NATIVE_PROFILE_HOME").expect("isolated profile home required"),
     );
@@ -52,6 +58,17 @@ pub(in crate::desktop) fn run(root: PathBuf) {
         };
         handle
             .update(cx, |viewer, window, cx| {
+                viewer.session.update(cx, |session, _| {
+                    assert!(
+                        session.sources.sources().len() == 0 && session.event_tasks.is_empty(),
+                        "profile requires an unconfigured fixture"
+                    );
+                    session.sources =
+                        crate::data::registry::SourceRegistry::with_diagnostic_read_capacity(
+                            read_capacity,
+                        );
+                });
+                println!("SEEX_NATIVE_CONFIG read_capacity={read_capacity} metrics={metric_count}");
                 viewer.open_configured_sources(vec![source], cx);
                 schedule(
                     handle,
@@ -59,6 +76,7 @@ pub(in crate::desktop) fn run(root: PathBuf) {
                         project_id,
                         run_id,
                         metric_count,
+                        read_capacity,
                         stage: 0,
                         since: Instant::now(),
                         last: Instant::now(),
@@ -80,6 +98,7 @@ pub(in crate::desktop) fn run(root: PathBuf) {
 }
 
 struct State {
+    read_capacity: usize,
     metric_count: usize,
     project_id: ProjectId,
     run_id: seex::RunId,
@@ -576,6 +595,11 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
             window.root::<ViewerApp>().flatten().unwrap().read_with(cx, report_unready);
         }
         if timed_out || state.stage == 9 {
+            window.root::<ViewerApp>().flatten().unwrap().read_with(cx, |viewer, cx| {
+                let peaks = viewer.session.read(cx).sources.queue_peaks();
+                assert!(peaks[1] > 0 && peaks[1] <= state.read_capacity, "capacity override did not constrain active reads");
+                println!("SEEX_NATIVE_CAPACITY capacity={} queue_peaks={peaks:?}", state.read_capacity);
+            });
             #[cfg(feature = "test-support")]
             print_read_trace(None, state.stage);
             println!("SEEX_NATIVE_RESULT ok={} stage={} status={}", !timed_out, state.stage, state.status);

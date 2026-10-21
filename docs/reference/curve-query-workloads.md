@@ -791,6 +791,28 @@ read capacities only via a diagnostic control, preserving loaded/current-painted
 curve ratios, cancelled/unfinished cohorts and final drain; do not tune to open
 microtimings at the expense of actual visible-curve completion.
 
+### Diagnostic read-capacity control
+The native profile has an opt-in `SEEX_NATIVE_READ_CAPACITY` control restricted to
+1/2/4; it replaces the registry's shared diagnostic gate only and is not a
+production default/concurrency setting. A valid-order 500 fixture completed the
+same loaded/painted/drain workflow at all three capacities:
+
+| Capacity | Forward complete data/paint | Reverse complete data/paint | Sampled RSS max |
+| ---: | ---: | ---: | ---: |
+| 1 | 4/59 | 2/59 | ~220 MiB |
+| 2 | 5/60 | 0/60 | ~227 MiB |
+| 4 | 4/60 | 0/59 | ~251 MiB |
+
+One capture per capacity; not ABBA or a tuning result. Capacity 1's extra reverse
+hits are noise/fixture scheduling, not a claimed improvement. A 10,000 run with
+capacity 1 completed initial/tail phases then stopped producing phase markers before
+the external 100-second limit; capacity 2 completed through the head phase then
+stopped similarly; capacity 4 was not completed before the combined tool deadline.
+These are incomplete diagnostics, not failure rates. The stop-before-20-second
+profile timeout is itself unresolved (possible main-thread/GPUI blockage), so do
+not lower production concurrency. Native read-capacity override remains test-only.
+
+
 
 ### Current Detail range matrix after resource-boundary work
 The prepared `.tmp/v5-panel-million/store` fixture was recreated in this workspace
