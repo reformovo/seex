@@ -708,6 +708,42 @@ Prior unsampled timeout remains unclassified; success here does not prove trace
 caused it. Next investigate connection-open/cancellation cost without connection
 caching, retaining explicit loaded/painted and unfinished-request criteria.
 
+### Cancellation before and during fresh open
+The desktop request now rechecks current/cancelled state before **each** fresh
+open, including retries. Existing non-cancellable helpers retain their behavior;
+no API, connection cache, SQL or snapshot policy change. Tests verify an already
+cancelled first attempt never opens/registers/queries and a cancelled retry skips
+its second open. Post-open rejected registration is now explicitly traced.
+Native diagnostics compare a single cancel-call timestamp with a single completed
+open interval; repeated/missing intervals remain unclassified. This records the
+cancel call, not its registry-lock acquisition or a SQL interrupt timestamp.
+With stride 8, valid fixtures and final loaded=14/painted=14/queues zero:
+
+| Metrics / Overview cohort | Cancel called before / during / after open | Post-open registration rejected | Rejected then metadata | Pre-open skips |
+| --- | --- | ---: | ---: | ---: |
+| 500 forward | 0 / 17 / 0 | 17 | 0 | 0 |
+| 500 reverse | 0 / 17 / 1 | 17 | 0 | 0 |
+| 500 all captured | 0 / 36 / 2 | 36 | 0 | 0 |
+| 10,000 forward | 0 / 16 / 0 | 16 | 0 | 0 |
+| 10,000 reverse | 0 / 17 / 0 | 17 | 0 | 0 |
+| 10,000 all captured | 0 / 35 / 0 | 35 | 0 | 0 |
+
+No events dropped. No new skips were observed: the pre-open rule fixes a race/
+retry boundary, **not** the dominant waste after open has started. Existing rejection
+already prevents metadata/storage on those cancelled generations. Motion target
+data/paint readiness did not materially improve; do not claim a browsing speedup.
+One bounded ABBA used the exact performance_gate.py run entry point, real pre-edit/
+candidate release SDK binaries, one prepared local Run, 4,096 observations, full
+Step range, budget 64, sessions reused but query connections fresh. Each request
+asserts 64 returned points, with mutex handle registration and no cancellation.
+`query.preopen_cancel_check` A/B/B/A medians: **41.148/40.794/41.692/40.903 ms**;
+MAD **1.173/0.383/2.368/0.936%**. Ten calibrated samples >=25 ms, <=120 s, no retry.
+Classification **inconclusive** (candidate noise above limit), not preservation or
+acceleration. Ephemeral result SHA-256:
+`7aa161c8e0a2c152b147d7449e3ff05c098de6460e14d1187bba182b0a9bed2f`.
+Next profile connection-open subphases; do not add connection caching or remove
+fresh request snapshots merely to avoid open cost.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

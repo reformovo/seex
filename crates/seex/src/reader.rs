@@ -700,13 +700,15 @@ impl Reader {
             return Ok(None);
         }
         let trace = std::cell::RefCell::new(trace);
-        self.with_fresh_query_reader_registered(
+        let cancelled = std::cell::RefCell::new(is_superseded);
+        self.with_fresh_query_reader_checked(
+            &mut || !(cancelled.borrow_mut())(),
             register,
             &mut |phase| (trace.borrow_mut())(phase),
             |reader| {
                 let mut results = Vec::with_capacity(run_ids.len());
                 for run_id in run_ids {
-                    if is_superseded() {
+                    if (cancelled.borrow_mut())() {
                         return Ok(None);
                     }
                     let result = reader.query_metric_once_traced(
@@ -720,12 +722,12 @@ impl Reader {
                         },
                     );
                     // An interrupt maps to Storage too; cancellation must not retry SQL.
-                    if is_superseded() {
+                    if (cancelled.borrow_mut())() {
                         return Ok(None);
                     }
                     results.push(result?);
                 }
-                if is_superseded() {
+                if (cancelled.borrow_mut())() {
                     return Ok(None);
                 }
                 Ok(Some(results))
@@ -760,9 +762,23 @@ impl Reader {
         &self,
         register: &mut dyn FnMut(ReaderInterrupt) -> bool,
         trace: &mut dyn FnMut(&'static str),
+        operation: impl FnMut(&Self) -> SdkResult<Option<T>>,
+    ) -> SdkResult<Option<T>> {
+        self.with_fresh_query_reader_checked(&mut || true, register, trace, operation)
+    }
+
+    fn with_fresh_query_reader_checked<T>(
+        &self,
+        before_open: &mut dyn FnMut() -> bool,
+        register: &mut dyn FnMut(ReaderInterrupt) -> bool,
+        trace: &mut dyn FnMut(&'static str),
         mut operation: impl FnMut(&Self) -> SdkResult<Option<T>>,
     ) -> SdkResult<Option<T>> {
         for attempt in 0..2 {
+            if !before_open() {
+                trace("fresh_open_skipped");
+                return Ok(None);
+            }
             trace("fresh_open_start");
             let reader = match self.fresh_query_reader() {
                 Err(Error::Storage) if attempt == 0 => continue,
@@ -773,6 +789,7 @@ impl Reader {
             }
             trace("fresh_open_finish");
             if !register(reader.interrupt_handle().ok_or(Error::Storage)?) {
+                trace("fresh_register_rejected");
                 return Ok(None);
             }
             trace("query_start");
@@ -1678,6 +1695,65 @@ mod tests {
             },
         )?;
         assert_eq!(value, Some(9));
+        Ok(())
+    }
+
+    #[test]
+    fn cancelled_retry_skips_open_and_already_cancelled_request_never_opens()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = crate::Client::builder(root.path()).open()?;
+        let run = client.start_run(crate::RunOptions::new("probe").id("run"))?;
+        run.finish()?;
+        client.shutdown()?;
+        let reader = Reader::builder(root.path()).open()?;
+        let mut phases = Vec::new();
+        let cancelled = Cell::new(false);
+        let value = reader.with_fresh_query_reader_checked::<()>(
+            &mut || !cancelled.get(),
+            &mut |_| true,
+            &mut |p| phases.push(p),
+            |_| {
+                cancelled.set(true);
+                Err(Error::Storage)
+            },
+        )?;
+        assert_eq!(value, None);
+        assert_eq!(
+            phases,
+            [
+                "fresh_open_start",
+                "fresh_open_finish",
+                "query_start",
+                "fresh_open_skipped"
+            ]
+        );
+        phases.clear();
+        let value = reader.with_fresh_query_reader_checked::<()>(
+            &mut || false,
+            &mut |_| panic!("must not register"),
+            &mut |p| phases.push(p),
+            |_| panic!("must not execute"),
+        )?;
+        assert_eq!(value, None);
+        assert_eq!(phases, ["fresh_open_skipped"]);
+        let calls = Cell::new(0);
+        phases.clear();
+        let query = MetricQuery::new(MetricRange::All(MetricAxis::Step), 8)?;
+        let value = reader.query_metrics_for_desktop_with_interrupt(
+            &[run.run_id().clone()],
+            &MetricKey::from_string("loss"),
+            &query,
+            false,
+            &mut || {
+                calls.set(calls.get() + 1);
+                calls.get() == 2
+            },
+            &mut |_| panic!("cancelled before open must not register"),
+            &mut |p| phases.push(p),
+        )?;
+        assert!(value.is_none());
+        assert_eq!(phases, ["fresh_open_skipped"]);
         Ok(())
     }
 

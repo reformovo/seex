@@ -330,6 +330,33 @@ fn print_read_trace(since: Option<Instant>, stage: usize) {
         "SEEX_READ_TRACE kind=Overview stage={stage} events={event_count} dropped={dropped} stride={stride} source_generations={} phase_counts={phases:?}",
         grouped.len()
     );
+    let (mut during, mut before, mut after, mut rejected, mut skipped, mut rejected_metadata) =
+        (0, 0, 0, 0, 0, 0);
+    for p in grouped.values() {
+        let is_rejected = p.contains_key("fresh_register_rejected");
+        rejected += usize::from(is_rejected);
+        skipped += usize::from(p.contains_key("fresh_open_skipped"));
+        rejected_metadata += usize::from(is_rejected && p.contains_key("metadata_start"));
+        if let (Some(a), Some(b), Some(c)) = (
+            p.get("fresh_open_start"),
+            p.get("fresh_open_finish"),
+            p.get("cancel_called"),
+        ) && a.len() == 1
+            && b.len() == 1
+            && c.len() == 1
+        {
+            if c[0] < a[0] {
+                before += 1;
+            } else if c[0] <= b[0] {
+                during += 1;
+            } else {
+                after += 1;
+            }
+        }
+    }
+    println!(
+        "SEEX_OPEN_CANCEL cohort={stage} before={before} during={during} after={after} rejected={rejected} skipped={skipped} rejected_with_metadata={rejected_metadata}"
+    );
     for (start, end) in [
         ("enqueue", "start"),
         ("start", "finish"),
