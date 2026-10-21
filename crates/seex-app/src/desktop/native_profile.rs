@@ -102,9 +102,26 @@ struct MotionTrace {
     // First frame observing visible, pending, complete data, and current paint.
     observed: [Option<Duration>; 4],
     generation: Option<u64>,
+    source_id: Option<DataSourceId>,
+    origin: &'static str,
+    ended: Option<Instant>,
+    reason: &'static str,
     done: bool,
 }
 impl MotionTrace {
+    fn new(target: usize) -> Self {
+        Self {
+            target,
+            started: Instant::now(),
+            observed: [None; 4],
+            generation: None,
+            source_id: None,
+            origin: "unmapped",
+            ended: None,
+            reason: "open",
+            done: false,
+        }
+    }
     fn observe(&mut self, states: [bool; 4], elapsed: Duration) {
         if self.done {
             return;
@@ -115,11 +132,13 @@ impl MotionTrace {
             }
         }
     }
-    fn finish(&mut self, reason: &str) {
+    fn finish(&mut self, reason: &'static str) {
         if self.done {
             return;
         }
         self.done = true;
+        self.ended = Some(Instant::now());
+        self.reason = reason;
         println!(
             "SEEX_MOTION_TRACE target={} generation={:?} reason={reason} observed_ms={:?} age_ms={}",
             self.target,
@@ -133,13 +152,7 @@ impl MotionTrace {
 #[cfg(test)]
 #[test]
 fn motion_trace_preserves_missing_events_and_first_observations() {
-    let mut trace = MotionTrace {
-        target: 4,
-        started: Instant::now(),
-        observed: [None; 4],
-        generation: None,
-        done: false,
-    };
+    let mut trace = MotionTrace::new(4);
     trace.observe([true, true, false, false], Duration::from_millis(16));
     trace.observe([true, true, false, false], Duration::from_millis(32));
     trace.finish("left_viewport");
@@ -153,13 +166,7 @@ fn motion_trace_preserves_missing_events_and_first_observations() {
             None
         ]
     );
-    let mut cached = MotionTrace {
-        target: 0,
-        started: Instant::now(),
-        observed: [None; 4],
-        generation: None,
-        done: false,
-    };
+    let mut cached = MotionTrace::new(0);
     cached.observe([true, false, true, true], Duration::from_millis(16));
     assert!(
         cached.observed[1].is_none(),
@@ -301,7 +308,12 @@ fn print_motion_cohorts(traces: &[MotionTrace]) {
         let phases: std::collections::HashSet<_> = events
             .iter()
             .filter(|e| {
-                e.generation.0 == generation && e.kind == crate::data::worker::ReadKind::Overview
+                e.generation.0 == generation
+                    && e.kind == crate::data::worker::ReadKind::Overview
+                    && trace
+                        .source_id
+                        .as_ref()
+                        .is_none_or(|source| &e.source_id == source)
             })
             .map(|e| e.phase)
             .collect();
@@ -311,9 +323,12 @@ fn print_motion_cohorts(traces: &[MotionTrace]) {
             missing += 1;
         }
         println!(
-            "SEEX_MOTION_COHORT target={} generation={} observed={:?} phases={:?}",
+            "SEEX_MOTION_COHORT target={} generation={} source={:?} origin={} reason={} observed={:?} phases={:?}",
             trace.target,
             generation,
+            trace.source_id,
+            trace.origin,
+            trace.reason,
             trace.observed.map(|v| v.map(|d| d.as_secs_f64() * 1000.)),
             phases
         );
@@ -497,8 +512,11 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                             continue;
                         }
                         let panel = &snapshot.views.active().panels[trace.target];
-                        if trace.observed[0].is_none() {
-                            trace.generation = panel.overview_generation.map(|g| g.0).or_else(|| (panel.overview_revision > 0).then_some(panel.overview_revision));
+                        if trace.generation.is_none() {
+                            trace.generation = panel.overview_generation.map(|g| g.0).or_else(|| panel.overview.as_ref().and_then(|_| (panel.overview_revision > 0).then_some(panel.overview_revision)));
+                            trace.origin = if panel.overview_generation.is_some() { "pending" } else if trace.generation.is_some() { "cached" } else { "unmapped" };
+                            trace.source_id = snapshot.views.active().runs.first().map(|r| r.source_id.clone())
+                                .filter(|s| snapshot.views.active().runs.iter().all(|r| &r.source_id == s));
                         }
                         let pending = panel.is_pending(crate::data::worker::ReadKind::Overview);
                         let loaded = panel.source_errors.is_empty() && panel.overview.as_ref().is_some_and(|s|
@@ -520,7 +538,7 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                         state.motion_steps += 1;
                         let forward = state.motion_steps * 4 % n.saturating_sub(14).max(1);
                         let target = if state.stage == 6 || state.motion_steps % 2 == 0 { forward } else { n - 1 - forward };
-                        state.traces.push(MotionTrace { target, started: Instant::now(), observed: [None; 4], generation: None, done: false });
+                        state.traces.push(MotionTrace::new(target));
                         viewer.workspace.update(cx, |workspace, cx| {
                             workspace.metric_scroll.scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.) });
                             cx.notify();
@@ -536,9 +554,9 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
         if advance {
             if matches!(state.stage, 6 | 7) {
                 print_read_trace(Some(state.since), state.stage);
+                for trace in &mut state.traces { trace.finish("stage_end"); }
                 #[cfg(feature = "test-support")]
                 print_motion_cohorts(&state.traces);
-                for trace in &mut state.traces { trace.finish("stage_end"); }
                 let counts: [usize; 4] = std::array::from_fn(|i| state.traces.iter().filter(|t| t.observed[i].is_some()).count());
                 println!("SEEX_MOTION_SUMMARY stage={} targets={} observed_visible_pending_data_paint={counts:?}", state.stage, state.traces.len());
                 state.traces.clear();

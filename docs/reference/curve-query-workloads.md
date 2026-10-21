@@ -805,7 +805,9 @@ prints each target/generation cohort's observed states and phase set, plus joine
 missing totals. A generation is joined only by exact source/generation/kind event
 identity; target proximity is never used. This output is diagnostic and can omit
 sampled generations by design, so it cannot be interpreted as complete workload
-coverage until joined counts and trace stride are reported.
+coverage until joined counts and trace stride are reported. Cohorts now also carry
+source identity, pending-vs-cached origin, and censored end reason (left viewport,
+stage end, or painted); phase sets are filtered by exact source+generation+kind.
 
 ## Next optimization roadmap
 
