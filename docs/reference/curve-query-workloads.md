@@ -808,6 +808,18 @@ sampled generations by design, so it cannot be interpreted as complete workload
 coverage until joined counts and trace stride are reported. Cohorts now also carry
 source identity, pending-vs-cached origin, and censored end reason (left viewport,
 stage end, or painted); phase sets are filtered by exact source+generation+kind.
+A stride=1 valid-order 500 capture joined **59/59** forward target cohorts and the
+reverse cohort joined **59/60** (one stage-end target had no sampled generation).
+The forward cohort had 55 targets observing pending, 4 observing complete data and
+4 observing paint; reverse had 58 pending and **0 complete/paint**. Most pending
+cohorts contained enqueue/start/fresh-open/cancel/register-rejected/finish without
+metadata or storage. A small minority reached metadata/diagnostics/storage before
+cancellation and could produce complete data. This is the clearest current
+explanation of motion misses: requests are usually cancelled while opening or
+before registration, not delayed at coordinator apply. It still does not identify
+why fresh open takes its measured time or prove SQL work never began for every
+cohort. The 10,000 joined output was also collected; it is not used as a timing
+comparison, and raw logs remain ephemeral.
 
 ## Next optimization roadmap
 
