@@ -800,7 +800,12 @@ from target index alone. Per-generation read phases are sampled separately and
 must be joined by source+generation+kind, not by timestamp nearest-neighbor.
 The next useful output is a small cohort table of target generation plus enqueue,
 worker, storage envelope, apply and paint observations; no production fix is
-justified until that join has sufficient complete rows.
+justified until that join has sufficient complete rows. The native profile now
+prints each target/generation cohort's observed states and phase set, plus joined/
+missing totals. A generation is joined only by exact source/generation/kind event
+identity; target proximity is never used. This output is diagnostic and can omit
+sampled generations by design, so it cannot be interpreted as complete workload
+coverage until joined counts and trace stride are reported.
 
 ## Next optimization roadmap
 

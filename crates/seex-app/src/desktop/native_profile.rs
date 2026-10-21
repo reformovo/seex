@@ -288,6 +288,44 @@ fn stage_pair_rejects_missing_repeated_and_reversed_events() {
 }
 
 #[cfg(feature = "test-support")]
+#[cfg(feature = "test-support")]
+fn print_motion_cohorts(traces: &[MotionTrace]) {
+    let (events, _, _) = crate::data::worker::read_trace();
+    let mut joined = 0;
+    let mut missing = 0;
+    for trace in traces {
+        let Some(generation) = trace.generation else {
+            missing += 1;
+            continue;
+        };
+        let phases: std::collections::HashSet<_> = events
+            .iter()
+            .filter(|e| {
+                e.generation.0 == generation && e.kind == crate::data::worker::ReadKind::Overview
+            })
+            .map(|e| e.phase)
+            .collect();
+        if phases.contains("enqueue") {
+            joined += 1;
+        } else {
+            missing += 1;
+        }
+        println!(
+            "SEEX_MOTION_COHORT target={} generation={} observed={:?} phases={:?}",
+            trace.target,
+            generation,
+            trace.observed.map(|v| v.map(|d| d.as_secs_f64() * 1000.)),
+            phases
+        );
+    }
+    println!(
+        "SEEX_MOTION_COHORT_SUMMARY targets={} joined={} missing={}",
+        traces.len(),
+        joined,
+        missing
+    );
+}
+
 fn print_read_trace(since: Option<Instant>, stage: usize) {
     let (events, dropped, stride) = crate::data::worker::read_trace();
     let event_count = events.len();
@@ -498,6 +536,8 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
         if advance {
             if matches!(state.stage, 6 | 7) {
                 print_read_trace(Some(state.since), state.stage);
+                #[cfg(feature = "test-support")]
+                print_motion_cohorts(&state.traces);
                 for trace in &mut state.traces { trace.finish("stage_end"); }
                 let counts: [usize; 4] = std::array::from_fn(|i| state.traces.iter().filter(|t| t.observed[i].is_some()).count());
                 println!("SEEX_MOTION_SUMMARY stage={} targets={} observed_visible_pending_data_paint={counts:?}", state.stage, state.traces.len());
