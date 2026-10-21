@@ -922,6 +922,34 @@ scans from native LTTB/storage consumption. Next add RunId to the opt-in trace o
 profile one curve at a time inside a 16-curve request before choosing bounds versus
 request batching. No production SQL change or ABBA was performed.
 
+### Storage operator profile: bounds/neighbor versus native sampling
+A release ignored storage profile now captures `EXPLAIN (ANALYZE, FORMAT JSON)` for
+outside-only, prefix, middle and full on the local v5 panel fixture. It refuses to
+overwrite an existing output directory and validates source/returned counts. This
+is plan evidence, not a timed ABBA; operator timings are not summed as wall-clock
+and DuckLake `operator_rows_scanned` is not treated as physical row count.
+
+The key plan finding is structural:
+
+- outside-only returns one real neighbor, but its `step_bounds` aggregate scans the
+  full one-million-step relation across **62 Parquet files**;
+- prefix returns 2,050 source rows from **1 file**, but its bounds discovery still
+  scans the full relation across 62 files;
+- middle returns 100,004 source rows from **8 files**, while bounds discovery still
+  scans the full relation across 62 files;
+- full uses the bounded/full path and reads all observations as expected.
+
+Thus the narrow/empty latency floor is not native LTTB alone: nearest-neighbor
+bounds discovery performs a separate full relation scan, and the effective result
+path is another scan. This identifies the first candidate optimization boundary.
+It does not authorize replacing real neighbors, dropping duplicate Step observations,
+or using physical position/LWW. Any fix must preserve append-only v5 semantics and
+DuckLake snapshot/file-list ownership. Next compare a minimal bounds-scan reduction
+against the current plan, with all eight range correctness cases and one/16 curves;
+request-level SQL batching remains a later alternative, not the assumed answer.
+The opt-in profile test is `storage::alignment_query::tests::detail_storage_operator_profile`;
+raw JSON/SQL output lives only in ignored `.tmp/v5-storage-operators/` scratch.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range

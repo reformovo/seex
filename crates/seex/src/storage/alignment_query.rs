@@ -391,6 +391,106 @@ mod tests {
     use super::*;
     use crate::storage::ProjectMetricReader;
 
+    #[test]
+    #[ignore = "read-only actual DuckLake plan profile; release and local fixture required"]
+    fn detail_storage_operator_profile() -> Result<(), Box<dyn Error>> {
+        assert!(!cfg!(debug_assertions), "requires --release");
+        let root = std::path::PathBuf::from(std::env::var("SEEX_PANEL_ROOT")?).canonicalize()?;
+        assert!(root.ends_with(".tmp/v5-panel-million/store"));
+        let output = std::path::PathBuf::from(std::env::var("SEEX_STORAGE_PROFILE_OUT")?);
+        assert_eq!(
+            output.parent().unwrap().canonicalize()?,
+            root.parent().and_then(|p| p.parent()).unwrap()
+        );
+        assert!(
+            output
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("v5-")
+        );
+        std::fs::create_dir(&output)?; // Refuse overwriting old evidence.
+        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
+            crate::storage::bootstrap::CatalogBackend::Sqlite,
+            &root,
+            None,
+            None,
+            None,
+        );
+        let connection =
+            crate::storage::bootstrap::open_existing_native_connection_with_config(config)?;
+        for (case, start, end, count) in [
+            ("empty", 2_000_000, 3_000_000, 1),
+            ("prefix", 0, 2048, 2050),
+            ("middle", 450_000, 550_000, 100_004),
+            ("full", 0, 1_000_000, 1_000_001),
+        ] {
+            let query = AlignmentQuery {
+                run_id: RunId::from_string("run-0"),
+                metric_key: MetricKey::from_string("loss"),
+                axis: AlignmentAxis::Step,
+                viewport: AlignmentViewport::new(start, end)?,
+                reduction: AlignmentReduction::screen_budget(1024, 1)?,
+            };
+            let whole = case == "full";
+            let (sql, values) = if whole {
+                let mut values = base_values(AlignmentSource::Project, &query, None);
+                values.extend([Box::new(start) as Box<dyn duckdb::ToSql>, Box::new(end)]);
+                (
+                    bounded_full_sql(AlignmentSource::Project, query.axis),
+                    values,
+                )
+            } else {
+                (
+                    aligned_points_sql(
+                        AlignmentSource::Project,
+                        query.axis,
+                        true,
+                        AlignmentPlan::NarrowStep,
+                    ),
+                    query_values(
+                        AlignmentSource::Project,
+                        &query,
+                        None,
+                        AlignmentPlan::NarrowStep,
+                    )?,
+                )
+            };
+            let selected = sampling::select(
+                &mut connection.prepare(&sql)?,
+                &values,
+                1024,
+                (!whole).then_some((start, end)),
+            )?;
+            assert_eq!(selected.source_count, count);
+            assert_eq!(selected.points.len() as u64, count.min(1024));
+            let explain = format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}");
+            let mut statement = connection.prepare(&explain)?;
+            let rows = statement.query_map(
+                duckdb::params_from_iter(values.iter().map(|v| v.as_ref())),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )?;
+            let mut profiles = 0;
+            for row in rows {
+                profiles += 1;
+                let (key, plan) = row?;
+                assert_eq!(key, "analyzed_plan");
+                assert!(
+                    plan.contains("operator_name"),
+                    "expected analyzed operator tree"
+                );
+                std::fs::write(output.join(format!("{case}.json")), plan)?;
+            }
+            assert_eq!(profiles, 1, "expected exactly one analyzed plan");
+            std::fs::write(output.join(format!("{case}.sql")), sql)?;
+            println!(
+                "SEEX_STORAGE_PROFILE case={case} source={count} returned={}",
+                selected.points.len()
+            );
+        }
+        Ok(())
+    }
+
     fn connection() -> Result<Connection, Box<dyn Error>> {
         let connection = Connection::open_in_memory()?;
         connection.execute_batch(
