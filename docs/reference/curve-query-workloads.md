@@ -763,6 +763,33 @@ RSS/frame claim follows. Next compare attach cost against an explicitly isolated
 fresh connection operation, then decide whether any non-caching reduction exists.
 
 
+### Current Detail range matrix after resource-boundary work
+The prepared `.tmp/v5-panel-million/store` fixture was recreated in this workspace
+outside query timing (16 Runs, 1,000,001 observations each). The existing
+`panel_gate` acceptance path ran all eight Detail ranges at 1 and 16 curves,
+release, single test thread, ten calibrated samples per case, each sample >=25 ms;
+all 16 cases passed completeness/source/point-count assertions. These are baseline
+measurements, not a new ABBA or optimization result; raw logs are ignored local
+scratch. Hot medians (ms):
+
+| Range | 1 curve | 16 curves |
+| --- | ---: | ---: |
+| full | 77.9 | 687.4 |
+| prefix | 61.6 | 433.8 |
+| middle | 67.2 | 525.1 |
+| window | 61.4 | 428.0 |
+| small | 61.1 | 430.3 |
+| small-middle | 61.2 | 425.3 |
+| tail | 61.6 | 428.4 |
+| empty | 61.3 | 428.4 |
+
+The one-curve non-full floor is roughly 61–67 ms. Sixteen-curve narrow/outside
+cases are roughly 425–434 ms, middle is about 525 ms, and full is about 687 ms.
+The matrix does not separate connection/metadata/diagnostics/bounds/storage/LTTB
+stages; do not infer the next SQL change from these medians alone. The required
+fixture is now local but ignored; it is not a repository fixture or raw evidence
+commit.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
