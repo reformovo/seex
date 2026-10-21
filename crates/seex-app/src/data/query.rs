@@ -141,7 +141,16 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_overview(&self, request: &OverviewRequest) -> Result<CurveSnapshot, QueryError> {
-        self.query_overview_until(request, &mut || false, &mut |_| true, &mut |_| {})
+        let started = std::time::Instant::now();
+        let mut trace = |phase| {
+            if std::env::var_os("SEEX_PANEL_STAGE_TIMING").is_some() {
+                eprintln!(
+                    "SEEX_PANEL_STAGE phase={phase} elapsed_ns={}",
+                    started.elapsed().as_nanos()
+                );
+            }
+        };
+        self.query_overview_until(request, &mut || false, &mut |_| true, &mut trace)
             .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
     }
 
@@ -174,7 +183,16 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_detail(&self, request: &DetailRequest) -> Result<CurveSnapshot, QueryError> {
-        self.query_detail_until(request, &mut || false, &mut |_| true, &mut |_| {})
+        let started = std::time::Instant::now();
+        let mut trace = |phase| {
+            if std::env::var_os("SEEX_PANEL_STAGE_TIMING").is_some() {
+                eprintln!(
+                    "SEEX_PANEL_STAGE phase={phase} elapsed_ns={}",
+                    started.elapsed().as_nanos()
+                );
+            }
+        };
+        self.query_detail_until(request, &mut || false, &mut |_| true, &mut trace)
             .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
     }
 

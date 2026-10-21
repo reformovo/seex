@@ -875,6 +875,30 @@ why fresh open takes its measured time or prove SQL work never began for every
 cohort. The 10,000 joined output was also collected; it is not used as a timing
 comparison, and raw logs remain ephemeral.
 
+### Detail stage trace: representative cases
+With the prepared v5 panel fixture, `SEEX_PANEL_STAGE_TIMING=1` traced four
+representative Detail cases (1/16 curves × prefix/full), one fresh process per case,
+12 repeated request samples from the existing diagnostic loop. These are profile
+observations, not ABBA: trace output is not calibrated timing input and fixture/OS
+caches were not controlled.
+
+| Curves / range | Fresh open median ms | Storage envelope median ms | Points conversion median ms |
+| --- | ---: | ---: | ---: |
+| 1 / prefix | 29.67 | 32.49 | 0.015 |
+| 1 / full | 32.10 | 48.76 | 0.016 |
+| 16 / prefix | 27.44 | 22.59 | 0.012 |
+| 16 / full | 28.51 | 38.19 | 0.015 |
+
+For 16 curves, `query_start→first metadata_start` spans the sequential 16-Run
+loop and must not be compared with the one-curve interval. Metadata/diagnostics/
+storage phase entries are per Run but the current trace lacks RunId, so their
+cross-curve aggregation is intentionally not used for a decision. Points conversion
+is negligible in these samples. The useful current conclusion is that fixed fresh
+open plus per-Run query work dominate; this does not yet distinguish bounds/neighbor
+scans from native LTTB/storage consumption. Next add RunId to the opt-in trace or
+profile one curve at a time inside a 16-curve request before choosing bounds versus
+request batching. No production SQL change or ABBA was performed.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
