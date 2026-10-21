@@ -362,35 +362,93 @@ fn stage_pair_rejects_missing_repeated_and_reversed_events() {
     assert_eq!(single_stage_ms(Some(&end), Some(&start)), Err("reversed"));
 }
 
+fn cohort_events<'a>(
+    trace: &MotionTrace,
+    events: &'a [crate::data::worker::ReadTraceEvent],
+) -> Vec<&'a crate::data::worker::ReadTraceEvent> {
+    let (Some(source), Some(generation)) = (&trace.source_id, trace.generation) else {
+        return Vec::new();
+    };
+    events
+        .iter()
+        .filter(|e| {
+            &e.source_id == source
+                && e.generation.0 == generation
+                && e.kind == crate::data::worker::ReadKind::Overview
+        })
+        .collect()
+}
+
+#[cfg(test)]
+#[test]
+fn cohort_requires_source_identity_and_censors_post_exit_events() {
+    use crate::data::worker::{Generation, ReadKind, ReadTraceEvent};
+    let source = DataSourceId::new("a").unwrap();
+    let mut trace = MotionTrace::new(4);
+    trace.generation = Some(7);
+    trace.ended = Some(trace.started + Duration::from_millis(20));
+    let event = |source_id, phase, ms| ReadTraceEvent {
+        source_id,
+        generation: Generation(7),
+        kind: ReadKind::Overview,
+        phase,
+        at: trace.started + Duration::from_millis(ms),
+    };
+    let events = vec![
+        event(source.clone(), "enqueue", 0),
+        event(source.clone(), "finish", 30),
+        event(DataSourceId::new("b").unwrap(), "start", 5),
+    ];
+    assert!(cohort_events(&trace, &events).is_empty());
+    trace.source_id = Some(source);
+    let matching = cohort_events(&trace, &events);
+    assert_eq!(matching.len(), 2);
+    assert_eq!(
+        matching
+            .iter()
+            .filter(|e| e.at <= trace.ended.unwrap())
+            .count(),
+        1
+    );
+    assert_eq!(matching[0].phase, "enqueue");
+}
+
 #[cfg(feature = "test-support")]
 fn print_motion_cohorts(traces: &[MotionTrace]) {
     let (events, _, _) = crate::data::worker::read_trace();
     let mut joined = 0;
     let mut missing = 0;
+    let mut last_stage = HashMap::<&str, usize>::new();
     for trace in traces {
         let Some(generation) = trace.generation else {
             missing += 1;
             continue;
         };
-        let phases: std::collections::HashSet<_> = events
+        let matching = cohort_events(trace, &events);
+        let cutoff = trace.ended.unwrap_or_else(Instant::now);
+        let phases: Vec<_> = matching
             .iter()
-            .filter(|e| {
-                e.generation.0 == generation
-                    && e.kind == crate::data::worker::ReadKind::Overview
-                    && trace
-                        .source_id
-                        .as_ref()
-                        .is_none_or(|source| &e.source_id == source)
-            })
+            .filter(|e| e.at <= cutoff)
             .map(|e| e.phase)
             .collect();
-        if phases.contains("enqueue") {
+        let later = matching.iter().filter(|e| e.at > cutoff).count();
+        let last = if trace.origin == "cached" {
+            "cached"
+        } else {
+            matching
+                .iter()
+                .filter(|e| e.at <= cutoff)
+                .last()
+                .map_or("unmatched", |e| e.phase)
+        };
+        *last_stage.entry(last).or_default() += 1;
+        if phases.contains(&"enqueue") {
             joined += 1;
         } else {
             missing += 1;
         }
         println!(
-            "SEEX_MOTION_COHORT target={} generation={} source={:?} origin={} reason={} observed={:?} phases={:?}",
+            "SEEX_MOTION_COHORT target={} generation={} source={:?} origin={} reason={} observed={:?} phases_before_exit={:?} later_events={later}",
             trace.target,
             generation,
             trace.source_id,
@@ -401,7 +459,7 @@ fn print_motion_cohorts(traces: &[MotionTrace]) {
         );
     }
     println!(
-        "SEEX_MOTION_COHORT_SUMMARY targets={} joined={} missing={}",
+        "SEEX_MOTION_COHORT_SUMMARY targets={} joined={} missing={} last_before_exit={last_stage:?}",
         traces.len(),
         joined,
         missing
