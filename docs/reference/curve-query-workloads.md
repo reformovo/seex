@@ -759,8 +759,37 @@ open by these observations, but no cache or reuse is approved: request-scoped
 fresh snapshots and cancellation ownership remain product constraints. This is
 profiling evidence, not ABBA or an optimization result. A 10,000 run completed
 with valid data/paint/queues, but this instrumentation can alter scheduling; no
-RSS/frame claim follows. Next compare attach cost against an explicitly isolated
-fresh connection operation, then decide whether any non-caching reduction exists.
+RSS/frame claim follows. The combined `connection_ducklake_attach` timer includes
+**INSTALL + LOAD + ATTACH**, not solely the DuckLake snapshot attach.
+
+An isolated release Rust probe used the existing local panel store with a new
+in-memory DuckDB connection each iteration, the same SQLite read-only attach
+options/aliases, and no curve reads. It timed INSTALL, LOAD and ATTACH separately.
+Ten internally calibrated whole-operation batches per workload were >=25 ms;
+all workloads finished within 120 s. This is a profile, not ABBA. The first
+sequential capture observed INSTALL 0.07–0.10 ms, LOAD 13–16 ms, ATTACH 9.7–10.4 ms.
+A second explicitly synchronized 1/4-thread probe yielded:
+
+| Parallel connections per wave | DuckDB open median / p95 ms | INSTALL median / p95 ms | LOAD median / p95 ms | ATTACH median / p95 ms | Whole wave median ms |
+| ---: | --- | --- | --- | --- | ---: |
+| 1 | 2.18 / 2.32 | 0.071 / 0.086 | 13.69 / 14.54 | 9.78 / 10.45 | 26.07 |
+| 4 | 3.98 / 4.21 | 0.099 / 0.147 | 51.46 / 70.65 | 24.67 / 33.92 | 85.79 |
+
+There were ten calibrated samples, four serial waves/sample versus one parallel
+wave/sample, with 40 per-connection observations in each case; minimum complete
+sample times were 102.66/80.65 ms. Threads were spawned per wave, unlike persistent
+app workers. Wall time includes teardown/thread overhead; subphase sample sets
+must not be summed by median. Warm OS/extension caches were not cleared. Raw Rust
+probe/fixture references are ephemeral scratch, not repository fixtures.
+The duplicate INSTALL is **not** a meaningful latency source, so a LOAD-first/
+install-fallback production change is rejected for now. Parallel LOAD/ATTACH wall
+times increase, but no internal lock or mechanism is identified. One four-way wave
+opens four connections versus one serial connection: latency alone does not justify
+lowering production concurrency or asserting a throughput improvement. No cache,
+reuse, SQL/validity change or production performance claim. Next test 1/2/4 native
+read capacities only via a diagnostic control, preserving loaded/current-painted
+curve ratios, cancelled/unfinished cohorts and final drain; do not tune to open
+microtimings at the expense of actual visible-curve completion.
 
 
 ### Current Detail range matrix after resource-boundary work
