@@ -192,9 +192,19 @@ fn panel_gate() -> Result<(), Box<dyn Error>> {
         for curve in &snapshot.series {
             assert_eq!(curve.source_row_count, expected_source_count);
             assert_eq!(curve.completeness, EvidenceCompleteness::Complete);
+            assert!(curve.reasons.is_empty());
             assert_eq!(
                 curve.returned_point_count,
                 expected_source_count.min(MAX_CHART_POINTS as u64)
+            );
+            assert_eq!(
+                curve
+                    .chart_series
+                    .as_ref()
+                    .expect("Complete curve must be drawable")
+                    .points()
+                    .len() as u64,
+                curve.returned_point_count
             );
         }
         Ok(())

@@ -141,16 +141,7 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_overview(&self, request: &OverviewRequest) -> Result<CurveSnapshot, QueryError> {
-        let started = std::time::Instant::now();
-        let mut trace = |phase| {
-            if std::env::var_os("SEEX_PANEL_STAGE_TIMING").is_some() {
-                eprintln!(
-                    "SEEX_PANEL_STAGE phase={phase} elapsed_ns={}",
-                    started.elapsed().as_nanos()
-                );
-            }
-        };
-        self.query_overview_until(request, &mut || false, &mut |_| true, &mut trace)
+        self.query_overview_until(request, &mut || false, &mut |_| true, &mut |_| {})
             .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
     }
 
@@ -183,16 +174,7 @@ impl ReadSession {
     ///
     /// Returns [`QueryError`] when the request cannot be planned or executed.
     pub fn query_detail(&self, request: &DetailRequest) -> Result<CurveSnapshot, QueryError> {
-        let started = std::time::Instant::now();
-        let mut trace = |phase| {
-            if std::env::var_os("SEEX_PANEL_STAGE_TIMING").is_some() {
-                eprintln!(
-                    "SEEX_PANEL_STAGE phase={phase} elapsed_ns={}",
-                    started.elapsed().as_nanos()
-                );
-            }
-        };
-        self.query_detail_until(request, &mut || false, &mut |_| true, &mut trace)
+        self.query_detail_until(request, &mut || false, &mut |_| true, &mut |_| {})
             .map(|snapshot| snapshot.expect("non-cancellable query should return a snapshot"))
     }
 
@@ -280,6 +262,51 @@ pub(crate) fn detail_budget(logical_width: u32) -> u32 {
     MAX_CHART_POINTS as u32
 }
 
+struct PanelStageProfile {
+    request: u64,
+    started: std::time::Instant,
+    attempt: usize,
+    next: usize,
+    current: Option<usize>,
+}
+impl PanelStageProfile {
+    fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            request: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            started: std::time::Instant::now(),
+            attempt: 0,
+            next: 0,
+            current: None,
+        }
+    }
+    fn emit(&mut self, phase: &'static str, runs: &[seex::RunId]) {
+        if phase == "fresh_open_start" {
+            self.attempt += 1;
+            self.next = 0;
+            self.current = None;
+        }
+        if phase == "curve_start" {
+            assert!(
+                self.next < runs.len(),
+                "trace curve order exceeds requested Runs"
+            );
+            self.current = Some(self.next);
+            self.next += 1;
+        }
+        let run = self.current.map(|i| runs[i].as_str());
+        eprintln!(
+            "SEEX_PANEL_STAGE request={} attempt={} run={run:?} phase={phase} elapsed_ns={}",
+            self.request,
+            self.attempt,
+            self.started.elapsed().as_nanos()
+        );
+        if matches!(phase, "curve_finish" | "curve_error") {
+            self.current = None;
+        }
+    }
+}
+
 fn query_curves(
     session: &ReadSession,
     selection: &CurveSelection,
@@ -323,16 +350,35 @@ fn query_curves(
         .iter()
         .map(|run| run.run_id.clone())
         .collect::<Vec<_>>();
-    let Some(evidence) = session.reader().query_metrics_for_desktop_with_interrupt(
+    let mut profile = std::env::var_os("SEEX_PANEL_STAGE_TIMING").map(|_| PanelStageProfile::new());
+    if let Some(p) = &mut profile {
+        p.emit("reader_start", &requested);
+    }
+    let result = session.reader().query_metrics_for_desktop_with_interrupt(
         &requested,
         &selection.metric_key,
         &query,
         force_full_step,
         is_superseded,
         register,
-        trace,
-    )?
-    else {
+        &mut |phase| {
+            trace(phase);
+            if let Some(p) = &mut profile {
+                p.emit(phase, &requested);
+            }
+        },
+    );
+    if let Some(p) = &mut profile {
+        p.emit(
+            match &result {
+                Ok(Some(_)) => "reader_finish",
+                Ok(None) => "reader_cancelled",
+                Err(_) => "reader_error",
+            },
+            &requested,
+        );
+    }
+    let Some(evidence) = result? else {
         return Ok(None);
     };
     let mut real_bounds: Option<(i64, i64)> = None;
@@ -452,6 +498,24 @@ mod tests {
     };
     use seex::{Client, LogOptions, ProjectId, RunOptions};
     use seex_plot::{AxisRange, BrushState};
+
+    #[test]
+    fn panel_trace_tracks_filtered_run_order_and_resets_on_retry() {
+        let runs = [seex::RunId::from_string("b"), seex::RunId::from_string("a")];
+        let mut p = super::PanelStageProfile::new();
+        p.emit("fresh_open_start", &runs);
+        p.emit("curve_start", &runs);
+        assert_eq!(p.current.map(|i| runs[i].as_str()), Some("b"));
+        p.emit("curve_finish", &runs);
+        assert_eq!(p.current, None);
+        p.emit("curve_start", &runs);
+        assert_eq!(p.current.map(|i| runs[i].as_str()), Some("a"));
+        p.emit("curve_error", &runs);
+        p.emit("fresh_open_start", &runs);
+        assert_eq!(p.attempt, 2);
+        p.emit("curve_start", &runs);
+        assert_eq!(p.current.map(|i| runs[i].as_str()), Some("b"));
+    }
 
     #[test]
     fn screen_budgets_clamp_density_and_overflow() {

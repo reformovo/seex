@@ -711,6 +711,7 @@ impl Reader {
                     if (cancelled.borrow_mut())() {
                         return Ok(None);
                     }
+                    (trace.borrow_mut())("curve_start");
                     let result = reader.query_metric_once_traced(
                         run_id,
                         metric_key,
@@ -721,6 +722,11 @@ impl Reader {
                             (trace.borrow_mut())(phase);
                         },
                     );
+                    (trace.borrow_mut())(if result.is_ok() {
+                        "curve_finish"
+                    } else {
+                        "curve_error"
+                    });
                     // An interrupt maps to Storage too; cancellation must not retry SQL.
                     if (cancelled.borrow_mut())() {
                         return Ok(None);

@@ -844,6 +844,29 @@ stages; do not infer the next SQL change from these medians alone. The required
 fixture is now local but ignored; it is not a repository fixture or raw evidence
 commit.
 
+The corrected request/attempt/Run stage profile now confirms the fixed cost is in
+per-Run storage work, not points conversion. Hot medians from the 12-sample
+representative traces (all 8 cases were parsed with the same grouping):
+
+| Curves / range | Reader total | Fresh open | Per-Run diagnostics sum | Per-Run storage sum | Points sum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 / prefix | 58.96 ms | 27.10 ms | 0.83 ms | 30.26 ms | 0.025 ms |
+| 1 / full | 73.56 ms | 27.15 ms | 0.88 ms | 44.62 ms | 0.026 ms |
+| 16 / prefix | 417.82 ms | 27.51 ms | 15.24 ms | 369.91 ms | 0.414 ms |
+| 16 / full | 667.36 ms | 27.28 ms | 18.51 ms | 616.02 ms | 0.430 ms |
+| 16 / middle | 510.62 ms | 27.04 ms | 16.74 ms | 461.27 ms | 0.424 ms |
+| 16 / empty | 421.49 ms | 27.03 ms | 14.99 ms | 374.29 ms | 0.325 ms |
+
+For each 16-curve request, storage sums are per Run and reader total is the
+request wall time; do not sum reader totals or compare first metadata timestamps
+as if they were one Run. The 16/full storage envelope is about 92% of matched
+reader time; 16/prefix about 89%. Bounds/neighbor work and native LTTB remain
+inside this storage envelope. This supports profiling one curve/range storage
+plan next; it does not yet select bounds reduction over request-level batching.
+Representative traces used `SEEX_PANEL_STAGE_TIMING=1`; they are diagnostics,
+not calibrated ABBA, with OS caches not cleared and fresh connections per request.
+Raw logs are ignored scratch.
+
 ### Target-to-generation correlation (diagnostic infrastructure)
 Motion traces now attach the first observed Overview generation/revision to each
 logical target where it exists. This is an attribution aid only: a completed
