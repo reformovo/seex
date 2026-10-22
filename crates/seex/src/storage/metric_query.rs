@@ -58,37 +58,16 @@ impl<'connection> ProjectMetricReader<'connection> {
         if run_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let requested_rows = (0..run_ids.len())
-            .map(|ordinal| format!("(?, {ordinal})"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "WITH requested(run_id, ordinal) AS (VALUES {requested_rows})
-             SELECT run_id, metric_key, effective_count, last_step, last_value_f64,
-                    min_value_f64, max_value_f64
-             FROM (
-                 SELECT requested.ordinal, summary.*
-                 FROM requested
-                 JOIN seex_runs AS run USING (run_id)
-                 JOIN seex_metric_aggregates AS summary USING (run_id)
-                 WHERE run.status <> 'running' AND summary.metric_key = ?
-                 UNION ALL
-                 SELECT requested.ordinal, points.run_id, points.metric_key,
-                        count(*) AS effective_count, max(points.step) AS last_step,
-                        arg_max(points.value_f64, points.step) AS last_value_f64,
-                        min(points.value_f64) AS min_value_f64,
-                        max(points.value_f64) AS max_value_f64
-                 FROM requested
-                 JOIN seex_runs AS run USING (run_id)
-                 JOIN dl.metric_points AS points USING (run_id)
-                 WHERE run.status = 'running' AND points.metric_key = ?
-                 GROUP BY requested.ordinal, points.run_id, points.metric_key
-             )
-             ORDER BY ordinal"
-        );
-        let mut params: Vec<&str> = Vec::with_capacity(run_ids.len() + 2);
+        // The catalog decides whether the fact-table fallback is needed. In-memory
+        // Run status can lag the terminal write, and a finished Run never becomes
+        // running again, so this check is conservative.
+        let include_running = self.running_run_count(run_ids)? > 0;
+        let sql = summaries_sql(run_ids.len(), include_running);
+        let mut params: Vec<&str> = Vec::with_capacity(run_ids.len() + 1);
         params.extend(run_ids.iter().map(RunId::as_str));
-        params.push(metric_key.as_str());
+        if include_running {
+            params.push(metric_key.as_str());
+        }
         params.push(metric_key.as_str());
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(
@@ -96,6 +75,23 @@ impl<'connection> ProjectMetricReader<'connection> {
             stored_metric_aggregate_from_row,
         )?;
         rows.map(|row| Ok(row?.into_metric_aggregate())).collect()
+    }
+
+    fn running_run_count(&self, run_ids: &[RunId]) -> Result<u64, StorageError> {
+        let requested_rows = (0..run_ids.len())
+            .map(|_| "(?)")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH requested(run_id) AS (VALUES {requested_rows})
+             SELECT count(*)::UBIGINT
+             FROM requested JOIN seex_runs AS run USING (run_id)
+             WHERE run.status = 'running'"
+        );
+        let params = run_ids.iter().map(RunId::as_str);
+        self.connection
+            .query_row(&sql, duckdb::params_from_iter(params), |row| row.get(0))
+            .map_err(StorageError::from)
     }
 
     pub fn list_metrics(
@@ -190,6 +186,56 @@ fn sampled_sql(source: MetricSource<'_>) -> String {
          SELECT step, epoch_ms(timestamp), value_f64, epoch_ms(ingested_at), step
          FROM effective WHERE isfinite(value_f64) ORDER BY step",
         effective_cte(source)
+    )
+}
+
+fn summaries_sql(run_count: usize, include_running: bool) -> String {
+    let requested_rows = (0..run_count)
+        .map(|ordinal| format!("(?, {ordinal})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let running_ctes = if include_running {
+        ", running AS MATERIALIZED (
+             SELECT requested.ordinal, requested.run_id
+             FROM requested
+             JOIN seex_runs AS run USING (run_id)
+             WHERE run.status = 'running'
+         ),
+         running_points AS (
+             SELECT running.ordinal, points.run_id, points.metric_key,
+                    points.step, points.value_f64
+             FROM running
+             JOIN dl.metric_points AS points USING (run_id)
+             WHERE points.metric_key = ?
+         )"
+    } else {
+        ""
+    };
+    let running_branch = if include_running {
+        "UNION ALL
+             SELECT ordinal, run_id, metric_key,
+                    count(*) AS effective_count, max(step) AS last_step,
+                    arg_max(value_f64, step) AS last_value_f64,
+                    min(value_f64) AS min_value_f64,
+                    max(value_f64) AS max_value_f64
+             FROM running_points
+             GROUP BY ordinal, run_id, metric_key"
+    } else {
+        ""
+    };
+    format!(
+        "WITH requested(run_id, ordinal) AS (VALUES {requested_rows}){running_ctes}
+         SELECT run_id, metric_key, effective_count, last_step, last_value_f64,
+                min_value_f64, max_value_f64
+         FROM (
+             SELECT requested.ordinal, summary.*
+             FROM requested
+             JOIN seex_runs AS run USING (run_id)
+             JOIN seex_metric_aggregates AS summary USING (run_id)
+             WHERE run.status <> 'running' AND summary.metric_key = ?
+             {running_branch}
+         )
+         ORDER BY ordinal"
     )
 }
 
