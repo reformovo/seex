@@ -408,7 +408,7 @@ fn exported_workbench_uses_semantic_snapshot_without_changing_autosave_path(
 }
 
 #[gpui::test]
-fn restored_state_retains_unavailable_runs_and_unknown_metrics(cx: &mut TestAppContext) {
+fn restored_state_retains_runs_with_empty_unknown_metrics(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture_with_complete_runs(2, 1);
     let alias = SourceAlias::new("research").expect("test alias should be valid");
     let mut document = saved_workbench(
@@ -439,10 +439,12 @@ fn restored_state_retains_unavailable_runs_and_unknown_metrics(cx: &mut TestAppC
                 .overview
                 .as_ref()
                 .is_some_and(|snapshot| {
-                    snapshot
-                        .series
-                        .iter()
-                        .all(|series| series.completeness == EvidenceCompleteness::Unavailable)
+                    // Without series diagnostics an unknown metric is a
+                    // lifecycle-Complete series with no points.
+                    snapshot.series.iter().all(|series| {
+                        series.completeness == EvidenceCompleteness::Complete
+                            && series.returned_point_count == 0
+                    })
                 })
     });
 

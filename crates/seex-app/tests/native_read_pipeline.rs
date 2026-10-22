@@ -243,8 +243,8 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         [
             EvidenceCompleteness::Complete,
             EvidenceCompleteness::Partial,
-            EvidenceCompleteness::Invalid,
-            EvidenceCompleteness::Unavailable,
+            EvidenceCompleteness::Partial,
+            EvidenceCompleteness::Complete,
         ]
     );
     assert_eq!(
@@ -253,7 +253,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
             .iter()
             .map(|series| series.chart_series.is_some())
             .collect::<Vec<_>>(),
-        [true, true, false, false]
+        [true, true, true, true]
     );
 
     let detail_selection = CurveSelection {
@@ -296,13 +296,13 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         other => return Err(format!("unexpected detail snapshot: {other:?}").into()),
     };
     assert_eq!(detail.point_budget, full_detail.point_budget);
-    assert_eq!(detail.series[0].source_row_count, 1_003);
+    assert_eq!(detail.series[0].source_row_count, 1_001);
     assert!(detail.series[0].returned_point_count <= 1024);
     #[cfg(feature = "test-support")]
     {
         let resources = detail.resource_snapshot();
         assert_eq!(resources.requested_budget, 1024);
-        assert_eq!(resources.source_points, 1_003);
+        assert_eq!(resources.source_points, 1_001);
         assert_eq!(
             resources.returned_points,
             detail.series[0].returned_point_count
@@ -321,7 +321,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
             .points()
             .first()
             .map(|point| point.x as i64),
-        Some(499),
+        Some(500),
     );
     assert_eq!(
         detail.series[0]
@@ -331,7 +331,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
             .points()
             .last()
             .map(|point| point.x as i64),
-        Some(1_501),
+        Some(1_500),
     );
 
     Ok(())

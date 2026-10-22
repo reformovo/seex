@@ -39,9 +39,7 @@ mod native_engine_behavior;
 mod reader_parity;
 
 #[doc(hidden)]
-pub use crate::model::alignment::{
-    AlignedMetricPoint, AlignmentAxis, AlignmentQueryError, AlignmentViewport,
-};
+pub use crate::model::alignment::{AlignmentAxis, AlignmentQueryError, AlignmentViewport};
 pub use crate::model::comparison::{
     ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
     EvidenceCompleteness, EvidenceReason, MetricComparisonResult, ObjectiveDirection,

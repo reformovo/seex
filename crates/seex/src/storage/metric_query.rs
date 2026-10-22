@@ -1,4 +1,3 @@
-use crate::model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult};
 use crate::model::metric::{
     MetricAggregate, MetricKey, MetricPoint, MetricQuery, MetricQueryResult, ReductionPolicy, Step,
 };
@@ -6,10 +5,6 @@ use crate::model::run::{RunId, RunStatus};
 use chrono::{TimeZone, Utc};
 use duckdb::Connection;
 
-use crate::storage::alignment_query::{
-    AlignmentSource, query_aligned_metric, query_bounded_full_aligned_metric,
-    query_narrow_step_metric, validate_alignment_identity,
-};
 use crate::storage::rows::StoredMetricAggregate;
 use crate::storage::sql::string_literal as sql_string_literal;
 use crate::storage::{MetricReader, StorageError};
@@ -18,16 +13,6 @@ use crate::storage::{MetricReader, StorageError};
 pub(crate) enum MetricSource<'a> {
     Project,
     Parquet(&'a str),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SeriesDiagnostics {
-    pub effective_count: u64,
-    pub min_step: Option<i64>,
-    pub max_step: Option<i64>,
-    pub has_negative_step: bool,
-    pub has_decreasing_timestamp: bool,
-    pub has_non_finite_value: bool,
 }
 
 /// Metric reader for the authoritative DuckLake project relation.
@@ -47,80 +32,6 @@ impl<'connection> ProjectMetricReader<'connection> {
     /// Returns [`StorageError`] for query, extension, or conversion failures.
     pub fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError> {
         query_metric(self.connection, MetricSource::Project, query)
-    }
-
-    #[doc(hidden)]
-    pub fn series_diagnostics(
-        &self,
-        run_id: &RunId,
-        metric_key: &MetricKey,
-    ) -> Result<SeriesDiagnostics, StorageError> {
-        query_series_diagnostics(self.connection, MetricSource::Project, run_id, metric_key)
-    }
-
-    /// Queries project metric points on a derived comparison axis.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] for query or conversion failures.
-    pub fn query_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-    ) -> Result<AlignmentQueryResult, StorageError> {
-        validate_alignment_identity(query)?;
-        let run_start_millis = match query.axis {
-            AlignmentAxis::Step => None,
-            AlignmentAxis::ElapsedTime => Some(self.run_start_millis(&query.run_id)?),
-        };
-        query_aligned_metric(
-            self.connection,
-            AlignmentSource::Project,
-            query,
-            run_start_millis,
-        )
-    }
-
-    pub(crate) fn query_bounded_full_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-        source_row_count: u64,
-    ) -> Result<AlignmentQueryResult, StorageError> {
-        validate_alignment_identity(query)?;
-        let run_start_millis = match query.axis {
-            AlignmentAxis::Step => None,
-            AlignmentAxis::ElapsedTime => Some(self.run_start_millis(&query.run_id)?),
-        };
-        query_bounded_full_aligned_metric(
-            self.connection,
-            AlignmentSource::Project,
-            query,
-            run_start_millis,
-            source_row_count,
-        )
-    }
-
-    #[doc(hidden)]
-    pub fn query_narrow_step_metric(
-        &self,
-        query: &AlignmentQuery,
-    ) -> Result<AlignmentQueryResult, StorageError> {
-        query_narrow_step_metric(self.connection, AlignmentSource::Project, query)
-    }
-
-    fn run_start_millis(&self, run_id: &RunId) -> Result<i64, StorageError> {
-        let result = self.connection.query_row(
-            "SELECT epoch_ms(started_at::TIMESTAMPTZ)
-             FROM seex_runs WHERE run_id = ?",
-            [run_id.as_str()],
-            |row| row.get(0),
-        );
-        match result {
-            Ok(started_at) => Ok(started_at),
-            Err(duckdb::Error::QueryReturnedNoRows) => Err(StorageError::RunNotFound {
-                run_id: run_id.as_str().to_owned(),
-            }),
-            Err(source) => Err(source.into()),
-        }
     }
 
     pub fn metric_aggregate(
@@ -219,63 +130,6 @@ impl MetricReader for ProjectMetricReader<'_> {
     fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError> {
         Self::query_metric(self, query)
     }
-
-    fn query_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-    ) -> Result<AlignmentQueryResult, StorageError> {
-        Self::query_aligned_metric(self, query)
-    }
-}
-
-pub(crate) fn query_series_diagnostics(
-    connection: &Connection,
-    source: MetricSource<'_>,
-    run_id: &RunId,
-    metric_key: &MetricKey,
-) -> Result<SeriesDiagnostics, StorageError> {
-    if run_id.as_str().trim().is_empty() || metric_key.as_str().trim().is_empty() {
-        return Err(StorageError::InvalidIdentity);
-    }
-    let relation = source_relation(source);
-    let sql = format!(
-        "WITH ordered AS (
-             SELECT step, timestamp, value_f64,
-                    lag(timestamp) OVER (ORDER BY step, timestamp) AS previous_timestamp
-             FROM {relation}
-             WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
-         )
-         SELECT count(*)::UBIGINT, min(step), max(step),
-                coalesce(bool_or(step < 0), false),
-                coalesce(bool_or(previous_timestamp > timestamp), false),
-                coalesce(bool_or(NOT isfinite(value_f64)), false)
-         FROM ordered"
-    );
-    let mut values: Vec<Box<dyn duckdb::ToSql>> = Vec::with_capacity(4);
-    if let MetricSource::Parquet(location) = source {
-        values.push(Box::new(location.to_owned()));
-    }
-    values.extend([
-        Box::new(run_id.as_str().to_owned()) as Box<dyn duckdb::ToSql>,
-        Box::new(metric_key.as_str().to_owned()),
-        Box::new(percent_encode_metric_key(metric_key.as_str())),
-    ]);
-    connection
-        .query_row(
-            &sql,
-            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
-            |row| {
-                Ok(SeriesDiagnostics {
-                    effective_count: row.get(0)?,
-                    min_step: row.get(1)?,
-                    max_step: row.get(2)?,
-                    has_negative_step: row.get(3)?,
-                    has_decreasing_timestamp: row.get(4)?,
-                    has_non_finite_value: row.get(5)?,
-                })
-            },
-        )
-        .map_err(StorageError::from)
 }
 
 pub(crate) fn query_metric(
@@ -473,7 +327,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn diagnostics_cover_all_observations() -> Result<(), Box<dyn std::error::Error>> {
+    fn full_query_retains_every_observation_in_range() -> Result<(), Box<dyn std::error::Error>> {
         let connection = Connection::open_in_memory()?;
         connection.execute_batch(
             "CREATE SCHEMA dl;
@@ -488,19 +342,6 @@ mod tests {
                  ('run-1', 'loss', 'loss', 0, epoch_ms(20), 'NaN'::DOUBLE, epoch_ms(2));",
         )?;
 
-        let diagnostics = query_series_diagnostics(
-            &connection,
-            MetricSource::Project,
-            &RunId::from_string("run-1"),
-            &MetricKey::from_string("loss"),
-        )?;
-
-        assert_eq!(diagnostics.effective_count, 3);
-        assert_eq!(diagnostics.min_step, Some(-1));
-        assert_eq!(diagnostics.max_step, Some(0));
-        assert!(diagnostics.has_negative_step);
-        assert!(diagnostics.has_decreasing_timestamp);
-        assert!(diagnostics.has_non_finite_value);
         let reader = ProjectMetricReader::new(&connection);
         let bounded = MetricQuery::new(
             RunId::from_string("run-1"),

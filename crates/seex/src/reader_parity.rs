@@ -161,23 +161,24 @@ impl Fixture {
 }
 
 #[test]
-fn step_overview_keeps_invalid_timestamp_evidence_and_observations()
--> Result<(), Box<dyn std::error::Error>> {
+fn step_overview_keeps_observations_without_diagnostics() -> Result<(), Box<dyn std::error::Error>>
+{
     let fixture = Fixture::open_with_timestamp_order(true)?;
     let metric = MetricKey::from_string("loss");
     for budget in [4, MAX_CHART_POINTS] {
         let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), budget)?;
         let expected = fixture.query(query.clone())?;
         for _ in 0..2 {
-            let actual = fixture.native.query_metric_overview_for_desktop(
-                &fixture.run_id,
-                &metric,
-                &query,
-            )?;
+            let actual =
+                fixture
+                    .native
+                    .query_metric_for_desktop(&fixture.run_id, &metric, &query)?;
             assert_eq!(actual.source_count(), 10);
             assert!(actual.samples().len() <= budget);
-            assert_eq!(actual.completeness(), crate::EvidenceCompleteness::Invalid);
-            assert_eq!(actual.reasons(), &[crate::EvidenceReason::DecreasingAxis]);
+            // Completeness now reflects Run lifecycle only; timestamp order is
+            // no longer inspected by the curve query path.
+            assert_eq!(actual.completeness(), crate::EvidenceCompleteness::Complete);
+            assert!(actual.reasons().is_empty());
             let payloads = |series: &crate::MetricSeries| {
                 let mut rows = series
                     .samples()
@@ -215,7 +216,7 @@ fn panel_queries_match_single_curve_order_and_cancel_without_partial_results()
         RunId::from_string("run-2"),
     ];
     let key = MetricKey::from_string("loss");
-    for overview in [false, true] {
+    {
         let query = MetricQuery::new(
             MetricRange::Steps {
                 start: Step::new(2),
@@ -224,14 +225,10 @@ fn panel_queries_match_single_curve_order_and_cancel_without_partial_results()
             8,
         )?;
         let actual = reader
-            .query_metrics_for_desktop(&ids, &key, &query, overview, &mut || false)?
+            .query_metrics_for_desktop(&ids, &key, &query, &mut || false)?
             .unwrap();
         for (id, series) in ids.iter().zip(actual) {
-            let expected = if overview {
-                reader.query_metric_overview_for_desktop(id, &key, &query)?
-            } else {
-                reader.query_metric_for_desktop(id, &key, &query)?
-            };
+            let expected = reader.query_metric_for_desktop(id, &key, &query)?;
             assert_eq!(series.source_count(), expected.source_count());
             assert_eq!(series.completeness(), expected.completeness());
             assert_eq!(series.reasons(), expected.reasons());
@@ -249,7 +246,7 @@ fn panel_queries_match_single_curve_order_and_cancel_without_partial_results()
     }
     let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), 8)?;
     let panel = |ids: &[RunId], cancel: &mut dyn FnMut() -> bool| {
-        reader.query_metrics_for_desktop(ids, &key, &query, true, cancel)
+        reader.query_metrics_for_desktop(ids, &key, &query, cancel)
     };
     let mut checks = 0;
     let cancelled = panel(&ids, &mut || {
@@ -289,7 +286,7 @@ fn panel_reopens_after_external_inline_flush() -> Result<(), Box<dyn std::error:
     let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), 8)?;
     let mut checks = 0;
     let during = reader
-        .query_metrics_for_desktop(&ids, &key, &query, true, &mut || {
+        .query_metrics_for_desktop(&ids, &key, &query, &mut || {
             checks += 1;
             if checks == 3 {
                 run.finish().expect("external finish/flush must succeed");
@@ -302,7 +299,7 @@ fn panel_reopens_after_external_inline_flush() -> Result<(), Box<dyn std::error:
         vec![3, 10, 3]
     );
     let after = reader
-        .query_metrics_for_desktop(&ids, &key, &query, true, &mut || false)?
+        .query_metrics_for_desktop(&ids, &key, &query, &mut || false)?
         .unwrap();
     assert_eq!(after[0].source_count(), 3);
     let status = after[0].completeness();
@@ -346,7 +343,7 @@ fn relative_time_and_timestamp_ranges_are_rejected() {
 }
 
 #[test]
-fn small_fixture_preserves_repeated_observations_and_true_step_neighbors()
+fn small_fixture_preserves_repeated_observations_without_out_of_view_neighbors()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::open()?;
     let metric = MetricKey::from_string("loss");
@@ -369,10 +366,10 @@ fn small_fixture_preserves_repeated_observations_and_true_step_neighbors()
             _ => panic!("Step query returned another coordinate axis"),
         })
         .collect::<Vec<_>>();
-    assert_eq!(points.len(), 4);
-    assert_eq!(points[0], (1, 1.0));
-    assert_eq!(points[3], (3, 3.0));
-    let mut repeated = points[1..3].to_vec();
+    // Desktop Detail is viewport-only: Steps 1 and 3 are not appended as
+    // neighbors, while both real Step 2 observations are retained.
+    assert_eq!(points.len(), 2);
+    let mut repeated = points;
     repeated.sort_by(|left, right| left.1.total_cmp(&right.1));
     assert_eq!(repeated, [(2, 2.0), (2, 42.0)]);
     Ok(())

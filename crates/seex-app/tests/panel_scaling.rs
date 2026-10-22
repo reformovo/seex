@@ -50,13 +50,10 @@ fn request(curves: usize) -> OverviewRequest {
 }
 
 fn expected_source_count(start: i64, end: i64) -> u64 {
-    // Fixture has Steps 0..POINTS-1 plus a repeated midpoint. Counts include
-    // one actual neighbor on each available side, even for an empty viewport.
+    // Fixture has Steps 0..POINTS-1 plus a repeated midpoint. Desktop Detail is
+    // viewport-only, so out-of-view neighbors are not counted.
     let inside = (i128::from(end.min(POINTS - 1)) - i128::from(start.max(0)) + 1).max(0) as u64;
-    inside
-        + u64::from(start <= POINTS / 2 && POINTS / 2 <= end)
-        + u64::from(start > 0)
-        + u64::from(end < POINTS - 1)
+    inside + u64::from(start <= POINTS / 2 && POINTS / 2 <= end)
 }
 
 fn detail_case(name: &str) -> Result<(i64, i64, u64), Box<dyn Error>> {
@@ -111,18 +108,18 @@ fn panel_contract_and_values() {
     assert!(is_detail("typo").is_err());
     for (case, count) in [
         ("full", 1_000_001),
-        ("prefix", 2050),
-        ("middle", 100_004),
-        ("window", 2052),
-        ("small", 513),
-        ("small-middle", 515),
-        ("tail", 1001),
-        ("empty", 1),
+        ("prefix", 2049),
+        ("middle", 100_002),
+        ("window", 2050),
+        ("small", 512),
+        ("small-middle", 513),
+        ("tail", 1000),
+        ("empty", 0),
     ] {
         assert_eq!(detail_case(case).unwrap().2, count, "{case}");
     }
     assert!(detail_case("typo").is_err());
-    assert_eq!(expected_source_count(-100, -1), 1);
+    assert_eq!(expected_source_count(-100, -1), 0);
     let mut state = 0x5eec_u64;
     for _ in 0..1000 {
         assert!((0.0..1.0).contains(&value(&mut state)));

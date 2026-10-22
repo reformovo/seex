@@ -312,7 +312,7 @@ fn query_curves(
     selection: &CurveSelection,
     viewport: AlignmentViewport,
     point_budget: u32,
-    force_full_step: bool,
+    overview: bool,
     is_superseded: &mut dyn FnMut() -> bool,
     register: &mut dyn FnMut(seex::ReaderInterrupt) -> bool,
     trace: &mut dyn FnMut(&'static str),
@@ -343,7 +343,7 @@ fn query_curves(
         })
         .collect::<Vec<_>>();
     let query = MetricQuery::new(
-        desktop_metric_range(selection.axis, viewport),
+        desktop_metric_range(selection.axis, viewport, overview),
         point_budget as usize,
     )?;
     let requested = runs
@@ -358,7 +358,6 @@ fn query_curves(
         &requested,
         &selection.metric_key,
         &query,
-        force_full_step,
         is_superseded,
         register,
         &mut |phase| {
@@ -443,9 +442,18 @@ fn query_curves(
     }))
 }
 
-fn desktop_metric_range(axis: CurveAxis, viewport: AlignmentViewport) -> MetricRange {
+fn desktop_metric_range(
+    axis: CurveAxis,
+    viewport: AlignmentViewport,
+    overview: bool,
+) -> MetricRange {
     let end = viewport.end().saturating_add(1);
     match axis {
+        // Overview covers the whole Step axis. An open-ended range avoids the
+        // `i64::MAX - 1` boundary that a closed-to-half-open conversion implies.
+        CurveAxis::Step if overview => MetricRange::StepsFrom {
+            start: seex::Step::new(0),
+        },
         CurveAxis::Step => MetricRange::Steps {
             start: seex::Step::new(viewport.start()),
             end: seex::Step::new(end),

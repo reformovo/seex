@@ -1169,7 +1169,6 @@ fn execute(
             registered = true;
             #[cfg(feature = "test-support")]
             pause_registered_read_for_test(kind);
-            active_session.reader().refresh_diagnostics(generation.0);
             let result = execute_read(
                 active_session,
                 &request,

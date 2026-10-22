@@ -6,7 +6,6 @@
     reason = "private storage seams remain exercised by crate-local parity tests"
 )]
 
-mod alignment_query;
 pub mod bootstrap;
 pub mod config;
 mod lock;
@@ -21,13 +20,10 @@ mod sql;
 pub mod time;
 pub mod write;
 
-use crate::model::alignment::{AlignmentQuery, AlignmentQueryResult};
 use crate::model::metric::{MetricQuery, MetricQueryResult};
 
 pub use lock::RunWriterGuard;
 pub(crate) use lock::{CatalogWriteGuard, ProjectCreateGuard};
-#[doc(hidden)]
-pub use metric_query::SeriesDiagnostics;
 pub use metric_query::{ProjectMetricReader, percent_encode_metric_key};
 #[doc(hidden)]
 pub use project::ReadInterrupt;
@@ -38,10 +34,6 @@ pub use schema::{ColumnSchema, SchemaReport, validate_metric_point_schema};
 /// Common metric-series query interface for current storage inputs.
 pub trait MetricReader {
     fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError>;
-    fn query_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-    ) -> Result<AlignmentQueryResult, StorageError>;
 }
 
 /// Failures returned by Seex storage operations.

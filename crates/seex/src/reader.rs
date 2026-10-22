@@ -10,10 +10,6 @@ use std::path::{Path, PathBuf};
 use crate::config::{CatalogBackend, S3Options};
 use crate::engine::query::NativeQueryStore;
 use crate::error::{Error, Result as SdkResult};
-use crate::model::alignment::{
-    AlignedMetricPoint, AlignmentAxis, AlignmentQuery, AlignmentReason, AlignmentReduction,
-    AlignmentViewport,
-};
 use crate::model::comparison::{
     EvidenceCompleteness, EvidenceReason, ObjectiveEvidence, ObjectiveMetric,
 };
@@ -28,7 +24,7 @@ use crate::storage::bootstrap::{
     open_existing_native_connection_with_config, open_shared_existing_local_connection_with_config,
 };
 use crate::storage::config::{S3ConnectionOverrides, resolve_init_config, resolve_storage_config};
-use crate::storage::{ProjectConnection, ProjectMetricReader, SeriesDiagnostics, StorageError};
+use crate::storage::{ProjectConnection, ProjectMetricReader, StorageError};
 
 /// Builder for opening one existing native store read-only.
 pub struct ReaderBuilder {
@@ -44,8 +40,6 @@ pub const MAX_CHART_POINTS: usize = 1_024;
 /// Maximum number of Runs returned by one discovery request.
 pub const MAX_RUN_PAGE_SIZE: usize = 100;
 const MAX_RUN_METADATA_CACHE: usize = 4_096;
-const MAX_FINISHED_DIAGNOSTICS_CACHE: usize = 4_096;
-const MAX_VOLATILE_DIAGNOSTICS_CACHE: usize = 1_024;
 
 /// Failure while opening a Reader restricted to local data.
 #[doc(hidden)]
@@ -267,9 +261,6 @@ impl ReaderBuilder {
             _native_database: native_database,
             retry_config,
             run_metadata: RefCell::new(HashMap::new()),
-            diagnostics: RefCell::new(DiagnosticsCache::default()),
-            #[cfg(test)]
-            diagnostics_loads: Cell::new(0),
         })
     }
 }
@@ -280,55 +271,11 @@ pub struct Reader {
     _native_database: Option<NativeReadDatabase>,
     retry_config: NativeStorageConfig,
     run_metadata: RefCell<HashMap<RunId, RunMetadata>>,
-    diagnostics: RefCell<DiagnosticsCache>,
-    #[cfg(test)]
-    diagnostics_loads: Cell<usize>,
 }
 
 #[derive(Clone)]
 struct RunMetadata {
-    project_id: Option<ProjectId>,
     status: RunStatus,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct DiagnosticsKey {
-    project_id: Option<ProjectId>,
-    run_id: RunId,
-    metric_key: MetricKey,
-}
-
-#[derive(Clone, Copy)]
-struct AxisBounds {
-    start: Option<i64>,
-    end: Option<i64>,
-}
-
-impl AxisBounds {
-    const fn new(start: Option<i64>, end: Option<i64>) -> Self {
-        Self { start, end }
-    }
-
-    fn viewport(self) -> SdkResult<AlignmentViewport> {
-        let start = self.start.unwrap_or(i64::MIN);
-        let end = self
-            .end
-            .map(|value| value.checked_sub(1).ok_or(Error::UnsupportedQuery))
-            .transpose()?
-            .unwrap_or(i64::MAX);
-        AlignmentViewport::new(start, end).map_err(|_| Error::UnsupportedQuery)
-    }
-
-    fn contains(self, value: i64) -> bool {
-        self.start.is_none_or(|start| start <= value) && self.end.is_none_or(|end| value < end)
-    }
-}
-
-#[derive(Clone, Default)]
-struct DiagnosticsCache {
-    generation: Option<u64>,
-    finished: HashMap<DiagnosticsKey, SeriesDiagnostics>,
-    volatile: HashMap<DiagnosticsKey, SeriesDiagnostics>,
 }
 
 impl Reader {
@@ -555,18 +502,7 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
     ) -> SdkResult<MetricSeries> {
-        self.diagnostics.borrow_mut().volatile.clear();
-        self.query_metric_impl(run_id, metric_key, query, false, false)
-    }
-
-    /// Selects the current Desktop storage generation for volatile diagnostics.
-    #[doc(hidden)]
-    pub fn refresh_diagnostics(&self, generation: u64) {
-        let mut cache = self.diagnostics.borrow_mut();
-        if cache.generation != Some(generation) {
-            cache.generation = Some(generation);
-            cache.volatile.clear();
-        }
+        self.query_metric_impl(run_id, metric_key, query)
     }
 
     /// Returns cancellation capability for this Reader's native connection.
@@ -626,11 +562,11 @@ impl Reader {
         ))
     }
 
-    /// Desktop-only query retaining one real sample outside each range edge.
+    /// Desktop curve query returning only observations inside the requested range.
     ///
-    /// The stable [`Reader::query_metric`] contract never returns these
-    /// neighbors. This adapter may return at most two neighbors while keeping
-    /// the complete result within the query's `max_points` bound.
+    /// Detail and Overview share this viewport SQL: neither retains out-of-view
+    /// neighbors, because discovering them scans the whole Run even for a narrow
+    /// or empty viewport.
     ///
     /// # Errors
     ///
@@ -642,18 +578,7 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
     ) -> SdkResult<MetricSeries> {
-        self.query_metric_impl(run_id, metric_key, query, true, false)
-    }
-
-    /// Desktop Overview query retaining neighbors on the incumbent plan.
-    #[doc(hidden)]
-    pub fn query_metric_overview_for_desktop(
-        &self,
-        run_id: &RunId,
-        metric_key: &MetricKey,
-        query: &MetricQuery,
-    ) -> SdkResult<MetricSeries> {
-        self.query_metric_impl(run_id, metric_key, query, true, true)
+        self.query_metric_impl(run_id, metric_key, query)
     }
 
     /// Request-scoped connection; Storage failures discard and retry the full panel once.
@@ -663,14 +588,12 @@ impl Reader {
         run_ids: &[RunId],
         metric_key: &MetricKey,
         query: &MetricQuery,
-        overview: bool,
         is_superseded: &mut dyn FnMut() -> bool,
     ) -> SdkResult<Option<Vec<MetricSeries>>> {
         self.query_metrics_for_desktop_with_interrupt(
             run_ids,
             metric_key,
             query,
-            overview,
             is_superseded,
             &mut |_| true,
             &mut |_| {},
@@ -685,7 +608,6 @@ impl Reader {
         run_ids: &[RunId],
         metric_key: &MetricKey,
         query: &MetricQuery,
-        overview: bool,
         is_superseded: &mut dyn FnMut() -> bool,
         register: &mut dyn FnMut(ReaderInterrupt) -> bool,
         trace: &mut dyn FnMut(&'static str),
@@ -712,16 +634,10 @@ impl Reader {
                         return Ok(None);
                     }
                     (trace.borrow_mut())("curve_start");
-                    let result = reader.query_metric_once_traced(
-                        run_id,
-                        metric_key,
-                        query,
-                        true,
-                        overview,
-                        &mut |phase| {
+                    let result =
+                        reader.query_metric_once_traced(run_id, metric_key, query, &mut |phase| {
                             (trace.borrow_mut())(phase);
-                        },
-                    );
+                        });
                     (trace.borrow_mut())(if result.is_ok() {
                         "curve_finish"
                     } else {
@@ -746,12 +662,10 @@ impl Reader {
         run_id: &RunId,
         metric_key: &MetricKey,
         query: &MetricQuery,
-        retain_neighbors: bool,
-        force_full_step: bool,
     ) -> SdkResult<MetricSeries> {
         self.with_fresh_query_reader(|reader| {
             reader
-                .query_metric_once(run_id, metric_key, query, retain_neighbors, force_full_step)
+                .query_metric_once(run_id, metric_key, query)
                 .map(Some)
         })?
         .ok_or(Error::Storage)
@@ -790,9 +704,6 @@ impl Reader {
                 Err(Error::Storage) if attempt == 0 => continue,
                 result => result?,
             };
-            if attempt != 0 {
-                reader.diagnostics.borrow_mut().volatile.clear();
-            }
             trace("fresh_open_finish");
             if !register(reader.interrupt_handle().ok_or(Error::Storage)?) {
                 trace("fresh_register_rejected");
@@ -801,22 +712,11 @@ impl Reader {
             trace("query_start");
             match operation(&reader) {
                 Err(Error::Storage) if attempt == 0 => continue,
-                Ok(Some(value)) => {
-                    self.remember_query_diagnostics(&reader);
-                    return Ok(Some(value));
-                }
+                Ok(Some(value)) => return Ok(Some(value)),
                 result => return result,
             }
         }
         Err(Error::Storage)
-    }
-
-    fn remember_query_diagnostics(&self, query_reader: &Self) {
-        self.diagnostics
-            .replace(query_reader.diagnostics.borrow().clone());
-        #[cfg(test)]
-        self.diagnostics_loads
-            .set(query_reader.diagnostics_loads.get());
     }
 
     fn fresh_query_reader(&self) -> SdkResult<Self> {
@@ -829,9 +729,6 @@ impl Reader {
             _native_database: None,
             retry_config: self.retry_config.clone(),
             run_metadata: RefCell::new(HashMap::new()),
-            diagnostics: RefCell::new(self.diagnostics.borrow().clone()),
-            #[cfg(test)]
-            diagnostics_loads: Cell::new(self.diagnostics_loads.get()),
         })
     }
 
@@ -840,17 +737,8 @@ impl Reader {
         run_id: &RunId,
         metric_key: &MetricKey,
         query: &MetricQuery,
-        retain_neighbors: bool,
-        force_full_step: bool,
     ) -> SdkResult<MetricSeries> {
-        self.query_metric_once_traced(
-            run_id,
-            metric_key,
-            query,
-            retain_neighbors,
-            force_full_step,
-            &mut |_| {},
-        )
+        self.query_metric_once_traced(run_id, metric_key, query, &mut |_| {})
     }
 
     fn query_metric_once_traced(
@@ -858,8 +746,6 @@ impl Reader {
         run_id: &RunId,
         metric_key: &MetricKey,
         query: &MetricQuery,
-        retain_neighbors: bool,
-        force_full_step: bool,
         trace: &mut dyn FnMut(&'static str),
     ) -> SdkResult<MetricSeries> {
         #[cfg(feature = "test-query-probe")]
@@ -867,121 +753,7 @@ impl Reader {
         trace("metadata_start");
         let metadata = self.metadata(run_id)?;
         trace("metadata_finish");
-
-        let run_status = metadata.status;
-        trace("diagnostics_start");
-        let diagnostics = self.series_diagnostics(run_id, metric_key, &metadata);
-        trace("diagnostics_finish");
-        let (axis, storage_axis, bounds) = match query.range() {
-            MetricRange::All(axis) => (*axis, AlignmentAxis::Step, None),
-            MetricRange::Steps { start, end } => (
-                MetricAxis::Step,
-                AlignmentAxis::Step,
-                Some(AxisBounds::new(Some(start.value()), Some(end.value()))),
-            ),
-            MetricRange::StepsFrom { start } => (
-                MetricAxis::Step,
-                AlignmentAxis::Step,
-                Some(AxisBounds::new(Some(start.value()), None)),
-            ),
-            MetricRange::StepsUntil { end } => (
-                MetricAxis::Step,
-                AlignmentAxis::Step,
-                Some(AxisBounds::new(None, Some(end.value()))),
-            ),
-            // MetricQuery::new rejects these axes. Keep the match exhaustive so
-            // the internal range types can be retired independently later.
-            MetricRange::RelativeTime { .. }
-            | MetricRange::RelativeTimeFrom { .. }
-            | MetricRange::RelativeTimeUntil { .. }
-            | MetricRange::Timestamps { .. }
-            | MetricRange::TimestampsFrom { .. }
-            | MetricRange::TimestampsUntil { .. } => return Err(Error::UnsupportedQuery),
-        };
-        if axis == MetricAxis::Step && !retain_neighbors {
-            return self.query_step_metric(run_id, metric_key, query, &metadata, diagnostics);
-        }
-        let viewport = bounds.unwrap_or(AxisBounds::new(None, None)).viewport()?;
-        let reduction = AlignmentReduction::screen_budget(
-            u32::try_from(query.max_points()).unwrap_or(u32::MAX),
-            1,
-        )
-        .map_err(|_| Error::UnsupportedQuery)?;
-        let storage_query = AlignmentQuery {
-            run_id: run_id.clone(),
-            metric_key: metric_key.clone(),
-            axis: storage_axis,
-            viewport,
-            reduction,
-        };
-        let narrow_step = use_narrow_step_plan(axis, bounds, diagnostics, force_full_step);
-        let bounded_full_count = self
-            .connection
-            .is_some()
-            .then(|| use_bounded_full_plan(axis, bounds, diagnostics, narrow_step))
-            .filter(|bounded| *bounded)
-            .and(diagnostics.map(|diagnostics| diagnostics.effective_count));
-        let connection = self.connection.as_ref().ok_or(Error::Storage)?;
-        trace("storage_start");
-        let result = match (narrow_step, bounded_full_count) {
-            (true, None) => {
-                ProjectMetricReader::new(connection).query_narrow_step_metric(&storage_query)
-            }
-            (false, Some(source_count)) => ProjectMetricReader::new(connection)
-                .query_bounded_full_aligned_metric(&storage_query, source_count),
-            (false, None) => {
-                ProjectMetricReader::new(connection).query_aligned_metric(&storage_query)
-            }
-            (true, Some(_)) => return Err(Error::Storage),
-        }
-        .map_err(public_storage_error)?;
-        trace("storage_finish");
-        let neighbor_count = result
-            .points
-            .iter()
-            .filter(|point| !in_half_open_range(point.axis_value, bounds))
-            .count() as u64;
-        let points = if retain_neighbors {
-            bounded_desktop_points(result.points, bounds, query.max_points())
-        } else {
-            result
-                .points
-                .into_iter()
-                .filter(|point| in_half_open_range(point.axis_value, bounds))
-                .collect()
-        };
-        trace("points_start");
-        let mut samples = points
-            .into_iter()
-            .map(|point| {
-                let coordinate = match axis {
-                    MetricAxis::Step => MetricCoordinate::Step(Step::new(point.axis_value)),
-                    MetricAxis::RelativeTime => {
-                        MetricCoordinate::RelativeTime(RelativeTime::from_millis(point.axis_value))
-                    }
-                    MetricAxis::Timestamp => MetricCoordinate::Timestamp(Timestamp::from_millis(
-                        point.point.timestamp.timestamp_millis(),
-                    )),
-                };
-                MetricSample {
-                    coordinate,
-                    point: point.point,
-                }
-            })
-            .collect::<Vec<_>>();
-        if !retain_neighbors {
-            samples = enforce_point_bound(samples, query.max_points());
-        }
-        let source_count = if retain_neighbors {
-            result.source_row_count
-        } else {
-            result.source_row_count.saturating_sub(neighbor_count)
-        };
-        let (completeness, reasons) = qualify_series(result.reasons, diagnostics, run_status);
-        let series = MetricSeries::from_samples(axis, samples, source_count, completeness, reasons)
-            .map_err(|_| Error::Storage)?;
-        trace("points_finish");
-        Ok(series)
+        self.query_step_metric(run_id, metric_key, query, &metadata, trace)
     }
 
     fn query_step_metric(
@@ -990,7 +762,7 @@ impl Reader {
         metric_key: &MetricKey,
         query: &MetricQuery,
         metadata: &RunMetadata,
-        diagnostics: Option<SeriesDiagnostics>,
+        trace: &mut dyn FnMut(&'static str),
     ) -> SdkResult<MetricSeries> {
         let (start, end) = match query.range() {
             MetricRange::All(MetricAxis::Step) => (None, None),
@@ -1009,10 +781,13 @@ impl Reader {
                 .map_err(|_| Error::UnsupportedQuery)?;
         let connection = self.connection.as_ref().ok_or(Error::Storage)?;
         let started = std::time::Instant::now();
+        trace("storage_start");
         let result = ProjectMetricReader::new(connection)
             .query_metric(&storage_query)
             .map_err(public_storage_error)?;
         crate::storage::bootstrap::record_write_timing("reader_points_query", started.elapsed());
+        trace("storage_finish");
+        trace("points_start");
         let mut samples = result
             .points
             .into_iter()
@@ -1022,7 +797,7 @@ impl Reader {
             })
             .collect::<Vec<_>>();
         samples = enforce_point_bound(samples, query.max_points());
-        let (completeness, reasons) = qualify_series(Vec::new(), diagnostics, metadata.status);
+        let (completeness, reasons) = qualify_series(metadata.status);
         MetricSeries::from_samples(
             MetricAxis::Step,
             samples,
@@ -1031,48 +806,7 @@ impl Reader {
             reasons,
         )
         .map_err(|_| Error::Storage)
-    }
-
-    fn series_diagnostics(
-        &self,
-        run_id: &RunId,
-        metric_key: &MetricKey,
-        metadata: &RunMetadata,
-    ) -> Option<SeriesDiagnostics> {
-        let key = DiagnosticsKey {
-            project_id: metadata.project_id.clone(),
-            run_id: run_id.clone(),
-            metric_key: metric_key.clone(),
-        };
-        let finished = metadata.status == RunStatus::Finished;
-        let cached = self.diagnostics.borrow();
-        let diagnostics = if finished {
-            cached.finished.get(&key)
-        } else {
-            cached.volatile.get(&key)
-        };
-        if let Some(diagnostics) = diagnostics {
-            return Some(*diagnostics);
-        }
-        drop(cached);
-        #[cfg(test)]
-        self.diagnostics_loads.set(self.diagnostics_loads.get() + 1);
-        let loaded = ProjectMetricReader::new(self.connection.as_ref()?)
-            .series_diagnostics(run_id, metric_key)
-            .ok()?;
-        let mut cache = self.diagnostics.borrow_mut();
-        if finished {
-            if cache.finished.len() >= MAX_FINISHED_DIAGNOSTICS_CACHE {
-                cache.finished.clear();
-            }
-            cache.finished.insert(key, loaded);
-        } else {
-            if cache.volatile.len() >= MAX_VOLATILE_DIAGNOSTICS_CACHE {
-                cache.volatile.clear();
-            }
-            cache.volatile.insert(key, loaded);
-        }
-        Some(loaded)
+        .inspect(|_| trace("points_finish"))
     }
 
     fn metadata(&self, run_id: &RunId) -> SdkResult<RunMetadata> {
@@ -1111,61 +845,8 @@ impl Reader {
 
 impl From<&Run> for RunMetadata {
     fn from(run: &Run) -> Self {
-        Self {
-            project_id: Some(run.project_id.clone()),
-            status: run.status,
-        }
+        Self { status: run.status }
     }
-}
-
-fn use_narrow_step_plan(
-    axis: MetricAxis,
-    bounds: Option<AxisBounds>,
-    diagnostics: Option<SeriesDiagnostics>,
-    force_full: bool,
-) -> bool {
-    let (Some(bounds), Some(diagnostics)) = (bounds, diagnostics) else {
-        return false;
-    };
-    if force_full || axis != MetricAxis::Step || diagnostics.effective_count == 0 {
-        return false;
-    }
-    match (diagnostics.min_step, diagnostics.max_step) {
-        (Some(min_step), Some(max_step)) => {
-            !(bounds.start.is_none_or(|start| start <= min_step)
-                && bounds.end.is_none_or(|end| max_step < end))
-        }
-        _ => false,
-    }
-}
-
-fn use_bounded_full_plan(
-    axis: MetricAxis,
-    bounds: Option<AxisBounds>,
-    diagnostics: Option<SeriesDiagnostics>,
-    narrow_step: bool,
-) -> bool {
-    let Some(diagnostics) = diagnostics else {
-        return false;
-    };
-    if narrow_step || !bounded_reduction_is_safe(axis, diagnostics) {
-        return false;
-    }
-    match (axis, bounds, diagnostics.min_step, diagnostics.max_step) {
-        (_, None, _, _) => true,
-        (MetricAxis::Step, Some(bounds), Some(minimum), Some(maximum)) => {
-            bounds.start.is_none_or(|start| start <= minimum)
-                && bounds.end.is_none_or(|end| maximum < end)
-        }
-        _ => false,
-    }
-}
-
-fn bounded_reduction_is_safe(axis: MetricAxis, diagnostics: SeriesDiagnostics) -> bool {
-    !diagnostics.has_negative_step
-        && !diagnostics.has_non_finite_value
-        // Timestamp order qualifies evidence, but cannot change the Step reduction axis.
-        && (axis == MetricAxis::Step || !diagnostics.has_decreasing_timestamp)
 }
 
 fn public_storage_error(error: StorageError) -> Error {
@@ -1179,54 +860,6 @@ fn public_storage_error(error: StorageError) -> Error {
     }
 }
 
-fn in_half_open_range(value: i64, bounds: Option<AxisBounds>) -> bool {
-    bounds.is_none_or(|bounds| bounds.contains(value))
-}
-
-#[cfg(test)]
-pub(crate) fn bound_quality_samples(
-    points: Vec<AlignedMetricPoint>,
-    start: i64,
-    end: i64,
-    budget: usize,
-) -> Vec<AlignedMetricPoint> {
-    bounded_desktop_points(
-        points,
-        Some(AxisBounds::new(Some(start), Some(end))),
-        budget,
-    )
-}
-
-fn bounded_desktop_points(
-    points: Vec<AlignedMetricPoint>,
-    bounds: Option<AxisBounds>,
-    max_points: usize,
-) -> Vec<AlignedMetricPoint> {
-    let Some(bounds) = bounds else {
-        return enforce_point_bound(points, max_points);
-    };
-    let mut left = None;
-    let mut right = None;
-    let mut inside = Vec::new();
-    for point in points {
-        if bounds.start.is_some_and(|start| point.axis_value < start) {
-            left = Some(point);
-        } else if bounds.end.is_some_and(|end| point.axis_value >= end) {
-            right.get_or_insert(point);
-        } else {
-            inside.push(point);
-        }
-    }
-    let neighbor_count = usize::from(left.is_some()) + usize::from(right.is_some());
-    let inside_limit = max_points.saturating_sub(neighbor_count);
-    if inside_limit < 2 {
-        inside.truncate(inside_limit);
-    } else {
-        inside = enforce_point_bound(inside, inside_limit);
-    }
-    left.into_iter().chain(inside).chain(right).collect()
-}
-
 fn enforce_point_bound<T: Clone>(samples: Vec<T>, max_points: usize) -> Vec<T> {
     if samples.len() <= max_points {
         return samples;
@@ -1237,66 +870,18 @@ fn enforce_point_bound<T: Clone>(samples: Vec<T>, max_points: usize) -> Vec<T> {
         .collect()
 }
 
-fn qualify_series(
-    alignment_reasons: Vec<AlignmentReason>,
-    diagnostics: Option<SeriesDiagnostics>,
-    run_status: RunStatus,
-) -> (EvidenceCompleteness, Vec<EvidenceReason>) {
-    let mut reasons = alignment_reasons
-        .into_iter()
-        .map(|reason| match reason {
-            AlignmentReason::MissingRunStart => EvidenceReason::MissingRunStart,
-            AlignmentReason::NegativeAxis => EvidenceReason::NegativeAxis,
-            AlignmentReason::DecreasingAxis => EvidenceReason::DecreasingAxis,
-        })
-        .collect::<Vec<_>>();
-    let missing_metric = diagnostics.is_some_and(|value| value.effective_count == 0);
-    match diagnostics {
-        Some(value) => {
-            if value.has_negative_step {
-                reasons.push(EvidenceReason::NegativeAxis);
-            }
-            if value.has_decreasing_timestamp {
-                reasons.push(EvidenceReason::DecreasingAxis);
-            }
-            if value.has_non_finite_value {
-                reasons.push(EvidenceReason::NonFiniteValue);
-            }
-            if missing_metric && reasons.is_empty() {
-                reasons.push(EvidenceReason::MissingMetric);
-            }
-        }
-        None => reasons.push(EvidenceReason::DiagnosticsUnavailable),
+fn qualify_series(run_status: RunStatus) -> (EvidenceCompleteness, Vec<EvidenceReason>) {
+    match run_status {
+        RunStatus::Finished => (EvidenceCompleteness::Complete, Vec::new()),
+        RunStatus::Running => (
+            EvidenceCompleteness::Partial,
+            vec![EvidenceReason::RunRunning],
+        ),
+        RunStatus::Failed => (
+            EvidenceCompleteness::Partial,
+            vec![EvidenceReason::RunFailed],
+        ),
     }
-    let invalid = reasons.iter().any(|reason| {
-        matches!(
-            reason,
-            EvidenceReason::NegativeAxis
-                | EvidenceReason::DecreasingAxis
-                | EvidenceReason::NonFiniteValue
-        )
-    });
-    let missing_run_start = reasons.contains(&EvidenceReason::MissingRunStart);
-    let mut completeness = if invalid {
-        EvidenceCompleteness::Invalid
-    } else if missing_metric || missing_run_start {
-        EvidenceCompleteness::Unavailable
-    } else {
-        EvidenceCompleteness::Complete
-    };
-    if reasons.contains(&EvidenceReason::DiagnosticsUnavailable) {
-        completeness = completeness.max(EvidenceCompleteness::Partial);
-    }
-    let lifecycle_reason = match run_status {
-        RunStatus::Running => Some(EvidenceReason::RunRunning),
-        RunStatus::Failed => Some(EvidenceReason::RunFailed),
-        RunStatus::Finished => None,
-    };
-    if let Some(reason) = lifecycle_reason {
-        completeness = completeness.max(EvidenceCompleteness::Partial);
-        reasons.push(reason);
-    }
-    (completeness, reasons)
 }
 
 /// Horizontal coordinate requested for a metric series.
@@ -1750,7 +1335,6 @@ mod tests {
             &[run.run_id().clone()],
             &MetricKey::from_string("loss"),
             &query,
-            false,
             &mut || {
                 calls.set(calls.get() + 1);
                 calls.get() == 2
@@ -1894,47 +1478,28 @@ mod tests {
         let result = reader
             .with_fresh_query_reader(|fresh| {
                 attempts += 1;
-                assert_eq!(
-                    fresh.diagnostics_loads.get(),
-                    0,
-                    "failed-attempt cache must not escape"
-                );
                 let mut output = Vec::new();
                 for id in ["a", "b"] {
                     calls.push(id);
                     if attempts == 1 && id == "b" {
                         return Err(Error::Storage);
                     }
-                    output.push(fresh.query_metric_once(
-                        &RunId::from_string(id),
-                        &key,
-                        &query,
-                        true,
-                        true,
-                    )?);
+                    output.push(fresh.query_metric_once(&RunId::from_string(id), &key, &query)?);
                 }
                 Ok(Some(output))
             })?
             .unwrap();
         assert_eq!(calls, vec!["a", "b", "a", "b"]);
         assert_eq!(result.len(), 2);
-        assert_eq!(reader.diagnostics_loads.get(), 2);
-        let cached = reader.diagnostics.borrow().finished.len();
         let mut calls = 0;
-        let error = reader.with_fresh_query_reader::<()>(|fresh| {
+        let error = reader.with_fresh_query_reader::<()>(|_| {
             calls += 1;
-            fresh.diagnostics.borrow_mut().finished.clear();
             Err(Error::Storage)
         });
         assert_eq!(error, Err(Error::Storage));
         assert_eq!(calls, 2);
-        assert_eq!(reader.diagnostics.borrow().finished.len(), cached);
-        let cancelled = reader.with_fresh_query_reader::<()>(|fresh| {
-            fresh.diagnostics.borrow_mut().finished.clear();
-            Ok(None)
-        })?;
+        let cancelled = reader.with_fresh_query_reader::<()>(|_| Ok(None))?;
         assert!(cancelled.is_none());
-        assert_eq!(reader.diagnostics.borrow().finished.len(), cached);
         let mut calls = 0;
         assert_eq!(
             reader.with_fresh_query_reader::<()>(|_| {
@@ -2039,95 +1604,6 @@ mod tests {
             })
         );
         assert!(MetricQuery::new(MetricRange::All(MetricAxis::Step), 2).is_ok());
-    }
-
-    #[test]
-    fn narrow_step_plan_requires_an_incomplete_cached_boundary() {
-        let diagnostics = SeriesDiagnostics {
-            effective_count: 10,
-            min_step: Some(0),
-            max_step: Some(9),
-            has_negative_step: false,
-            has_decreasing_timestamp: false,
-            has_non_finite_value: false,
-        };
-
-        assert!(use_narrow_step_plan(
-            MetricAxis::Step,
-            Some(AxisBounds::new(Some(2), Some(8))),
-            Some(diagnostics),
-            false
-        ));
-        assert!(!use_narrow_step_plan(
-            MetricAxis::Step,
-            Some(AxisBounds::new(Some(0), Some(10))),
-            Some(diagnostics),
-            false
-        ));
-        assert!(!use_narrow_step_plan(
-            MetricAxis::Step,
-            Some(AxisBounds::new(Some(2), Some(8))),
-            Some(diagnostics),
-            true
-        ));
-    }
-
-    #[test]
-    fn bounded_full_plan_requires_complete_valid_diagnostics() {
-        let diagnostics = SeriesDiagnostics {
-            effective_count: 10,
-            min_step: Some(0),
-            max_step: Some(9),
-            has_negative_step: false,
-            has_decreasing_timestamp: false,
-            has_non_finite_value: false,
-        };
-
-        assert!(use_bounded_full_plan(
-            MetricAxis::Step,
-            Some(AxisBounds::new(Some(0), Some(10))),
-            Some(diagnostics),
-            false
-        ));
-        assert!(!use_bounded_full_plan(
-            MetricAxis::Step,
-            Some(AxisBounds::new(Some(2), Some(8))),
-            Some(diagnostics),
-            true
-        ));
-        assert!(!use_bounded_full_plan(
-            MetricAxis::RelativeTime,
-            Some(AxisBounds::new(Some(0), Some(10))),
-            Some(diagnostics),
-            false
-        ));
-        let invalid = SeriesDiagnostics {
-            has_decreasing_timestamp: true,
-            ..diagnostics
-        };
-        assert!(!bounded_reduction_is_safe(
-            MetricAxis::RelativeTime,
-            invalid
-        ));
-        assert!(bounded_reduction_is_safe(MetricAxis::Step, invalid));
-        assert!(!bounded_reduction_is_safe(
-            MetricAxis::Step,
-            SeriesDiagnostics {
-                has_negative_step: true,
-                ..invalid
-            }
-        ));
-        assert!(!bounded_reduction_is_safe(
-            MetricAxis::Step,
-            SeriesDiagnostics {
-                has_non_finite_value: true,
-                ..invalid
-            }
-        ));
-        let (completeness, reasons) =
-            qualify_series(Vec::new(), Some(invalid), RunStatus::Finished);
-        assert_eq!(completeness, EvidenceCompleteness::Invalid);
-        assert_eq!(reasons, vec![EvidenceReason::DecreasingAxis]);
     }
 
     #[test]
@@ -2280,71 +1756,20 @@ mod tests {
             let step = sample.point.step.value();
             (1..4).contains(&step)
         }));
-        assert_eq!(series.completeness(), EvidenceCompleteness::Invalid);
-        assert_eq!(
-            series.reasons(),
-            [
-                EvidenceReason::NegativeAxis,
-                EvidenceReason::DecreasingAxis,
-                EvidenceReason::NonFiniteValue,
-            ]
-        );
+        assert_eq!(series.completeness(), EvidenceCompleteness::Complete);
+        assert!(series.reasons().is_empty());
+        // Detail is viewport-only: no Step 0/4 neighbors, and the native
+        // reduction keeps the in-range endpoints within the same budget.
         assert_eq!(desktop_series.samples().len(), 2);
-        assert_eq!(desktop_series.samples()[0].point.step, Step::new(0));
-        assert_eq!(desktop_series.samples()[1].point.step, Step::new(4));
-        assert_eq!(reader.diagnostics_loads.get(), 1);
-        reader.refresh_diagnostics(1);
-        let cache_query = MetricQuery::new(
-            MetricRange::Steps {
-                start: Step::new(1),
-                end: Step::new(4),
-            },
-            2,
-        )?;
-        reader.query_metric_for_desktop(
-            &run.run_id,
-            &MetricKey::from_string("loss"),
-            &cache_query,
-        )?;
-        assert_eq!(reader.diagnostics_loads.get(), 1);
-
-        reader
-            .run_metadata
-            .borrow_mut()
-            .get_mut(&run.run_id)
-            .expect("test Run metadata should be cached")
-            .status = RunStatus::Running;
-        // A stale caller-side status cannot change the fresh query snapshot.
-        reader.refresh_diagnostics(2);
-        for _ in 0..2 {
-            reader.query_metric_for_desktop(
-                &run.run_id,
-                &MetricKey::from_string("loss"),
-                &cache_query,
-            )?;
-        }
-        assert_eq!(reader.diagnostics_loads.get(), 1);
-        reader.refresh_diagnostics(3);
-        reader.query_metric_for_desktop(
-            &run.run_id,
-            &MetricKey::from_string("loss"),
-            &cache_query,
-        )?;
-        assert_eq!(reader.diagnostics_loads.get(), 1);
-        Ok(())
-    }
-
-    #[test]
-    fn diagnostic_failure_preserves_points_with_explicit_partial_evidence()
-    -> Result<(), MetricSeriesError> {
-        let sample = sample(MetricCoordinate::Step(Step::new(7)));
-        let (completeness, reasons) = qualify_series(Vec::new(), None, RunStatus::Finished);
-        let series =
-            MetricSeries::from_samples(MetricAxis::Step, vec![sample], 1, completeness, reasons)?;
-
-        assert_eq!(series.samples().len(), 1);
-        assert_eq!(series.completeness(), EvidenceCompleteness::Partial);
-        assert_eq!(series.reasons(), [EvidenceReason::DiagnosticsUnavailable]);
+        assert_eq!(desktop_series.source_count(), 3);
+        assert_eq!(
+            desktop_series
+                .samples()
+                .iter()
+                .map(|sample| sample.point.step)
+                .collect::<Vec<_>>(),
+            [Step::new(1), Step::new(3)]
+        );
         Ok(())
     }
 }
