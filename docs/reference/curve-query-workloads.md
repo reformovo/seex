@@ -1369,6 +1369,52 @@ Evidence retained from the superseded two-shape intermediate:
 - rejected 8-column result: `24410485336a85d08a63dee5d98aef2c2bbc9608c5cede319625864372129476`;
 - candidate executable: `3f0afcc78e4ea3e9558e5aa0b873da2d99c667929def25ba65a8cdc1a99f0395`.
 
+### Per-statement fixed cost versus row volume
+`storage::metric_query::tests::sampling_stage_profile` measures the production sampled
+statement on one reused read-only connection: `prepare`, then `execute` (including
+`row_count()` materialization), then `consume` (Arrow batch conversion, payload extraction,
+native LTTB). It runs ten repetitions per Run and sums the per-Run medians for sixteen
+curves; the desktop panel also reuses one connection and processes curves sequentially.
+This is a storage-only diagnostic, not A-B-B-A: it excludes the fresh request open,
+metadata, point conversion and chart construction, and it does not measure RSS.
+
+```sh
+SEEX_PANEL_ROOT="$PWD/.tmp/v5-panel-million/store" \
+SEEX_STORAGE_PROFILE_OUT="$PWD/.tmp/v5-sampling-stages" \
+cargo test -p seex --release --lib storage::metric_query::tests::sampling_stage_profile \
+  -- --ignored --exact --nocapture --test-threads=1
+```
+
+Medians in ms, one curve / sixteen curves:
+
+| Range | Rows/curve | prepare | execute | consume |
+| --- | ---: | ---: | ---: | ---: |
+| prefix (0..2,048) | 2,049 | 1.24 / 17.48 | 8.69 / 127.95 | 0.06 / 0.90 |
+| middle | 100,002 | 1.18 / 18.78 | 9.80 / 157.94 | 1.55 / 24.62 |
+| outside (empty) | 0 | 1.02 / 15.16 | 1.10 / 16.41 | 0.00 / 0.02 |
+| overview | 1,000,001 | 1.67 / 25.63 | 20.52 / 327.45 | 16.83 / 267.52 |
+
+`prepare` is 1.0–1.7 ms per statement, or 15–26 ms for a sixteen-curve panel. The empty
+viewport gives the pure statement fixed cost: about 2.2 ms per curve (prepare plus
+execute), 32 ms per panel. Narrow and middle requests are execute-dominated; Arrow
+consumption and LTTB are negligible or small there. Overview is split roughly 55/45
+between execute (327 ms) and consume (268 ms).
+
+**Decision:** request-level batching is not the next optimization. It could remove at most
+the per-statement prepare and fixed execution overhead (~32–44 ms per sixteen-curve
+panel), while leaving the row scan, materialization and Arrow/LTTB work unchanged. The
+earlier 53% bounds-only batching win measured a different SQL shape and does not transfer
+to this fetch-and-reduce pipeline. Profile Overview's consume half next (Arrow conversion
+versus native LTTB) and keep batching as a later candidate only if a concrete
+fixed-cost-dominated request needs it.
+
+Raw evidence: `.tmp/v5-sampling-stages/sampling-stages.csv` (SHA-256
+`744635f8260bcf85dc0cf998416fa764769bab48b30cca029b324bfae1d91db5`) and
+`.tmp/v5-sampling-stages.log` (SHA-256
+`b8fad825285cfb27475e7ac68f27ea7ae1fd548c4bfc3c6bc06bb66929afe8d5`). The first
+preliminary run (without the execute/consume split) is `.tmp/v5-sampling-stage-profile/`
+and is not used.
+
 ## Next optimization roadmap
 
 Priority is bounded interactive work first, narrow-range latency second, and full-range
@@ -1383,20 +1429,22 @@ virtualization demonstrates scheduling intent, not bounded resource usage.
    Check superseded/cancelled work cannot repopulate evicted panels. This proves scheduling
    behavior only; real GUI frame latency and RSS require a separate desktop run. Do not
    load 10,000 million-point curves simply to exercise 10,000 panel identities.
-2. **Optimize the one sampling SQL.** Detail and Overview now share a filtered viewport
-   query; only bounds differ. Before adding request-level batching, capture its production
-   plan and close the evidence gap on the `(? IS NULL OR step >= ?)` form; then profile
-   per-statement fixed cost versus row volume. Do not reintroduce neighbors or
-   duplicate-observation loss for speed, and do not bypass DuckLake's authoritative
-   file/snapshot ownership.
+2. **The one sampling SQL is measured; batching is not next.** Detail and Overview share a
+   filtered viewport query and its production plans are captured. The per-statement profile
+   shows 1.0–1.7 ms prepare and ~2 ms fixed execution per curve (32–44 ms per sixteen-curve
+   panel), while row scan/materialization dominates narrow and middle ranges. Request-level
+   batching therefore targets a small share and is deferred. Do not reintroduce neighbors or
+   duplicate-observation loss for speed, and do not bypass DuckLake's file/snapshot
+   ownership.
 3. **Data-quality flags are out of the query path.** Series diagnostics were removed;
    completeness reflects Run lifecycle only. Summaries keep the catalog guard that skips the
    fact fallback. If validity evidence (negative Step, decreasing timestamp, non-finite value,
    missing metric) is needed again, maintain it at write/flush time in the catalog, with its
    own proposal, migration story, and measurement.
-4. **Revisit full-range Overview only after those findings.** Profile SQL/Arrow consumption
-   and native LTTB separately on the current revision. Optimize the measured dominant stage;
-   keep native LTTB as the default and do not reintroduce Arrow+screen as an alternate policy.
+4. **Overview is the next measured boundary.** The sixteen-curve profile splits its storage
+   time into roughly 327 ms execute and 268 ms Arrow+LTTB consume. Split Arrow conversion
+   from native LTTB, then optimize the measured dominant half; keep native LTTB as the
+   default and do not reintroduce Arrow+screen as an alternate policy.
 5. **Defer other discovery surfaces.** Give each its own workload and baseline later; do not
    mix them into curve-query comparisons. Reassess the selected-Run limit separately only if a
    concrete comparison UX requires more than sixteen Runs.

@@ -502,6 +502,135 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "storage-boundary per-statement profile; release and local fixture required"]
+    fn sampling_stage_profile() -> Result<(), Box<dyn std::error::Error>> {
+        fn median(values: &mut [f64]) -> f64 {
+            values.sort_by(f64::total_cmp);
+            let middle = values.len() / 2;
+            if values.len().is_multiple_of(2) {
+                (values[middle - 1] + values[middle]) / 2.0
+            } else {
+                values[middle]
+            }
+        }
+
+        assert!(!cfg!(debug_assertions), "requires --release");
+        let root = std::path::PathBuf::from(std::env::var("SEEX_PANEL_ROOT")?).canonicalize()?;
+        assert!(root.ends_with(".tmp/v5-panel-million/store"));
+        let output = std::path::PathBuf::from(std::env::var("SEEX_STORAGE_PROFILE_OUT")?);
+        assert_eq!(
+            output.parent().unwrap().canonicalize()?,
+            root.parent().and_then(|path| path.parent()).unwrap()
+        );
+        assert!(
+            output
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("v5-")
+        );
+        std::fs::create_dir(&output)?; // Refuse overwriting old evidence.
+        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
+            crate::storage::bootstrap::CatalogBackend::Sqlite,
+            &root,
+            None,
+            None,
+            None,
+        );
+        let connection =
+            crate::storage::bootstrap::open_existing_native_connection_with_config(config)?;
+        let metric_key = MetricKey::from_string("loss");
+        let runs = (0..16)
+            .map(|index| RunId::from_string(format!("run-{index}")))
+            .collect::<Vec<_>>();
+        let budget = 1024;
+        let mut csv = String::from("range,scope,rows,prepare_ns,execute_ns,consume_ns\n");
+        for (name, start, end, expected_rows) in [
+            (
+                "prefix",
+                Some(Step::new(0)),
+                Some(Step::new(2049)),
+                2049_u64,
+            ),
+            (
+                "middle",
+                Some(Step::new(450_000)),
+                Some(Step::new(550_001)),
+                100_002,
+            ),
+            (
+                "outside",
+                Some(Step::new(2_000_000)),
+                Some(Step::new(3_000_001)),
+                0,
+            ),
+            ("overview", Some(Step::new(0)), None, 1_000_001),
+        ] {
+            let mut first_prepare = Vec::new();
+            let mut first_execute = Vec::new();
+            let mut first_consume = Vec::new();
+            let mut prepare_sum = 0.0;
+            let mut execute_sum = 0.0;
+            let mut consume_sum = 0.0;
+            let mut rows_sum = 0;
+            for run in &runs {
+                let query = MetricQuery::new(
+                    run.clone(),
+                    metric_key.clone(),
+                    start,
+                    end,
+                    ReductionPolicy::screen_budget(1024, 1)?,
+                )?;
+                let sql = sampled_sql(MetricSource::Project);
+                let values = query_params(MetricSource::Project, &query);
+                let mut prepares = Vec::new();
+                let mut executes = Vec::new();
+                let mut consumes = Vec::new();
+                let mut rows = 0;
+                for _ in 0..10 {
+                    let started = std::time::Instant::now();
+                    let mut statement = connection.prepare(&sql)?;
+                    prepares.push(started.elapsed().as_nanos() as f64);
+                    let (selected, timings) =
+                        crate::storage::sampling::select_timed(&mut statement, &values, budget)?;
+                    executes.push(timings.execute.as_nanos() as f64);
+                    consumes.push(timings.consume.as_nanos() as f64);
+                    rows = selected.source_count;
+                }
+                assert_eq!(rows, expected_rows, "{name} source count");
+                let prepare = median(&mut prepares);
+                let execute = median(&mut executes);
+                let consume = median(&mut consumes);
+                if run == &runs[0] {
+                    first_prepare.push(prepare);
+                    first_execute.push(execute);
+                    first_consume.push(consume);
+                }
+                prepare_sum += prepare;
+                execute_sum += execute;
+                consume_sum += consume;
+                rows_sum += rows;
+                csv.push_str(&format!(
+                    "{name},{},{rows},{prepare:.0},{execute:.0},{consume:.0}\n",
+                    run.as_str()
+                ));
+            }
+            csv.push_str(&format!(
+                "{name},16-curves,{rows_sum},{prepare_sum:.0},{execute_sum:.0},{consume_sum:.0}\n"
+            ));
+            println!(
+                "SEEX_STAGE_PROFILE range={name} scope=one rows={expected_rows} prepare_ns={:.0} execute_ns={:.0} consume_ns={:.0}",
+                first_prepare[0], first_execute[0], first_consume[0]
+            );
+            println!(
+                "SEEX_STAGE_PROFILE range={name} scope=sixteen rows={rows_sum} prepare_ns={prepare_sum:.0} execute_ns={execute_sum:.0} consume_ns={consume_sum:.0}"
+            );
+        }
+        std::fs::write(output.join("sampling-stages.csv"), csv)?;
+        Ok(())
+    }
+
+    #[test]
     fn sampled_query_excludes_non_finite_values_and_counts_finite_rows()
     -> Result<(), Box<dyn std::error::Error>> {
         let connection = Connection::open_in_memory()?;

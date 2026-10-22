@@ -35,6 +35,11 @@ pub(crate) struct Selection {
     pub source_count: u64,
 }
 
+pub(crate) struct SelectionTimings {
+    pub execute: std::time::Duration,
+    pub consume: std::time::Duration,
+}
+
 fn invalid(message: impl ToString) -> StorageError {
     StorageError::Storage {
         operation: "native LTTB result selection",
@@ -55,10 +60,19 @@ pub(crate) fn select(
     values: &[Box<dyn ToSql>],
     budget: usize,
 ) -> Result<Selection, StorageError> {
+    select_timed(statement, values, budget).map(|(selection, _)| selection)
+}
+
+pub(crate) fn select_timed(
+    statement: &mut Statement<'_>,
+    values: &[Box<dyn ToSql>],
+    budget: usize,
+) -> Result<(Selection, SelectionTimings), StorageError> {
     let started = std::time::Instant::now();
     statement.execute(duckdb::params_from_iter(values.iter().map(|v| v.as_ref())))?;
     let expected_rows = statement.row_count();
-    super::bootstrap::record_write_timing("native_execute", started.elapsed());
+    let execute = started.elapsed();
+    super::bootstrap::record_write_timing("native_execute", execute);
     let started = std::time::Instant::now();
     let mut consumed = 0;
     // Same materialized result API as query_arrow, but exposes the exact result
@@ -104,11 +118,15 @@ pub(crate) fn select(
         return Err(invalid("incomplete Arrow result"));
     }
     let points = reducer.finish().map_err(|e| invalid(format!("{e:?}")))?;
-    super::bootstrap::record_write_timing("native_consume", started.elapsed());
-    Ok(Selection {
-        points,
-        source_count: expected_rows as u64,
-    })
+    let consume = started.elapsed();
+    super::bootstrap::record_write_timing("native_consume", consume);
+    Ok((
+        Selection {
+            points,
+            source_count: expected_rows as u64,
+        },
+        SelectionTimings { execute, consume },
+    ))
 }
 
 #[cfg(test)]
