@@ -13,14 +13,16 @@ Parquet hashes, sixteen case logs, results, and wall time; these are not reposit
 
 Fixture: `.tmp/v5-panel-million/store`, sixteen Runs, each with `loss` Steps 0..999,999 plus
 an additional observation at Step 500,000 (1,000,001 observations). Budget: 1,024 points/curve.
-Source counts include one actual nearest neighbor per available side, even outside the data.
+At that capture, source counts included one actual nearest neighbor per available side, even
+outside the data; Desktop Detail no longer requests those neighbors (see below).
 ## Measurement method
 Each case ran in a fresh process: one separately timed first request, an excluded calibration
 pilot, then ten internally calibrated samples of at least 25 ms. All cases selected one
 iteration per sample. The complete sixteen-case workload took **58.64 seconds**, within a
 shared 120-second deadline. First-request timing excludes opening the `ReadSession`.
-The first request populates session diagnostics; hot samples reuse those diagnostics,
-not a cached curve result or a cross-request DuckDB connection.
+At that capture, the first request populated session diagnostics and hot samples reused
+them, not a cached curve result or a cross-request DuckDB connection. Series diagnostics
+were later removed (see below).
 OS caches were **not cleared**: “first” does not mean cold disk.
 RSS is the process high-water mark from macOS `/usr/bin/time -l`, including first request,
 pilot, and samples; it is neither retained chart memory nor a per-request allocation delta.
@@ -947,8 +949,425 @@ or using physical position/LWW. Any fix must preserve append-only v5 semantics a
 DuckLake snapshot/file-list ownership. Next compare a minimal bounds-scan reduction
 against the current plan, with all eight range correctness cases and one/16 curves;
 request-level SQL batching remains a later alternative, not the assumed answer.
-The opt-in profile test is `storage::alignment_query::tests::detail_storage_operator_profile`;
-raw JSON/SQL output lives only in ignored `.tmp/v5-storage-operators/` scratch.
+The opt-in profile test was `storage::alignment_query::tests::detail_storage_operator_profile`;
+raw JSON/SQL output lives only in ignored `.tmp/v5-storage-operators/` scratch. The module
+was deleted with the neighbor SQL; reproduce that probe from `076913b`. The static-bounds,
+batched-bounds and bounds-gate probes described below were scratch-only and never committed;
+their raw plans remain under `.tmp/`, but they no longer exist in the tree.
+
+### Rejected candidate: separate predicate Top-N bounds
+Compared baseline `076913b2072b4cbbd3100121fcc6dffac7d1f0c1` with a minimal
+replacement of `step_bounds`: independent left/right Step scans, each filtered by
+identity and its strict viewport predicate, ordered descending/ascending with
+`LIMIT 1`. Scalar subqueries retained NULL for an absent side. The effective-row
+scan and native sampling were unchanged. This added a third relation reference;
+Parquet/identity parameter bindings were repeated for all three references.
+**The production change was withdrawn**, not retained as an optimization.
+
+One bounded A-B-B-A used the exact gate command:
+
+```sh
+python scripts/performance_gate.py run \
+  --manifest .tmp/v5-bounds-comparison/manifest.json \
+  --output .tmp/v5-bounds-comparison/result.json
+```
+
+Each capture ran the existing release `panel_gate` for prefix, middle and outside
+(`empty`), with one and sixteen curves, validating every measured request.
+Each metric has ten calibrated samples >=25 ms; all selected one iteration/sample.
+The complete gate finished within its enforced 120-second deadline, excluding
+builds, EXPLAIN and separate correctness checks. No retries or OS-cache clearing.
+Times below are hot medians in ms, in A/B/B/A order:
+
+| Curves | Range | A1 | B1 | B2 | A2 |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | prefix | 61.24 | 63.62 | 66.88 | 61.09 |
+| 1 | middle | 71.05 | 71.31 | 73.59 | 69.56 |
+| 1 | outside | 63.95 | 68.14 | 71.66 | 62.69 |
+| 16 | prefix | 430.35 | 480.63 | 500.31 | 436.19 |
+| 16 | middle | 503.65 | 604.00 | 624.81 | 522.89 |
+| 16 | outside | 412.76 | 556.30 | 555.68 | 425.34 |
+
+The gate verdict is **inconclusive**, not a formal regression classification:
+several selected metrics exceeded 2% relative MAD. All medians were slower for B;
+16-curve middle/outside each stayed below 2% MAD in all four captures. There is no
+measured reason to retain the extra scans. Separate candidate `query_panel` checks
+passed all eight ranges × one/sixteen curves (four requests/case), including exact
+source counts, completeness, budget and chart-point counts. Unit coverage now also
+checks prefix/suffix and `i64::MIN`/`i64::MAX` singleton viewports with duplicate and
+non-finite observations; selected neighbors must remain whole real observations.
+
+Candidate EXPLAIN confirms the limitation: outside's left scan still emits
+1,000,001 Steps from 62 files; prefix's right scan still reads 62 files despite
+emitting fewer rows. Middle's bounds read 28 + 29 files. Predicate pushdown and
+Top-N do not guarantee early file termination. Effective rows/counts were correct;
+this is not evidence of an LTTB bottleneck. Before another production candidate,
+verify whether a DuckLake-owned aggregate with a static Step predicate can avoid
+fact scans in the actual plan; do not assume `min`/`max` or `LIMIT 1` can do so.
+
+Ignored evidence: `.tmp/v5-bounds-comparison/` (logs, runner, manifest, result and
+copied executables), `.tmp/v5-storage-topn-bounds/` (JSON plans and SQL).
+SHA-256 identities:
+- manifest: `f7f2a86a5bd882fd504e37061e7b05b93fb4b933fdd15ec029d6867ee25a35a4`;
+- runner: `29ed38930f45964a0c80bd96632a8f17c4d61083a2bc474bfaa33cad32baadc7`;
+- result: `d8c0336a9f801bd7ceccaa08d3e0fde3d6c16f9207e2602cd8b424f687b88c30`;
+- baseline executable: `244608756bc69036dc9e0c704a727ca1ac1a3958b18123fd1e1f54b2c40a3b4d`;
+- candidate executable: `b3fe457890145f880cae77ea7d6baee5125a3734a89a3644053c0b8c79a881cf`.
+
+### Static aggregate plan validation: no metadata-only shortcut
+`detail_static_bounds_operator_profile` captures 76 analyzed plans: all eight
+ranges plus outside-left and an unfiltered control, both sides, literal/bound Step
+predicates, and paired min/max versus the single nearest aggregate. All boundary
+assertions passed. Reproduce with the existing fixture (output must not exist):
+```sh
+SEEX_PANEL_ROOT="$PWD/.tmp/v5-panel-million/store" \
+SEEX_STORAGE_PROFILE_OUT="$PWD/.tmp/v5-static-bounds-plans" \
+cargo test -p seex --release --lib storage::alignment_query::tests::detail_static_bounds_operator_profile \
+  -- --ignored --exact --nocapture --test-threads=1
+```
+Nonempty predicates still have `DUCKLAKE_SCAN` feeding the aggregate. Literal/bound
+and single/paired forms match: prefix-right **997,952 / 62**, middle-left
+**450,000 / 28**, middle-right **449,999 / 29**, tail-left **999,001 / 62**, and
+outside-right's left **1,000,001 / 62** (rows / files). The unfiltered control also
+scans 1,000,001 Steps / 62 files. Impossible sides become `EMPTY_RESULT`, but do
+not remove work on the other side.
+This DuckLake version/fixture provides no metadata-only nearest-bound shortcut;
+do not proceed with that production rewrite. This is plan evidence, not ABBA or
+physical-I/O measurement; no hot-path SQL changed. Consider request batching before
+another equivalent per-curve bounds rewrite. Raw SQL/JSON and `SHA256SUMS` live in
+ignored `.tmp/v5-static-bounds-plans/`; SHA-256:
+`c98d564fffbd953f5844e147f2d435c5909d22224a163f6a5f0ecf77674dde03`.
+
+### Request-batched bounds investigation: fewer nodes, unchanged fact work
+The ignored `detail_batched_bounds_operator_profile` compares the incumbent bounds
+CTE (extracted verbatim, with the same bindings) against a requested-Run VALUES
+relation joined to DuckLake, then grouped by request ordinal and RunId. Scope is
+**bounds discovery only**, not effective observation fetch, native LTTB or a panel.
+Both plans use bound identities and viewport limits, on the existing read-only
+connection. No production query, public API or connection lifetime changed.
+
+```sh
+SEEX_PANEL_ROOT="$PWD/.tmp/v5-panel-million/store" \
+SEEX_STORAGE_PROFILE_OUT="$PWD/.tmp/v5-batched-bounds-plans-complete" \
+cargo test -p seex --release --lib storage::alignment_query::tests::detail_batched_bounds_operator_profile \
+  -- --ignored --exact --nocapture --test-threads=1
+```
+
+All 72 analyzed plans completed: prefix, middle, outside and a missing-Run control;
+each has sixteen single queries and one/16-Run batch queries. Boundary values,
+request order/identity and NULL boundaries for the missing Run were asserted.
+For each of prefix/middle/outside:
+
+| Shape | DuckLake scan nodes | Scan output Steps | Files read |
+| --- | ---: | ---: | ---: |
+| Sixteen incumbent queries, summed | 16 | 16,000,016 | 992 |
+| One sixteen-Run grouped query | 1 | 16,000,016 | 992 |
+| One single-Run grouped query | 1 | 1,000,001 | 62 |
+
+The missing-Run control selects fifteen real Runs plus one absent identity:
+both shapes scan 15,000,015 Steps / 930 files and preserve the absent request.
+Batching does not reduce fact work here; it adds HASH_JOIN and HASH_GROUP_BY.
+Fewer statements may save prepare/dispatch cost, but this profile does not measure
+that tradeoff. No ABBA, end-to-end latency, physical-I/O or RSS claim follows.
+Raw SQL/JSON and `SHA256SUMS` are in the output directory above; manifest SHA-256:
+`138f436b023abfef23c3b91bfb483ebdf9c2c317435a616d79e7c19425c3f8bd`.
+
+Do not yet wire a complete grouped query into Reader. Its current loop qualifies
+each Run, chooses narrow/bounded-full/fallback, and shares only one fresh request
+connection. The existing Arrow selector accepts exactly one curve and one set of
+snapshot counts; concatenating Run streams would corrupt counts and LTTB budgets.
+Any full prototype needs explicit request ordinal, per-Run snapshot counts/empty
+rows, real nearest observation selection (ties unspecified), and separate reducers
+with unchanged per-curve budgets. Preserve duplicate observations, cancellation,
+whole-attempt retry and no partial publication. A single batch statement would
+share one statement snapshot; do not promise a panel-wide transaction snapshot.
+Next, measure a bounded storage-only control of sixteen incumbent bounds calls
+versus this grouped query, including prepare, before paying for a grouped fetch/
+reducer integration. Mixed Run ranges, non-finite observations, full/Overview,
+actual points/budget parity and cancellation remain unvalidated by this probe.
+
+### Bounds-only A-B-B-A: batch candidate improves this boundary
+One bounded comparison used the ignored release `detail_bounds_gate`, with the
+same executable selecting baseline/candidate via `SEEX_BOUNDS_ROLE`. Baseline
+executes sixteen incumbent bounds CTEs; candidate executes one sixteen-Run grouped
+query using the same builder as the plan probe. SQL text and parameter allocation,
+connection open/attach and EXPLAIN are excluded. Every measured operation includes
+prepare, binding, execution, complete result consumption and boundary assertions;
+B additionally validates request ordinals/RunIds. The connection is reused within
+each capture, not across captures. No cross-request production cache was added.
+
+```sh
+python scripts/performance_gate.py run \
+  --manifest .tmp/v5-bounds-only-abba/manifest.json \
+  --output .tmp/v5-bounds-only-abba/result.json
+```
+
+The complete workload took **24.73 s**. All twelve metric captures have ten
+calibrated samples >=25 ms, one iteration/sample; one first operation and a
+calibration pilot per case are excluded. OS caches were not cleared. No retries.
+Hot medians (ms), in A/B/B/A order:
+
+| Range | A1 | B1 | B2 | A2 | Combined improvement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| prefix | 222.24 | 103.47 | 104.95 | 225.34 | 53.43% |
+| middle | 221.99 | 103.69 | 106.85 | 224.19 | 52.81% |
+| outside | 222.03 | 104.24 | 105.53 | 223.66 | 52.93% |
+
+Gate **pass**; relative MAD 0.45–1.38%, protected middle/outside did not regress.
+This measures the combined storage boundary, not prepare alone or a complete
+Detail request. Fact scan cardinality/files remain unchanged; no physical-I/O,
+LTTB, chart, RSS or full/Overview performance conclusion follows. The result
+supports a separately scoped full grouped-fetch/reducer prototype, not production
+integration yet. Ordinary tests also isolate different Run bounds and an empty
+request, independently of the homogeneous million-point fixture.
+Ignored raw evidence in the manifest directory includes the source snapshot,
+copied runner, build records, gate log, wall time, manifest and result. SHA-256:
+- manifest: `4662acc550e16d010f74346fe9af79815b689179e5784e8215eeb741b1747add`;
+- result: `af40e7a2082d431671cec7205209003a5e6c29e3ea6978e4818705f9e88b935b`;
+- runner: `8010788d60c78771be71ad6c243488ea4b35c8b384399c874e726a315f8f0463`;
+- captured source: `d61e44d058ad74d259f0b388918e88ced2f153f2469cb698219ca712f2334ff7`.
+
+### Neighbor ablation: substantial observed cost, noisy comparison
+`detail_neighbor_ablation` compares incumbent narrow SQL against test-only viewport
+filtering, with snapshot/finite counts and native LTTB in both; curves stay sequential.
+Prepare/execute/consume are included; open/attach, metadata and chart conversion are not.
+One `python scripts/performance_gate.py run --manifest .tmp/v5-neighbor-ablation/manifest.json --output .tmp/v5-neighbor-ablation/result.json`
+finished in **50.07 s**, ten calibrated samples >=25 ms per metric/capture, no
+retries. **Inconclusive**: every metric exceeded 2% relative MAD in at least one
+capture (0.35–4.40% overall). Medians in ms, A/B/B/A:
+
+| Curves | Range | A1 | B1 | B2 | A2 |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | prefix | 21.63 | 9.06 | 9.07 | 21.96 |
+| 1 | middle | 26.96 | 13.79 | 13.61 | 27.99 |
+| 1 | outside | 22.42 | 2.16 | 2.19 | 21.59 |
+| 16 | prefix | 345.38 | 149.16 | 139.72 | 354.35 |
+| 16 | middle | 436.64 | 227.64 | 230.59 | 447.80 |
+| 16 | outside | 338.53 | 34.49 | 33.98 | 361.32 |
+
+Separate traced one-Run diagnostics (three hot observations, not ABBA) show:
+prefix prepare/execute/consume **1.59/21.04/0.065 → 1.20/8.28/0.064 ms**;
+middle **1.77/25.27/1.68 → 1.33/11.37/1.61 ms**;
+outside **1.41/20.21/0.018 → 1.04/1.28/0.013 ms**.
+The candidate removes the million-Step/62-file bounds scan. Prefix reads 2,049
+observations/one file, middle 100,002/eight files, outside becomes EMPTY_RESULT.
+SQL stats and neighbor Top-N are small in operator evidence; parallel operator
+times are not additive wall-clock costs. Full-range requests are not covered.
+Observed savings support considering desktop Detail without neighbors, not a
+formal performance pass or deleting other storage/API contracts. Budget remains
+1,024; outside changes from one real point to empty. No production change yet.
+Raw logs/source/runner/result: ignored `.tmp/v5-neighbor-ablation/`; result SHA-256
+`6cb62add2b31e54308c37195abff13873a3d538a5d9128839a392511ae8d98a7`.
+Plans: `.tmp/v5-neighbor-profile-{baseline,candidate}/`, each with `SHA256SUMS`.
+
+### Desktop Detail drops out-of-view neighbors
+The ablation above led to a deliberate product change, approved as a UX tradeoff:
+Desktop **Detail** now queries only observations inside its closed viewport.
+Out-of-view neighbors previously forced a whole-Run bounds scan for every curve,
+even when the viewport held 2,048 of 1,000,001 Steps or none at all.
+
+Implementation: the panel path and the single-curve `query_metric_for_desktop`
+adapter no longer request neighbors at all. Detail reuses the existing
+viewport-filtered storage SQL (`step >= ? AND step < ?`, real snapshot counts,
+native LTTB, per-curve budget) instead of inventing another SQL shape. Stable
+`query_metric`, duplicate observations, budgets, retry, cancellation and
+no-partial-publication rules are untouched. No connection cache, rollup,
+dependency, partition or public Python API change. The follow-up section below
+records how Overview and the remaining storage shapes were resolved.
+
+One bounded A-B-B-A measured the **complete Detail panel request**: sixteen
+curves, fresh request connection, metadata/diagnostics, per-Run SQL, Arrow
+consumption, native LTTB and chart-series construction.
+
+```sh
+python scripts/performance_gate.py run \
+  --manifest .tmp/v5-detail-no-neighbor/manifest.json \
+  --output .tmp/v5-detail-no-neighbor/result.json
+```
+
+A is commit `076913b` (neighbor-retaining Detail); B is this change. Each
+build's binary was verified by its own expected source counts before timing.
+Three invalid attempts are not used: two never completed all cases (the first
+because a shared Cargo target directory silently reused the candidate test
+artifact for the baseline; the second because the runner requested an unsupported
+range name), and one completed capture set whose manifest keys did not match the
+emitted metric names (kept as `result-invalid-metric-keys.json`). The valid gate
+finished in **52.90 s**; every metric has ten calibrated samples >=25 ms in all
+four captures; no reruns of the reported workload. Hot medians (ms), A/B/B/A:
+
+| 16 curves | A1 | B1 | B2 | A2 | Combined improvement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| prefix (0..2,048) | 435.06 | 205.66 | 208.17 | 429.03 | 52.11% |
+| middle | 527.07 | 293.85 | 292.40 | 526.65 | 44.36% |
+| outside (empty) | 421.03 | 87.11 | 86.82 | 426.35 | 79.48% |
+
+Gate **pass**; relative MAD 0.32–1.87%, no protected regression. Empty viewports
+now return zero observations instead of one neighbor, so they render no curve
+instead of a single edge sample. Sparse curves may start/end at their first/last
+in-view observation, and a segment crossing a viewport with no observation inside
+no longer draws. That is the accepted cost; it needs real desktop confirmation,
+which this session did not run. Counts changed accordingly: prefix 2,050 -> 2,049,
+middle 100,004 -> 100,002, outside 1 -> 0 per curve; full detail is unchanged.
+
+Correctness: `panel_contract_and_values`, `native_read_pipeline` (exact counts,
+completeness, budget, first/last chart points), reader parity for repeated Step
+observations without neighbors, and the affected Reader unit test all pass. The
+narrow-Step/bounds SQL no longer sits on any path and was removed afterwards (see
+the next section); the previously reported request-batching gain does not apply.
+Ignored raw evidence in `.tmp/v5-detail-no-neighbor/`; SHA-256:
+- manifest: `0d20a2282b98e4a8b86e77ca13202a4f732f237352533f10c2355bfaba5a0654`;
+- result: `f637c6067a5e1b6cabc837e56afeb0b88a82ce72a45f344fdf97c69406485f49`;
+- baseline executable: `244608756bc69036dc9e0c704a727ca1ac1a3958b18123fd1e1f54b2c40a3b4d`;
+- candidate executable: `03fb5dad6d1c5cb827a7aaf60f5e944f01327e1778ef3183b735d0b87aa60968`.
+
+### Unused storage surfaces removed
+Overview no longer has a separate aligned/neighbor path. An intermediate attempt
+kept two shapes (viewport with statistics, whole series without) and registered
+Overview as `StepsFrom{0}` in the second. Using the statistics shape for Overview
+was measured and **rejected**: sixteen curves regressed **13.2%** (687/686 ->
+781/777 ms). That shape added an aggregate, a per-row `LEFT JOIN`, and extra
+`UBIGINT` columns; the run did not isolate their individual shares, so "column
+width" was never proven to be the sole cause. The regression file is kept as
+`.tmp/v5-overview-unified/result-8col-regression.json`. The final resolution is
+below: Detail and Overview share the same source, so they now also share one SQL.
+
+Removed with this change: the neighbor/aligned SQL and its `AlignmentQuery`,
+`AlignmentQueryResult`, `AlignmentReduction`, `AlignmentReason`,
+`AlignedMetricPoint`, `AlignedMetricResult` model types; the narrow-bounds plan;
+`query_aligned_metric` on `ProjectMetricReader`, `ParquetMetricReader`,
+`StandaloneMetricReader` and the `MetricReader` trait; the Parquet timestamp and
+ElapsedTime adapters; and the test-only Engine aligned entry point. Kept:
+`AlignmentAxis`, `AlignmentViewport`, `AlignmentQueryError` (desktop viewport and
+axis state) and summaries. Series diagnostics were removed separately below.
+
+### One filtered sampling SQL for Detail and Overview
+Both panels read the same fact relation, so neither needs per-row snapshot
+statistics. The sampled query is now a single shape:
+
+```sql
+WITH effective AS (
+    SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at
+    FROM dl.metric_points
+    WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
+      AND (? IS NULL OR step >= ?)
+      AND (? IS NULL OR step < ?)
+)
+SELECT step, epoch_ms(timestamp), value_f64, epoch_ms(ingested_at), step
+FROM effective WHERE isfinite(value_f64) ORDER BY step
+```
+
+`WHERE isfinite` runs at the SQL boundary, so the materialized row count is
+exactly the reducible point count and `Statement::row_count()` sizes the streaming
+LTTB. The `source_stats` CTE, `LEFT JOIN`, count columns, empty-result metadata
+row, seven-column protocol, and the Overview-only finite gate are all gone.
+Detail and Overview differ only in bounds: `Steps{start, end+1}` versus
+`StepsFrom{0}`. Non-sampled `Full` queries keep returning raw observations.
+
+Semantics change: `source_count` now counts finite observations in range rather
+than all observations including NaN/Inf. The desktop `source_row_count` feeds
+`downsampled()` and test-support resource snapshots, not displayed text; evidence
+completeness follows Run lifecycle only (see "Series diagnostics removed" below).
+This matches ClickHouse's own `lttb`, which drops
+NaN at the aggregate's `add()` and sizes buckets from the buffered finite count
+(it buffers O(N) instead of streaming, which is why it needs no pre-count).
+
+One bounded A-B-B-A compared the previous two-shape state with this one on
+the sixteen-curve panel: Detail prefix/middle/outside plus a whole-series
+Overview. It finished in **70.07 s** with ten calibrated samples >=25 ms per
+metric/capture. Medians in ms, A/B/B/A:
+
+| Query | A1 | B1 | B2 | A2 |
+| --- | ---: | ---: | ---: | ---: |
+| detail prefix | 209.17 | 230.27 | 206.68 | 210.10 |
+| detail middle | 284.99 | 288.25 | 269.61 | 288.12 |
+| detail outside | 88.67 | 101.65 | 83.59 | 87.77 |
+| overview full | 694.08 | 693.99 | 683.26 | 684.93 |
+
+Gate verdict **inconclusive**: three Detail captures exceeded 2% relative MAD
+(up to 3.83%), so no classification is claimed. There is no repeatable direction
+and no regression signal; Overview is flat. This is a simplification, not an
+optimization. Raw evidence `.tmp/v5-one-shape/artifacts/`; SHA-256:
+- manifest: `f2cb2c79848c14c4310f64659d69c4803d940c238e5404541d92d63452415d7a`;
+- result: `8a09d95ad12550af0369b18ef059f6f18ba27988f91fc365493ce121201b0d8d`;
+- two-shape baseline: `2a2edda6df54897fb75f5c17c2d1729bfcfc4f67405402177cd2368027e80065`;
+- one-shape candidate: `1810e6e613a9f442c20ec5543f3091af724809e135c52616192a4e42263eb1c9`.
+
+The earlier eight-to-seven-column experiment is superseded by this change; its
+raw evidence remains in `.tmp/v5-cols-baseline/artifacts/`.
+
+### Production plan evidence
+`storage::metric_query::tests::production_query_plans` captures the plans of the
+SQL that production actually builds: the shared sampled shape (four ranges) and
+the summaries query. It validates result counts first, then runs
+`EXPLAIN (ANALYZE, FORMAT JSON)` with the same bindings.
+Reproduce against the prepared fixture (output must not exist):
+
+```sh
+SEEX_PANEL_ROOT="$PWD/.tmp/v5-panel-million/store" \
+SEEX_STORAGE_PROFILE_OUT="$PWD/.tmp/v5-production-plans-final" \
+cargo test -p seex --release --lib storage::metric_query::tests::production_query_plans \
+  -- --ignored --exact --nocapture --test-threads=1
+```
+
+| Query | Files read | Rows out of `DUCKLAKE_SCAN` |
+| --- | ---: | ---: |
+| Detail prefix (0..2,048 closed) | 1 | 2,049 |
+| Detail middle (450,000..550,000) | 8 | 100,002 |
+| Detail outside (2M..3M) | 0 | 0 (operator eliminated) |
+| Overview (`StepsFrom{0}`) | 62 | 1,000,001 |
+| Summaries, sixteen finished Runs | 0 | 0 |
+
+This closes the earlier gap: the `(? IS NULL OR step >= ?)` form prunes files,
+and the non-finite filter does not force a full scan. Raw SQL/JSON and
+`SHA256SUMS` live in the ignored output directory; SHA-256:
+`e329af6d90fc7b01033b88d1d7886c69062cd1d8ffd46831829a7ddf19967542`.
+
+### Summaries: catalog guard skips the fact fallback
+The summaries query used to include the running-Run branch unconditionally.
+With sixteen finished Runs it still read **11 Parquet files / 24,576 rows** for a
+branch that could not match. Restructuring with a `MATERIALIZED` running set did
+not help (planner still scanned the probe side), so the branch is now chosen from
+the catalog: one `count(*)` over the requested Run ids decides which SQL is built.
+The finished-only statement reads **0 files**, verified by the plan test above.
+The guard also fixed a real hazard: a test fixture's in-memory `Run` said
+`Finished` while the catalog row still said `running`; caller-supplied statuses
+were therefore not trusted, and the catalog is the single source of truth.
+This is plan-level evidence, not an ABBA; the added lookup is a small catalog
+count, and summaries remain an inspector/discovery operation outside the hot
+Detail path.
+
+### Series diagnostics removed
+Before removal, every curve performed one whole-Run `lag` window per Reader
+generation to derive validity evidence (negative Step, decreasing timestamp,
+non-finite value, missing metric). Batching that window into one partitioned
+query was measured first and **rejected**: sixteen single queries took
+**365.20 / 363.69 ms** versus **469.13 / 450.36 ms** for the batch (storage-only
+A-B-B-A, 21.33 s, eight of ten samples calibrated per capture; gate
+`inconclusive` because one capture's MAD was 3.9%). The combined partition sort
+lost the parallelism of independent Run-scoped queries.
+
+The feature was then removed instead of optimized. `SeriesDiagnostics`,
+`query_series_diagnostics`, the Reader diagnostics cache, and the generation
+refresh call are gone. Completeness now follows Run lifecycle only:
+`Finished -> Complete`, `Running -> Partial + RunRunning`,
+`Failed -> Partial + RunFailed`. The curve path no longer emits `Invalid`,
+`Unavailable`, `MissingMetric`, `NegativeAxis`, `DecreasingAxis`,
+`NonFiniteValue`, or `DiagnosticsUnavailable`. Non-finite values are still
+filtered in SQL, so they never reach LTTB, and a Run without the metric now
+reports `Complete` with zero points rather than `Unavailable`. This is a
+product semantic change, not just a cleanup; callers that need data-quality
+flags would have to maintain them at write/flush time in a separate proposal.
+Raw rejected-batch evidence `.tmp/v5-diagnostics-batch/`; SHA-256:
+- manifest: `2e4edb3a112b3e916bc3bfec40349b96c6a95ecc255e22c91d718406afef9d80`;
+- result: `010c826a46ca256d2dae7d8dafb3a3099e1f2099087feccb8077b34ed172b3e2`;
+- runner: `eb892822dd58495078a6876f623db36b86a64a89c9eae44e32d859d05b8dd9bd`.
+
+Evidence retained from the superseded two-shape intermediate:
+`.tmp/v5-overview-unified/`; SHA-256:
+- manifest: `0f69a55e8dcd3eec16b23c3bb8afc868377f9fd8ba105d04fb4ac1d4d155366d`;
+- result: `21b734809f62bca0519e5e9e9db7f1b0c23b3a4ce114f5f98512b9e835f7d932`;
+- rejected 8-column result: `24410485336a85d08a63dee5d98aef2c2bbc9608c5cede319625864372129476`;
+- candidate executable: `3f0afcc78e4ea3e9558e5aa0b873da2d99c667929def25ba65a8cdc1a99f0395`.
 
 ## Next optimization roadmap
 
@@ -964,19 +1383,23 @@ virtualization demonstrates scheduling intent, not bounded resource usage.
    Check superseded/cancelled work cannot repopulate evicted panels. This proves scheduling
    behavior only; real GUI frame latency and RSS require a separate desktop run. Do not
    load 10,000 million-point curves simply to exercise 10,000 panel identities.
-2. **Profile Detail's fixed cost, then choose one SQL change.** Capture current plans and
-   request-stage timings for outside-only, sub-budget, 2,048-Step, 10%, and full viewports,
-   with one and sixteen curves. Investigate bounds discovery before considering request-level
-   batched SQL. Prefer reducing unnecessary scans if plans support it; batching adds query
-   complexity and must preserve per-curve budgets, retries, and cancellation. Neither is
-   pre-approved as the answer. Do not trade correct nearest neighbors or duplicate observations
-   for speed, or bypass DuckLake's authoritative file/snapshot ownership.
-3. **Revisit full-range Overview only after those findings.** Profile SQL/Arrow consumption
+2. **Optimize the one sampling SQL.** Detail and Overview now share a filtered viewport
+   query; only bounds differ. Before adding request-level batching, capture its production
+   plan and close the evidence gap on the `(? IS NULL OR step >= ?)` form; then profile
+   per-statement fixed cost versus row volume. Do not reintroduce neighbors or
+   duplicate-observation loss for speed, and do not bypass DuckLake's authoritative
+   file/snapshot ownership.
+3. **Data-quality flags are out of the query path.** Series diagnostics were removed;
+   completeness reflects Run lifecycle only. Summaries keep the catalog guard that skips the
+   fact fallback. If validity evidence (negative Step, decreasing timestamp, non-finite value,
+   missing metric) is needed again, maintain it at write/flush time in the catalog, with its
+   own proposal, migration story, and measurement.
+4. **Revisit full-range Overview only after those findings.** Profile SQL/Arrow consumption
    and native LTTB separately on the current revision. Optimize the measured dominant stage;
    keep native LTTB as the default and do not reintroduce Arrow+screen as an alternate policy.
-4. **Defer summary, inspector, and discovery.** Give each its own workload and baseline later;
-   do not mix them into curve-query comparisons. Reassess the selected-Run limit separately
-   only if a concrete comparison UX requires more than sixteen Runs.
+5. **Defer other discovery surfaces.** Give each its own workload and baseline later; do not
+   mix them into curve-query comparisons. Reassess the selected-Run limit separately only if a
+   concrete comparison UX requires more than sixteen Runs.
 
 Each production change needs focused acceptance coverage and one affected-boundary, bounded
 A-B-B-A comparison (ten calibrated samples >=25 ms, total <=120 s). Cover all eight Detail

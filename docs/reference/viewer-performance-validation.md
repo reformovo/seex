@@ -289,7 +289,7 @@ objects and `vmmap` reported a 769.1 MiB physical footprint. Malloc zones held
 2.0 GiB, including 1.2 GiB of resident `MALLOC_SMALL (empty)` regions. A
 symbolized high-water capture recorded 32.4 million allocations and 130.6 GiB
 of cumulative allocation churn. The largest stacks were
-`query_curves → query_aligned_metric → PhysicalCTE::Sink` and
+`query_curves → query_aligned_metric → PhysicalCTE::Sink` (historical API name) and
 `PhysicalWindow → HashedSort/FullSort`, allocating through DuckDB's
 `ColumnDataCollection`, `TupleDataAllocator`, and buffer manager.
 
