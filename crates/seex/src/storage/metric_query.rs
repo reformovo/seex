@@ -366,6 +366,141 @@ pub fn percent_encode_metric_key(value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn sum_total_files(plan: &str) -> u64 {
+        let mut sum = 0;
+        let mut rest = plan;
+        while let Some(position) = rest.find("\"Total Files Read\"") {
+            rest = &rest[position + "\"Total Files Read\"".len()..];
+            let Some(colon) = rest.find(':') else { break };
+            let after = rest[colon + 1..].trim_start();
+            let digits: String = after
+                .trim_start_matches('"')
+                .chars()
+                .take_while(|character| character.is_ascii_digit())
+                .collect();
+            sum += digits.parse::<u64>().unwrap_or(0);
+            rest = after;
+        }
+        sum
+    }
+
+    fn explain(
+        connection: &Connection,
+        sql: &str,
+        values: &[Box<dyn duckdb::ToSql>],
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let (key, plan): (String, String) = connection.query_row(
+            &format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}"),
+            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(key, "analyzed_plan");
+        Ok(plan)
+    }
+
+    #[test]
+    #[ignore = "read-only production SQL plans; release and local fixture required"]
+    fn production_query_plans() -> Result<(), Box<dyn std::error::Error>> {
+        assert!(!cfg!(debug_assertions), "requires --release");
+        let root = std::path::PathBuf::from(std::env::var("SEEX_PANEL_ROOT")?).canonicalize()?;
+        assert!(root.ends_with(".tmp/v5-panel-million/store"));
+        let output = std::path::PathBuf::from(std::env::var("SEEX_STORAGE_PROFILE_OUT")?);
+        assert_eq!(
+            output.parent().unwrap().canonicalize()?,
+            root.parent().and_then(|path| path.parent()).unwrap()
+        );
+        assert!(
+            output
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("v5-")
+        );
+        std::fs::create_dir(&output)?; // Refuse overwriting old evidence.
+        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
+            crate::storage::bootstrap::CatalogBackend::Sqlite,
+            &root,
+            None,
+            None,
+            None,
+        );
+        let connection =
+            crate::storage::bootstrap::open_existing_native_connection_with_config(config)?;
+        let reader = ProjectMetricReader::new(&connection);
+        let run_id = RunId::from_string("run-0");
+        let metric_key = MetricKey::from_string("loss");
+
+        for (name, start, end, rows, files) in [
+            (
+                "detail-prefix",
+                Some(Step::new(0)),
+                Some(Step::new(2049)),
+                2049,
+                1,
+            ),
+            (
+                "detail-middle",
+                Some(Step::new(450_000)),
+                Some(Step::new(550_001)),
+                100_002,
+                8,
+            ),
+            (
+                "detail-outside",
+                Some(Step::new(2_000_000)),
+                Some(Step::new(3_000_001)),
+                0,
+                0,
+            ),
+            ("overview", Some(Step::new(0)), None, 1_000_001, 62),
+        ] {
+            let query = MetricQuery::new(
+                run_id.clone(),
+                metric_key.clone(),
+                start,
+                end,
+                ReductionPolicy::screen_budget(1024, 1)?,
+            )?;
+            let result = reader.query_metric(&query)?;
+            assert_eq!(result.source_row_count, rows, "{name} source count");
+            assert_eq!(result.points.len() as u64, rows.min(1024), "{name} points");
+            let sql = sampled_sql(MetricSource::Project);
+            let values = query_params(MetricSource::Project, &query);
+            let plan = explain(&connection, &sql, &values)?;
+            assert_eq!(sum_total_files(&plan), files, "{name} files");
+            std::fs::write(output.join(format!("{name}.json")), plan)?;
+            std::fs::write(output.join(format!("{name}.sql")), sql)?;
+        }
+
+        let run_ids = (0..16)
+            .map(|index| RunId::from_string(format!("run-{index}")))
+            .collect::<Vec<_>>();
+        let summaries = reader.query_metric_summaries(&run_ids, &metric_key)?;
+        assert_eq!(summaries.len(), 16);
+        assert_eq!(summaries[0].effective_count, 1_000_001);
+        // The fixture has no running Run, so the production query omits the
+        // fact-table fallback entirely.
+        let sql = summaries_sql(run_ids.len(), false);
+        let values: Vec<Box<dyn duckdb::ToSql>> = run_ids
+            .iter()
+            .map(|id| Box::new(id.as_str().to_owned()) as Box<dyn duckdb::ToSql>)
+            .chain(std::iter::once(Box::new("loss") as Box<dyn duckdb::ToSql>))
+            .collect();
+        let plan = explain(&connection, &sql, &values)?;
+        assert_eq!(
+            sum_total_files(&plan),
+            0,
+            "finished-only summaries must not scan facts"
+        );
+        std::fs::write(output.join("summaries.json"), plan)?;
+        std::fs::write(output.join("summaries.sql"), sql)?;
+        println!(
+            "SEEX_PRODUCTION_PLANS summaries_files=0 summaries_ok={}",
+            summaries.len()
+        );
+        Ok(())
+    }
+
     #[test]
     fn sampled_query_excludes_non_finite_values_and_counts_finite_rows()
     -> Result<(), Box<dyn std::error::Error>> {
