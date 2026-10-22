@@ -142,25 +142,10 @@ pub(crate) fn query_metric(
     }
 
     if let Some(budget) = query.reduction.max_points() {
-        let sql = format!(
-            "{}, source_stats AS (
-                 SELECT count(*)::UBIGINT AS total,
-                        count(*) FILTER (WHERE isfinite(value_f64))::UBIGINT AS finite_count
-                 FROM effective
-             )
-             SELECT points.step, epoch_ms(points.timestamp), points.value_f64,
-                    epoch_ms(points.ingested_at), points.step,
-                    source_stats.total, source_stats.finite_count, 0::UBIGINT
-             FROM source_stats LEFT JOIN effective AS points ON true ORDER BY points.step",
-            effective_cte(source)
-        );
+        let sql = sampled_sql(source);
         let values = query_params(source, query);
-        let selected = crate::storage::sampling::select(
-            &mut connection.prepare(&sql)?,
-            &values,
-            budget,
-            None,
-        )?;
+        let selected =
+            crate::storage::sampling::select(&mut connection.prepare(&sql)?, &values, budget)?;
         let points = selected
             .points
             .into_iter()
@@ -197,6 +182,15 @@ pub(crate) fn query_metric(
         points,
         source_row_count,
     })
+}
+
+fn sampled_sql(source: MetricSource<'_>) -> String {
+    format!(
+        "{}
+         SELECT step, epoch_ms(timestamp), value_f64, epoch_ms(ingested_at), step
+         FROM effective WHERE isfinite(value_f64) ORDER BY step",
+        effective_cte(source)
+    )
 }
 
 fn query_params(source: MetricSource<'_>, query: &MetricQuery) -> Vec<Box<dyn duckdb::ToSql>> {
@@ -327,7 +321,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_query_retains_every_observation_in_range() -> Result<(), Box<dyn std::error::Error>> {
+    fn sampled_query_excludes_non_finite_values_and_counts_finite_rows()
+    -> Result<(), Box<dyn std::error::Error>> {
         let connection = Connection::open_in_memory()?;
         connection.execute_batch(
             "CREATE SCHEMA dl;
@@ -336,26 +331,34 @@ mod tests {
                  step BIGINT, timestamp TIMESTAMPTZ, value_f64 DOUBLE,
                  ingested_at TIMESTAMPTZ
              );
+             INSERT INTO dl.metric_points
+             SELECT 'run-1', 'loss', 'loss', step, epoch_ms(1000 + step),
+                    step::DOUBLE, epoch_ms(2000 + step)
+             FROM range(0, 6) AS generated(step);
              INSERT INTO dl.metric_points VALUES
-                 ('run-1', 'loss', 'loss', -1, epoch_ms(30), 1.0, epoch_ms(1)),
-                 ('run-1', 'loss', 'loss', 0, epoch_ms(25), 2.0, epoch_ms(1)),
-                 ('run-1', 'loss', 'loss', 0, epoch_ms(20), 'NaN'::DOUBLE, epoch_ms(2));",
+                 ('run-1', 'loss', 'loss', 2, epoch_ms(1002), 42.0, epoch_ms(2002)),
+                 ('run-1', 'loss', 'loss', 6, epoch_ms(1006), 'NaN'::DOUBLE, epoch_ms(2006)),
+                 ('run-1', 'loss', 'loss', 7, epoch_ms(1007), 'Infinity'::DOUBLE, epoch_ms(2007));",
         )?;
-
-        let reader = ProjectMetricReader::new(&connection);
-        let bounded = MetricQuery::new(
+        let query = MetricQuery::new(
             RunId::from_string("run-1"),
             MetricKey::from_string("loss"),
             Some(Step::new(0)),
-            Some(Step::new(1)),
-            ReductionPolicy::Full,
+            None,
+            ReductionPolicy::screen_budget(4, 1)?,
         )?;
-        let result = reader.query_metric(&bounded)?;
-        assert_eq!(result.source_row_count, 2);
-        assert_eq!(result.points.len(), 2);
-        assert!(result.points.iter().all(|p| p.step.value() == 0));
-        assert!(result.points.iter().any(|p| p.value_f64 == 2.0));
-        assert!(result.points.iter().any(|p| p.value_f64.is_nan()));
+
+        let result = query_metric(&connection, MetricSource::Project, &query)?;
+
+        assert_eq!(result.source_row_count, 7);
+        assert!(result.points.len() <= 4);
+        assert!(
+            result
+                .points
+                .iter()
+                .all(|point| point.value_f64.is_finite())
+        );
+        assert!(result.points.iter().all(|point| point.step.value() <= 5));
         Ok(())
     }
 }
