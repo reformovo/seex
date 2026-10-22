@@ -155,6 +155,86 @@ the parallel operator timings are not additive wall-clock shares.
   separate, smaller candidate (~15–26 ms per panel, more visible on
   narrow/empty ranges) and must not become a cross-request connection cache.
 
+## Follow-up optimization plan
+
+The full request still has non-SQL costs around the sampled statement. One
+release panel case per row, ten hot samples, median, diagnostic only (not
+A-B-B-A):
+
+| Request | fresh open | metadata | storage | points | sum |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Detail prefix, 16 curves | 29.04 | 15.36 | 164.00 | 0.14 | 208.53 |
+| Overview, 16 curves | 28.56 | 20.19 | 622.64 | 0.19 | 671.58 |
+
+`storage` here is the Reader's `query_metric` stage and includes the selected
+`MetricPoint` conversion and trace overhead; the finer storage split is the
+stage table above. The candidates below are ordered by measured gain versus
+risk, and none changes the frozen SQL shape.
+
+### 1. Request-scoped query context (recommended next)
+
+Two avoidable per-request costs remain:
+
+- **Metadata:** `runs_for_desktop` already reads the selected Runs, but the
+  fresh query reader starts with an empty `run_metadata` cache and calls
+  `get_run` again for every curve. Measured 15–20 ms per sixteen-curve panel.
+  Seeding the fresh reader from the request's Run snapshot should remove most
+  of it. This also gives the panel one consistent Run-status snapshot per
+  request; document that status is the discovery snapshot, not a per-curve
+  re-read.
+- **Prepare:** each curve prepares the same SQL with different parameters.
+  Measured 1.0–1.7 ms per curve, 15–26 ms per panel. Reusing one prepared
+  statement within the request/attempt should remove most of it. Keep the
+  cache per attempt and per connection; a storage retry gets a fresh reader
+  and statement, and this must never become a cross-request connection cache.
+
+Combined expected gain is about 30–45 ms per sixteen-curve panel: roughly
+14–21% of the 209 ms Detail-prefix request and 4.5–7% of the 672 ms Overview
+request. This is the best measured small win and does not involve Arrow, LTTB
+or SQL changes. Verify with one bounded A-B-B-A over prefix/middle/outside and
+Overview, plus acceptance coverage for retry, cancellation and superseded
+requests.
+
+### 2. Snapshot reuse and invalidation (P6)
+
+The Viewer already retains Overview snapshots and Detail coverage
+(`needs_detail`, `detail_covers`, `retain_active_detail_coverage`). Audit the
+actual hit/miss behavior under zoom, pan, panel switches and source appends
+before adding anything: a covered viewport should not re-run a 200–670 ms
+query. The remaining work is bounded eviction, a data version/revision for
+invalidation, and proving that a stale snapshot cannot win after a write or
+compaction. This is the largest interactive win that does not touch the query
+shape, but it is app-level cache work, not a storage micro-optimization.
+
+### 3. Executed-row reduction (P5/P3, later phase)
+
+Overview `execute` is 315 ms and prefixes scan 124 ms per sixteen curves. The
+only material way to cut that is to execute fewer rows or avoid the sort:
+Rollup layers (P5) or a shared-sorted production layout (P3). Both are roadmap
+phases with their own write-side validation, append-only/duplicate semantics
+and RSS gates; they must not be bundled into a curve-query micro-change.
+
+### 4. Optional experiments
+
+- **Point conversion:** the Reader storage stage is about 22 ms higher than the
+  storage-only profile, likely `MetricPoint` timestamp conversion and trace
+  overhead. Measure before changing; expected gain is small.
+- **Fetch/LTTB micro-optimizations:** 77 ms fetch and 170 ms LTTB per sixteen
+  Overview curves, but the LTTB ceiling is about 5% of the request and the
+  first attempt did not repeat. Revisit only with a new algorithmic idea.
+- **Parallel curve execution:** 16 curves are currently sequential on one
+  request connection. Bounded parallel workers could reduce wall time, but
+  would add connections, cancellation/retry complexity and RSS contention; the
+  earlier native capacity diagnostics closed without evidence to change
+  production concurrency. Requires a separate proposal and real desktop
+  evidence.
+
+**Do not reopen:** the current SQL shape, request-level batching, LTTB
+micro-optimization, connection caching, out-of-view neighbors or series
+diagnostics, and the 16-Run/1,024-point limits. These are either measured as
+low-value, rejected, or product boundaries; changing them needs a new
+proposal.
+
 ## Not measured
 
 - Real desktop GPUI frame latency and RSS. The viewport-only Detail tradeoff
@@ -179,6 +259,10 @@ the parallel operator timings are not additive wall-clock shares.
   (`68c2af7602b1e356b9cb6920fca5adf2dd4c2e2fce9207b5a99c9e430924dfea`),
   `lttb-stages.csv`
   (`a344e2507b20d3d0a158831f55cb6af76c81261e9d6e135477d6cbc33da5bfb7`).
+- Full-request stage traces: `.tmp/v5-stage-metadata-prefix.log`
+  (`5437c8cebaaf4a68482d01943eff1b4aa51135fd276fa2ee53b46397c1c75b57`) and
+  `.tmp/v5-stage-metadata-overview.log`
+  (`9271e404d35b2d16dc426b52957ceb451263d8bb34d451df3d93fc8145f5ca35`).
 - Plans: `.tmp/v5-production-plans-final/` (SHA-256
   `e329af6d90fc7b01033b88d1d7886c69062cd1d8ffd46831829a7ddf19967542`).
 - Code commits: `3366bb7` viewport-only Detail and surface removal, `4a4dda6`
