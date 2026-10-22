@@ -97,7 +97,7 @@ in read-only mode and reopen on storage failure. Desktop curve panels use one
 fresh connection per request, shared sequentially by at most 16 requested curves
 and released when the request ends. This is not a cross-request connection cache.
 A storage failure discards the whole panel attempt before one fresh retry; partial
-results and diagnostics from failed or superseded attempts are not published.
+results and stale snapshots from failed or superseded attempts are not published.
 Each SQL statement retains its own snapshot semantics; a panel is not promised
 to be one transaction-wide DuckLake snapshot. Single-curve reads retain fresh
 request connections, and writer lock/attach/recovery rules are unchanged.

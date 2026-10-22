@@ -62,6 +62,13 @@ interruption is stale cancellation, never an error snapshot. If narrow SQL
 cannot improve real RSS, the next candidate is a narrow-only bounded reducer,
 then physical Parquet ordering or row-group sizing without a schema change.
 
+**Historical note (2026-10-22).** The paragraph above describes the pre-v5
+query plan. ADR 0019 replaced last-write-wins with append-only observations,
+and later curve-query work removed out-of-view neighbors, the aligned/time
+query axes, and whole-series series diagnostics. The current contract is
+documented in `docs/reference/curve-query-workloads.md` and ADR 0019's update
+section.
+
 ## Consequences
 
 The weaker compile-time isolation inside `seex` is an accepted cost. Public API

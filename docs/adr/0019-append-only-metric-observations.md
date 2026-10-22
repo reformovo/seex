@@ -42,3 +42,19 @@ before claiming performance improvements; a comparison with old winner queries
 is not a semantics-preserving optimization. Measure reporting, persistence,
 finish and complete Reader requests independently. Rollup, production layout
 switches and incremental business compaction are outside this change.
+
+## Update (2026-10-22): query-time series diagnostics removed
+
+The non-finite-value diagnostics mentioned above were implemented as a per-curve
+`lag` window over the whole Run and have since been removed. Sampled queries
+filter `isfinite(value_f64)` in SQL before native LTTB, and curve completeness
+now follows Run lifecycle only (`Finished -> Complete`; `Running` and `Failed`
+-> `Partial` with a lifecycle reason). A missing metric is a lifecycle-complete
+series with zero points, and non-finite observations are no longer returned by
+sampled queries or used to mark a curve invalid.
+
+Append-only semantics, duplicate observations, summaries counting every
+observation, and DuckLake/catalog ownership are unchanged. If data-quality
+flags are needed again, maintain them at write/flush time (for example in the
+catalog or summaries) rather than scanning the whole Run per query; that
+requires its own proposal, migration story, and measurement.

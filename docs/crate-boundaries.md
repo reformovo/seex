@@ -57,12 +57,14 @@ Desktop converts its closed viewport into crate-private options while preserving
 the 1024 point bound. Step coordinates retain repeated observations; equal-Step
 order is unspecified.
 
-Full-span and narrow queries use distinct physical plans. The protected
-full-span plan remains unchanged while narrow Step selection can filter before
-materialization and reduction without choosing replacement winners. Whole-series
-diagnostics are separate from viewport selection. Superseded requests may
-interrupt only the cloned connection and current request token that own them;
-stale results never enter a Viewer snapshot.
+Sampled queries use one filtered physical shape. Identity plus half-open Step
+bounds are applied before materialization, non-finite values are filtered in
+SQL, and native LTTB reduces the remaining observations without choosing
+replacement winners. Detail and Overview differ only in their bounds; there is
+no separate full-span/narrow plan and no out-of-view neighbor discovery.
+Completeness follows the Run lifecycle. Superseded requests may interrupt only
+the cloned connection and current request token that own them; stale results
+never enter a Viewer snapshot.
 
 The native project store is the authoritative read source for catalog discovery
 and inline plus Parquet-backed facts.
