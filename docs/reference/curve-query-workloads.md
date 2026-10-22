@@ -1,4 +1,8 @@
 # Curve query workload baseline
+
+> Current-state summary: [curve-query-performance-report.md](curve-query-performance-report.md).
+> This file remains the chronological evidence log.
+
 This is a workload baseline, **not an A-B-B-A optimization comparison or a performance PASS**.
 It measures native LTTB Detail requests at eight inclusive Step ranges, with one or sixteen
 Run curves per metric panel. No production SQL, scheduling, or selection limit changed.
