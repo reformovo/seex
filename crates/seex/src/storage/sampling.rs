@@ -37,6 +37,10 @@ pub(crate) struct Selection {
 
 pub(crate) struct SelectionTimings {
     pub execute: std::time::Duration,
+    pub fetch: std::time::Duration,
+    pub arrow: std::time::Duration,
+    pub rows: std::time::Duration,
+    pub finish: std::time::Duration,
     pub consume: std::time::Duration,
 }
 
@@ -73,13 +77,21 @@ pub(crate) fn select_timed(
     let expected_rows = statement.row_count();
     let execute = started.elapsed();
     super::bootstrap::record_write_timing("native_execute", execute);
-    let started = std::time::Instant::now();
+    let consume_started = std::time::Instant::now();
     let mut consumed = 0;
+    let mut fetch = std::time::Duration::ZERO;
+    let mut arrow = std::time::Duration::ZERO;
+    let mut rows = std::time::Duration::ZERO;
     // Same materialized result API as query_arrow, but exposes the exact result
     // row count before selection. A failed fetch cannot masquerade as complete EOF.
     let mut reducer = OrderedLttb::new(expected_rows, budget);
-    while let Some(chunk) = statement.step() {
+    loop {
+        let started = std::time::Instant::now();
+        let Some(chunk) = statement.step() else { break };
+        fetch += started.elapsed();
+        let started = std::time::Instant::now();
         let batch = RecordBatch::from(&chunk);
+        arrow += started.elapsed();
         if batch.num_rows() == 0 {
             continue;
         }
@@ -97,6 +109,7 @@ pub(crate) fn select_timed(
             .as_any()
             .downcast_ref::<Float64Array>()
             .ok_or_else(|| invalid("expected DOUBLE values"))?;
+        let started = std::time::Instant::now();
         for index in 0..batch.num_rows() {
             if cols.iter().any(|column| column.is_null(index)) || ys.is_null(index) {
                 return Err(invalid("NULL observation field"));
@@ -112,20 +125,30 @@ pub(crate) fn select_timed(
                 .push(point)
                 .map_err(|error| invalid(format!("{error:?}")))?;
         }
+        rows += started.elapsed();
         consumed += batch.num_rows();
     }
     if consumed != expected_rows {
         return Err(invalid("incomplete Arrow result"));
     }
+    let started = std::time::Instant::now();
     let points = reducer.finish().map_err(|e| invalid(format!("{e:?}")))?;
-    let consume = started.elapsed();
+    let finish = started.elapsed();
+    let consume = consume_started.elapsed();
     super::bootstrap::record_write_timing("native_consume", consume);
     Ok((
         Selection {
             points,
             source_count: expected_rows as u64,
         },
-        SelectionTimings { execute, consume },
+        SelectionTimings {
+            execute,
+            fetch,
+            arrow,
+            rows,
+            finish,
+            consume,
+        },
     ))
 }
 

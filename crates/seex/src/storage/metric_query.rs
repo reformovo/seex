@@ -544,7 +544,9 @@ mod tests {
             .map(|index| RunId::from_string(format!("run-{index}")))
             .collect::<Vec<_>>();
         let budget = 1024;
-        let mut csv = String::from("range,scope,rows,prepare_ns,execute_ns,consume_ns\n");
+        let mut csv = String::from(
+            "range,scope,rows,prepare_ns,execute_ns,fetch_ns,arrow_ns,rows_ns,finish_ns,consume_ns\n",
+        );
         for (name, start, end, expected_rows) in [
             (
                 "prefix",
@@ -568,9 +570,17 @@ mod tests {
         ] {
             let mut first_prepare = Vec::new();
             let mut first_execute = Vec::new();
+            let mut first_fetch = Vec::new();
+            let mut first_arrow = Vec::new();
+            let mut first_rows = Vec::new();
+            let mut first_finish = Vec::new();
             let mut first_consume = Vec::new();
             let mut prepare_sum = 0.0;
             let mut execute_sum = 0.0;
+            let mut fetch_sum = 0.0;
+            let mut arrow_sum = 0.0;
+            let mut rows_time_sum = 0.0;
+            let mut finish_sum = 0.0;
             let mut consume_sum = 0.0;
             let mut rows_sum = 0;
             for run in &runs {
@@ -585,6 +595,10 @@ mod tests {
                 let values = query_params(MetricSource::Project, &query);
                 let mut prepares = Vec::new();
                 let mut executes = Vec::new();
+                let mut fetches = Vec::new();
+                let mut arrows = Vec::new();
+                let mut row_times = Vec::new();
+                let mut finishes = Vec::new();
                 let mut consumes = Vec::new();
                 let mut rows = 0;
                 for _ in 0..10 {
@@ -594,39 +608,99 @@ mod tests {
                     let (selected, timings) =
                         crate::storage::sampling::select_timed(&mut statement, &values, budget)?;
                     executes.push(timings.execute.as_nanos() as f64);
+                    fetches.push(timings.fetch.as_nanos() as f64);
+                    arrows.push(timings.arrow.as_nanos() as f64);
+                    row_times.push(timings.rows.as_nanos() as f64);
+                    finishes.push(timings.finish.as_nanos() as f64);
                     consumes.push(timings.consume.as_nanos() as f64);
                     rows = selected.source_count;
                 }
                 assert_eq!(rows, expected_rows, "{name} source count");
                 let prepare = median(&mut prepares);
                 let execute = median(&mut executes);
+                let fetch = median(&mut fetches);
+                let arrow = median(&mut arrows);
+                let rows_time = median(&mut row_times);
+                let finish = median(&mut finishes);
                 let consume = median(&mut consumes);
                 if run == &runs[0] {
                     first_prepare.push(prepare);
                     first_execute.push(execute);
+                    first_fetch.push(fetch);
+                    first_arrow.push(arrow);
+                    first_rows.push(rows_time);
+                    first_finish.push(finish);
                     first_consume.push(consume);
                 }
                 prepare_sum += prepare;
                 execute_sum += execute;
+                fetch_sum += fetch;
+                arrow_sum += arrow;
+                rows_time_sum += rows_time;
+                finish_sum += finish;
                 consume_sum += consume;
                 rows_sum += rows;
                 csv.push_str(&format!(
-                    "{name},{},{rows},{prepare:.0},{execute:.0},{consume:.0}\n",
+                    "{name},{},{rows},{prepare:.0},{execute:.0},{fetch:.0},{arrow:.0},{rows_time:.0},{finish:.0},{consume:.0}\n",
                     run.as_str()
                 ));
             }
             csv.push_str(&format!(
-                "{name},16-curves,{rows_sum},{prepare_sum:.0},{execute_sum:.0},{consume_sum:.0}\n"
+                "{name},16-curves,{rows_sum},{prepare_sum:.0},{execute_sum:.0},{fetch_sum:.0},{arrow_sum:.0},{rows_time_sum:.0},{finish_sum:.0},{consume_sum:.0}\n"
             ));
             println!(
-                "SEEX_STAGE_PROFILE range={name} scope=one rows={expected_rows} prepare_ns={:.0} execute_ns={:.0} consume_ns={:.0}",
-                first_prepare[0], first_execute[0], first_consume[0]
+                "SEEX_STAGE_PROFILE range={name} scope=one rows={expected_rows} prepare_ns={:.0} execute_ns={:.0} fetch_ns={:.0} arrow_ns={:.0} rows_ns={:.0} finish_ns={:.0} consume_ns={:.0}",
+                first_prepare[0],
+                first_execute[0],
+                first_fetch[0],
+                first_arrow[0],
+                first_rows[0],
+                first_finish[0],
+                first_consume[0]
             );
             println!(
-                "SEEX_STAGE_PROFILE range={name} scope=sixteen rows={rows_sum} prepare_ns={prepare_sum:.0} execute_ns={execute_sum:.0} consume_ns={consume_sum:.0}"
+                "SEEX_STAGE_PROFILE range={name} scope=sixteen rows={rows_sum} prepare_ns={prepare_sum:.0} execute_ns={execute_sum:.0} fetch_ns={fetch_sum:.0} arrow_ns={arrow_sum:.0} rows_ns={rows_time_sum:.0} finish_ns={finish_sum:.0} consume_ns={consume_sum:.0}"
+            );
+        }
+
+        // Isolate reducer cost from Arrow conversion and payload extraction.
+        let mut lttb_csv = String::from("scope,rows,push_ns,finish_ns\n");
+        for (name, count) in [
+            ("prefix", 2_049_usize),
+            ("middle", 100_002),
+            ("overview", 1_000_001),
+        ] {
+            let mut pushes = Vec::new();
+            let mut finishes = Vec::new();
+            for _ in 0..10 {
+                let mut reducer = crate::storage::lttb::OrderedLttb::new(count, budget);
+                let started = std::time::Instant::now();
+                for index in 0..count {
+                    reducer
+                        .push(crate::storage::sampling::Observation {
+                            step: index as i64,
+                            timestamp_millis: index as i64,
+                            value_f64: (index % 97) as f64,
+                            ingested_at_millis: index as i64,
+                            axis_value: index as i64,
+                        })
+                        .map_err(|error| format!("{error:?}"))?;
+                }
+                pushes.push(started.elapsed().as_nanos() as f64);
+                let started = std::time::Instant::now();
+                let points = reducer.finish().map_err(|error| format!("{error:?}"))?;
+                finishes.push(started.elapsed().as_nanos() as f64);
+                assert_eq!(points.len(), count.min(budget));
+            }
+            let push = median(&mut pushes);
+            let finish = median(&mut finishes);
+            lttb_csv.push_str(&format!("{name},{count},{push:.0},{finish:.0}\n"));
+            println!(
+                "SEEX_STAGE_PROFILE reducer={name} rows={count} push_ns={push:.0} finish_ns={finish:.0}"
             );
         }
         std::fs::write(output.join("sampling-stages.csv"), csv)?;
+        std::fs::write(output.join("lttb-stages.csv"), lttb_csv)?;
         Ok(())
     }
 
