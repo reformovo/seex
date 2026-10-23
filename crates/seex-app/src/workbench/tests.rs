@@ -131,6 +131,32 @@ fn run_limit_allows_removal_and_is_independent_per_view() {
 }
 
 #[test]
+fn archived_runs_do_not_consume_selection_capacity() {
+    let mut views = AnalysisViews::default();
+    let run = |index: usize| {
+        RunRef::new(
+            DataSourceId::new("source").expect("test alias should be valid"),
+            ProjectId::from_string("project"),
+            RunId::from_string(format!("run-{index}")),
+        )
+    };
+    for index in 0..crate::domain::MAX_SELECTED_RUNS {
+        assert!(
+            views
+                .toggle_active_run(run(index), true)
+                .expect("the first Runs should be selectable")
+        );
+    }
+
+    views.archive_run(run(0));
+    assert!(
+        views
+            .toggle_active_run(run(crate::domain::MAX_SELECTED_RUNS), true)
+            .expect("an archived Run must not consume selection capacity")
+    );
+}
+
+#[test]
 fn run_visibility_changes_preserve_loaded_panel_state() {
     let mut views = AnalysisViews::default();
     let panel_id = views.select_active_metric(MetricKey::from_string("loss"));

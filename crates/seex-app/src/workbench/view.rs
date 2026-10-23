@@ -479,6 +479,10 @@ impl AnalysisViews {
         true
     }
 
+    /// Adds or removes an active Run.
+    ///
+    /// `selection_has_capacity` must be derived from visible catalog
+    /// Runs: `runs` also retains archived and unavailable references.
     pub fn toggle_active_run(
         &mut self,
         run: RunRef,
@@ -489,7 +493,7 @@ impl AnalysisViews {
             view.runs.remove(index);
             false
         } else {
-            if !selection_has_capacity || view.runs.len() >= MAX_SELECTED_RUNS {
+            if !selection_has_capacity {
                 return Err(SelectionError::RunLimit);
             }
             view.runs.push(run);
