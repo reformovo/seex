@@ -14,6 +14,8 @@
 //! produces roughly 1,024 Steps per Parquet file per series (about 312,000
 //! files), so this is a file-count stress case as well as a point-count case.
 use seex::{Client, LogOptions, RunOptions};
+// The integration test links the library to validate the viewer source config.
+use seex_app::config::load_sources_for_scope;
 use std::{
     env,
     error::Error,
@@ -91,6 +93,31 @@ fn prepare_scale_case() -> Result<(), Box<dyn Error>> {
         runs as u64 * metrics as u64 * points as u64,
         started.elapsed().as_secs_f64()
     );
+    Ok(())
+}
+
+#[test]
+#[ignore = "checks the viewer source config; set SEEX_VIEWER_ROOT"]
+fn verify_viewer_source_config() -> Result<(), Box<dyn Error>> {
+    let project_root = PathBuf::from(env::var("SEEX_VIEWER_ROOT")?);
+    let sources = seex_app::config::load_sources_for_scope(Some(&project_root))?;
+    println!(
+        "SEEX_VIEWER_SOURCES {:?}",
+        sources
+            .iter()
+            .map(|source| (
+                source.alias.as_str(),
+                source.root_path.clone(),
+                source.projects.len()
+            ))
+            .collect::<Vec<_>>()
+    );
+    let source = sources
+        .iter()
+        .find(|source| source.alias.as_str() == "panel")
+        .ok_or("panel source is missing")?;
+    assert_eq!(source.projects.len(), 1);
+    assert_eq!(source.projects[0].as_str(), "panel");
     Ok(())
 }
 
