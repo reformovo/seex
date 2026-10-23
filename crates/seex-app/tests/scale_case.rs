@@ -1,0 +1,131 @@
+//! Opt-in multi-Run, multi-metric scale fixture generator. Not a performance gate.
+//!
+//! 20 Runs x 16 metrics x 1,000,000 Steps (320M observations, about 6.1 GB and
+//! 26 minutes on the local Mac):
+//!
+//! ```sh
+//! SEEX_SCALE_ROOT="$PWD/.tmp/v5-panel-20x16/store" \
+//! SEEX_SCALE_RUNS=20 SEEX_SCALE_METRICS=16 SEEX_SCALE_POINTS=1000000 \
+//! cargo test -p seex-app --no-default-features --release --test scale_case \
+//!   prepare_scale_case -- --ignored --exact --nocapture
+//! ```
+//!
+//! The writer's 16,384-report batch cap means a 16-metric `log_with` call
+//! produces roughly 1,024 Steps per Parquet file per series (about 312,000
+//! files), so this is a file-count stress case as well as a point-count case.
+use seex::{Client, LogOptions, RunOptions};
+use std::{
+    env,
+    error::Error,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
+
+fn value(state: &mut u64) -> f64 {
+    *state ^= *state << 13;
+    *state ^= *state >> 7;
+    *state ^= *state << 17;
+    (*state >> 11) as f64 / (1_u64 << 53) as f64
+}
+
+#[test]
+#[ignore = "creates a large local fixture; set SEEX_SCALE_ROOT, SEEX_SCALE_RUNS, SEEX_SCALE_METRICS, SEEX_SCALE_POINTS"]
+fn prepare_scale_case() -> Result<(), Box<dyn Error>> {
+    let root = PathBuf::from(env::var("SEEX_SCALE_ROOT")?);
+    if !root.is_absolute() || !root.to_string_lossy().contains("/.tmp/v5-") {
+        return Err("SEEX_SCALE_ROOT must be an absolute path under .tmp/v5-*".into());
+    }
+    if root.exists() {
+        return Err("refusing to overwrite an existing scale fixture".into());
+    }
+    let runs: usize = env::var("SEEX_SCALE_RUNS").unwrap_or("2".into()).parse()?;
+    let metrics: usize = env::var("SEEX_SCALE_METRICS")
+        .unwrap_or("2".into())
+        .parse()?;
+    let points: i64 = env::var("SEEX_SCALE_POINTS")
+        .unwrap_or("10000".into())
+        .parse()?;
+    if runs == 0 || metrics == 0 || points <= 0 {
+        return Err("scale counts must be positive".into());
+    }
+    let keys = (0..metrics)
+        .map(|index| format!("metric-{index:02}"))
+        .collect::<Vec<_>>();
+    let client = Client::builder(&root).open()?;
+    let started = Instant::now();
+    for run_index in 0..runs {
+        let run = client.start_run(RunOptions::new("panel").id(format!("run-{run_index:02}")))?;
+        let mut states = (0..metrics)
+            .map(|metric| 0x5eec_0000 + run_index as u64 * 131 + metric as u64)
+            .collect::<Vec<_>>();
+        for step in 0..points {
+            let values = keys
+                .iter()
+                .enumerate()
+                .map(|(metric, key)| (key.as_str(), value(&mut states[metric])));
+            run.log_with(values, LogOptions::new().step(step))?;
+            if (step + 1) % 2_048 == 0 {
+                let deadline = Instant::now() + Duration::from_secs(60);
+                while client.diagnostics().pending_reports != 0 {
+                    if Instant::now() >= deadline {
+                        return Err("scale fixture drain timeout".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            if (step + 1) % 65_536 == 0 {
+                eprintln!(
+                    "SEEX_SCALE run={run_index} step={step} elapsed_s={:.1}",
+                    started.elapsed().as_secs_f64()
+                );
+            }
+        }
+        run.finish()?;
+        eprintln!(
+            "SEEX_SCALE finished run={run_index} elapsed_s={:.1}",
+            started.elapsed().as_secs_f64()
+        );
+    }
+    eprintln!(
+        "SEEX_SCALE complete runs={runs} metrics={metrics} points={points} observations={} elapsed_s={:.1}",
+        runs as u64 * metrics as u64 * points as u64,
+        started.elapsed().as_secs_f64()
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "reads an existing scale fixture; set SEEX_SCALE_ROOT"]
+fn verify_scale_case() -> Result<(), Box<dyn Error>> {
+    let root = PathBuf::from(env::var("SEEX_SCALE_ROOT")?);
+    let expected_runs: usize = env::var("SEEX_SCALE_RUNS").unwrap_or("20".into()).parse()?;
+    let expected_metrics: usize = env::var("SEEX_SCALE_METRICS")
+        .unwrap_or("16".into())
+        .parse()?;
+    let expected_points: i64 = env::var("SEEX_SCALE_POINTS")
+        .unwrap_or("1000000".into())
+        .parse()?;
+    let reader = seex::Reader::builder(&root).open()?;
+    let projects = reader.projects()?;
+    let project = projects
+        .iter()
+        .find(|project| project.project_id.as_str() == "panel")
+        .ok_or("panel project is missing")?;
+    let runs = reader.runs(&project.project_id)?;
+    let metrics = reader.metrics(&runs[0])?;
+    let query = seex::MetricQuery::new(seex::MetricRange::All(seex::MetricAxis::Step), 1024)?;
+    let result = reader.query_metric(&runs[0].run_id, &metrics[0].metric_key, &query)?;
+    println!(
+        "SEEX_SCALE_VERIFY projects={} runs={} metrics={} source_count={} points={}",
+        projects.len(),
+        runs.len(),
+        metrics.len(),
+        result.source_count(),
+        result.samples().len()
+    );
+    assert_eq!(runs.len(), expected_runs);
+    assert_eq!(metrics.len(), expected_metrics);
+    assert_eq!(result.source_count(), expected_points as u64);
+    assert_eq!(result.samples().len(), 1024);
+    Ok(())
+}
