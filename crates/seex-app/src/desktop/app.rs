@@ -92,6 +92,7 @@ pub(super) struct ViewerApp {
     pending_close_target: Option<CloseTarget>,
     source_reload_generation: u64,
     project_root: Option<PathBuf>,
+    home: Option<PathBuf>,
     pending_commands: Vec<command::WorkbenchCommand>,
     command_dispatch_pending: bool,
     run_hover_revision: u64,
@@ -182,6 +183,7 @@ impl ViewerApp {
             pending_close_target: None,
             source_reload_generation: 0,
             project_root: project_path.clone(),
+            home: home.map(Path::to_path_buf),
             pending_commands: Vec::new(),
             command_dispatch_pending: false,
             run_hover_revision: 0,
@@ -680,7 +682,9 @@ impl ViewerApp {
     fn reload_sources(&mut self, cx: &mut Context<Self>) {
         let generation = self.begin_source_reload();
         let project_root = self.project_root.clone();
-        let load = cx.background_spawn(async move { load_and_preflight_sources(project_root) });
+        let home = self.home.clone();
+        let load =
+            cx.background_spawn(async move { load_and_preflight_sources(project_root, home) });
         cx.spawn(async move |this, cx| {
             let result = load.await;
             let _ = this.update(cx, |viewer, cx| {
@@ -1249,9 +1253,11 @@ impl ViewerApp {
 
 fn load_and_preflight_sources(
     project_root: Option<PathBuf>,
+    home: Option<PathBuf>,
 ) -> Result<(SourceConfiguration, Vec<ConfiguredSource>), String> {
-    let configuration = SourceConfiguration::load_for_scope(project_root.as_deref())
-        .map_err(|error| error.to_string())?;
+    let configuration =
+        SourceConfiguration::load_for_scope_at(project_root.as_deref(), home.as_deref())
+            .map_err(|error| error.to_string())?;
     let sources = configuration.configured_sources();
     for source in &sources {
         let preflight =
