@@ -47,7 +47,7 @@ struct ReadTrace {
 static READ_TRACE: OnceLock<Mutex<ReadTrace>> = OnceLock::new();
 #[cfg(all(feature = "test-support", target_os = "macos"))]
 static READ_TRACE_STRIDE: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 fn trace_selected(generation: Generation, stride: u64) -> bool {
     stride != 0
         && generation
@@ -1318,7 +1318,7 @@ mod tests {
         request_is_superseded,
     };
 
-    #[cfg(feature = "test-support")]
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
     #[test]
     fn trace_sampling_is_generation_stable_and_disabled_at_zero() {
         let selected: Vec<_> = (1..1024)
