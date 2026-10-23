@@ -7,34 +7,18 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use seex::{
-    CatalogBackend, MetricKey, MetricQuery, MetricRange, Reader, RelativeTime, RunId, Step,
-    Timestamp,
+    CatalogBackend, MAX_CHART_POINTS, MetricKey, MetricQuery, MetricRange, Reader, RunId, Step,
 };
 
 const POINTS: i64 = 1_000_000;
 const SAMPLES: usize = 10;
 const TARGET: Duration = Duration::from_millis(25);
-const EPOCH_MILLIS: i64 = 1_700_000_000_000;
 
 #[derive(Clone, Copy)]
 enum Axis {
     Step,
     RelativeTime,
     Timestamp,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ReaderBoundary {
-    Detail,
-    Overview,
-}
-
-const fn reader_boundary(narrow: bool) -> ReaderBoundary {
-    if narrow {
-        ReaderBoundary::Detail
-    } else {
-        ReaderBoundary::Overview
-    }
 }
 
 impl Axis {
@@ -96,6 +80,9 @@ fn selected_ranges() -> Result<Vec<bool>, Box<dyn Error>> {
 }
 
 fn query(reader: &Reader, axis: Axis, narrow: bool) -> Result<usize, Box<dyn Error>> {
+    if !matches!(axis, Axis::Step) {
+        return Err("P0 benchmark supports Step queries only".into());
+    }
     let (start, end) = if narrow {
         (450_000, 550_000)
     } else {
@@ -106,28 +93,14 @@ fn query(reader: &Reader, axis: Axis, narrow: bool) -> Result<usize, Box<dyn Err
             start: Step::new(start),
             end: Step::new(end),
         },
-        Axis::RelativeTime => MetricRange::RelativeTime {
-            start: RelativeTime::from_millis(start),
-            end: RelativeTime::from_millis(end),
-        },
-        Axis::Timestamp => MetricRange::Timestamps {
-            start: Timestamp::from_millis(EPOCH_MILLIS + start),
-            end: Timestamp::from_millis(EPOCH_MILLIS + end),
-        },
+        Axis::RelativeTime | Axis::Timestamp => unreachable!(),
     };
-    let query = MetricQuery::new(range, Some(5_000))?;
-    let series = match reader_boundary(narrow) {
-        ReaderBoundary::Detail => reader.query_metric_for_desktop(
-            &RunId::from_string("run-1"),
-            &MetricKey::from_string("loss"),
-            &query,
-        )?,
-        ReaderBoundary::Overview => reader.query_metric_overview_for_desktop(
-            &RunId::from_string("run-1"),
-            &MetricKey::from_string("loss"),
-            &query,
-        )?,
-    };
+    let query = MetricQuery::new(range, MAX_CHART_POINTS)?;
+    let series = reader.query_metric_for_desktop(
+        &RunId::from_string("run-1"),
+        &MetricKey::from_string("loss"),
+        &query,
+    )?;
     Ok(series.samples().len())
 }
 
@@ -137,7 +110,7 @@ fn capture(reader: &Reader, axis: Axis, narrow: bool) -> Result<(usize, Vec<f64>
         let started = Instant::now();
         for _ in 0..iterations {
             let points = query(reader, axis, narrow)?;
-            if points == 0 || points > 5_000 + usize::from(narrow) * 2 {
+            if points == 0 || points > MAX_CHART_POINTS {
                 return Err("Reader benchmark violated its point budget".into());
             }
         }
@@ -188,12 +161,6 @@ fn reader_record_contains_only_ten_raw_samples() {
     assert!(record.starts_with("SEEX_BENCH {\"schema_version\":3"));
     assert!(record.contains("duckdb.reader.step.narrow"));
     assert!(!record.contains("p50"));
-}
-
-#[test]
-fn full_range_measures_the_overview_boundary() {
-    assert_eq!(reader_boundary(true), ReaderBoundary::Detail);
-    assert_eq!(reader_boundary(false), ReaderBoundary::Overview);
 }
 
 #[test]

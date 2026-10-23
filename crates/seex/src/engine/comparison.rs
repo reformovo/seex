@@ -171,6 +171,7 @@ fn reject_duplicate_run_ids(run_ids: &[RunId]) -> Result<(), EngineError> {
     Ok(())
 }
 
+#[allow(dead_code, reason = "retained for crate-local comparison tests")]
 pub(crate) fn compare_evidence(
     objective: &ObjectiveMetric,
     candidate: ObjectiveEvidence,

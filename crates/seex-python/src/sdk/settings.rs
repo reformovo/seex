@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use seex::{CatalogBackend, ClientBuilder, ReaderBuilder, S3Options};
+use seex::{CatalogBackend, ClientBuilder, S3Options};
 
 #[pyclass(name = "Settings", module = "seex._seex", frozen, skip_from_py_object)]
 #[derive(Clone)]
@@ -57,11 +57,9 @@ impl PySettings {
     ) -> PyResult<Self> {
         if catalog_backend
             .as_deref()
-            .is_some_and(|value| !matches!(value, "duckdb" | "sqlite"))
+            .is_some_and(|value| value != "sqlite")
         {
-            return Err(PyValueError::new_err(
-                "catalog_backend must be 'duckdb' or 'sqlite'",
-            ));
+            return Err(PyValueError::new_err("catalog_backend must be 'sqlite'"));
         }
         if !(1..=1_048_576).contains(&metric_queue_capacity) {
             return Err(PyValueError::new_err(
@@ -121,23 +119,8 @@ impl PySettings {
         builder
     }
 
-    pub fn reader_builder(&self, root: PathBuf) -> ReaderBuilder {
-        let mut builder = ReaderBuilder::new(root).s3_options(self.s3_options());
-        if let Some(backend) = self.native_catalog_backend() {
-            builder = builder.catalog_backend(backend);
-        }
-        if let Some(path) = &self.catalog_path {
-            builder = builder.catalog_path(path);
-        }
-        if let Some(path) = &self.data_path {
-            builder = builder.data_path(path);
-        }
-        builder
-    }
-
     fn native_catalog_backend(&self) -> Option<CatalogBackend> {
         match self.catalog_backend.as_deref() {
-            Some("duckdb") => Some(CatalogBackend::DuckDb),
             Some("sqlite") => Some(CatalogBackend::Sqlite),
             _ => None,
         }

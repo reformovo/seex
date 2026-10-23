@@ -28,7 +28,6 @@ actions!(
         ZoomIn,
         ZoomOut,
         UseStep,
-        UseElapsed,
         ActivateSelection,
         Quit
     ]
@@ -37,6 +36,11 @@ actions!(
 pub(super) const SELECTABLE_CONTEXT: &str = "ViewerSelectable";
 
 pub fn run(project_path: Option<PathBuf>) {
+    #[cfg(feature = "test-support")]
+    if let Some(root) = std::env::var_os("SEEX_NATIVE_PROFILE_ROOT") {
+        app::run_native_profile(PathBuf::from(root));
+        return;
+    }
     let app = Application::new().with_assets(ViewerAssets);
     let reopen_project_path = project_path.clone();
     app.on_reopen(move |cx| {
@@ -118,7 +122,6 @@ fn menus() -> Vec<Menu> {
                 MenuItem::action("Show Metric Inspector", ShowMetricInspector),
                 MenuItem::separator(),
                 MenuItem::action("Step", UseStep),
-                MenuItem::action("Elapsed Time", UseElapsed),
             ],
         },
     ]

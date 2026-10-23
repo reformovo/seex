@@ -59,6 +59,18 @@ impl Default for SourceRegistry {
 
 impl SourceRegistry {
     #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn with_diagnostic_read_capacity(capacity: usize) -> Self {
+        assert!(
+            matches!(capacity, 1 | 2 | 4),
+            "diagnostic capacity must be 1, 2 or 4"
+        );
+        Self {
+            entries: Vec::new(),
+            gate: Arc::new(ReadConcurrencyGate::new(capacity)),
+        }
+    }
+
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
     pub(crate) fn shutdown_for_tests(&mut self) {
         for worker in self
             .entries
@@ -111,6 +123,34 @@ impl SourceRegistry {
 
     pub fn sources(&self) -> impl ExactSizeIterator<Item = &ImportedSource> {
         self.entries.iter().map(|entry| &entry.source)
+    }
+
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn queue_depths(&self) -> [usize; 3] {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.worker.as_ref())
+            .fold([0; 3], |mut total, worker| {
+                let depths = worker.queue_depths();
+                total[0] += depths[0];
+                total[1] = total[1].max(depths[1]); // Shared gate, not per-worker capacity.
+                total[2] += depths[2];
+                total
+            })
+    }
+
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn queue_peaks(&self) -> [usize; 3] {
+        self.entries
+            .iter()
+            .filter_map(|e| e.worker.as_ref())
+            .fold([0; 3], |mut total, worker| {
+                let peak = worker.queue_peaks();
+                total[0] += peak[0]; // Sum of per-source maxima, not a simultaneous peak.
+                total[1] = total[1].max(peak[1]); // Shared gate.
+                total[2] += peak[2];
+                total
+            })
     }
 
     #[cfg(feature = "test-support")]
@@ -433,6 +473,23 @@ mod tests {
         );
     }
 
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    #[test]
+    fn diagnostic_capacities_start_without_sources() {
+        for capacity in [1, 2, 4] {
+            let registry = SourceRegistry::with_diagnostic_read_capacity(capacity);
+            assert_eq!(registry.sources().len(), 0);
+            assert_eq!(registry.queue_depths(), [0; 3]);
+        }
+    }
+
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    #[test]
+    #[should_panic(expected = "diagnostic capacity must be 1, 2 or 4")]
+    fn diagnostic_capacity_rejects_unsupported_value() {
+        SourceRegistry::with_diagnostic_read_capacity(3);
+    }
+
     #[test]
     fn events_update_only_their_matching_source_status() {
         let mut registry = SourceRegistry::default();
@@ -443,6 +500,7 @@ mod tests {
             source_id: first.clone(),
             generation: Generation(1),
             kind: ReadKind::Catalog,
+            metric_key: None,
             result: Ok(ReadSnapshot::Catalog(CatalogSnapshot {
                 projects: Vec::new(),
                 runs: Vec::new(),

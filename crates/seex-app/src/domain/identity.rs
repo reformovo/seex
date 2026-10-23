@@ -4,7 +4,7 @@ use std::path::Path;
 use seex::ProjectId;
 use seex::{Run, RunId, RunStatus};
 
-pub const MAX_SELECTED_RUNS: usize = 20;
+pub const MAX_SELECTED_RUNS: usize = 16;
 
 /// Stable portable identity assigned to one imported Data source.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -194,10 +194,10 @@ mod tests {
 
     #[test]
     fn selection_limit_error_uses_the_product_limit() {
-        assert_eq!(MAX_SELECTED_RUNS, 20);
+        assert_eq!(MAX_SELECTED_RUNS, 16);
         assert_eq!(
             SelectionError::RunLimit.to_string(),
-            "at most 20 Runs can be selected"
+            "at most 16 Runs can be selected"
         );
     }
 

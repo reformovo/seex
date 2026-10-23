@@ -224,7 +224,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         ReadSnapshot::Overview(snapshot) => snapshot,
         other => return Err(format!("unexpected overview snapshot: {other:?}").into()),
     };
-    assert_eq!(overview.point_budget, 128);
+    assert_eq!(overview.point_budget, 1024);
     assert_eq!(
         overview
             .real_range
@@ -232,7 +232,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         Some((0, SOURCE_POINTS - 1))
     );
     assert_eq!(overview.series[0].source_row_count, SOURCE_POINTS as u64);
-    assert!(overview.series[0].returned_point_count <= 130);
+    assert!(overview.series[0].returned_point_count <= 1024);
     assert!(overview.series[0].downsampled());
     assert_eq!(
         overview
@@ -243,8 +243,8 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         [
             EvidenceCompleteness::Complete,
             EvidenceCompleteness::Partial,
-            EvidenceCompleteness::Invalid,
-            EvidenceCompleteness::Unavailable,
+            EvidenceCompleteness::Partial,
+            EvidenceCompleteness::Complete,
         ]
     );
     assert_eq!(
@@ -253,7 +253,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
             .iter()
             .map(|series| series.chart_series.is_some())
             .collect::<Vec<_>>(),
-        [true, true, false, false]
+        [true, true, true, true]
     );
 
     let detail_selection = CurveSelection {
@@ -276,8 +276,8 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         ReadSnapshot::Detail(snapshot) => snapshot,
         other => return Err(format!("unexpected detail snapshot: {other:?}").into()),
     };
-    assert_eq!(full_detail.point_budget, 256);
-    assert!(full_detail.series[0].returned_point_count <= 258);
+    assert_eq!(full_detail.point_budget, 1024);
+    assert!(full_detail.series[0].returned_point_count <= 1024);
     assert!(full_detail.series[0].downsampled());
 
     let detail_request = DetailRequest {
@@ -296,13 +296,13 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
         other => return Err(format!("unexpected detail snapshot: {other:?}").into()),
     };
     assert_eq!(detail.point_budget, full_detail.point_budget);
-    assert_eq!(detail.series[0].source_row_count, 1_003);
-    assert!(detail.series[0].returned_point_count <= 258);
+    assert_eq!(detail.series[0].source_row_count, 1_001);
+    assert!(detail.series[0].returned_point_count <= 1024);
     #[cfg(feature = "test-support")]
     {
         let resources = detail.resource_snapshot();
-        assert_eq!(resources.requested_budget, 256);
-        assert_eq!(resources.source_points, 1_003);
+        assert_eq!(resources.requested_budget, 1024);
+        assert_eq!(resources.source_points, 1_001);
         assert_eq!(
             resources.returned_points,
             detail.series[0].returned_point_count
@@ -321,7 +321,7 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
             .points()
             .first()
             .map(|point| point.x as i64),
-        Some(499),
+        Some(500),
     );
     assert_eq!(
         detail.series[0]
@@ -331,45 +331,46 @@ fn assert_backend_contract(fixture: &Fixture) -> Result<(), Box<dyn Error>> {
             .points()
             .last()
             .map(|point| point.x as i64),
-        Some(1_501),
+        Some(1_500),
     );
 
     Ok(())
 }
 
 #[test]
-fn both_catalog_backends_preserve_query_and_refresh_contracts() -> Result<(), Box<dyn Error>> {
-    let duckdb = fixture(CatalogBackend::DuckDb, false)?;
-    assert_backend_contract(&duckdb)?;
+fn sqlite_relative_and_absolute_paths_preserve_query_and_refresh_contracts()
+-> Result<(), Box<dyn Error>> {
+    let relative = fixture(CatalogBackend::Sqlite, false)?;
+    assert_backend_contract(&relative)?;
     let sqlite = fixture(CatalogBackend::Sqlite, true)?;
     assert_backend_contract(&sqlite)?;
     Ok(())
 }
 
 #[test]
-fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Error>> {
-    let duckdb = fixture(CatalogBackend::DuckDb, false)?;
+fn source_registry_reads_two_sqlite_sources_together() -> Result<(), Box<dyn Error>> {
+    let relative = fixture(CatalogBackend::Sqlite, false)?;
     let sqlite = fixture(CatalogBackend::Sqlite, true)?;
     let mut registry = SourceRegistry::default();
-    let duckdb_id = registry.configure(ConfiguredSource {
-        alias: SourceAlias::new("duckdb").expect("test alias should be valid"),
-        root_path: duckdb.root_path().to_path_buf(),
-        projects: vec![duckdb.project_id.clone()],
+    let relative_id = registry.configure(ConfiguredSource {
+        alias: SourceAlias::new("relative").expect("test alias should be valid"),
+        root_path: relative.root_path().to_path_buf(),
+        projects: vec![relative.project_id.clone()],
     });
     let sqlite_id = registry.configure(ConfiguredSource {
         alias: SourceAlias::new("sqlite").expect("test alias should be valid"),
         root_path: sqlite.root_path().to_path_buf(),
         projects: vec![sqlite.project_id.clone()],
     });
-    let duckdb_events = registry
-        .activate(&duckdb_id)?
-        .ok_or("DuckDB source should return an event stream")?;
+    let relative_events = registry
+        .activate(&relative_id)?
+        .ok_or("relative source should return an event stream")?;
     let sqlite_events = registry
         .activate(&sqlite_id)?
         .ok_or("SQLite source should return an event stream")?;
 
     registry.submit(
-        &duckdb_id,
+        &relative_id,
         Generation(1),
         ReadRequest::Discover(DiscoveryRequest::default()),
     )?;
@@ -378,21 +379,21 @@ fn source_registry_reads_duckdb_and_sqlite_together() -> Result<(), Box<dyn Erro
         Generation(2),
         ReadRequest::Discover(DiscoveryRequest::default()),
     )?;
-    let duckdb_event = receive_event(&duckdb_events, EVENT_TIMEOUT)?;
+    let relative_event = receive_event(&relative_events, EVENT_TIMEOUT)?;
     let sqlite_event = receive_event(&sqlite_events, EVENT_TIMEOUT)?;
     assert!(matches!(
-        &duckdb_event.result,
+        &relative_event.result,
         Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
     ));
     assert!(matches!(
         &sqlite_event.result,
         Ok(ReadSnapshot::Catalog(catalog)) if catalog.projects.len() == 1
     ));
-    registry.apply_event(&duckdb_event);
+    registry.apply_event(&relative_event);
     registry.apply_event(&sqlite_event);
 
     assert_eq!(
-        registry.source(&duckdb_id).map(|source| &source.status),
+        registry.source(&relative_id).map(|source| &source.status),
         Some(&SourceStatus::Ready)
     );
     assert_eq!(

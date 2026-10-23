@@ -1,0 +1,106 @@
+# P1 SQLite/DuckLake multi-process feasibility
+
+Status: P1 correctness acceptance passes through `82601a0`.
+These probes ran on
+Darwin 27.0.0 arm64 with Rust 1.97.1. They use one local SQLite WAL catalog, four child processes
+writing distinct Runs, and a Reader opened before the writes. Each child writes 32 points.
+
+## Observations
+
+| Probe | Result |
+| --- | --- |
+| Four clients open together | Some `Client::open()` calls failed with public `Storage`. |
+| Open clients one by one, then write together with the normal 8192-row inline limit | `finish()` failed with DuckDB `database is locked` and `ducklake_inlined_data_1_1 does not exist`. |
+| Open clients one by one, then serialize each whole Run lifecycle under a test file lock | A later `finish()` still failed because its already-open connection referenced the removed inline table. |
+| Same lock and already-open clients, temporarily set inline limit to zero | One four-writer run passed; the Reader saw all 32 points of each finished Run. |
+| Inline limit zero, remove the test lock | Concurrent `finish()` calls again failed with `Storage`. |
+| Normal inline limit, acquire the test lock before opening each client and hold through shutdown | One four-writer run passed; the continuously open Reader saw all finished Runs and their points. |
+| Normal inline limit, catalog lock plus fresh writer/read connections | Four independently opened clients passed concurrently three times; Reader saw 32 points and a 32-point summary for every finished Run. |
+
+The final passing case is reproducible with:
+
+```text
+cargo test -p seex --test p1_multi_writer_feasibility \
+  serialized_lifecycles_keep_reader_consistent -- --ignored --nocapture
+```
+
+The earlier test lock covers the *entire* client lifecycle. It prevents simultaneous training writers and
+does not satisfy P1. The zero-inline probes temporarily changed `data_inlining_row_limit` in
+`storage/bootstrap.rs` and restored 8192 afterward. Neither probe establishes crash recovery or
+bounded lock hold time.
+
+## Coordination design to validate
+
+Use one advisory OS lock per canonical catalog path for all DuckLake/SQLite write transactions:
+bootstrap, Project/Run metadata, background metric batches, aggregate publication, and inline flush.
+Keep the per-Run writer lock. `run.log()` only admits to its bounded queue; the background worker
+waits for the catalog lock. Lock timeout and queue full need distinct typed errors. Establish one
+lock order for Project creation, Run ownership, and catalog writes.
+
+An already-open DuckDB connection can retain an obsolete inline-table reference after another
+process flushes. The first correctness implementation should acquire the catalog lock, open a fresh
+existing-catalog writer connection, perform one bounded write operation, and release both. Connection
+reuse needs a separately proven invalidation mechanism. Reader requests must retry a stale inline
+failure with a new read connection and must not publish a partial chart. The catalog remains the
+only authority for committed facts and file metadata.
+
+Finalization drains the client's admitted queue before taking the catalog lock. Aggregate publication
+and terminal status update need one catalog transaction, so a Reader cannot see partial aggregates
+for a finished Run. Inline flush follows under the lock; a crash after terminal commit still needs
+the existing idempotent flush retry. Measure lock hold time: DuckLake's flush is table-wide, so a
+different coordination design may be required.
+
+## P1 gate complete
+
+The four-client write/read snapshot is covered by
+`simultaneous_writers_keep_reader_consistent`. The
+`crashed_writer_can_restart_and_finish_the_same_run` probe drains a child process, terminates it
+without running destructors, reopens the SQLite store, verifies the running Run and persisted point,
+resumes the same Run, and finishes it. A unit probe reopens after a terminal commit followed by a
+forced flush failure. It checks that a new writer automatically retries the idempotent DuckLake
+inline flush, that a second failure preserves the marker, and that a Reader sees the committed
+inline point without running recovery. Missing and v1 storage format markers are rejected by both
+readers and writers.
+
+Run-writer conflicts, catalog lock timeout versus queue pressure, four-process opening, concurrent
+Reader snapshots, and completed Run flush retries remain covered by the existing acceptance tests.
+The first release store is SQLite catalog plus local DuckLake data; S3 and the DuckDB catalog
+backend are rejected at configuration resolution.
+
+## Verification and performance observation
+
+The workspace Rust tests, Python tests (99 passed), Pyright, Ruff, wheel build,
+package smoke, and Viewer release build passed after the P1 changes. The
+freshly built release Viewer passed `scripts/viewer_smoke.py` in global and
+Project scopes. `uv run python scripts/viewer_smoke.py` could not read the uv
+cache in the sandbox; `.venv/bin/python scripts/viewer_smoke.py` ran the same
+script successfully.
+
+One bounded A-B-B-A preservation comparison used the P0 revision `4da28dc`
+and the P1 revision `82601a0`, with 1,000 reports in each of 30 Runs per
+capture. It finished within 120 seconds, with ten calibrated samples of at
+least 25 ms per metric. The result was **inconclusive** because baseline
+finalization noise exceeded the 2% limit. Median drain samples were 148/147 ms
+before and 379/379 ms after; median finalization samples were 102/108 ms
+before and 621/628 ms after. The P1 implementation therefore carries a
+substantial observed local write cost, even though this comparison cannot
+classify a reliable regression under the gate's noise rule. The manifest and
+raw result remain outside the repository at `/tmp/seex-p1-durability-*.json`.
+
+The opt-in `SEEX_WRITE_TIMING=1` probe records `connection_attach`, lock wait
+and hold, batch append, summary rebuild, and inline flush phases. One four-writer
+correctness run produced four append samples and five finish samples. Mean
+connection open plus attach was 72.6 ms across 24 samples; batch append was
+20.7 ms, summary rebuild 30.9 ms, and inline flush 28.4 ms. Append lock wait
+averaged 325.6 ms and reached 1,096.8 ms. These samples show that connection
+setup and catalog contention matter in this workload; they do not isolate the
+cost of full-Run summary reconstruction or table-wide flush at scale. The raw
+diagnostic log is outside the repository at `/tmp/seex-p1-write-timing.log`.
+
+A second bounded A-B-B-A comparison after automatic recovery returned
+**inconclusive** because finalization samples exceeded the noise limit. Its
+baseline drain medians were 148/148 ms and candidate medians 386/389 ms;
+baseline finalization medians were 105/98 ms and candidate medians
+1,410/1,431 ms. The result does not establish a classified regression, but
+it reinforces that synchronous finalization remains expensive. Its raw result
+is `/tmp/seex-p1-recovery-result.json`.

@@ -6,11 +6,10 @@ use crate::data::query::{
 };
 use crate::data::worker::{Generation, ReadRequest, ReadSnapshot, ReadWorker, recv_event_for_test};
 use crate::domain::DataSourceId;
+#[cfg(feature = "test-support")]
+use seex::EvidenceReason;
 use seex::ProjectId;
-use seex::{AlignedMetricPoint, AlignmentViewport};
-use seex::{Client, LogOptions, RunOptions};
-use seex::{EvidenceCompleteness, EvidenceReason};
-use seex::{MetricKey, MetricPoint, Step};
+use seex::{AlignmentViewport, Client, EvidenceCompleteness, LogOptions, MetricKey, RunOptions};
 use seex::{Run, RunId, RunStatus};
 use seex_plot::{DataPoint, Series, SeriesId};
 
@@ -346,30 +345,21 @@ fn synthetic_snapshot(series_count: usize, point_count: i64) -> CurveSnapshot {
         .expect("fixed timestamp should parse");
     let source_id = DataSourceId::new("synthetic-source").expect("test alias should be valid");
     let project_id = ProjectId::from_string("viewer-scale");
-    let metric_key = MetricKey::from_string("loss");
     let series = (0..series_count)
         .map(|run_index| {
             let run_id = RunId::from_string(format!("run-{run_index}"));
             let run_ref = RunRef::new(source_id.clone(), project_id.clone(), run_id.clone());
             let points = (0..point_count)
-                .map(|index| AlignedMetricPoint {
-                    point: MetricPoint {
-                        run_id: run_id.clone(),
-                        metric_key: metric_key.clone(),
-                        step: Step::new(index),
-                        timestamp,
-                        value_f64: run_index as f64 + (index % 1_000) as f64 / 1_000.,
-                        ingested_at: timestamp,
-                    },
-                    axis_value: index,
+                .map(|index| {
+                    DataPoint::new(
+                        index as f64,
+                        run_index as f64 + (index % 1_000) as f64 / 1_000.,
+                    )
                 })
                 .collect::<Vec<_>>();
             let chart_series = Series::new(
                 SeriesId::new(run_ref.cache_key()).expect("Run reference should make a series id"),
-                points
-                    .iter()
-                    .map(|point| DataPoint::new(point.axis_value as f64, point.point.value_f64))
-                    .collect(),
+                points.clone(),
             )
             .expect("generated series should be valid");
             CurveSeriesSnapshot {

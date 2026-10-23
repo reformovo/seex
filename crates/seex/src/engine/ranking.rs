@@ -16,6 +16,7 @@ use crate::model::run::Run;
 #[cfg(test)]
 use crate::model::run::RunId;
 
+#[allow(dead_code, reason = "retained for crate-local ranking tests")]
 struct RankingCandidate {
     evidence: ObjectiveEvidence,
     created_at: DateTime<Utc>,
@@ -78,6 +79,7 @@ impl NativeClient {
 /// Complete finite evidence is eligible. Equal objective values receive a
 /// competition rank and are ordered by creation time, then Run ID. Ineligible
 /// entries retain their input order after eligible entries.
+#[allow(dead_code, reason = "retained for crate-local ranking tests")]
 pub fn rank_run_evidence(
     objective: &ObjectiveMetric,
     candidates: Vec<(Run, ObjectiveEvidence)>,
@@ -96,6 +98,7 @@ pub fn rank_run_evidence(
     )
 }
 
+#[allow(dead_code, reason = "retained for crate-local ranking tests")]
 fn rank_candidates(
     objective: &ObjectiveMetric,
     mut candidates: Vec<RankingCandidate>,
@@ -127,6 +130,7 @@ fn rank_candidates(
     }
 }
 
+#[allow(dead_code, reason = "retained for crate-local ranking tests")]
 fn compare_candidates(
     left: &RankingCandidate,
     right: &RankingCandidate,
@@ -160,6 +164,7 @@ fn compare_candidates(
     }
 }
 
+#[allow(dead_code, reason = "retained for crate-local ranking tests")]
 fn eligible_value(evidence: &ObjectiveEvidence) -> Option<f64> {
     (evidence.completeness == EvidenceCompleteness::Complete)
         .then(|| evidence.usable_value())

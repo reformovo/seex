@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::Arc;
 
 use seex::AlignmentViewport;
@@ -9,7 +10,7 @@ use seex::RunId;
 
 use crate::data::query::{CurveSnapshot, InspectorSnapshot};
 use crate::data::worker::{Generation, ReadKind};
-use crate::domain::{DataSourceId, RunRef, SelectionError, ViewNavigation};
+use crate::domain::{DataSourceId, MAX_SELECTED_RUNS, RunRef, SelectionError, ViewNavigation};
 use crate::workbench::panel_reads::{
     AnalysisViewId, MetricPanelId, PanelReadMode, PanelReadSnapshot, SourceReadFailure,
 };
@@ -161,6 +162,26 @@ pub struct AnalysisViews {
     next_id: u64,
 }
 
+/// A recoverable issue found while restoring a saved workbench.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RestoreIssue {
+    RunLimit { view_name: String, count: usize },
+    Other(String),
+}
+
+impl fmt::Display for RestoreIssue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RunLimit { view_name, count } => write!(
+                formatter,
+                "View {view_name:?}: {} (selected {count})",
+                SelectionError::RunLimit
+            ),
+            Self::Other(message) => formatter.write_str(message),
+        }
+    }
+}
+
 impl Default for AnalysisViews {
     fn default() -> Self {
         let view = AnalysisView {
@@ -187,7 +208,7 @@ impl Default for AnalysisViews {
 }
 
 impl AnalysisViews {
-    pub fn restore(document: &TomlWorkbenchDocument) -> (Self, Vec<String>) {
+    pub fn restore(document: &TomlWorkbenchDocument) -> (Self, Vec<RestoreIssue>) {
         let mut issues = Vec::new();
         let mut views = Vec::new();
         for (index, saved) in document.views.iter().enumerate() {
@@ -199,11 +220,11 @@ impl AnalysisViews {
                     saved_run.run_id.clone(),
                 );
                 if runs.contains(&run) {
-                    issues.push(format!(
+                    issues.push(RestoreIssue::Other(format!(
                         "View {:?} contains duplicate Run {}",
                         saved.name,
                         saved_run.run_id.as_str()
-                    ));
+                    )));
                 } else {
                     runs.push(run);
                 }
@@ -216,6 +237,12 @@ impl AnalysisViews {
                 }
                 runs.push(organized.clone());
             }
+            if runs.len() > MAX_SELECTED_RUNS {
+                issues.push(RestoreIssue::RunLimit {
+                    view_name: saved.name.clone(),
+                    count: runs.len(),
+                });
+            }
             let mut panels = Vec::new();
             for metric in &saved.metrics {
                 let metric_key = MetricKey::from_string(metric);
@@ -223,10 +250,10 @@ impl AnalysisViews {
                     .iter()
                     .any(|panel: &MetricPanel| panel.metric_key == metric_key)
                 {
-                    issues.push(format!(
+                    issues.push(RestoreIssue::Other(format!(
                         "View {:?} contains duplicate Metric {metric:?}",
                         saved.name
-                    ));
+                    )));
                 } else {
                     let mut panel = MetricPanel::new(metric_key);
                     if let Some((_, height)) =
@@ -244,10 +271,10 @@ impl AnalysisViews {
                     .map(|panel| panel.panel_id.clone())
             });
             if saved.selected_metric.is_some() && selected_panel_id.is_none() {
-                issues.push(format!(
+                issues.push(RestoreIssue::Other(format!(
                     "View {:?} selected an unknown persisted Metric",
                     saved.name
-                ));
+                )));
             }
             let mut navigation = ViewNavigation::default();
             navigation.select_axis(saved.axis);
@@ -276,7 +303,9 @@ impl AnalysisViews {
         }
         let active = document.active_view.min(views.len() - 1);
         if active != document.active_view {
-            issues.push("persisted active View index is unavailable".to_owned());
+            issues.push(RestoreIssue::Other(
+                "persisted active View index is unavailable".to_owned(),
+            ));
         }
         let active_view_id = views[active].view_id.clone();
         let next_id = views.len() as u64 + 1;
@@ -450,6 +479,10 @@ impl AnalysisViews {
         true
     }
 
+    /// Adds or removes an active Run.
+    ///
+    /// `selection_has_capacity` must be derived from visible catalog
+    /// Runs: `runs` also retains archived and unavailable references.
     pub fn toggle_active_run(
         &mut self,
         run: RunRef,
@@ -576,21 +609,43 @@ impl AnalysisViews {
     }
 
     pub fn select_active_metric(&mut self, metric_key: MetricKey) -> MetricPanelId {
-        let existing = self
+        self.select_active_metrics([metric_key])
+            .into_iter()
+            .next()
+            .expect("single metric selection must produce one panel")
+    }
+
+    pub(crate) fn select_active_metrics(
+        &mut self,
+        metric_keys: impl IntoIterator<Item = MetricKey>,
+    ) -> Vec<MetricPanelId> {
+        let mut existing = self
             .active()
             .panels
             .iter()
-            .find(|panel| panel.metric_key == metric_key)
-            .map(|panel| panel.panel_id.clone());
-        if let Some(panel_id) = existing {
-            select_panel(self.active_mut(), &panel_id);
-            return panel_id;
+            .map(|panel| (panel.metric_key.clone(), panel.panel_id.clone()))
+            .collect::<HashMap<_, _>>();
+        let mut selected = Vec::new();
+        let mut seen = HashSet::new();
+        for metric_key in metric_keys {
+            if !seen.insert(metric_key.clone()) {
+                continue;
+            }
+            let panel_id = if let Some(panel_id) = existing.get(&metric_key) {
+                panel_id.clone()
+            } else {
+                let panel = MetricPanel::new(metric_key.clone());
+                let panel_id = panel.panel_id.clone();
+                self.active_mut().panels.push(panel);
+                existing.insert(metric_key, panel_id.clone());
+                panel_id
+            };
+            selected.push(panel_id);
         }
-        let panel = MetricPanel::new(metric_key);
-        let panel_id = panel.panel_id.clone();
-        self.active_mut().panels.push(panel);
-        select_panel(self.active_mut(), &panel_id);
-        panel_id
+        if let Some(panel_id) = selected.last() {
+            select_panel(self.active_mut(), panel_id);
+        }
+        selected
     }
 
     pub fn remove_active_panel(&mut self, panel_id: &MetricPanelId) -> bool {

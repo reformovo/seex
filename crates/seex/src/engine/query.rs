@@ -3,10 +3,6 @@ use std::collections::HashMap;
 use crate::storage::{ProjectConnection, ProjectMetricReader};
 
 use crate::engine::EngineError;
-#[cfg(test)]
-use crate::model::alignment::{
-    AlignedMetricResult, AlignmentQuery, AlignmentQueryResult, AlignmentReason,
-};
 use crate::model::comparison::{
     EvidenceCompleteness, EvidenceReason, ObjectiveEvidence, ObjectiveMetric,
 };
@@ -90,20 +86,6 @@ impl<'connection> NativeQueryStore<'connection> {
     }
 
     #[cfg(test)]
-    #[allow(
-        dead_code,
-        reason = "retained for crate-local aligned query acceptance tests"
-    )]
-    pub fn query_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-        run_status: RunStatus,
-    ) -> Result<AlignedMetricResult, EngineError> {
-        let result = self.reader().query_aligned_metric(query)?;
-        Ok(aligned_metric_result(result, run_status))
-    }
-
-    #[cfg(test)]
     pub fn objective_evidence(
         &self,
         run_id: &RunId,
@@ -172,53 +154,6 @@ impl<'connection> NativeQueryStore<'connection> {
     }
 }
 
-#[cfg(test)]
-fn aligned_metric_result(
-    result: AlignmentQueryResult,
-    run_status: RunStatus,
-) -> AlignedMetricResult {
-    let has_non_finite_value = result
-        .points
-        .iter()
-        .any(|point| !point.point.value_f64.is_finite());
-    let mut reasons = result
-        .reasons
-        .into_iter()
-        .map(|reason| match reason {
-            AlignmentReason::MissingRunStart => EvidenceReason::MissingRunStart,
-            AlignmentReason::NegativeAxis => EvidenceReason::NegativeAxis,
-            AlignmentReason::DecreasingAxis => EvidenceReason::DecreasingAxis,
-        })
-        .collect::<Vec<_>>();
-    if has_non_finite_value {
-        reasons.push(EvidenceReason::NonFiniteValue);
-    }
-    let mut completeness = if reasons.iter().any(|reason| {
-        matches!(
-            reason,
-            EvidenceReason::NegativeAxis
-                | EvidenceReason::DecreasingAxis
-                | EvidenceReason::NonFiniteValue
-        )
-    }) {
-        EvidenceCompleteness::Invalid
-    } else if reasons.contains(&EvidenceReason::MissingRunStart) || result.points.is_empty() {
-        if reasons.is_empty() {
-            reasons.push(EvidenceReason::MissingMetric);
-        }
-        EvidenceCompleteness::Unavailable
-    } else {
-        EvidenceCompleteness::Complete
-    };
-    qualify_lifecycle(run_status, &mut completeness, &mut reasons);
-    AlignedMetricResult {
-        points: result.points,
-        source_row_count: result.source_row_count,
-        completeness,
-        reasons,
-    }
-}
-
 fn objective_evidence(
     run_id: &RunId,
     run_status: RunStatus,
@@ -275,21 +210,6 @@ fn qualify_lifecycle(
 mod tests {
     use super::*;
 
-    fn aligned_point(value_f64: f64) -> crate::model::alignment::AlignedMetricPoint {
-        let timestamp = chrono::Utc::now();
-        crate::model::alignment::AlignedMetricPoint {
-            point: MetricPoint {
-                run_id: RunId::from_string("run-1"),
-                metric_key: MetricKey::from_string("loss"),
-                step: Step::new(0),
-                timestamp,
-                value_f64,
-                ingested_at: timestamp,
-            },
-            axis_value: 0,
-        }
-    }
-
     #[test]
     fn objective_evidence_retains_invalid_value_and_failed_reason() {
         let run_id = RunId::from_string("run-1");
@@ -314,41 +234,5 @@ mod tests {
                 vec![EvidenceReason::NonFiniteValue, EvidenceReason::RunFailed]
             )
         );
-    }
-
-    #[test]
-    fn aligned_empty_running_series_is_unavailable_with_both_reasons() {
-        let result = aligned_metric_result(
-            AlignmentQueryResult {
-                points: Vec::new(),
-                source_row_count: 0,
-                reasons: Vec::new(),
-            },
-            RunStatus::Running,
-        );
-
-        assert_eq!(
-            (result.completeness, result.reasons),
-            (
-                EvidenceCompleteness::Unavailable,
-                vec![EvidenceReason::MissingMetric, EvidenceReason::RunRunning]
-            )
-        );
-    }
-
-    #[test]
-    fn aligned_non_finite_finished_series_is_invalid_without_repair() {
-        let result = aligned_metric_result(
-            AlignmentQueryResult {
-                points: vec![aligned_point(f64::NAN)],
-                source_row_count: 1,
-                reasons: Vec::new(),
-            },
-            RunStatus::Finished,
-        );
-
-        assert_eq!(result.completeness, EvidenceCompleteness::Invalid);
-        assert_eq!(result.reasons, vec![EvidenceReason::NonFiniteValue]);
-        assert!(result.points[0].point.value_f64.is_nan());
     }
 }

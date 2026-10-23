@@ -2,7 +2,8 @@
 
 ## Scope
 V1 validates a local-first loop for individual trainers: create project, create
-run, log numeric metrics, query chart-ready data, and compare runs.
+run, and log numeric metrics. Native Reader and Viewer layers expose bounded
+chart-ready data; comparison and ranking remain outside the P0 Python surface.
 
 V1 value is local ownership with an open Parquet boundary. AI Native, Cloud,
 MCP, and agent memory are future work.
@@ -72,14 +73,15 @@ implementation detail.
 
 ## Query Goals
 Both query paths matter for v1: long single-series chart queries with range
-  selection and downsampling.
-- Many-run comparison queries using run summaries.
+selection and downsampling.
+- Run summaries support Viewer inspection without a public Python comparison API.
 - Metric discovery through catalog/index data rather than full fact-table
   scans.
 
-Initial API shape: `run.log(key, value)`, `run.log(key, step, value)`,
-`query_metric(..., max_points=None)`, and summary query. `max_points` is strict;
-short series stay unchanged and downsampling preserves endpoints via DuckDB LTTB.
+Initial API shape: `run.log(key, value)` and `run.log(key, step, value)`.
+Chart reads use the native Reader with an explicit Step range and
+`2 <= max_points <= 1024`; short series stay unchanged and downsampling
+preserves endpoints via DuckDB LTTB.
 Ordinary hot-path `run.log(...)` calls do not raise by default for transient
 storage or backpressure failures; those failures must be surfaced through
 diagnostics.
@@ -92,8 +94,9 @@ local datasets.
 Keep v1 code focused on native mode: no deletion, workspace hierarchy,
 config/tag filtering, Cloud skeletons, public `StorageLayer`, agent tables, or MCP.
 
-The Python API should return chart-ready query data only. Built-in plotting,
-rendering APIs, and plotting dependencies stay outside Seex v1.
+The Python API is the Run writing surface. Built-in plotting, rendering APIs,
+and plotting dependencies stay outside Seex v1; chart reads remain in native
+Reader and Viewer layers.
 
 Future architecture documents may preserve Cloud and AI Native constraints, but
 they should not drive v1 code shape until the native loop is proven.

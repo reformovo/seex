@@ -110,7 +110,71 @@ fn option_arc_ptr_eq<T>(left: &Option<Arc<T>>, right: &Option<Arc<T>>) -> bool {
     }
 }
 
+#[cfg(all(test, feature = "test-support"))]
+#[test]
+fn readiness_requires_current_revision_viewport_and_nonempty_paint() {
+    let range = AxisRange::new(0., 10.).unwrap();
+    let viewport = Viewport::new(range, range);
+    let data_range = seex::AlignmentViewport::new(0, 10).unwrap();
+    let snapshot = Arc::new(CurveSnapshot {
+        viewport: data_range,
+        real_range: Some(data_range),
+        point_budget: 2,
+        series: Vec::new(),
+    });
+    let chart = DetailChart::new(
+        snapshot,
+        1,
+        viewport,
+        None,
+        None,
+        Vec::<RunRef>::new().into(),
+    );
+    assert!(!chart.painted_current()); // Cache warming is not paint completion.
+    chart.adapter.borrow_mut().detail_painted = Some((1, viewport, 0));
+    assert!(!chart.painted_current());
+    chart.adapter.borrow_mut().detail_painted = Some((0, viewport, 1));
+    assert!(!chart.painted_current());
+    let other = Viewport::new(AxisRange::new(2., 5.).unwrap(), range);
+    chart.adapter.borrow_mut().detail_painted = Some((1, other, 1));
+    assert!(!chart.painted_current());
+    chart.adapter.borrow_mut().detail_painted = Some((1, viewport, 1));
+    assert!(chart.painted_current());
+}
+
 impl DetailChart {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn painted_current(&self) -> bool {
+        self.adapter
+            .borrow()
+            .detail_painted
+            .is_some_and(|(revision, viewport, paths)| {
+                revision == self.revision && viewport == self.viewport && paths > 0
+            })
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn paint_diagnostic(&self) -> String {
+        let adapter = self.adapter.borrow();
+        format!(
+            "revision={} viewport={:?} painted={:?} prepaint_bounds_mask={:?}",
+            self.revision, self.viewport, adapter.detail_painted, adapter.detail_prepaint
+        )
+    }
+
+    #[cfg(all(test, feature = "test-support"))]
+    pub(crate) fn retention_probes(
+        &self,
+    ) -> (
+        std::sync::Weak<CurveSnapshot>,
+        std::rc::Weak<std::cell::RefCell<ChartAdapter>>,
+    ) {
+        (
+            Arc::downgrade(&self.snapshot),
+            std::rc::Rc::downgrade(&self.adapter),
+        )
+    }
+
     pub fn new(
         snapshot: Arc<CurveSnapshot>,
         revision: u64,

@@ -1,6 +1,10 @@
-use seex::AlignmentAxis;
-use seex_plot::AxisRange;
+use std::time::Instant;
 
+use seex::AlignmentAxis;
+use seex::{EvidenceCompleteness, Run, RunStatus};
+use seex_plot::{AxisRange, DataPoint, Series, SeriesId};
+
+use crate::data::query::CurveSeriesSnapshot;
 use crate::domain::SourceAlias;
 use crate::workbench::panel_reads::PanelReadTag;
 use crate::workbench::toml_document::{
@@ -8,6 +12,39 @@ use crate::workbench::toml_document::{
 };
 
 use super::*;
+
+fn populated_curve_snapshot(run_ref: RunRef, viewport: seex::AlignmentViewport) -> CurveSnapshot {
+    let timestamp = "2026-01-01T00:00:00Z"
+        .parse()
+        .expect("timestamp should parse");
+    let series = Series::new(
+        SeriesId::new(run_ref.cache_key()).expect("series id should be valid"),
+        vec![DataPoint::new(1., 1.), DataPoint::new(2., 2.)],
+    )
+    .expect("series should be valid");
+    CurveSnapshot {
+        viewport,
+        point_budget: 2,
+        real_range: Some(viewport),
+        series: vec![CurveSeriesSnapshot {
+            run: Run {
+                run_id: run_ref.run_id.clone(),
+                project_id: run_ref.project_id.clone(),
+                name: "run".to_owned(),
+                status: RunStatus::Finished,
+                created_at: timestamp,
+                started_at: timestamp,
+                finished_at: Some(timestamp),
+            },
+            run_ref,
+            completeness: EvidenceCompleteness::Complete,
+            reasons: Vec::new(),
+            source_row_count: 2,
+            returned_point_count: 2,
+            chart_series: Some(series),
+        }],
+    }
+}
 
 fn panel_completion(
     panel_id: &MetricPanelId,
@@ -43,6 +80,21 @@ fn closing_the_last_view_creates_a_new_empty_view() {
 }
 
 #[test]
+fn batch_metric_selection_preserves_order_deduplicates_and_selects_last() {
+    let mut views = AnalysisViews::default();
+    let selected = views.select_active_metrics([
+        MetricKey::from_string("loss"),
+        MetricKey::from_string("accuracy"),
+        MetricKey::from_string("loss"),
+    ]);
+    assert_eq!(views.active().panels.len(), 2);
+    assert_eq!(selected.len(), 2);
+    assert_eq!(views.active().selected_panel_id, selected.last().cloned());
+    assert_eq!(views.active().panels[0].metric_key.as_str(), "loss");
+    assert_eq!(views.active().panels[1].metric_key.as_str(), "accuracy");
+}
+
+#[test]
 fn run_limit_allows_removal_and_is_independent_per_view() {
     let mut views = AnalysisViews::default();
     let run = |index: usize| {
@@ -75,6 +127,32 @@ fn run_limit_allows_removal_and_is_independent_per_view() {
         views
             .toggle_active_run(run(crate::domain::MAX_SELECTED_RUNS), true)
             .expect("a new View should have independent capacity")
+    );
+}
+
+#[test]
+fn archived_runs_do_not_consume_selection_capacity() {
+    let mut views = AnalysisViews::default();
+    let run = |index: usize| {
+        RunRef::new(
+            DataSourceId::new("source").expect("test alias should be valid"),
+            ProjectId::from_string("project"),
+            RunId::from_string(format!("run-{index}")),
+        )
+    };
+    for index in 0..crate::domain::MAX_SELECTED_RUNS {
+        assert!(
+            views
+                .toggle_active_run(run(index), true)
+                .expect("the first Runs should be selectable")
+        );
+    }
+
+    views.archive_run(run(0));
+    assert!(
+        views
+            .toggle_active_run(run(crate::domain::MAX_SELECTED_RUNS), true)
+            .expect("an archived Run must not consume selection capacity")
     );
 }
 
@@ -313,7 +391,14 @@ fn workbench_round_trip_retains_runs_beyond_the_live_limit() {
         .expect("current workbench document should round-trip");
     let (views, issues) = AnalysisViews::restore(&decoded);
 
-    assert!(issues.is_empty());
+    assert_eq!(issues.len(), 1);
+    assert_eq!(
+        issues[0],
+        RestoreIssue::RunLimit {
+            view_name: "Over limit".to_owned(),
+            count: 25,
+        }
+    );
     assert_eq!(decoded.views[0].runs.len(), 25);
     assert_eq!(views.active().runs.len(), 25);
 }
@@ -651,6 +736,158 @@ fn deactivating_a_view_cancels_every_panel_generation() {
     assert!(panel.source_errors.is_empty());
     assert!(panel.inspector_errors.is_empty());
     assert!(views.active().timeline_extents.is_empty());
+}
+
+#[test]
+fn nonempty_detail_payloads_are_evicted_and_stale_results_do_not_repopulate() {
+    let mut views = AnalysisViews::default();
+    let first = views.select_active_metric(MetricKey::from_string("first"));
+    let second = views.select_active_metric(MetricKey::from_string("second"));
+    let run = RunRef::new(
+        DataSourceId::new("source").expect("source should be valid"),
+        ProjectId::from_string("project"),
+        RunId::from_string("run"),
+    );
+    let viewport = AlignmentViewport::new(0, 10).expect("viewport should be valid");
+    for (panel, generation) in [(&first, 1), (&second, 2)] {
+        views.begin_active_panel_detail(panel, Generation(generation), viewport, 800);
+        assert!(views.complete_active_panel_read(
+            ReadKind::Detail,
+            panel_completion(
+                panel,
+                Generation(generation),
+                PanelReadMode::Replace,
+                vec![run.clone()],
+                Some(populated_curve_snapshot(run.clone(), viewport)),
+                Vec::new(),
+            ),
+        ));
+    }
+    let points = |views: &AnalysisViews, panel| {
+        views
+            .active_panel(panel)
+            .unwrap()
+            .detail
+            .as_ref()
+            .unwrap()
+            .series
+            .iter()
+            .filter_map(|curve| curve.chart_series.as_ref())
+            .map(|series| series.points().len())
+            .sum::<usize>()
+    };
+    assert_eq!(points(&views, &first), 2);
+    let released = Arc::downgrade(views.active_panel(&first).unwrap().detail.as_ref().unwrap());
+    assert!(views.evict_hidden_panel_details(std::slice::from_ref(&second)));
+    assert!(released.upgrade().is_none());
+    assert!(views.active_panel(&first).unwrap().detail.is_none());
+    assert_eq!(points(&views, &second), 2);
+    assert!(!views.complete_active_panel_read(
+        ReadKind::Detail,
+        panel_completion(
+            &first,
+            Generation(1),
+            PanelReadMode::Replace,
+            vec![run.clone()],
+            Some(populated_curve_snapshot(run, viewport)),
+            Vec::new(),
+        ),
+    ));
+    assert!(views.active_panel(&first).unwrap().detail.is_none());
+}
+
+#[test]
+fn ten_thousand_panel_identity_scroll_keeps_payloads_to_retained_window() {
+    let mut views = AnalysisViews::default();
+    let started = Instant::now();
+    let panel_ids = views.select_active_metrics(
+        (0..10_000).map(|index| MetricKey::from_string(format!("metric-{index}"))),
+    );
+    let identity_elapsed = started.elapsed();
+    let started = Instant::now();
+    let cloned_panels = views.active().panels.to_vec();
+    let clone_elapsed = started.elapsed();
+    std::hint::black_box(&cloned_panels);
+    eprintln!(
+        "panel boundary: identities={} identity_ms={:.3} full_clone_ms={:.3}",
+        panel_ids.len(),
+        identity_elapsed.as_secs_f64() * 1_000.,
+        clone_elapsed.as_secs_f64() * 1_000.,
+    );
+    let viewport = AlignmentViewport::new(0, 100).expect("viewport should be valid");
+    let snapshot = || CurveSnapshot {
+        viewport,
+        point_budget: 2,
+        real_range: Some(viewport),
+        series: Vec::new(),
+    };
+    for (generation, panel_id) in panel_ids.iter().take(8).enumerate() {
+        views.begin_active_panel_detail(panel_id, Generation(generation as u64 + 1), viewport, 800);
+        assert!(views.complete_active_panel_read(
+            ReadKind::Detail,
+            panel_completion(
+                panel_id,
+                Generation(generation as u64 + 1),
+                PanelReadMode::Replace,
+                Vec::new(),
+                Some(snapshot()),
+                Vec::new(),
+            ),
+        ));
+        views.begin_active_panel_overview(panel_id, Generation(generation as u64 + 10_001), 800);
+        assert!(views.complete_active_panel_read(
+            ReadKind::Overview,
+            panel_completion(
+                panel_id,
+                Generation(generation as u64 + 10_001),
+                PanelReadMode::Replace,
+                Vec::new(),
+                Some(snapshot()),
+                Vec::new(),
+            ),
+        ));
+    }
+    let retained = panel_ids[..6].to_vec();
+    assert!(views.evict_hidden_panel_details(&retained));
+    assert_eq!(
+        views
+            .active()
+            .panels
+            .iter()
+            .filter(|panel| panel.detail.is_some())
+            .count(),
+        6
+    );
+    assert!(views.evict_unretained_panel_overviews(&retained));
+    assert_eq!(
+        views
+            .active()
+            .panels
+            .iter()
+            .filter(|panel| panel.overview.is_some())
+            .count(),
+        6
+    );
+    let evicted = &panel_ids[9_999];
+    views.begin_active_panel_detail(evicted, Generation(20_000), viewport, 800);
+    assert!(!views.complete_active_panel_read(
+        ReadKind::Detail,
+        panel_completion(
+            evicted,
+            Generation(19_999),
+            PanelReadMode::Replace,
+            Vec::new(),
+            Some(snapshot()),
+            Vec::new(),
+        ),
+    ));
+    assert!(
+        views
+            .active_panel(evicted)
+            .expect("evicted panel remains")
+            .detail
+            .is_none()
+    );
 }
 
 #[test]

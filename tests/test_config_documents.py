@@ -34,6 +34,9 @@ def test_sdk_lifecycle_leaves_config_and_workbench_bytes_unchanged(
     _write(project_workbench, _fixture("workbench/v1.toml"))
     documents = [global_config, global_workbench, project_config, project_workbench]
     before = {path: path.read_bytes() for path in documents}
+    extension_cache = pathlib.Path.home() / ".duckdb"
+    if extension_cache.is_dir():
+        (home / ".duckdb").symlink_to(extension_cache, target_is_directory=True)
     monkeypatch.setenv("HOME", str(home))
 
     with seex.init(project="project-1", dir=root, id="run-1", name="run") as run:

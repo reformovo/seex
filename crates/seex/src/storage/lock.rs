@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::model::run::RunId;
 use crate::model::types::ProjectId;
@@ -106,9 +107,86 @@ impl Drop for ProjectCreateGuard {
     }
 }
 
+/// Exclusive, bounded cross-process guard for one catalog's write transaction.
+#[derive(Debug)]
+pub(crate) struct CatalogWriteGuard {
+    lock_file: File,
+}
+
+impl CatalogWriteGuard {
+    pub(crate) fn acquire(catalog_path: &Path, timeout: Duration) -> Result<Self, StorageError> {
+        let parent = catalog_path
+            .parent()
+            .ok_or_else(|| StorageError::CatalogNotFound {
+                name: path_basename(catalog_path),
+            })?;
+        std::fs::create_dir_all(parent).map_err(|source| StorageError::Storage {
+            operation: "creating catalog lock directory",
+            name: path_basename(parent),
+            source,
+        })?;
+        let parent = std::fs::canonicalize(parent).map_err(|source| StorageError::Storage {
+            operation: "resolving catalog lock directory",
+            name: path_basename(parent),
+            source,
+        })?;
+        let lock_name = format!(".{}.write.lock", path_basename(catalog_path));
+        let lock_file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(parent.join(lock_name))
+            .map_err(|source| StorageError::Storage {
+                operation: "opening catalog write lock",
+                name: path_basename(catalog_path),
+                source,
+            })?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            match lock_file.try_lock() {
+                Ok(()) => return Ok(Self { lock_file }),
+                Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(StorageError::CatalogWriteLockTimeout);
+                }
+                Err(source) => {
+                    return Err(StorageError::Storage {
+                        operation: "locking catalog for write",
+                        name: path_basename(catalog_path),
+                        source: source.into(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+impl Drop for CatalogWriteGuard {
+    fn drop(&mut self) {
+        let _ = self.lock_file.unlock();
+    }
+}
+
 fn path_basename(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("storage path")
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_write_lock_distinguishes_contention_from_queue_pressure() {
+        let root = tempfile::tempdir().expect("temporary catalog root");
+        let catalog = root.path().join("catalog.sqlite");
+        let _first = CatalogWriteGuard::acquire(&catalog, Duration::ZERO).expect("first lock");
+        let error = CatalogWriteGuard::acquire(&catalog, Duration::ZERO).unwrap_err();
+        assert!(matches!(error, StorageError::CatalogWriteLockTimeout));
+    }
 }

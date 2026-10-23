@@ -9,7 +9,7 @@ use crate::storage::{ProjectConnection, RunWriterGuard};
 use crate::engine::EngineError;
 use crate::engine::bootstrap::{
     CatalogBackend, NativeStorageConfig, S3ConnectionConfig, catalog_lock_namespace,
-    open_existing_native_connection_with_config, open_native_connection_with_config,
+    open_existing_client_connection_with_config, open_native_connection_with_config,
 };
 #[cfg(test)]
 use crate::engine::query::NativeQueryStore;
@@ -99,23 +99,27 @@ impl NativeClient {
         );
         let catalog_path = storage_config.catalog_path().to_owned();
         let connection = if must_exist {
-            open_existing_native_connection_with_config(storage_config)?
+            open_existing_client_connection_with_config(storage_config.clone())?
         } else {
-            open_native_connection_with_config(storage_config)?
+            open_native_connection_with_config(storage_config.clone())?
         };
         let lock_namespace = catalog_lock_namespace(&catalog_path)?;
-        let connection = Arc::new(Mutex::new(ProjectConnection::new(connection)));
+        let connection = Arc::new(Mutex::new(ProjectConnection::with_catalog_write_lock(
+            connection,
+            storage_config,
+        )));
         let reporter =
             MetricReporter::open_with_capacity(Arc::clone(&connection), metric_queue_capacity);
 
-        Ok(Self {
+        let client = Self {
             lock_namespace,
             reporter,
             connection,
             active_runs: Arc::new(Mutex::new(HashMap::new())),
             flush_lock: Arc::new(Mutex::new(())),
             is_shutdown: AtomicBool::new(false),
-        })
+        };
+        Ok(client)
     }
 
     pub fn create_project(
@@ -190,7 +194,11 @@ impl NativeClient {
 
     pub fn get_run(&self, run_id: &RunId) -> Result<Run, EngineError> {
         let connection = self.connection()?;
-        Ok(connection.get_run(run_id)?)
+        if connection.uses_sqlite_catalog() {
+            Ok(connection.fresh_read()?.get_run(run_id)?)
+        } else {
+            Ok(connection.get_run(run_id)?)
+        }
     }
 
     pub fn resume_run(&self, run_id: &RunId) -> Result<Run, EngineError> {
@@ -264,7 +272,15 @@ impl NativeClient {
                 to: "flushed",
             });
         }
+        self.flush_pending_data(run_id, timeout, true)
+    }
 
+    fn flush_pending_data(
+        &self,
+        run_id: &RunId,
+        timeout: Option<Duration>,
+        only_pending: bool,
+    ) -> Result<(), EngineError> {
         let deadline = timeout.map(|timeout| Instant::now() + timeout);
         self.reporter.set_flush_running(run_id);
         let _flush_guard = match self.acquire_flush_lock(deadline) {
@@ -280,17 +296,13 @@ impl NativeClient {
         }
 
         let connection = self.connection()?;
-        let flush_interrupt = install_flush_interrupt(&connection, deadline);
-        let result = connection.flush_metric_points();
-        if let Some(flush_interrupt) = &flush_interrupt {
-            flush_interrupt.mark_completed();
-        }
+        let (result, timed_out) = if only_pending {
+            connection.flush_pending_metric_points_with_deadline(deadline)
+        } else {
+            connection.flush_metric_points_with_deadline(deadline)
+        };
         drop(connection);
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline)
-            || flush_interrupt
-                .as_ref()
-                .is_some_and(FlushInterrupt::timed_out)
-        {
+        if timed_out {
             self.reporter.set_flush_timed_out(run_id);
             return Err(EngineError::MetricFlushTimeout);
         }
@@ -344,8 +356,9 @@ impl NativeClient {
     }
 
     pub fn greatest_persisted_step(&self, run_id: &RunId) -> Result<Option<Step>, EngineError> {
-        let value = self
-            .connection()?
+        let connection = self.connection()?;
+        let fresh = connection.fresh_read()?;
+        let value = fresh
             .query_row(
                 "SELECT max(step) FROM dl.metric_points WHERE run_id = ?",
                 [run_id.as_str()],
@@ -365,7 +378,8 @@ impl NativeClient {
         max_points: Option<usize>,
     ) -> Result<Vec<MetricPoint>, EngineError> {
         let connection = self.connection()?;
-        NativeQueryStore::new(&connection)
+        let fresh = connection.fresh_read()?;
+        NativeQueryStore::new(&fresh)
             .query_metric(run_id, metric_key, start_step, end_step, max_points)
     }
 
@@ -377,7 +391,8 @@ impl NativeClient {
     ) -> Result<crate::model::comparison::ObjectiveEvidence, EngineError> {
         let run = self.get_run(run_id)?;
         let connection = self.connection()?;
-        NativeQueryStore::new(&connection).objective_evidence(run_id, run.status, objective)
+        let fresh = connection.fresh_read()?;
+        NativeQueryStore::new(&fresh).objective_evidence(run_id, run.status, objective)
     }
 
     #[cfg(test)]
@@ -388,8 +403,9 @@ impl NativeClient {
     ) -> Result<Vec<(Run, crate::model::comparison::ObjectiveEvidence)>, EngineError> {
         let connection = self.connection()?;
         let runs = connection.get_runs(run_ids)?;
+        let fresh = connection.fresh_read()?;
         let evidence =
-            NativeQueryStore::new(&connection).objective_evidence_for_runs(&runs, objective)?;
+            NativeQueryStore::new(&fresh).objective_evidence_for_runs(&runs, objective)?;
         Ok(runs.into_iter().zip(evidence).collect())
     }
 
@@ -397,7 +413,8 @@ impl NativeClient {
     pub fn list_metrics(&self, run_id: &RunId) -> Result<Vec<MetricAggregate>, EngineError> {
         let run = self.get_run(run_id)?;
         let connection = self.connection()?;
-        NativeQueryStore::new(&connection).list_metrics(run_id, run.status)
+        let fresh = connection.fresh_read()?;
+        NativeQueryStore::new(&fresh).list_metrics(run_id, run.status)
     }
 
     fn project_exists(&self, project_id: &ProjectId) -> Result<bool, EngineError> {
@@ -422,6 +439,10 @@ impl NativeClient {
         let active_run = self.acquire_run_writer(run_id)?;
         active_run.close_admission()?;
         if let Err(error) = self.reporter.drain(timeout) {
+            active_run.open_admission()?;
+            return Err(error);
+        }
+        if let Err(error) = self.flush_pending_data(run_id, timeout, false) {
             active_run.open_admission()?;
             return Err(error);
         }
@@ -522,45 +543,6 @@ impl NativeClient {
             }
         }
     }
-}
-
-struct FlushInterrupt {
-    completed: Arc<AtomicBool>,
-    timed_out: Arc<AtomicBool>,
-}
-
-impl FlushInterrupt {
-    fn mark_completed(&self) {
-        self.completed.store(true, Ordering::Relaxed);
-    }
-
-    fn timed_out(&self) -> bool {
-        self.timed_out.load(Ordering::Relaxed)
-    }
-}
-
-fn install_flush_interrupt(
-    connection: &ProjectConnection,
-    deadline: Option<Instant>,
-) -> Option<FlushInterrupt> {
-    let deadline = deadline?;
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let completed = Arc::new(AtomicBool::new(false));
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let timer_completed = Arc::clone(&completed);
-    let timer_timed_out = Arc::clone(&timed_out);
-    let interrupt = connection.interrupt_handle();
-    std::thread::spawn(move || {
-        std::thread::sleep(remaining);
-        if !timer_completed.load(Ordering::Relaxed) {
-            timer_timed_out.store(true, Ordering::Relaxed);
-            interrupt.interrupt();
-        }
-    });
-    Some(FlushInterrupt {
-        completed,
-        timed_out,
-    })
 }
 
 const fn run_status_value(status: RunStatus) -> &'static str {
@@ -1123,11 +1105,18 @@ mod tests {
                 .map(|summary| (
                     summary.metric_key.as_str(),
                     summary.effective_count,
-                    summary.last_value_f64
+                    summary.min_value_f64,
+                    summary.max_value_f64
                 ))
                 .collect::<Vec<_>>(),
-            vec![("eval/accuracy", 1, 0.8), ("train/loss", 1, 0.125)],
+            vec![
+                ("eval/accuracy", 1, 0.8, 0.8),
+                ("train/loss", 2, 0.125, 0.25)
+            ],
         );
+        let loss = &summaries[1];
+        assert_eq!(loss.last_step, Step::new(0));
+        assert!([0.125, 0.25].contains(&loss.last_value_f64));
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }
@@ -1267,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn finalization_flush_failure_keeps_terminal_state_and_updates_diagnostics()
+    fn finalization_flush_failure_keeps_run_running_and_updates_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
         let root_path = std::env::temp_dir().join(format!("seex-client-{}", uuid::Uuid::new_v4()));
         let client = NativeClient::open(&root_path)?;
@@ -1302,7 +1291,7 @@ mod tests {
             matches!(finish, Err(EngineError::MetricFlush { .. })),
             "expected finalization to surface MetricFlush, got {finish:?}",
         );
-        assert_eq!(stored.status, RunStatus::Finished);
+        assert_eq!(stored.status, RunStatus::Running);
         assert_eq!(
             diagnostics.last_flush_run_id.as_deref(),
             Some("run-flush-failure"),
@@ -1312,6 +1301,160 @@ mod tests {
             diagnostics.last_flush_error.as_deref(),
             Some("flush metric_points failed"),
         );
+
+        std::fs::remove_file(&metric_points_path)?;
+        let finished = client.finish_run(&run.run_id)?;
+        assert_eq!(finished.status, RunStatus::Finished);
+        std::fs::remove_dir_all(root_path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn reopening_store_recovers_terminal_inline_flush() -> Result<(), Box<dyn std::error::Error>> {
+        let root_path = std::env::temp_dir().join(format!("seex-client-{}", uuid::Uuid::new_v4()));
+        let client = NativeClient::open_with_catalog_backend_storage_config(
+            &root_path,
+            CatalogBackend::Sqlite,
+            None,
+            None,
+            None,
+            65_536,
+        )?;
+        let project = client.create_project(
+            "local training",
+            Some(ProjectId::from_string("project-recovery")),
+        )?;
+        let run = client.create_run(
+            &project.project_id,
+            "baseline",
+            Some(RunId::from_string("run-recovery")),
+        )?;
+        client
+            .run_handle(run.clone())
+            .log_metric_at_step("train/loss", 0, 0.25)?;
+        client.reporter.drain(None)?;
+
+        let metric_points_path = root_path
+            .join(".seex")
+            .join("data")
+            .join("main")
+            .join("metric_points");
+        if metric_points_path.is_dir() {
+            std::fs::remove_dir_all(&metric_points_path)?;
+        }
+        std::fs::write(&metric_points_path, b"flush failure")?;
+        let finish = client.finish_run(&run.run_id);
+        assert!(matches!(finish, Err(EngineError::MetricFlush { .. })));
+        assert_eq!(client.get_run(&run.run_id)?.status, RunStatus::Running);
+
+        // Simulate a store that persisted a terminal status and recovery marker
+        // before its inline data was flushed.
+        {
+            let connection = client.connection()?;
+            connection.execute(
+                "UPDATE seex_runs SET status = 'finished' WHERE run_id = 'run-recovery'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE seex_storage_metadata SET value = 1 WHERE key = 'flush_pending'",
+                [],
+            )?;
+        }
+        client.shutdown(None)?;
+
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            &root_path,
+            None,
+            None,
+            None,
+        );
+        let reader =
+            crate::storage::bootstrap::open_existing_native_connection_with_config(config)?;
+        let pending: i64 = reader.query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(pending, 1);
+        let visible_points: i64 = reader.query_row(
+            "SELECT count(*) FROM dl.metric_points WHERE run_id = 'run-recovery'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(visible_points, 1);
+        drop(reader);
+
+        let failed_recovery = NativeClient::open_with_catalog_backend_storage_config(
+            &root_path,
+            CatalogBackend::Sqlite,
+            None,
+            None,
+            None,
+            65_536,
+        );
+        assert!(
+            failed_recovery.is_err(),
+            "writer open must retry and fail while flush is blocked"
+        );
+
+        let reader = crate::storage::bootstrap::open_existing_native_connection_with_config(
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                &root_path,
+                None,
+                None,
+                None,
+            ),
+        )?;
+        let pending_after_failure: i64 = reader.query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(pending_after_failure, 1);
+        drop(reader);
+
+        std::fs::remove_file(&metric_points_path)?;
+        std::fs::create_dir_all(&metric_points_path)?;
+        let recovered = NativeClient::open_with_catalog_backend_storage_config_mode(
+            &root_path,
+            CatalogBackend::Sqlite,
+            None,
+            None,
+            None,
+            65_536,
+            true,
+        )?;
+        let partition_path = metric_points_path
+            .join("run_id=run-recovery")
+            .join("metric_key_encoded=train%252Floss");
+        assert!(partition_contains_parquet(&partition_path)?);
+        recovered.shutdown(None)?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            &root_path,
+            None,
+            None,
+            None,
+        );
+        let connection = open_native_connection_with_config(config.clone())?;
+        connection.execute(
+            "UPDATE seex_storage_metadata SET value = 1 WHERE key = 'flush_pending'",
+            [],
+        )?;
+        drop(connection);
+        let recovered_again = open_existing_client_connection_with_config(config)?;
+        let pending: i64 = recovered_again.query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            pending, 0,
+            "retry after an already completed flush must be idempotent"
+        );
+        drop(recovered_again);
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }

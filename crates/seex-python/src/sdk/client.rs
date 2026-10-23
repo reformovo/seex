@@ -1,7 +1,7 @@
 use pyo3::create_exception;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use seex::{ClientDiagnostics, MetricAggregate, MetricPoint, Project};
+use seex::ClientDiagnostics;
 
 create_exception!(
     seex._seex,
@@ -36,28 +36,6 @@ sdk_exception!(
 );
 sdk_exception!(InvalidConfigurationError, "Seex configuration is invalid.");
 sdk_exception!(StorageError, "A storage operation failed.");
-sdk_exception!(ApiClosedError, "The read-only API is closed.");
-
-#[pyclass(name = "Project", module = "seex._seex")]
-pub struct PyProject {
-    #[pyo3(get)]
-    project_id: String,
-    #[pyo3(get)]
-    name: String,
-    #[pyo3(get)]
-    created_at: String,
-}
-
-impl From<Project> for PyProject {
-    fn from(project: Project) -> Self {
-        Self {
-            project_id: project.project_id.as_str().to_owned(),
-            name: project.name,
-            created_at: project.created_at.to_rfc3339(),
-        }
-    }
-}
-
 #[pyclass(name = "Diagnostics", module = "seex._seex")]
 pub struct PyDiagnostics {
     #[pyo3(get)]
@@ -101,67 +79,6 @@ impl From<ClientDiagnostics> for PyDiagnostics {
                 seex::FlushState::TimedOut => "timed_out",
             },
             last_flush_error: diagnostics.last_flush_error,
-        }
-    }
-}
-
-#[pyclass(name = "MetricPoint", module = "seex._seex")]
-pub struct PyMetricPoint {
-    #[pyo3(get)]
-    run_id: String,
-    #[pyo3(get)]
-    metric_key: String,
-    #[pyo3(get)]
-    step: i64,
-    #[pyo3(get)]
-    timestamp: String,
-    #[pyo3(get)]
-    value_f64: f64,
-    #[pyo3(get)]
-    ingested_at: String,
-}
-
-impl From<MetricPoint> for PyMetricPoint {
-    fn from(point: MetricPoint) -> Self {
-        Self {
-            run_id: point.run_id.as_str().to_owned(),
-            metric_key: point.metric_key.as_str().to_owned(),
-            step: point.step.value(),
-            timestamp: point.timestamp.to_rfc3339(),
-            value_f64: point.value_f64,
-            ingested_at: point.ingested_at.to_rfc3339(),
-        }
-    }
-}
-
-#[pyclass(name = "MetricSummary", module = "seex._seex")]
-pub struct PyMetricSummary {
-    #[pyo3(get)]
-    run_id: String,
-    #[pyo3(get)]
-    metric_key: String,
-    #[pyo3(get)]
-    effective_count: u64,
-    #[pyo3(get)]
-    last_step: i64,
-    #[pyo3(get)]
-    last_value_f64: f64,
-    #[pyo3(get)]
-    min_value_f64: f64,
-    #[pyo3(get)]
-    max_value_f64: f64,
-}
-
-impl From<MetricAggregate> for PyMetricSummary {
-    fn from(summary: MetricAggregate) -> Self {
-        Self {
-            run_id: summary.run_id.as_str().to_owned(),
-            metric_key: summary.metric_key.as_str().to_owned(),
-            effective_count: summary.effective_count,
-            last_step: summary.last_step.value(),
-            last_value_f64: summary.last_value_f64,
-            min_value_f64: summary.min_value_f64,
-            max_value_f64: summary.max_value_f64,
         }
     }
 }

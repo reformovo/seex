@@ -6,26 +6,24 @@
     reason = "private storage seams remain exercised by crate-local parity tests"
 )]
 
-mod alignment_query;
 pub mod bootstrap;
 pub mod config;
 mod lock;
+pub(crate) mod lttb;
 mod metric_query;
 mod project;
 mod query;
 pub mod rows;
+mod sampling;
 mod schema;
 mod sql;
 pub mod time;
 pub mod write;
 
-use crate::model::alignment::{AlignmentQuery, AlignmentQueryResult};
 use crate::model::metric::{MetricQuery, MetricQueryResult};
 
-pub(crate) use lock::ProjectCreateGuard;
 pub use lock::RunWriterGuard;
-#[doc(hidden)]
-pub use metric_query::SeriesDiagnostics;
+pub(crate) use lock::{CatalogWriteGuard, ProjectCreateGuard};
 pub use metric_query::{ProjectMetricReader, percent_encode_metric_key};
 #[doc(hidden)]
 pub use project::ReadInterrupt;
@@ -36,10 +34,6 @@ pub use schema::{ColumnSchema, SchemaReport, validate_metric_point_schema};
 /// Common metric-series query interface for current storage inputs.
 pub trait MetricReader {
     fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError>;
-    fn query_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-    ) -> Result<AlignmentQueryResult, StorageError>;
 }
 
 /// Failures returned by Seex storage operations.
@@ -55,6 +49,10 @@ pub enum StorageError {
     RunAlreadyActive { run_id: String },
     #[error("catalog not found: {name}")]
     CatalogNotFound { name: String },
+    #[error("timed out waiting for the catalog write lock")]
+    CatalogWriteLockTimeout,
+    #[error("unsupported native storage format version {found}; expected {expected}")]
+    StorageFormatMismatch { expected: i64, found: i64 },
     #[error("storage operation failed while {operation}: {name}")]
     Storage {
         operation: &'static str,

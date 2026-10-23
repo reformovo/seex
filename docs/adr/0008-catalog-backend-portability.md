@@ -1,7 +1,7 @@
 # ADR 0008: V3 Catalog Backend Portability
 
 ## Status
-Accepted.
+Superseded by ADR 0018 for the first-release native store.
 
 V3 promotes SQLite from a deferred catalog backend to a required native
 backend, while keeping PostgreSQL deferred. PulseOn-owned catalog application

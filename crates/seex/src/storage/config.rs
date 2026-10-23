@@ -306,9 +306,15 @@ fn resolve_catalog_backend(
             .transpose()?
             .flatten()
     };
-    let name = explicit.or(configured.as_deref()).unwrap_or("duckdb");
-    CatalogBackend::from_name(name)
-        .ok_or_else(|| invalid(format!("unsupported catalog_backend: {name}")))
+    let name = explicit.or(configured.as_deref()).unwrap_or("sqlite");
+    let backend = CatalogBackend::from_name(name)
+        .ok_or_else(|| invalid(format!("unsupported catalog_backend: {name}")))?;
+    if backend != CatalogBackend::Sqlite {
+        return Err(invalid(
+            "catalog_backend must be 'sqlite'; other catalog backends are not supported",
+        ));
+    }
+    Ok(backend)
 }
 
 fn resolve_catalog_path(
@@ -342,10 +348,8 @@ fn validate_path_configuration(
     data_path: Option<&Path>,
     catalog_path: Option<&Path>,
 ) -> Result<(), InitConfigError> {
-    if data_path.is_some_and(is_unsupported_data_uri_path) {
-        return Err(invalid(
-            "data_path must be a local filesystem path or s3:// URI",
-        ));
+    if data_path.is_some_and(is_uri_path) {
+        return Err(invalid("data_path must be a local filesystem path"));
     }
     if catalog_path.is_some_and(is_uri_path) {
         return Err(invalid("catalog_path must be a local filesystem path"));
@@ -512,11 +516,6 @@ fn validate_s3_string(
 
 fn is_uri_path(path: &Path) -> bool {
     path.to_string_lossy().contains("://")
-}
-
-fn is_unsupported_data_uri_path(path: &Path) -> bool {
-    let path = path.to_string_lossy();
-    path.contains("://") && !path.starts_with("s3://")
 }
 
 fn invalid(message: impl Into<String>) -> InitConfigError {
@@ -733,7 +732,7 @@ mod tests {
             "#,
         );
 
-        let backend = resolve_catalog_backend(Some("duckdb"), Some(&config))
+        let backend = resolve_catalog_backend(Some("sqlite"), Some(&config))
             .expect("explicit catalog backend should resolve");
         let path = resolve_catalog_path(
             Path::new("project"),
@@ -742,12 +741,12 @@ mod tests {
         )
         .expect("explicit catalog path should resolve");
 
-        assert_eq!(backend, CatalogBackend::DuckDb);
+        assert_eq!(backend, CatalogBackend::Sqlite);
         assert_eq!(path, Some(PathBuf::from("explicit/catalog.db")));
     }
 
     #[test]
-    fn catalog_config_uses_file_values_or_duckdb_defaults() {
+    fn catalog_config_uses_file_values_or_sqlite_defaults() {
         let config = parse_config(
             r#"
             catalog_backend = "sqlite"
@@ -767,7 +766,7 @@ mod tests {
             configured_path,
             Some(PathBuf::from("project/configured/catalog.sqlite"))
         );
-        assert_eq!(default_backend, CatalogBackend::DuckDb);
+        assert_eq!(default_backend, CatalogBackend::Sqlite);
     }
 
     #[test]
@@ -791,29 +790,24 @@ mod tests {
     }
 
     #[test]
-    fn init_config_resolves_s3_data_path_for_supported_catalog_backends() {
+    fn init_config_rejects_s3_data_path() {
         let root_path = std::env::temp_dir().join(format!("seex-config-{}", uuid::Uuid::new_v4()));
 
-        for catalog_backend in ["duckdb", "sqlite"] {
-            let resolved = resolve_init_config(
-                &root_path,
-                Some(PathBuf::from("s3://bucket/seex")),
-                Some(catalog_backend),
-                None,
-                1024,
-                S3ConnectionOverrides {
-                    endpoint: Some("127.0.0.1:9000".to_owned()),
-                    access_key_id: Some("seex-key".to_owned()),
-                    secret_access_key: Some("seex-secret".to_owned()),
-                    path_style: Some(true),
-                    use_ssl: Some(false),
-                    ..S3ConnectionOverrides::default()
-                },
-            )
-            .expect("s3 init config should resolve for supported catalog backend");
+        let error = match resolve_init_config(
+            &root_path,
+            Some(PathBuf::from("s3://bucket/seex")),
+            Some("sqlite"),
+            None,
+            1024,
+            S3ConnectionOverrides::default(),
+        ) {
+            Ok(_) => panic!("S3 data paths must be rejected in the local-only P1 store"),
+            Err(error) => error,
+        };
 
-            assert_eq!(resolved.data_path, Some(PathBuf::from("s3://bucket/seex")));
-            assert!(resolved.s3_connection.is_some());
-        }
+        assert_eq!(
+            error.to_string(),
+            "data_path must be a local filesystem path"
+        );
     }
 }

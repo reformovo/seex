@@ -52,8 +52,8 @@ impl ReadSession {
     ///
     /// # Errors
     ///
-    /// Returns [`SourceError::UnsupportedS3`] before credential resolution for
-    /// an S3 data path. Other configuration and storage failures are preserved.
+    /// Returns a configuration error for an S3 data path before any credential
+    /// resolution. Other configuration and storage failures are preserved.
     pub fn open_existing(root_path: &Path) -> Result<Self, SourceError> {
         let reader = open_local_reader(root_path)?;
         Ok(Self {
@@ -94,9 +94,7 @@ impl ReadSession {
         );
         let mut runs = Vec::new();
         for project_id in projects_to_load {
-            let mut project_runs = self.reader.runs(project_id)?;
-            project_runs.reverse();
-            runs.extend(project_runs);
+            runs.extend(self.reader.runs(project_id)?);
         }
         let mut requested = request.metric_runs.iter().cloned().collect::<HashSet<_>>();
         if let Some(project_id) = project_id {
@@ -117,31 +115,36 @@ impl ReadSession {
             .iter()
             .map(|run| ((run.project_id.clone(), run.run_id.clone()), run.clone()))
             .collect::<HashMap<_, _>>();
-        for requested_project in requested
-            .iter()
-            .map(|(project_id, _)| project_id)
-            .collect::<HashSet<_>>()
-        {
-            if project_id == Some(requested_project) {
+        for (requested_project, requested_run) in &requested {
+            if known_runs.contains_key(&(requested_project.clone(), requested_run.clone())) {
                 continue;
             }
-            known_runs.extend(
-                self.reader
-                    .runs(requested_project)?
-                    .into_iter()
-                    .map(|run| ((run.project_id.clone(), run.run_id.clone()), run)),
-            );
+            if let Some(run) = self.reader.run(requested_project, requested_run)? {
+                if project_id.is_none_or(|project_id| project_id == requested_project) {
+                    runs.push(run.clone());
+                }
+                known_runs.insert((requested_project.clone(), requested_run.clone()), run);
+            }
         }
+        runs.sort_by(|left, right| {
+            (right.created_at, right.run_id.as_str()).cmp(&(left.created_at, left.run_id.as_str()))
+        });
         let mut metric_keys = BTreeMap::new();
         for (project_id, run_id) in requested {
             let Some(run) = known_runs.get(&(project_id, run_id)) else {
                 continue;
             };
-            for aggregate in self.reader.metrics(run)? {
-                metric_keys.insert(
-                    aggregate.metric_key.as_str().to_owned(),
-                    aggregate.metric_key,
-                );
+            let mut after = None::<String>;
+            loop {
+                let page = self.reader.series_keys_page(run, after.as_deref(), 100)?;
+                let complete = page.len() < 100;
+                after = page.last().map(|key| key.as_str().to_owned());
+                for metric_key in page {
+                    metric_keys.insert(metric_key.as_str().to_owned(), metric_key);
+                }
+                if complete {
+                    break;
+                }
             }
         }
         Ok(CatalogSnapshot {
@@ -193,7 +196,10 @@ mod tests {
 
         let error = ReadSession::open_existing(root.path()).err();
 
-        assert!(matches!(error, Some(SourceError::UnsupportedS3)));
+        assert!(matches!(
+            error,
+            Some(SourceError::Sdk(seex::Error::Configuration))
+        ));
         Ok(())
     }
 
@@ -250,6 +256,55 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["run-2", "run-1"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn discovery_reads_all_metric_pages_and_unions_selected_runs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let client = Client::builder(root.path()).open()?;
+        let mut runs = Vec::new();
+        for (id, count) in [
+            ("empty", 0),
+            ("page", 100),
+            ("boundary", 101),
+            ("many", 250),
+        ] {
+            let run = client.start_run(RunOptions::new("project").id(id))?;
+            if count > 0 {
+                let metrics = (0..count).map(|index| (format!("metric-{index:04}"), 1.));
+                run.log_with(metrics, LogOptions::new().step(0))?;
+            }
+            run.finish()?;
+            runs.push((run.run_id().clone(), count));
+        }
+        client.shutdown()?;
+        let session = ReadSession::open_existing(root.path())?;
+        for (run_id, count) in &runs {
+            let snapshot = session.discover(&DiscoveryRequest {
+                project_id: Some(ProjectId::from_string("project")),
+                selected_run_ids: vec![run_id.clone()],
+                ..DiscoveryRequest::default()
+            })?;
+            assert_eq!(snapshot.metric_keys.len(), *count);
+            assert_eq!(
+                snapshot
+                    .metric_keys
+                    .iter()
+                    .map(|key| key.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+                (0..*count)
+                    .map(|index| format!("metric-{index:04}"))
+                    .collect::<Vec<_>>()
+            );
+        }
+        let union = session.discover(&DiscoveryRequest {
+            project_id: Some(ProjectId::from_string("project")),
+            selected_run_ids: runs.into_iter().map(|(id, _)| id).collect(),
+            ..DiscoveryRequest::default()
+        })?;
+        assert_eq!(union.metric_keys.len(), 250);
         Ok(())
     }
 

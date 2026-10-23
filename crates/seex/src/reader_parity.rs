@@ -1,18 +1,16 @@
-use crate::storage::bootstrap::open_native_connection;
+use crate::storage::bootstrap::{
+    CatalogBackend, NativeStorageConfig, open_native_connection_with_config,
+};
 use crate::storage::{MetricWrite, ProjectConnection};
 use crate::{
-    CatalogBackend, Error, EvidenceCompleteness, EvidenceReason, MetricAxis, MetricCoordinate,
-    MetricKey, MetricQuery, MetricRange, ObjectiveDirection, ObjectiveMetric, Project, ProjectId,
-    Reader, RelativeTime, RunId, RunStatus, Step, Timestamp,
+    Error, MAX_CHART_POINTS, MetricCoordinate, MetricKey, MetricQuery, MetricRange, Project,
+    ProjectId, Reader, RunId, RunStatus, Step,
 };
 
 struct Fixture {
     _root: tempfile::TempDir,
     native: Reader,
-    standalone: Reader,
     run_id: RunId,
-    reference_run_id: RunId,
-    started_at: i64,
 }
 
 #[test]
@@ -26,8 +24,8 @@ fn native_reader_honors_explicit_storage_overrides_without_creating_a_store()
     )?;
 
     let reader = Reader::builder(root)
-        .catalog_backend(CatalogBackend::DuckDb)
-        .catalog_path(root.join(".seex/catalog.ducklake"))
+        .catalog_backend(crate::CatalogBackend::Sqlite)
+        .catalog_path(root.join(".seex/catalog.sqlite"))
         .data_path(root.join(".seex/data"))
         .open()?;
 
@@ -36,10 +34,10 @@ fn native_reader_honors_explicit_storage_overrides_without_creating_a_store()
     assert_eq!(
         Reader::builder(empty.path()).open().err(),
         Some(Error::CatalogNotFound {
-            name: String::from("catalog.ducklake")
+            name: String::from("catalog.sqlite")
         })
     );
-    assert!(!empty.path().join(".seex/catalog.ducklake").exists());
+    assert!(!empty.path().join(".seex/catalog.sqlite").exists());
     Ok(())
 }
 
@@ -70,55 +68,41 @@ fn native_reader_scopes_run_lookup_and_optional_metric_summaries()
             .native
             .metric_summary(&run, &MetricKey::from_string("loss"))?
             .map(|summary| summary.effective_count),
-        Some(8)
+        Some(10)
     );
-    assert!(
-        fixture
-            .native
-            .metric_summary(&run, &MetricKey::from_string("missing"))?
-            .is_none()
-    );
-    Ok(())
-}
-
-#[test]
-fn native_reader_comparison_and_ranking_share_canonical_evidence()
--> Result<(), Box<dyn std::error::Error>> {
-    let fixture = Fixture::open()?;
-    let objective = ObjectiveMetric {
-        metric_key: MetricKey::from_string("loss"),
-        direction: ObjectiveDirection::Minimize,
-    };
-
-    let comparison =
-        fixture
-            .native
-            .compare_runs(&fixture.run_id, &fixture.reference_run_id, &objective)?;
-    let ranking = fixture.native.rank_runs(
-        &[fixture.reference_run_id.clone(), fixture.run_id.clone()],
-        &objective,
-    )?;
-
-    assert_eq!(comparison.candidate.last_value_f64, Some(7.0));
-    assert_eq!(comparison.reference.last_value_f64, Some(10.0));
-    assert_eq!(ranking.entries[0].evidence.run_id, fixture.run_id);
-    assert_eq!(ranking.entries[0].rank, Some(1));
-    assert_eq!(
-        fixture.native.rank_runs(
-            &[fixture.run_id.clone(), fixture.run_id.clone()],
-            &objective
-        ),
-        Err(Error::DuplicateRunIdentity {
-            run_id: String::from("run-1")
-        })
-    );
+    let series = fixture.query(MetricQuery::new(
+        MetricRange::All(crate::MetricAxis::Step),
+        MAX_CHART_POINTS,
+    )?)?;
+    assert_eq!(series.source_count(), 10);
+    assert_eq!(series.samples().len(), 10);
+    let mut duplicates = series
+        .samples()
+        .iter()
+        .filter(|sample| sample.point.step == Step::new(2))
+        .map(|sample| sample.point.value_f64)
+        .collect::<Vec<_>>();
+    duplicates.sort_by(f64::total_cmp);
+    assert_eq!(duplicates, vec![2.0, 42.0]);
     Ok(())
 }
 
 impl Fixture {
     fn open() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::open_with_timestamp_order(false)
+    }
+
+    fn open_with_timestamp_order(decreasing: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let connection = ProjectConnection::new(open_native_connection(root.path())?);
+        let connection = ProjectConnection::new(open_native_connection_with_config(
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                root.path(),
+                None,
+                None,
+                None,
+            ),
+        )?);
         let created_at = crate::storage::time::current_timestamp("created_at")?;
         let project = Project {
             project_id: ProjectId::from_string("project-1"),
@@ -127,11 +111,6 @@ impl Fixture {
         };
         connection.create_project(&project)?;
         let run = connection.create_run(&project.project_id, "run", RunId::from_string("run-1"))?;
-        let reference = connection.create_run(
-            &project.project_id,
-            "reference",
-            RunId::from_string("run-2"),
-        )?;
         let started_at = run.started_at.timestamp_millis();
         let mut rows = (0..8)
             .map(|step| MetricWrite {
@@ -153,157 +132,218 @@ impl Fixture {
                 ingested_at_millis: started_at + 10 + step,
             }),
         );
-        rows.push(MetricWrite {
-            run_id: reference.run_id.as_str().to_owned(),
-            metric_key: String::from("loss"),
-            step: 0,
-            timestamp_millis: started_at,
-            value_f64: 10.0,
-            ingested_at_millis: started_at,
-        });
+        if decreasing {
+            for row in &mut rows {
+                row.timestamp_millis = started_at + 100 - row.step;
+            }
+        }
         connection.append_metric_batch(&rows)?;
         connection.rebuild_metric_aggregates_for_run(&run.run_id)?;
-        connection.rebuild_metric_aggregates_for_run(&reference.run_id)?;
         connection.mark_run_terminal(&run.run_id, RunStatus::Finished, created_at)?;
-        connection.mark_run_terminal(&reference.run_id, RunStatus::Finished, created_at)?;
         connection.flush_metric_points()?;
         drop(connection);
         std::fs::write(
             root.path().join(".seex/config.toml"),
-            "schema_version = 1\ncatalog_path = '.seex/catalog.ducklake'\n\
+            "schema_version = 1\ncatalog_backend = 'sqlite'\ncatalog_path = '.seex/catalog.sqlite'\n\
              data_path = '.seex/data'\n",
         )?;
-        let native = Reader::builder(root.path()).open()?;
-        let started_at = native.runs(&project.project_id)?[0]
-            .started_at
-            .timestamp_millis();
-        let parquet = root
-            .path()
-            .join(".seex/data/main/metric_points/**/*.parquet")
-            .to_string_lossy()
-            .into_owned();
-        let standalone = Reader::parquet(parquet).open()?;
         Ok(Self {
+            native: Reader::builder(root.path()).open()?,
             _root: root,
-            native,
-            standalone,
             run_id: run.run_id,
-            reference_run_id: reference.run_id,
-            started_at,
         })
     }
 
-    fn query(&self, reader: &Reader, query: MetricQuery) -> crate::Result<crate::MetricSeries> {
-        reader.query_metric(&self.run_id, &MetricKey::from_string("loss"), &query)
+    fn query(&self, query: MetricQuery) -> crate::Result<crate::MetricSeries> {
+        self.native
+            .query_metric(&self.run_id, &MetricKey::from_string("loss"), &query)
     }
 }
 
 #[test]
-fn native_and_standalone_ranges_have_strict_bounded_parity()
+fn step_overview_keeps_observations_without_diagnostics() -> Result<(), Box<dyn std::error::Error>>
+{
+    let fixture = Fixture::open_with_timestamp_order(true)?;
+    let metric = MetricKey::from_string("loss");
+    for budget in [4, MAX_CHART_POINTS] {
+        let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), budget)?;
+        let expected = fixture.query(query.clone())?;
+        for _ in 0..2 {
+            let actual =
+                fixture
+                    .native
+                    .query_metric_for_desktop(&fixture.run_id, &metric, &query)?;
+            assert_eq!(actual.source_count(), 10);
+            assert!(actual.samples().len() <= budget);
+            // Completeness now reflects Run lifecycle only; timestamp order is
+            // no longer inspected by the curve query path.
+            assert_eq!(actual.completeness(), crate::EvidenceCompleteness::Complete);
+            assert!(actual.reasons().is_empty());
+            let payloads = |series: &crate::MetricSeries| {
+                let mut rows = series
+                    .samples()
+                    .iter()
+                    .map(|s| {
+                        (
+                            s.point.step.value(),
+                            s.point.timestamp.timestamp_millis(),
+                            s.point.value_f64.to_bits(),
+                            s.point.ingested_at.timestamp_millis(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                rows.sort();
+                rows
+            };
+            assert_eq!(payloads(&actual), payloads(&expected));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn panel_queries_match_single_curve_order_and_cancel_without_partial_results()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::open()?;
+    let reader = &fixture.native;
+    let client = crate::Client::builder(fixture._root.path()).open()?;
+    let run = client.start_run(crate::RunOptions::new("project-1").id("run-2"))?;
+    run.log_with([("loss", 5.0)], crate::LogOptions::new().step(0))?;
+    run.finish()?;
+    let ids = [
+        RunId::from_string("run-2"),
+        fixture.run_id.clone(),
+        RunId::from_string("run-2"),
+    ];
+    let key = MetricKey::from_string("loss");
+    {
+        let query = MetricQuery::new(
+            MetricRange::Steps {
+                start: Step::new(2),
+                end: Step::new(4),
+            },
+            8,
+        )?;
+        let actual = reader
+            .query_metrics_for_desktop(&ids, &key, &query, &mut || false)?
+            .unwrap();
+        for (id, series) in ids.iter().zip(actual) {
+            let expected = reader.query_metric_for_desktop(id, &key, &query)?;
+            assert_eq!(series.source_count(), expected.source_count());
+            assert_eq!(series.completeness(), expected.completeness());
+            assert_eq!(series.reasons(), expected.reasons());
+            let payloads = |s: &crate::MetricSeries| {
+                let mut rows = s
+                    .samples()
+                    .iter()
+                    .map(|p| format!("{:?}", p.point))
+                    .collect::<Vec<_>>();
+                rows.sort();
+                rows
+            };
+            assert_eq!(payloads(&series), payloads(&expected));
+        }
+    }
+    let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), 8)?;
+    let panel = |ids: &[RunId], cancel: &mut dyn FnMut() -> bool| {
+        reader.query_metrics_for_desktop(ids, &key, &query, cancel)
+    };
+    let mut checks = 0;
+    let cancelled = panel(&ids, &mut || {
+        checks += 1;
+        checks >= 3
+    })?;
+    assert!(cancelled.is_none());
+    assert!(panel(&[], &mut || false)?.unwrap().is_empty());
+    let too_many = vec![fixture.run_id.clone(); 17];
+    assert_eq!(
+        panel(&too_many, &mut || false).unwrap_err(),
+        Error::UnsupportedQuery
+    );
+    Ok(())
+}
+
+#[test]
+fn panel_reopens_after_external_inline_flush() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
+    let reader = &fixture.native;
+    let client = crate::Client::builder(fixture._root.path()).open()?;
+    let run = client.start_run(crate::RunOptions::new("project-1").id("live"))?;
+    for step in 0..3 {
+        run.log_with([("loss", step as f64)], crate::LogOptions::new().step(step))?;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while client.diagnostics().pending_reports != 0 {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let ids = [
+        RunId::from_string("live"),
+        fixture.run_id.clone(),
+        RunId::from_string("live"),
+    ];
+    let key = MetricKey::from_string("loss");
+    let query = MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), 8)?;
+    let mut checks = 0;
+    let during = reader
+        .query_metrics_for_desktop(&ids, &key, &query, &mut || {
+            checks += 1;
+            if checks == 3 {
+                run.finish().expect("external finish/flush must succeed");
+            }
+            false
+        })?
+        .unwrap();
+    assert_eq!(
+        during.iter().map(|s| s.source_count()).collect::<Vec<_>>(),
+        vec![3, 10, 3]
+    );
+    let after = reader
+        .query_metrics_for_desktop(&ids, &key, &query, &mut || false)?
+        .unwrap();
+    assert_eq!(after[0].source_count(), 3);
+    let status = after[0].completeness();
+    assert_eq!(status, crate::EvidenceCompleteness::Complete);
+    Ok(())
+}
+
+#[test]
+fn native_ranges_are_strictly_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::open()?;
     let queries = [
-        MetricQuery::new(MetricRange::All(MetricAxis::Step), Some(3))?,
+        MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), 3)?,
         MetricQuery::new(
             MetricRange::Steps {
                 start: Step::new(1),
                 end: Step::new(6),
             },
-            Some(2),
+            2,
         )?,
         MetricQuery::new(
             MetricRange::StepsFrom {
                 start: Step::new(5),
             },
-            Some(2),
+            2,
         )?,
-        MetricQuery::new(MetricRange::StepsUntil { end: Step::new(3) }, Some(2))?,
-        MetricQuery::new(MetricRange::All(MetricAxis::Timestamp), Some(3))?,
-        MetricQuery::new(
-            MetricRange::Timestamps {
-                start: Timestamp::from_millis(fixture.started_at),
-                end: Timestamp::from_millis(fixture.started_at + 60_000),
-            },
-            Some(3),
-        )?,
-        MetricQuery::new(
-            MetricRange::TimestampsFrom {
-                start: Timestamp::from_millis(fixture.started_at + 5),
-            },
-            Some(2),
-        )?,
-        MetricQuery::new(
-            MetricRange::TimestampsUntil {
-                end: Timestamp::from_millis(fixture.started_at + 3),
-            },
-            Some(2),
-        )?,
+        MetricQuery::new(MetricRange::StepsUntil { end: Step::new(3) }, 2)?,
     ];
 
     for query in queries {
-        let native = fixture.query(&fixture.native, query.clone())?;
-        let standalone = fixture.query(&fixture.standalone, query.clone())?;
-
-        assert_eq!(standalone, native);
-        assert!(native.samples().len() <= query.max_points().unwrap_or(usize::MAX));
-        match query.range() {
-            MetricRange::Steps { start, end } => assert!(native.samples().iter().all(|sample| {
-                matches!(sample.coordinate, MetricCoordinate::Step(step)
-                    if start <= &step && &step < end)
-            })),
-            MetricRange::Timestamps { start, end } => {
-                assert!(native.samples().iter().all(|sample| {
-                    matches!(sample.coordinate, MetricCoordinate::Timestamp(timestamp)
-                        if start <= &timestamp && &timestamp < end)
-                }));
-            }
-            MetricRange::StepsFrom { start } => assert!(native.samples().iter().all(|sample| {
-                matches!(sample.coordinate, MetricCoordinate::Step(step) if start <= &step)
-            })),
-            MetricRange::StepsUntil { end } => assert!(native.samples().iter().all(|sample| {
-                matches!(sample.coordinate, MetricCoordinate::Step(step) if &step < end)
-            })),
-            MetricRange::TimestampsFrom { start } => {
-                assert!(native.samples().iter().all(|sample| {
-                    matches!(sample.coordinate, MetricCoordinate::Timestamp(timestamp)
-                        if start <= &timestamp)
-                }));
-            }
-            _ => {}
-        }
+        let native = fixture.query(query.clone())?;
+        assert!(native.samples().len() <= query.max_points());
     }
-    assert_eq!(fixture.standalone.projects(), Err(Error::UnsupportedQuery));
+    assert!(MetricQuery::new(MetricRange::All(crate::MetricAxis::Step), MAX_CHART_POINTS).is_ok());
     Ok(())
 }
 
 #[test]
-fn standalone_relative_ranges_report_missing_run_start() -> Result<(), Box<dyn std::error::Error>> {
-    let fixture = Fixture::open()?;
-    for range in [
-        MetricRange::All(MetricAxis::RelativeTime),
-        MetricRange::RelativeTime {
-            start: RelativeTime::from_millis(0),
-            end: RelativeTime::from_millis(60_000),
-        },
-        MetricRange::RelativeTimeUntil {
-            end: RelativeTime::from_millis(60_000),
-        },
-    ] {
-        let query = MetricQuery::new(range, Some(2))?;
-        let native = fixture.query(&fixture.native, query.clone())?;
-        let standalone = fixture.query(&fixture.standalone, query)?;
-
-        assert!(!native.samples().is_empty());
-        assert!(native.samples().len() <= 2);
-        assert!(standalone.samples().is_empty());
-        assert_eq!(standalone.completeness(), EvidenceCompleteness::Unavailable);
-        assert_eq!(standalone.reasons(), [EvidenceReason::MissingRunStart]);
-    }
-    Ok(())
+fn relative_time_and_timestamp_ranges_are_rejected() {
+    assert!(MetricQuery::new(MetricRange::All(crate::MetricAxis::RelativeTime), 2).is_err());
+    assert!(MetricQuery::new(MetricRange::All(crate::MetricAxis::Timestamp), 2).is_err());
 }
 
 #[test]
-fn small_fixture_preserves_lww_spikes_and_true_step_neighbors()
+fn small_fixture_preserves_repeated_observations_without_out_of_view_neighbors()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::open()?;
     let metric = MetricKey::from_string("loss");
@@ -312,16 +352,12 @@ fn small_fixture_preserves_lww_spikes_and_true_step_neighbors()
             start: Step::new(2),
             end: Step::new(3),
         },
-        None,
+        4,
     )?;
 
     let native = fixture
         .native
         .query_metric_for_desktop(&fixture.run_id, &metric, &narrow)?;
-    let standalone =
-        fixture
-            .standalone
-            .query_metric_for_desktop(&fixture.run_id, &metric, &narrow)?;
     let points = native
         .samples()
         .iter()
@@ -330,20 +366,11 @@ fn small_fixture_preserves_lww_spikes_and_true_step_neighbors()
             _ => panic!("Step query returned another coordinate axis"),
         })
         .collect::<Vec<_>>();
-
-    assert_eq!(standalone, native);
-    assert_eq!(points, [(1, 1.0), (2, 42.0), (3, 3.0)]);
-    let spike = fixture.query(
-        &fixture.native,
-        MetricQuery::new(
-            MetricRange::Steps {
-                start: Step::new(4),
-                end: Step::new(5),
-            },
-            None,
-        )?,
-    )?;
-    assert_eq!(spike.samples().len(), 1);
-    assert_eq!(spike.samples()[0].point.value_f64, 1_000.0);
+    // Desktop Detail is viewport-only: Steps 1 and 3 are not appended as
+    // neighbors, while both real Step 2 observations are retained.
+    assert_eq!(points.len(), 2);
+    let mut repeated = points;
+    repeated.sort_by(|left, right| left.1.total_cmp(&right.1));
+    assert_eq!(repeated, [(2, 2.0), (2, 42.0)]);
     Ok(())
 }

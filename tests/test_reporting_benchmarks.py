@@ -91,7 +91,10 @@ def test_mapping_mode_requires_complete_groups() -> None:
         bench_log_throughput.log_reports(FakeRun(), "mapping_8", 9)
 
 
-def test_persistence_emits_only_durability_samples(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("repeats,batch_iterations", [(10, 1), (30, 3)])
+def test_persistence_emits_only_durability_samples(
+    capsys: pytest.CaptureFixture[str], repeats: int, batch_iterations: int
+) -> None:
     diagnostics = {
         "pending_reports": 0,
         "persisted_reports": 1_000,
@@ -109,15 +112,17 @@ def test_persistence_emits_only_durability_samples(capsys: pytest.CaptureFixture
         "diagnostics_after_shutdown": diagnostics,
     }
 
-    bench_log_persistence.emit_performance_records({"reports_per_repeat": 1_000, "repeat_results": [repeat] * 30})
+    bench_log_persistence.emit_performance_records({"reports_per_repeat": 1_000, "repeat_results": [repeat] * repeats})
 
     metrics = performance_gate.parse_records(capsys.readouterr().out)
     assert set(metrics) == {"reporting.python.drain_persistence", "reporting.python.finalization"}
-    assert metrics["reporting.python.drain_persistence"]["samples"] == pytest.approx([75_000_000.0] * 10)
-    assert metrics["reporting.python.drain_persistence"]["batch_iterations"] == 3
+    assert metrics["reporting.python.drain_persistence"]["samples"] == pytest.approx(
+        [25_000_000.0 * batch_iterations] * 10
+    )
+    assert metrics["reporting.python.drain_persistence"]["batch_iterations"] == batch_iterations
     assert metrics["reporting.python.finalization"]["calibrated"]
 
 
 def test_persistence_rejects_partial_sample_sets() -> None:
-    with pytest.raises(ValueError, match="exactly thirty"):
+    with pytest.raises(ValueError, match="ten or thirty"):
         bench_log_persistence.emit_performance_records({"repeat_results": []})

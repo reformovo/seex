@@ -9,7 +9,7 @@ use crate::data::query::{
     InspectorRunSnapshot, InspectorSnapshot, OverviewRequest,
 };
 use crate::data::worker::{Generation, ReadEvent, ReadKind, ReadRequest, ReadSnapshot};
-use crate::domain::{DataSourceId, RunRef};
+use crate::domain::{DataSourceId, MAX_SELECTED_RUNS, RunRef};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct AnalysisViewId(String);
@@ -247,8 +247,8 @@ impl PanelReadCoordinator {
     ///
     /// # Errors
     ///
-    /// Returns [`PanelCoordinationError`] for an empty selection or a reused
-    /// in-flight generation.
+    /// Returns [`PanelCoordinationError`] for an empty or oversized selection,
+    /// or a reused in-flight generation.
     pub fn begin(
         &mut self,
         tag: PanelReadTag,
@@ -256,6 +256,11 @@ impl PanelReadCoordinator {
     ) -> Result<Vec<PlannedSourceRead>, PanelCoordinationError> {
         if request.runs().is_empty() {
             return Err(PanelCoordinationError::EmptySelection);
+        }
+        if request.runs().len() > MAX_SELECTED_RUNS {
+            return Err(PanelCoordinationError::TooManyCurves {
+                count: request.runs().len(),
+            });
         }
         let kind = request.kind();
         if self.inflight.contains_key(&(tag.generation, kind)) {
@@ -310,6 +315,13 @@ impl PanelReadCoordinator {
     }
 
     pub fn apply(&mut self, event: ReadEvent) -> PanelReadOutcome {
+        #[cfg(feature = "test-support")]
+        crate::data::worker::trace_read(
+            &event.source_id,
+            event.generation,
+            event.kind,
+            "event_apply",
+        );
         let lookup = (event.generation, event.kind);
         let Some(key) = self.inflight.get(&lookup).cloned() else {
             #[cfg(feature = "test-support")]
@@ -504,6 +516,8 @@ fn union_range(
 pub enum PanelCoordinationError {
     #[error("panel read selection is empty")]
     EmptySelection,
+    #[error("a panel can contain at most {MAX_SELECTED_RUNS} curves; got {count}")]
+    TooManyCurves { count: usize },
     #[error("panel read generation {0:?} is already in flight")]
     DuplicateGeneration(Generation),
 }
@@ -520,9 +534,9 @@ mod tests {
 
     use super::{
         AlignmentViewport, AnalysisViewId, CurveAxis, CurveSeriesSnapshot, CurveSnapshot,
-        DataSourceId, Generation, MetricKey, MetricPanelId, PanelReadCoordinator, PanelReadMode,
-        PanelReadOutcome, PanelReadRequest, PanelReadTag, ReadEvent, ReadKind, ReadRequest,
-        ReadSnapshot, RunRef,
+        DataSourceId, Generation, MetricKey, MetricPanelId, PanelCoordinationError,
+        PanelReadCoordinator, PanelReadMode, PanelReadOutcome, PanelReadRequest, PanelReadTag,
+        ReadEvent, ReadKind, ReadRequest, ReadSnapshot, RunRef,
     };
 
     fn run_ref(source: &str, run: &str) -> RunRef {
@@ -596,6 +610,7 @@ mod tests {
             source_id,
             generation: Generation(generation),
             kind: ReadKind::Detail,
+            metric_key: Some("loss".to_owned()),
             result: result.map(ReadSnapshot::Detail),
         }
     }
@@ -623,6 +638,28 @@ mod tests {
             panic!("expected a detail request");
         };
         assert_eq!(second_source.selection.runs, [second]);
+    }
+
+    #[test]
+    fn panel_rejects_seventeen_curves_across_sources() {
+        let runs = (0..17)
+            .map(|index| {
+                run_ref(
+                    if index % 2 == 0 {
+                        "source-a"
+                    } else {
+                        "source-b"
+                    },
+                    &format!("run-{index}"),
+                )
+            })
+            .collect();
+        let mut coordinator = PanelReadCoordinator::default();
+
+        assert!(matches!(
+            coordinator.begin(tag(1), request(runs)),
+            Err(PanelCoordinationError::TooManyCurves { count: 17 })
+        ));
     }
 
     #[test]

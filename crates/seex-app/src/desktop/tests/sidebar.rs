@@ -642,7 +642,7 @@ fn project_visibility_keeps_baseline_and_pinned_runs_visible(cx: &mut TestAppCon
 }
 
 #[gpui::test]
-fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
+fn run_limit_disables_runs_beyond_the_limit_and_keeps_project_actions_atomic(
     cx: &mut TestAppContext,
 ) {
     let (root, project_id, _) = fixture_with_runs(0, 21);
@@ -676,7 +676,7 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
         .expect("viewer should remain open");
     window
         .update(&mut cx, |viewer, _, cx| {
-            for run in runs.iter().take(20) {
+            for run in &runs {
                 viewer.toggle_run(run.clone(), cx);
             }
         })
@@ -688,7 +688,7 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
                 .session_snapshot(cx)
                 .active_catalog_run_count())
             .expect("viewer should remain open"),
-        20
+        16
     );
     window
         .update(&mut cx, |viewer, _, cx| {
@@ -707,8 +707,8 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
     window
         .read_with(&cx, |viewer, cx| {
             let snapshot = viewer.session_snapshot(cx);
-            assert_eq!(snapshot.views.active().runs.len(), 21);
-            assert_eq!(snapshot.active_catalog_run_count(), 20);
+            assert_eq!(snapshot.views.active().runs.len(), 17);
+            assert_eq!(snapshot.active_catalog_run_count(), 16);
         })
         .expect("viewer should remain open");
     window
@@ -758,7 +758,7 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
                 .session_snapshot(cx)
                 .active_catalog_run_count())
             .expect("viewer should remain open"),
-        20
+        16
     );
     let blocked_eye = cx
         .debug_bounds("run-eye-0")
@@ -779,7 +779,7 @@ fn run_limit_disables_the_twenty_first_run_and_keeps_project_actions_atomic(
     window
         .read_with(&cx, |viewer, cx| {
             let snapshot = viewer.session_snapshot(cx);
-            assert_eq!(snapshot.active_catalog_run_count(), 20);
+            assert_eq!(snapshot.active_catalog_run_count(), 16);
             assert!(snapshot.views.active().runs.contains(&runs[20]));
         })
         .expect("viewer should remain open");
@@ -859,7 +859,7 @@ fn baseline_pin_and_archived_restore_cannot_bypass_the_run_limit(cx: &mut TestAp
         .expect("viewer should remain open");
     window
         .update(&mut cx, |viewer, _, cx| {
-            for run in runs.iter().take(20) {
+            for run in &runs {
                 viewer.toggle_run(run.clone(), cx);
             }
         })
@@ -876,7 +876,7 @@ fn baseline_pin_and_archived_restore_cannot_bypass_the_run_limit(cx: &mut TestAp
     window
         .read_with(&cx, |viewer, cx| {
             let snapshot = viewer.session_snapshot(cx);
-            assert_eq!(snapshot.active_catalog_run_count(), 20);
+            assert_eq!(snapshot.active_catalog_run_count(), 16);
             assert!(snapshot.views.active().baseline.is_none());
             assert!(!snapshot.views.active().pinned_runs.contains(&runs[20]));
             assert!(!snapshot.views.active().runs.contains(&runs[20]));
@@ -904,7 +904,7 @@ fn baseline_pin_and_archived_restore_cannot_bypass_the_run_limit(cx: &mut TestAp
     window
         .read_with(&cx, |viewer, cx| {
             let snapshot = viewer.session_snapshot(cx);
-            assert_eq!(snapshot.active_catalog_run_count(), 20);
+            assert_eq!(snapshot.active_catalog_run_count(), 16);
             assert_eq!(snapshot.views.active().baseline.as_ref(), Some(&runs[20]));
             assert!(snapshot.views.archived_runs().contains(&runs[0]));
         })

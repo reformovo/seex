@@ -428,7 +428,20 @@ impl RunHandle {
                 RunStatus::Failed => self.client.fail_run(&self.native.run_id).map(|_| ()),
                 RunStatus::Running => unreachable!("finalization outcome must be terminal"),
             },
-            FinalizationStage::Flush => self.client.flush_run_data(&self.native.run_id, None),
+            FinalizationStage::Flush => {
+                let status = self.client.get_run(&self.native.run_id)?.status;
+                if status == RunStatus::Running {
+                    match requested {
+                        RunStatus::Finished => {
+                            self.client.finish_run(&self.native.run_id).map(|_| ())
+                        }
+                        RunStatus::Failed => self.client.fail_run(&self.native.run_id).map(|_| ()),
+                        RunStatus::Running => unreachable!("finalization outcome must be terminal"),
+                    }
+                } else {
+                    self.client.flush_run_data(&self.native.run_id, None)
+                }
+            }
         };
         match result {
             Ok(()) => {
@@ -460,18 +473,18 @@ impl RunHandle {
     }
 
     pub fn status(&self) -> RunStatus {
-        self.lifecycle
-            .lock()
-            .ok()
-            .and_then(|state| match *state {
-                FacadeRunState::Finalizing {
-                    outcome,
-                    stage: FinalizationStage::Flush,
-                }
-                | FacadeRunState::Complete { outcome } => Some(outcome),
-                _ => None,
-            })
-            .unwrap_or(self.native.status)
+        let lifecycle = self.lifecycle.lock().ok().map(|state| *state);
+        match lifecycle {
+            Some(FacadeRunState::Complete { outcome }) => outcome,
+            Some(FacadeRunState::Finalizing {
+                stage: FinalizationStage::Flush,
+                ..
+            }) => self
+                .client
+                .get_run(&self.native.run_id)
+                .map_or(self.native.status, |run| run.status),
+            _ => self.native.status,
+        }
     }
 }
 

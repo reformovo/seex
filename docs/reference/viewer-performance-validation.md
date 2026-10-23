@@ -289,7 +289,7 @@ objects and `vmmap` reported a 769.1 MiB physical footprint. Malloc zones held
 2.0 GiB, including 1.2 GiB of resident `MALLOC_SMALL (empty)` regions. A
 symbolized high-water capture recorded 32.4 million allocations and 130.6 GiB
 of cumulative allocation churn. The largest stacks were
-`query_curves → query_aligned_metric → PhysicalCTE::Sink` and
+`query_curves → query_aligned_metric → PhysicalCTE::Sink` (historical API name) and
 `PhysicalWindow → HashedSort/FullSort`, allocating through DuckDB's
 `ColumnDataCollection`, `TupleDataAllocator`, and buffer manager.
 
@@ -300,7 +300,9 @@ viewport selection and remove the full-series materialized CTE before any
 further tuning. Safe early Step filtering is preferred; elapsed-time filtering
 must preserve last-write-wins when a replacement changes timestamp. Grouped
 `arg_min(struct_pack(...))` remains rejected because its real six-Metric peak
-was 9.54 GiB and it broke hover.
+was 9.54 GiB and it broke hover. This paragraph records the pre-append-only
+investigation: last-write-wins, the aligned query path, and series diagnostics
+were later removed; see `curve-query-workloads.md`.
 
 A subsequent Step-bounds candidate pushed the viewport before last-write-wins,
 but obtained bounds with a second source scan. Narrow Detail improved by

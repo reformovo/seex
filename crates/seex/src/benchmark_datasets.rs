@@ -18,6 +18,38 @@ const POINTS: i64 = 1_000_000;
 const EPOCH_MILLIS: i64 = 1_700_000_000_000;
 const MANIFEST_PATH: &str = ".seex/reader-benchmark.txt";
 
+/// Stable seed shared by the P0 correctness and scale workload generators.
+pub const P0_SEED: u64 = 0x5EEC_0001;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct P0WorkloadProfile {
+    pub runs: usize,
+    pub metric_keys: usize,
+    pub actual_sequences: usize,
+}
+
+pub const P0_CORRECTNESS_PROFILE: P0WorkloadProfile = P0WorkloadProfile {
+    runs: 4,
+    metric_keys: 3,
+    actual_sequences: 12,
+};
+
+pub const P0_SCALE_PROFILE: P0WorkloadProfile = P0WorkloadProfile {
+    runs: 1_000_000,
+    metric_keys: 1_000_000,
+    actual_sequences: 10_000_000,
+};
+
+/// Deterministic xorshift step used by native workload producers.
+pub fn p0_next(seed: &mut u64) -> u64 {
+    let mut value = *seed;
+    value ^= value << 13;
+    value ^= value >> 7;
+    value ^= value << 17;
+    *seed = value;
+    value
+}
+
 fn dataset_manifest(backend: CatalogBackend) -> &'static str {
     match backend {
         CatalogBackend::DuckDb => {
@@ -295,4 +327,16 @@ fn prepare_compact_viewer_benchmark_dataset() -> Result<(), Box<dyn Error>> {
         .map(PathBuf::from)
         .ok_or("SEEX_VIEWER_BENCH_ROOT must name the prepared compact fixture")?;
     ensure_viewer_benchmark_dataset(&root, viewer_scale()?)
+}
+
+#[test]
+fn p0_profiles_and_seed_are_stable() {
+    assert_eq!(P0_SEED, 0x5EEC_0001);
+    assert_eq!(P0_CORRECTNESS_PROFILE.runs, 4);
+    assert_eq!(P0_CORRECTNESS_PROFILE.actual_sequences, 12);
+    assert_eq!(P0_SCALE_PROFILE.runs, 1_000_000);
+    let mut seed = P0_SEED;
+    let first = p0_next(&mut seed);
+    assert_ne!(first, P0_SEED);
+    assert_ne!(first, p0_next(&mut seed));
 }

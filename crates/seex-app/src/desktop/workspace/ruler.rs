@@ -105,6 +105,25 @@ pub(crate) fn axis_menu_item(
     })
 }
 
+pub(crate) fn disabled_axis_menu_item(
+    id: impl Into<gpui::ElementId>,
+    icon: IconName,
+    label: &str,
+    theme: ViewerTheme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .h(theme.spacing.control_height)
+        .px_2()
+        .gap_2()
+        .rounded(theme.spacing.corner_radius)
+        .flex()
+        .items_center()
+        .text_color(theme.colors.disabled)
+        .child(components::icon(icon, theme))
+        .child(label.to_owned())
+}
+
 pub(crate) fn format_tick(value: f64) -> String {
     if value.abs() >= 1_000_000. || (value != 0. && value.abs() < 0.001) {
         format!("{value:.2e}")
@@ -304,25 +323,13 @@ impl AnalysisWorkspace {
                                     )),
                                 )
                                 .child(
-                                    axis_menu_item(
+                                    disabled_axis_menu_item(
                                         "axis-time",
                                         IconName::Clock,
-                                        "Elapsed time",
-                                        elapsed,
+                                        "Elapsed time (unavailable)",
                                         theme,
                                     )
-                                    .debug_selector(|| "axis-time".to_owned())
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            this.axis_picker_open = false;
-                                            cx.emit(AnalysisWorkspaceEvent::Command(
-                                                WorkbenchCommand::SelectAxis(
-                                                    AlignmentAxis::ElapsedTime,
-                                                ),
-                                            ));
-                                            cx.notify();
-                                        },
-                                    )),
+                                    .debug_selector(|| "axis-time".to_owned()),
                                 ),
                         ),
                 )),

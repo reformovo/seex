@@ -1,6 +1,3 @@
-use std::path::Path;
-
-use crate::model::alignment::{AlignmentAxis, AlignmentQuery, AlignmentQueryResult};
 use crate::model::metric::{
     MetricAggregate, MetricKey, MetricPoint, MetricQuery, MetricQueryResult, ReductionPolicy, Step,
 };
@@ -8,32 +5,14 @@ use crate::model::run::{RunId, RunStatus};
 use chrono::{TimeZone, Utc};
 use duckdb::Connection;
 
-use crate::storage::alignment_query::{
-    AlignmentSource, query_aligned_metric, query_bounded_full_aligned_metric,
-    query_narrow_step_metric, validate_alignment_identity,
-};
 use crate::storage::rows::StoredMetricAggregate;
 use crate::storage::sql::string_literal as sql_string_literal;
 use crate::storage::{MetricReader, StorageError};
-
-const EXTREMA_PER_BUCKET: usize = 4;
-const LTTB_AUTO_INSTALL_ENV: &str = "SEEX_LTTB_AUTO_INSTALL";
-const LTTB_EXTENSION_PATH_ENV: &str = "SEEX_LTTB_EXTENSION_PATH";
 
 #[derive(Clone, Copy)]
 pub(crate) enum MetricSource<'a> {
     Project,
     Parquet(&'a str),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SeriesDiagnostics {
-    pub effective_count: u64,
-    pub min_step: Option<i64>,
-    pub max_step: Option<i64>,
-    pub has_negative_step: bool,
-    pub has_decreasing_timestamp: bool,
-    pub has_non_finite_value: bool,
 }
 
 /// Metric reader for the authoritative DuckLake project relation.
@@ -46,87 +25,13 @@ impl<'connection> ProjectMetricReader<'connection> {
         Self { connection }
     }
 
-    /// Queries effective project metric points.
+    /// Queries append-only project metric observations.
     ///
     /// # Errors
     ///
     /// Returns [`StorageError`] for query, extension, or conversion failures.
     pub fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError> {
         query_metric(self.connection, MetricSource::Project, query)
-    }
-
-    #[doc(hidden)]
-    pub fn series_diagnostics(
-        &self,
-        run_id: &RunId,
-        metric_key: &MetricKey,
-    ) -> Result<SeriesDiagnostics, StorageError> {
-        query_series_diagnostics(self.connection, MetricSource::Project, run_id, metric_key)
-    }
-
-    /// Queries project metric points on a derived comparison axis.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] for query or conversion failures.
-    pub fn query_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-    ) -> Result<AlignmentQueryResult, StorageError> {
-        validate_alignment_identity(query)?;
-        let run_start_millis = match query.axis {
-            AlignmentAxis::Step => None,
-            AlignmentAxis::ElapsedTime => Some(self.run_start_millis(&query.run_id)?),
-        };
-        query_aligned_metric(
-            self.connection,
-            AlignmentSource::Project,
-            query,
-            run_start_millis,
-        )
-    }
-
-    pub(crate) fn query_bounded_full_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-        source_row_count: u64,
-    ) -> Result<AlignmentQueryResult, StorageError> {
-        validate_alignment_identity(query)?;
-        let run_start_millis = match query.axis {
-            AlignmentAxis::Step => None,
-            AlignmentAxis::ElapsedTime => Some(self.run_start_millis(&query.run_id)?),
-        };
-        query_bounded_full_aligned_metric(
-            self.connection,
-            AlignmentSource::Project,
-            query,
-            run_start_millis,
-            source_row_count,
-        )
-    }
-
-    #[doc(hidden)]
-    pub fn query_narrow_step_metric(
-        &self,
-        query: &AlignmentQuery,
-    ) -> Result<AlignmentQueryResult, StorageError> {
-        query_narrow_step_metric(self.connection, AlignmentSource::Project, query)
-    }
-
-    fn run_start_millis(&self, run_id: &RunId) -> Result<i64, StorageError> {
-        let result = self.connection.query_row(
-            "SELECT epoch_ms(started_at::TIMESTAMPTZ)
-             FROM seex_runs WHERE run_id = ?",
-            [run_id.as_str()],
-            |row| row.get(0),
-        );
-        match result {
-            Ok(started_at) => Ok(started_at),
-            Err(duckdb::Error::QueryReturnedNoRows) => Err(StorageError::RunNotFound {
-                run_id: run_id.as_str().to_owned(),
-            }),
-            Err(source) => Err(source.into()),
-        }
     }
 
     pub fn metric_aggregate(
@@ -153,43 +58,16 @@ impl<'connection> ProjectMetricReader<'connection> {
         if run_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let requested_rows = (0..run_ids.len())
-            .map(|ordinal| format!("(?, {ordinal})"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "WITH requested(run_id, ordinal) AS (VALUES {requested_rows})
-             SELECT run_id, metric_key, effective_count, last_step, last_value_f64,
-                    min_value_f64, max_value_f64
-             FROM (
-                 SELECT requested.ordinal, summary.*
-                 FROM requested
-                 JOIN seex_runs AS run USING (run_id)
-                 JOIN seex_metric_aggregates AS summary USING (run_id)
-                 WHERE run.status <> 'running' AND summary.metric_key = ?
-                 UNION ALL
-                 SELECT requested.ordinal, points.run_id, points.metric_key,
-                        count(*) AS effective_count, max(points.step) AS last_step,
-                        arg_max(points.value_f64, points.step) AS last_value_f64,
-                        min(points.value_f64) AS min_value_f64,
-                        max(points.value_f64) AS max_value_f64
-                 FROM requested
-                 JOIN seex_runs AS run USING (run_id)
-                 JOIN (
-                     SELECT *, row_number() OVER (
-                         PARTITION BY run_id, metric_key, step
-                         ORDER BY ingested_at DESC, rowid DESC
-                     ) AS write_rank
-                     FROM dl.metric_points WHERE metric_key = ?
-                 ) AS points USING (run_id)
-                 WHERE run.status = 'running' AND points.write_rank = 1
-                 GROUP BY requested.ordinal, points.run_id, points.metric_key
-             )
-             ORDER BY ordinal"
-        );
-        let mut params: Vec<&str> = Vec::with_capacity(run_ids.len() + 2);
+        // The catalog decides whether the fact-table fallback is needed. In-memory
+        // Run status can lag the terminal write, and a finished Run never becomes
+        // running again, so this check is conservative.
+        let include_running = self.running_run_count(run_ids)? > 0;
+        let sql = summaries_sql(run_ids.len(), include_running);
+        let mut params: Vec<&str> = Vec::with_capacity(run_ids.len() + 1);
         params.extend(run_ids.iter().map(RunId::as_str));
-        params.push(metric_key.as_str());
+        if include_running {
+            params.push(metric_key.as_str());
+        }
         params.push(metric_key.as_str());
         let mut statement = self.connection.prepare(&sql)?;
         let rows = statement.query_map(
@@ -199,6 +77,23 @@ impl<'connection> ProjectMetricReader<'connection> {
         rows.map(|row| Ok(row?.into_metric_aggregate())).collect()
     }
 
+    fn running_run_count(&self, run_ids: &[RunId]) -> Result<u64, StorageError> {
+        let requested_rows = (0..run_ids.len())
+            .map(|_| "(?)")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH requested(run_id) AS (VALUES {requested_rows})
+             SELECT count(*)::UBIGINT
+             FROM requested JOIN seex_runs AS run USING (run_id)
+             WHERE run.status = 'running'"
+        );
+        let params = run_ids.iter().map(RunId::as_str);
+        self.connection
+            .query_row(&sql, duckdb::params_from_iter(params), |row| row.get(0))
+            .map_err(StorageError::from)
+    }
+
     pub fn list_metrics(
         &self,
         run_id: &RunId,
@@ -206,19 +101,12 @@ impl<'connection> ProjectMetricReader<'connection> {
     ) -> Result<Vec<MetricAggregate>, StorageError> {
         let sql = match run_status {
             RunStatus::Running => {
-                "WITH effective AS (
-                     SELECT *, row_number() OVER (
-                         PARTITION BY run_id, metric_key, step
-                         ORDER BY ingested_at DESC, rowid DESC
-                     ) AS write_rank
-                     FROM dl.metric_points WHERE run_id = ?
-                 )
-                 SELECT run_id, metric_key, count(*) AS effective_count,
+                "SELECT run_id, metric_key, count(*) AS effective_count,
                         max(step) AS last_step,
                         arg_max(value_f64, step) AS last_value_f64,
                         min(value_f64) AS min_value_f64,
                         max(value_f64) AS max_value_f64
-                 FROM effective WHERE write_rank = 1
+                 FROM dl.metric_points WHERE run_id = ?
                  GROUP BY run_id, metric_key ORDER BY metric_key"
             }
             RunStatus::Finished | RunStatus::Failed => {
@@ -238,72 +126,6 @@ impl MetricReader for ProjectMetricReader<'_> {
     fn query_metric(&self, query: &MetricQuery) -> Result<MetricQueryResult, StorageError> {
         Self::query_metric(self, query)
     }
-
-    fn query_aligned_metric(
-        &self,
-        query: &AlignmentQuery,
-    ) -> Result<AlignmentQueryResult, StorageError> {
-        Self::query_aligned_metric(self, query)
-    }
-}
-
-pub(crate) fn query_series_diagnostics(
-    connection: &Connection,
-    source: MetricSource<'_>,
-    run_id: &RunId,
-    metric_key: &MetricKey,
-) -> Result<SeriesDiagnostics, StorageError> {
-    if run_id.as_str().trim().is_empty() || metric_key.as_str().trim().is_empty() {
-        return Err(StorageError::InvalidIdentity);
-    }
-    let (relation, tie_breaker) = source_relation(source);
-    let sql = format!(
-        "WITH ranked AS (
-             SELECT step, timestamp, value_f64,
-                    row_number() OVER (
-                        PARTITION BY step ORDER BY ingested_at DESC, {tie_breaker}
-                    ) AS write_rank
-             FROM {relation}
-             WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
-         ),
-         effective AS (
-             SELECT step, timestamp, value_f64 FROM ranked WHERE write_rank = 1
-         ),
-         ordered AS (
-             SELECT *, lag(timestamp) OVER (ORDER BY step) AS previous_timestamp
-             FROM effective
-         )
-         SELECT count(*)::UBIGINT, min(step), max(step),
-                coalesce(bool_or(step < 0), false),
-                coalesce(bool_or(previous_timestamp > timestamp), false),
-                coalesce(bool_or(NOT isfinite(value_f64)), false)
-         FROM ordered"
-    );
-    let mut values: Vec<Box<dyn duckdb::ToSql>> = Vec::with_capacity(4);
-    if let MetricSource::Parquet(location) = source {
-        values.push(Box::new(location.to_owned()));
-    }
-    values.extend([
-        Box::new(run_id.as_str().to_owned()) as Box<dyn duckdb::ToSql>,
-        Box::new(metric_key.as_str().to_owned()),
-        Box::new(percent_encode_metric_key(metric_key.as_str())),
-    ]);
-    connection
-        .query_row(
-            &sql,
-            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
-            |row| {
-                Ok(SeriesDiagnostics {
-                    effective_count: row.get(0)?,
-                    min_step: row.get(1)?,
-                    max_step: row.get(2)?,
-                    has_negative_step: row.get(3)?,
-                    has_decreasing_timestamp: row.get(4)?,
-                    has_non_finite_value: row.get(5)?,
-                })
-            },
-        )
-        .map_err(StorageError::from)
 }
 
 pub(crate) fn query_metric(
@@ -315,75 +137,42 @@ pub(crate) fn query_metric(
         return Err(StorageError::InvalidIdentity);
     }
 
-    match query.reduction {
-        ReductionPolicy::Full => execute_query(connection, source, query, QueryShape::Full),
-        ReductionPolicy::ScreenBudget { .. } => {
-            let max_points = query
-                .reduction
-                .max_points()
-                .expect("screen budgets always have a point limit");
-            let bucket_count = (max_points / EXTREMA_PER_BUCKET).max(1);
-            execute_query(
-                connection,
-                source,
-                query,
-                QueryShape::Screen { bucket_count },
-            )
-        }
-        ReductionPolicy::Lttb { max_points } => {
-            let source_row_count = count_effective(connection, source, query)?;
-            if source_row_count <= max_points as u64 {
-                return execute_query(connection, source, query, QueryShape::Full);
-            }
-            let max_points = i64::try_from(max_points)
-                .map_err(|_| StorageError::QueryMaxPointsTooLarge { max_points })?;
-            ensure_lttb_extension_loaded(connection)?;
-            execute_query(connection, source, query, QueryShape::Lttb { max_points })
-        }
-    }
-}
-
-enum QueryShape {
-    Full,
-    Screen { bucket_count: usize },
-    Lttb { max_points: i64 },
-}
-
-fn execute_query(
-    connection: &Connection,
-    source: MetricSource<'_>,
-    query: &MetricQuery,
-    shape: QueryShape,
-) -> Result<MetricQueryResult, StorageError> {
-    let sql = match shape {
-        QueryShape::Full => full_query_sql(source),
-        QueryShape::Screen { .. } => screen_query_sql(source),
-        QueryShape::Lttb { .. } => lttb_query_sql(source),
-    };
-    let mut values = query_params(source, query);
-    match shape {
-        QueryShape::Full => {}
-        QueryShape::Screen { bucket_count } => {
-            values.push(Box::new(i64::try_from(bucket_count).map_err(|_| {
-                StorageError::QueryMaxPointsTooLarge {
-                    max_points: bucket_count.saturating_mul(EXTREMA_PER_BUCKET),
+    if let Some(budget) = query.reduction.max_points() {
+        let sql = sampled_sql(source);
+        let values = query_params(source, query);
+        let selected =
+            crate::storage::sampling::select(&mut connection.prepare(&sql)?, &values, budget)?;
+        let points = selected
+            .points
+            .into_iter()
+            .map(|p| {
+                StoredPoint {
+                    run_id: query.run_id.as_str().to_owned(),
+                    metric_key: query.metric_key.as_str().to_owned(),
+                    step: p.step,
+                    timestamp_millis: p.timestamp_millis,
+                    value_f64: p.value_f64,
+                    ingested_at_millis: p.ingested_at_millis,
                 }
-            })?));
-        }
-        QueryShape::Lttb { max_points } => values.push(Box::new(max_points)),
+                .into_metric_point()
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(MetricQueryResult {
+            points,
+            source_row_count: selected.source_count,
+        });
     }
-
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(
-        duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
-        stored_point_from_row,
-    )?;
+    let mut statement = connection.prepare(&full_query_sql(source))?;
+    let values = query_params(source, query);
     let mut points = Vec::new();
     let mut source_row_count = 0;
-    for row in rows {
-        let (point, row_count) = row?;
+    for row in statement.query_map(
+        duckdb::params_from_iter(values.iter().map(|v| v.as_ref())),
+        stored_point_from_row,
+    )? {
+        let (point, count) = row?;
         points.push(point.into_metric_point()?);
-        source_row_count = row_count;
+        source_row_count = count;
     }
     Ok(MetricQueryResult {
         points,
@@ -391,23 +180,63 @@ fn execute_query(
     })
 }
 
-fn count_effective(
-    connection: &Connection,
-    source: MetricSource<'_>,
-    query: &MetricQuery,
-) -> Result<u64, StorageError> {
-    let sql = format!(
-        "{} SELECT count(*)::UBIGINT FROM effective",
+fn sampled_sql(source: MetricSource<'_>) -> String {
+    format!(
+        "{}
+         SELECT step, epoch_ms(timestamp), value_f64, epoch_ms(ingested_at), step
+         FROM effective WHERE isfinite(value_f64) ORDER BY step",
         effective_cte(source)
-    );
-    let values = query_params(source, query);
-    connection
-        .query_row(
-            &sql,
-            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
-            |row| row.get(0),
-        )
-        .map_err(StorageError::from)
+    )
+}
+
+fn summaries_sql(run_count: usize, include_running: bool) -> String {
+    let requested_rows = (0..run_count)
+        .map(|ordinal| format!("(?, {ordinal})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let running_ctes = if include_running {
+        ", running AS MATERIALIZED (
+             SELECT requested.ordinal, requested.run_id
+             FROM requested
+             JOIN seex_runs AS run USING (run_id)
+             WHERE run.status = 'running'
+         ),
+         running_points AS (
+             SELECT running.ordinal, points.run_id, points.metric_key,
+                    points.step, points.value_f64
+             FROM running
+             JOIN dl.metric_points AS points USING (run_id)
+             WHERE points.metric_key = ?
+         )"
+    } else {
+        ""
+    };
+    let running_branch = if include_running {
+        "UNION ALL
+             SELECT ordinal, run_id, metric_key,
+                    count(*) AS effective_count, max(step) AS last_step,
+                    arg_max(value_f64, step) AS last_value_f64,
+                    min(value_f64) AS min_value_f64,
+                    max(value_f64) AS max_value_f64
+             FROM running_points
+             GROUP BY ordinal, run_id, metric_key"
+    } else {
+        ""
+    };
+    format!(
+        "WITH requested(run_id, ordinal) AS (VALUES {requested_rows}){running_ctes}
+         SELECT run_id, metric_key, effective_count, last_step, last_value_f64,
+                min_value_f64, max_value_f64
+         FROM (
+             SELECT requested.ordinal, summary.*
+             FROM requested
+             JOIN seex_runs AS run USING (run_id)
+             JOIN seex_metric_aggregates AS summary USING (run_id)
+             WHERE run.status <> 'running' AND summary.metric_key = ?
+             {running_branch}
+         )
+         ORDER BY ordinal"
+    )
 }
 
 fn query_params(source: MetricSource<'_>, query: &MetricQuery) -> Vec<Box<dyn duckdb::ToSql>> {
@@ -428,34 +257,24 @@ fn query_params(source: MetricSource<'_>, query: &MetricQuery) -> Vec<Box<dyn du
 }
 
 fn effective_cte(source: MetricSource<'_>) -> String {
-    let (relation, tie_breaker) = source_relation(source);
+    let relation = source_relation(source);
     format!(
-        "WITH ranked AS (
-             SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at,
-                    row_number() OVER (
-                        PARTITION BY run_id, metric_key, step
-                        ORDER BY ingested_at DESC, {tie_breaker}
-                    ) AS write_rank
+        "WITH effective AS (
+             SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at
              FROM {relation}
              WHERE run_id = ? AND metric_key = ? AND metric_key_encoded = ?
                AND (? IS NULL OR step >= ?)
                AND (? IS NULL OR step < ?)
-         ),
-         effective AS (
-             SELECT run_id, metric_key, step, timestamp, value_f64, ingested_at
-             FROM ranked WHERE write_rank = 1
          )"
     )
 }
 
-fn source_relation(source: MetricSource<'_>) -> (&'static str, &'static str) {
+fn source_relation(source: MetricSource<'_>) -> &'static str {
     match source {
-        MetricSource::Project => ("dl.metric_points", "rowid DESC"),
-        MetricSource::Parquet(_) => (
-            "read_parquet(?, hive_partitioning = true, union_by_name = true, \
-             filename = true, file_row_number = true)",
-            "filename DESC, file_row_number DESC",
-        ),
+        MetricSource::Project => "dl.metric_points",
+        MetricSource::Parquet(_) => {
+            "read_parquet(?, hive_partitioning = true, union_by_name = true)"
+        }
     }
 }
 
@@ -465,60 +284,6 @@ fn full_query_sql(source: MetricSource<'_>) -> String {
          SELECT run_id, metric_key, step, epoch_ms(timestamp), value_f64,
                 epoch_ms(ingested_at), count(*) OVER ()::UBIGINT
          FROM effective ORDER BY step",
-        effective_cte(source)
-    )
-}
-
-fn screen_query_sql(source: MetricSource<'_>) -> String {
-    format!(
-        "{},
-         numbered AS (
-             SELECT *, row_number() OVER (ORDER BY step) - 1 AS ordinal,
-                    count(*) OVER ()::UBIGINT AS source_row_count
-             FROM effective
-         ),
-         bucketed AS (
-             SELECT *, floor(
-                 ordinal::DOUBLE * ?::DOUBLE / source_row_count::DOUBLE
-             )::UBIGINT AS bucket
-             FROM numbered
-         ),
-         candidates AS (
-             SELECT *,
-                    row_number() OVER (PARTITION BY bucket ORDER BY step) AS first_rank,
-                    row_number() OVER (PARTITION BY bucket ORDER BY step DESC) AS last_rank,
-                    row_number() OVER (PARTITION BY bucket ORDER BY value_f64, step) AS min_rank,
-                    row_number() OVER (PARTITION BY bucket ORDER BY value_f64 DESC, step) AS max_rank
-             FROM bucketed
-         )
-         SELECT run_id, metric_key, step, epoch_ms(timestamp), value_f64,
-                epoch_ms(ingested_at), source_row_count
-         FROM candidates
-         WHERE first_rank = 1 OR last_rank = 1 OR min_rank = 1 OR max_rank = 1
-         ORDER BY step",
-        effective_cte(source)
-    )
-}
-
-fn lttb_query_sql(source: MetricSource<'_>) -> String {
-    format!(
-        "{},
-         normalized AS (
-             SELECT *, CAST(step AS HUGEINT) -
-                       min(CAST(step AS HUGEINT)) OVER () AS lttb_step
-             FROM effective
-         ),
-         sampled AS (
-             SELECT unnest(lttb(lttb_step, value_f64, ?)) AS point,
-                    count(*)::UBIGINT AS source_row_count
-             FROM normalized
-         )
-         SELECT normalized.run_id, normalized.metric_key, normalized.step,
-                epoch_ms(normalized.timestamp), normalized.value_f64,
-                epoch_ms(normalized.ingested_at), sampled.source_row_count
-         FROM sampled
-         JOIN normalized ON normalized.lttb_step = sampled.point.x
-         ORDER BY normalized.step",
         effective_cte(source)
     )
 }
@@ -597,152 +362,354 @@ pub fn percent_encode_metric_key(value: &str) -> String {
     encoded
 }
 
-fn ensure_lttb_extension_loaded(connection: &Connection) -> Result<(), StorageError> {
-    if lttb_function_available(connection) {
-        return Ok(());
-    }
-    let (loaded, installed) = lttb_extension_state(connection);
-    if loaded {
-        return Ok(());
-    }
-    if let Some(path) = std::env::var_os(LTTB_EXTENSION_PATH_ENV) {
-        return load_lttb_extension_from_path(connection, Path::new(&path));
-    }
-
-    let load_error = match installed {
-        true => match connection.execute_batch("LOAD lttb;") {
-            Ok(()) if lttb_function_available(connection) => return Ok(()),
-            Ok(()) => None,
-            Err(source) => Some(source.to_string()),
-        },
-        false => None,
-    };
-    if lttb_auto_install_allowed(std::env::var_os(LTTB_AUTO_INSTALL_ENV).as_deref()) {
-        return install_and_load_lttb_extension(connection);
-    }
-
-    let mut message = format!(
-        "lttb is not loaded and Seex will not download it automatically; \
-         set {LTTB_AUTO_INSTALL_ENV}=1 to allow INSTALL lttb FROM community, \
-         or set {LTTB_EXTENSION_PATH_ENV} to a local lttb.duckdb_extension"
-    );
-    if let Some(load_error) = load_error {
-        message.push_str("; LOAD lttb failed: ");
-        message.push_str(&load_error);
-    }
-    Err(StorageError::LttbExtensionUnavailable { message })
-}
-
-fn install_and_load_lttb_extension(connection: &Connection) -> Result<(), StorageError> {
-    match connection.execute_batch("INSTALL lttb FROM community; LOAD lttb;") {
-        Ok(()) if lttb_function_available(connection) => Ok(()),
-        Ok(()) => Err(StorageError::LttbExtensionUnavailable {
-            message: "INSTALL/LOAD lttb did not register lttb".to_owned(),
-        }),
-        Err(source) => Err(StorageError::LttbExtensionUnavailable {
-            message: source.to_string(),
-        }),
-    }
-}
-
-fn load_lttb_extension_from_path(connection: &Connection, path: &Path) -> Result<(), StorageError> {
-    let path = sql_string_literal(path.to_string_lossy().as_ref());
-    match connection.execute_batch(&format!("LOAD {path};")) {
-        Ok(()) if lttb_function_available(connection) => Ok(()),
-        Ok(()) => Err(StorageError::LttbExtensionUnavailable {
-            message: "LOAD lttb from SEEX_LTTB_EXTENSION_PATH did not register lttb".to_owned(),
-        }),
-        Err(source) => Err(StorageError::LttbExtensionUnavailable {
-            message: source.to_string(),
-        }),
-    }
-}
-
-fn lttb_function_available(connection: &Connection) -> bool {
-    connection
-        .query_row(
-            "SELECT count(*) > 0
-             FROM duckdb_functions()
-             WHERE function_name = 'lttb'",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .unwrap_or(false)
-}
-
-fn lttb_extension_state(connection: &Connection) -> (bool, bool) {
-    connection
-        .query_row(
-            "SELECT loaded, installed
-             FROM duckdb_extensions()
-             WHERE extension_name = 'lttb'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap_or((false, false))
-}
-
-fn lttb_auto_install_allowed(value: Option<&std::ffi::OsStr>) -> bool {
-    value
-        .and_then(std::ffi::OsStr::to_str)
-        .is_some_and(|value| matches!(value, "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"))
-}
-
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsStr;
-
     use super::*;
 
-    #[test]
-    fn lttb_auto_install_is_opt_in() {
-        assert!(!lttb_auto_install_allowed(None));
-        assert!(!lttb_auto_install_allowed(Some(OsStr::new("0"))));
-        assert!(lttb_auto_install_allowed(Some(OsStr::new("true"))));
+    fn sum_total_files(plan: &str) -> u64 {
+        let mut sum = 0;
+        let mut rest = plan;
+        while let Some(position) = rest.find("\"Total Files Read\"") {
+            rest = &rest[position + "\"Total Files Read\"".len()..];
+            let Some(colon) = rest.find(':') else { break };
+            let after = rest[colon + 1..].trim_start();
+            let digits: String = after
+                .trim_start_matches('"')
+                .chars()
+                .take_while(|character| character.is_ascii_digit())
+                .collect();
+            sum += digits.parse::<u64>().unwrap_or(0);
+            rest = after;
+        }
+        sum
     }
 
-    #[test]
-    fn lttb_install_check_does_not_download_the_extension() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let home = tempfile::tempdir()?;
-        let config =
-            duckdb::Config::default().with("home_directory", home.path().to_string_lossy())?;
-        let connection = Connection::open_in_memory_with_flags(config)?;
-
-        assert_eq!(lttb_extension_state(&connection), (false, false));
-        assert!(!lttb_function_available(&connection));
-        assert!(!home.path().join(".duckdb/extensions").exists());
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "network-dependent release LTTB acceptance"]
-    fn lttb_online_and_explicit_offline_paths() -> Result<(), Box<dyn std::error::Error>> {
-        let online_home = tempfile::tempdir()?;
-        let online_config = duckdb::Config::default()
-            .with("home_directory", online_home.path().to_string_lossy())?;
-        let online = Connection::open_in_memory_with_flags(online_config)?;
-        install_and_load_lttb_extension(&online)?;
-        let extension_path: String = online.query_row(
-            "SELECT install_path FROM duckdb_extensions() WHERE extension_name = 'lttb'",
-            [],
-            |row| row.get(0),
+    fn explain(
+        connection: &Connection,
+        sql: &str,
+        values: &[Box<dyn duckdb::ToSql>],
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let (key, plan): (String, String) = connection.query_row(
+            &format!("EXPLAIN (ANALYZE, FORMAT JSON) {sql}"),
+            duckdb::params_from_iter(values.iter().map(|value| value.as_ref())),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        assert!(Path::new(&extension_path).is_file());
+        assert_eq!(key, "analyzed_plan");
+        Ok(plan)
+    }
 
-        let offline_home = tempfile::tempdir()?;
-        let offline_config = duckdb::Config::default()
-            .with("home_directory", offline_home.path().to_string_lossy())?
-            .allow_unsigned_extensions()?;
-        let offline = Connection::open_in_memory_with_flags(offline_config)?;
-        load_lttb_extension_from_path(&offline, Path::new(&extension_path))?;
+    #[test]
+    #[ignore = "read-only production SQL plans; release and local fixture required"]
+    fn production_query_plans() -> Result<(), Box<dyn std::error::Error>> {
+        if cfg!(debug_assertions) {
+            return Err("requires --release".into());
+        }
+        let root = std::path::PathBuf::from(std::env::var("SEEX_PANEL_ROOT")?).canonicalize()?;
+        assert!(root.ends_with(".tmp/v5-panel-million/store"));
+        let output = std::path::PathBuf::from(std::env::var("SEEX_STORAGE_PROFILE_OUT")?);
+        assert_eq!(
+            output.parent().unwrap().canonicalize()?,
+            root.parent().and_then(|path| path.parent()).unwrap()
+        );
+        assert!(
+            output
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("v5-")
+        );
+        std::fs::create_dir(&output)?; // Refuse overwriting old evidence.
+        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
+            crate::storage::bootstrap::CatalogBackend::Sqlite,
+            &root,
+            None,
+            None,
+            None,
+        );
+        let connection =
+            crate::storage::bootstrap::open_existing_native_connection_with_config(config)?;
+        let reader = ProjectMetricReader::new(&connection);
+        let run_id = RunId::from_string("run-0");
+        let metric_key = MetricKey::from_string("loss");
 
-        assert_eq!(lttb_extension_state(&offline), (true, false));
+        for (name, start, end, rows, files) in [
+            (
+                "detail-prefix",
+                Some(Step::new(0)),
+                Some(Step::new(2049)),
+                2049,
+                1,
+            ),
+            (
+                "detail-middle",
+                Some(Step::new(450_000)),
+                Some(Step::new(550_001)),
+                100_002,
+                8,
+            ),
+            (
+                "detail-outside",
+                Some(Step::new(2_000_000)),
+                Some(Step::new(3_000_001)),
+                0,
+                0,
+            ),
+            ("overview", Some(Step::new(0)), None, 1_000_001, 62),
+        ] {
+            let query = MetricQuery::new(
+                run_id.clone(),
+                metric_key.clone(),
+                start,
+                end,
+                ReductionPolicy::screen_budget(1024, 1)?,
+            )?;
+            let result = reader.query_metric(&query)?;
+            assert_eq!(result.source_row_count, rows, "{name} source count");
+            assert_eq!(result.points.len() as u64, rows.min(1024), "{name} points");
+            let sql = sampled_sql(MetricSource::Project);
+            let values = query_params(MetricSource::Project, &query);
+            let plan = explain(&connection, &sql, &values)?;
+            assert_eq!(sum_total_files(&plan), files, "{name} files");
+            std::fs::write(output.join(format!("{name}.json")), plan)?;
+            std::fs::write(output.join(format!("{name}.sql")), sql)?;
+        }
+
+        let run_ids = (0..16)
+            .map(|index| RunId::from_string(format!("run-{index}")))
+            .collect::<Vec<_>>();
+        let summaries = reader.query_metric_summaries(&run_ids, &metric_key)?;
+        assert_eq!(summaries.len(), 16);
+        assert_eq!(summaries[0].effective_count, 1_000_001);
+        // The fixture has no running Run, so the production query omits the
+        // fact-table fallback entirely.
+        let sql = summaries_sql(run_ids.len(), false);
+        let values: Vec<Box<dyn duckdb::ToSql>> = run_ids
+            .iter()
+            .map(|id| Box::new(id.as_str().to_owned()) as Box<dyn duckdb::ToSql>)
+            .chain(std::iter::once(Box::new("loss") as Box<dyn duckdb::ToSql>))
+            .collect();
+        let plan = explain(&connection, &sql, &values)?;
+        assert_eq!(
+            sum_total_files(&plan),
+            0,
+            "finished-only summaries must not scan facts"
+        );
+        std::fs::write(output.join("summaries.json"), plan)?;
+        std::fs::write(output.join("summaries.sql"), sql)?;
+        println!(
+            "SEEX_PRODUCTION_PLANS summaries_files=0 summaries_ok={}",
+            summaries.len()
+        );
         Ok(())
     }
 
     #[test]
-    fn diagnostics_cover_the_whole_effective_series_after_lww()
+    #[ignore = "storage-boundary per-statement profile; release and local fixture required"]
+    fn sampling_stage_profile() -> Result<(), Box<dyn std::error::Error>> {
+        fn median(values: &mut [f64]) -> f64 {
+            values.sort_by(f64::total_cmp);
+            let middle = values.len() / 2;
+            if values.len().is_multiple_of(2) {
+                (values[middle - 1] + values[middle]) / 2.0
+            } else {
+                values[middle]
+            }
+        }
+
+        if cfg!(debug_assertions) {
+            return Err("requires --release".into());
+        }
+        let root = std::path::PathBuf::from(std::env::var("SEEX_PANEL_ROOT")?).canonicalize()?;
+        assert!(root.ends_with(".tmp/v5-panel-million/store"));
+        let output = std::path::PathBuf::from(std::env::var("SEEX_STORAGE_PROFILE_OUT")?);
+        assert_eq!(
+            output.parent().unwrap().canonicalize()?,
+            root.parent().and_then(|path| path.parent()).unwrap()
+        );
+        assert!(
+            output
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("v5-")
+        );
+        std::fs::create_dir(&output)?; // Refuse overwriting old evidence.
+        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
+            crate::storage::bootstrap::CatalogBackend::Sqlite,
+            &root,
+            None,
+            None,
+            None,
+        );
+        let connection =
+            crate::storage::bootstrap::open_existing_native_connection_with_config(config)?;
+        let metric_key = MetricKey::from_string("loss");
+        let runs = (0..16)
+            .map(|index| RunId::from_string(format!("run-{index}")))
+            .collect::<Vec<_>>();
+        let budget = 1024;
+        let mut csv = String::from(
+            "range,scope,rows,prepare_ns,execute_ns,fetch_ns,arrow_ns,rows_ns,finish_ns,consume_ns\n",
+        );
+        for (name, start, end, expected_rows) in [
+            (
+                "prefix",
+                Some(Step::new(0)),
+                Some(Step::new(2049)),
+                2049_u64,
+            ),
+            (
+                "middle",
+                Some(Step::new(450_000)),
+                Some(Step::new(550_001)),
+                100_002,
+            ),
+            (
+                "outside",
+                Some(Step::new(2_000_000)),
+                Some(Step::new(3_000_001)),
+                0,
+            ),
+            ("overview", Some(Step::new(0)), None, 1_000_001),
+        ] {
+            let mut first_prepare = Vec::new();
+            let mut first_execute = Vec::new();
+            let mut first_fetch = Vec::new();
+            let mut first_arrow = Vec::new();
+            let mut first_rows = Vec::new();
+            let mut first_finish = Vec::new();
+            let mut first_consume = Vec::new();
+            let mut prepare_sum = 0.0;
+            let mut execute_sum = 0.0;
+            let mut fetch_sum = 0.0;
+            let mut arrow_sum = 0.0;
+            let mut rows_time_sum = 0.0;
+            let mut finish_sum = 0.0;
+            let mut consume_sum = 0.0;
+            let mut rows_sum = 0;
+            for run in &runs {
+                let query = MetricQuery::new(
+                    run.clone(),
+                    metric_key.clone(),
+                    start,
+                    end,
+                    ReductionPolicy::screen_budget(1024, 1)?,
+                )?;
+                let sql = sampled_sql(MetricSource::Project);
+                let values = query_params(MetricSource::Project, &query);
+                let mut prepares = Vec::new();
+                let mut executes = Vec::new();
+                let mut fetches = Vec::new();
+                let mut arrows = Vec::new();
+                let mut row_times = Vec::new();
+                let mut finishes = Vec::new();
+                let mut consumes = Vec::new();
+                let mut rows = 0;
+                for _ in 0..10 {
+                    let started = std::time::Instant::now();
+                    let mut statement = connection.prepare(&sql)?;
+                    prepares.push(started.elapsed().as_nanos() as f64);
+                    let (selected, timings) =
+                        crate::storage::sampling::select_timed(&mut statement, &values, budget)?;
+                    executes.push(timings.execute.as_nanos() as f64);
+                    fetches.push(timings.fetch.as_nanos() as f64);
+                    arrows.push(timings.arrow.as_nanos() as f64);
+                    row_times.push(timings.rows.as_nanos() as f64);
+                    finishes.push(timings.finish.as_nanos() as f64);
+                    consumes.push(timings.consume.as_nanos() as f64);
+                    rows = selected.source_count;
+                }
+                assert_eq!(rows, expected_rows, "{name} source count");
+                let prepare = median(&mut prepares);
+                let execute = median(&mut executes);
+                let fetch = median(&mut fetches);
+                let arrow = median(&mut arrows);
+                let rows_time = median(&mut row_times);
+                let finish = median(&mut finishes);
+                let consume = median(&mut consumes);
+                if run == &runs[0] {
+                    first_prepare.push(prepare);
+                    first_execute.push(execute);
+                    first_fetch.push(fetch);
+                    first_arrow.push(arrow);
+                    first_rows.push(rows_time);
+                    first_finish.push(finish);
+                    first_consume.push(consume);
+                }
+                prepare_sum += prepare;
+                execute_sum += execute;
+                fetch_sum += fetch;
+                arrow_sum += arrow;
+                rows_time_sum += rows_time;
+                finish_sum += finish;
+                consume_sum += consume;
+                rows_sum += rows;
+                csv.push_str(&format!(
+                    "{name},{},{rows},{prepare:.0},{execute:.0},{fetch:.0},{arrow:.0},{rows_time:.0},{finish:.0},{consume:.0}\n",
+                    run.as_str()
+                ));
+            }
+            csv.push_str(&format!(
+                "{name},16-curves,{rows_sum},{prepare_sum:.0},{execute_sum:.0},{fetch_sum:.0},{arrow_sum:.0},{rows_time_sum:.0},{finish_sum:.0},{consume_sum:.0}\n"
+            ));
+            println!(
+                "SEEX_STAGE_PROFILE range={name} scope=one rows={expected_rows} prepare_ns={:.0} execute_ns={:.0} fetch_ns={:.0} arrow_ns={:.0} rows_ns={:.0} finish_ns={:.0} consume_ns={:.0}",
+                first_prepare[0],
+                first_execute[0],
+                first_fetch[0],
+                first_arrow[0],
+                first_rows[0],
+                first_finish[0],
+                first_consume[0]
+            );
+            println!(
+                "SEEX_STAGE_PROFILE range={name} scope=sixteen rows={rows_sum} prepare_ns={prepare_sum:.0} execute_ns={execute_sum:.0} fetch_ns={fetch_sum:.0} arrow_ns={arrow_sum:.0} rows_ns={rows_time_sum:.0} finish_ns={finish_sum:.0} consume_ns={consume_sum:.0}"
+            );
+        }
+
+        // Isolate reducer cost from Arrow conversion and payload extraction.
+        let mut lttb_csv = String::from("scope,rows,push_ns,finish_ns\n");
+        for (name, count) in [
+            ("prefix", 2_049_usize),
+            ("middle", 100_002),
+            ("overview", 1_000_001),
+        ] {
+            let mut pushes = Vec::new();
+            let mut finishes = Vec::new();
+            for _ in 0..10 {
+                let mut reducer = crate::storage::lttb::OrderedLttb::new(count, budget);
+                let started = std::time::Instant::now();
+                for index in 0..count {
+                    reducer
+                        .push(crate::storage::sampling::Observation {
+                            step: index as i64,
+                            timestamp_millis: index as i64,
+                            value_f64: (index % 97) as f64,
+                            ingested_at_millis: index as i64,
+                            axis_value: index as i64,
+                        })
+                        .map_err(|error| format!("{error:?}"))?;
+                }
+                pushes.push(started.elapsed().as_nanos() as f64);
+                let started = std::time::Instant::now();
+                let points = reducer.finish().map_err(|error| format!("{error:?}"))?;
+                finishes.push(started.elapsed().as_nanos() as f64);
+                assert_eq!(points.len(), count.min(budget));
+            }
+            let push = median(&mut pushes);
+            let finish = median(&mut finishes);
+            lttb_csv.push_str(&format!("{name},{count},{push:.0},{finish:.0}\n"));
+            println!(
+                "SEEX_STAGE_PROFILE reducer={name} rows={count} push_ns={push:.0} finish_ns={finish:.0}"
+            );
+        }
+        std::fs::write(output.join("sampling-stages.csv"), csv)?;
+        std::fs::write(output.join("lttb-stages.csv"), lttb_csv)?;
+        Ok(())
+    }
+
+    #[test]
+    fn sampled_query_excludes_non_finite_values_and_counts_finite_rows()
     -> Result<(), Box<dyn std::error::Error>> {
         let connection = Connection::open_in_memory()?;
         connection.execute_batch(
@@ -752,36 +719,34 @@ mod tests {
                  step BIGINT, timestamp TIMESTAMPTZ, value_f64 DOUBLE,
                  ingested_at TIMESTAMPTZ
              );
+             INSERT INTO dl.metric_points
+             SELECT 'run-1', 'loss', 'loss', step, epoch_ms(1000 + step),
+                    step::DOUBLE, epoch_ms(2000 + step)
+             FROM range(0, 6) AS generated(step);
              INSERT INTO dl.metric_points VALUES
-                 ('run-1', 'loss', 'loss', -1, epoch_ms(30), 1.0, epoch_ms(1)),
-                 ('run-1', 'loss', 'loss', 0, epoch_ms(25), 2.0, epoch_ms(1)),
-                 ('run-1', 'loss', 'loss', 0, epoch_ms(20), 'NaN'::DOUBLE, epoch_ms(2));",
+                 ('run-1', 'loss', 'loss', 2, epoch_ms(1002), 42.0, epoch_ms(2002)),
+                 ('run-1', 'loss', 'loss', 6, epoch_ms(1006), 'NaN'::DOUBLE, epoch_ms(2006)),
+                 ('run-1', 'loss', 'loss', 7, epoch_ms(1007), 'Infinity'::DOUBLE, epoch_ms(2007));",
+        )?;
+        let query = MetricQuery::new(
+            RunId::from_string("run-1"),
+            MetricKey::from_string("loss"),
+            Some(Step::new(0)),
+            None,
+            ReductionPolicy::screen_budget(4, 1)?,
         )?;
 
-        let diagnostics = query_series_diagnostics(
-            &connection,
-            MetricSource::Project,
-            &RunId::from_string("run-1"),
-            &MetricKey::from_string("loss"),
-        )?;
+        let result = query_metric(&connection, MetricSource::Project, &query)?;
 
-        assert_eq!(diagnostics.effective_count, 2);
-        assert_eq!(diagnostics.min_step, Some(-1));
-        assert_eq!(diagnostics.max_step, Some(0));
-        assert!(diagnostics.has_negative_step);
-        assert!(diagnostics.has_decreasing_timestamp);
-        assert!(diagnostics.has_non_finite_value);
+        assert_eq!(result.source_row_count, 7);
+        assert!(result.points.len() <= 4);
+        assert!(
+            result
+                .points
+                .iter()
+                .all(|point| point.value_f64.is_finite())
+        );
+        assert!(result.points.iter().all(|point| point.step.value() <= 5));
         Ok(())
-    }
-
-    #[test]
-    fn project_and_parquet_sources_share_effective_query_shape() {
-        let project = full_query_sql(MetricSource::Project);
-        let parquet = full_query_sql(MetricSource::Parquet("points.parquet"));
-
-        assert!(project.contains("FROM dl.metric_points"));
-        assert!(parquet.contains("FROM read_parquet"));
-        assert!(project.contains("metric_key_encoded = ?"));
-        assert!(parquet.contains("metric_key_encoded = ?"));
     }
 }

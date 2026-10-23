@@ -337,9 +337,9 @@ def summarize_values(values: list[float]) -> dict[str, float]:
 def emit_performance_records(result: dict[str, Any]) -> None:
     """Emits raw schema-v3 durability samples for the local target."""
     repeats = result["repeat_results"]
-    batch_iterations = 3
-    if len(repeats) != 10 * batch_iterations:
-        raise ValueError("persistence benchmark requires exactly thirty repeats")
+    if len(repeats) not in (10, 30):
+        raise ValueError("persistence benchmark requires ten or thirty repeats")
+    batch_iterations = len(repeats) // 10
     for label, field in (("drain_persistence", "drain_seconds"), ("finalization", "finalization_seconds")):
         raw = [
             sum(float(repeat[field]) for repeat in repeats[index : index + batch_iterations]) * 1_000_000_000

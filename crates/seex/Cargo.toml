@@ -1,10 +1,14 @@
 [package]
 name = "seex"
-version = "0.1.0-beta.5"
+version = "0.1.0-beta.6"
 edition = "2024"
 description = "Unified Rust SDK facade for Seex."
 license = "MIT"
 repository = "https://github.com/reformovo/seex"
+
+[features]
+# Opt-in deterministic app/SDK integration probes, never enabled by default.
+test-query-probe = []
 
 [dependencies]
 chrono = "0.4"

@@ -1,7 +1,7 @@
 # ADR 0009: V4 S3 Data Path
 
 ## Status
-Accepted.
+Superseded by ADR 0018 for the first-release native store.
 
 V4 supports S3-compatible object storage only for DuckLake `data_path`; the
 catalog database remains local. S3 configuration lives in

@@ -6,8 +6,9 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum CatalogBackend {
     #[default]
-    DuckDb,
     Sqlite,
+    /// Legacy test/storage adapter. Public configuration rejects this backend.
+    DuckDb,
 }
 
 impl CatalogBackend {

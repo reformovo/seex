@@ -2,24 +2,26 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::storage::StorageError;
 use crate::storage::sql::string_literal as sql_string_literal;
+use crate::storage::{CatalogWriteGuard, StorageError};
 
 const DUCKLAKE_ALIAS: &str = "dl";
 const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
 const S3_SECRET_NAME: &str = "seex_s3";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
 const SQLITE_JOURNAL_MODE: &str = "WAL";
+const STORAGE_FORMAT_VERSION: i64 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeConnectionMode {
-    ReadWrite,
+    Write,
+    WriteExisting,
     ReadOnly,
 }
 
 impl NativeConnectionMode {
     const fn must_exist(self) -> bool {
-        matches!(self, Self::ReadOnly)
+        !matches!(self, Self::Write)
     }
 }
 
@@ -46,6 +48,7 @@ impl CatalogBackend {
     }
 }
 
+#[derive(Clone)]
 pub struct NativeStorageConfig {
     catalog_backend: CatalogBackend,
     catalog_path: PathBuf,
@@ -149,12 +152,15 @@ impl CatalogAdapter {
             .map(|clause| format!("                 {clause},\n"))
             .unwrap_or_default();
         let read_only_clause = match mode {
-            NativeConnectionMode::ReadWrite => String::new(),
+            NativeConnectionMode::Write | NativeConnectionMode::WriteExisting => String::new(),
             NativeConnectionMode::ReadOnly => "                 READ_ONLY,\n".to_owned(),
         };
         let metadata_parameters = match (self.backend, mode) {
             (CatalogBackend::DuckDb, _) => String::new(),
-            (CatalogBackend::Sqlite, NativeConnectionMode::ReadWrite) => format!(
+            (
+                CatalogBackend::Sqlite,
+                NativeConnectionMode::Write | NativeConnectionMode::WriteExisting,
+            ) => format!(
                 "                 METADATA_PARAMETERS MAP {{'busy_timeout': \
                  '{SQLITE_BUSY_TIMEOUT_MS}', 'journal_mode': '{SQLITE_JOURNAL_MODE}'}},\n"
             ),
@@ -225,6 +231,10 @@ impl NativeStorageConfig {
     pub(crate) fn catalog_path(&self) -> &Path {
         self.catalog_path.as_path()
     }
+
+    pub(crate) fn catalog_backend(&self) -> CatalogBackend {
+        self.catalog_backend
+    }
 }
 
 pub(crate) fn catalog_lock_namespace(catalog_path: &Path) -> Result<PathBuf, StorageError> {
@@ -263,13 +273,31 @@ pub fn open_native_connection(root_path: &Path) -> Result<duckdb::Connection, St
 pub fn open_native_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<duckdb::Connection, StorageError> {
-    open_native_connection_with_mode(config, NativeConnectionMode::ReadWrite)
+    open_native_connection_with_mode(config, NativeConnectionMode::Write)
 }
 
 pub fn open_existing_native_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<duckdb::Connection, StorageError> {
     open_native_connection_with_mode(config, NativeConnectionMode::ReadOnly)
+}
+
+pub(crate) fn open_existing_writer_connection_with_config(
+    config: NativeStorageConfig,
+) -> Result<duckdb::Connection, StorageError> {
+    open_native_connection_with_mode(config, NativeConnectionMode::WriteExisting)
+}
+
+pub(crate) fn open_existing_client_connection_with_config(
+    config: NativeStorageConfig,
+) -> Result<duckdb::Connection, StorageError> {
+    let _guard =
+        CatalogWriteGuard::acquire(&config.catalog_path, std::time::Duration::from_secs(30))?;
+    let writer = open_existing_writer_connection_with_config(config.clone())?;
+    flush_pending_in_locked_connection(&writer)?;
+    repair_pending_series(&writer)?;
+    drop(writer);
+    open_existing_native_connection_with_config(config)
 }
 
 pub(crate) fn open_shared_existing_local_connection_with_config(
@@ -307,7 +335,17 @@ fn open_native_connection_with_mode(
     config: NativeStorageConfig,
     mode: NativeConnectionMode,
 ) -> Result<duckdb::Connection, StorageError> {
+    let connection_started = std::time::Instant::now();
     let must_exist = mode.must_exist();
+    let _catalog_guard = if must_exist {
+        None
+    } else {
+        Some(CatalogWriteGuard::acquire(
+            &config.catalog_path,
+            std::time::Duration::from_secs(30),
+        )?)
+    };
+    let catalog_preexisted = config.catalog_path.exists();
     if must_exist {
         verify_catalog_exists(&config.catalog_path)?;
     } else if let Some(catalog_parent) = config.catalog_path.parent() {
@@ -324,12 +362,15 @@ fn open_native_connection_with_mode(
             source,
         })?;
     }
+    let phase_started = std::time::Instant::now();
     let connection = open_duckdb_connection()?;
+    record_write_timing("connection_duckdb_open", phase_started.elapsed());
     if is_s3_data_path(&config.data_path)
         && let Some(s3_connection) = config.s3_connection.as_ref()
     {
         configure_s3_connection(&connection, s3_connection)?;
     }
+    let phase_started = std::time::Instant::now();
     attach_ducklake_with_backend_and_mode(
         &connection,
         config.catalog_backend,
@@ -337,11 +378,103 @@ fn open_native_connection_with_mode(
         &config.data_path,
         mode,
     )?;
+    record_write_timing("connection_ducklake_attach", phase_started.elapsed());
+    let phase_started = std::time::Instant::now();
     setup_catalog_adapter(&connection, config.catalog_backend, &config.catalog_path)?;
-    if !must_exist {
+    record_write_timing("connection_catalog_adapter", phase_started.elapsed());
+    if !matches!(mode, NativeConnectionMode::ReadOnly) {
+        record_write_timing("connection_attach", connection_started.elapsed());
+    }
+    let phase_started = std::time::Instant::now();
+    if !must_exist && !catalog_preexisted {
         initialize_storage_tables(&connection)?;
+    } else {
+        validate_storage_format(&connection)?;
+    }
+    record_write_timing(
+        "connection_format_setup_or_validate",
+        phase_started.elapsed(),
+    );
+    if matches!(mode, NativeConnectionMode::Write) {
+        flush_pending_in_locked_connection(&connection)?;
+        repair_pending_series(&connection)?;
     }
     Ok(connection)
+}
+
+fn repair_pending_series(connection: &duckdb::Connection) -> Result<(), StorageError> {
+    let mut pending = connection
+        .prepare("SELECT run_id, metric_key FROM seex_series_directory WHERE status = 'pending'")?;
+    let rows = pending.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let rows = rows.collect::<Result<Vec<_>, _>>()?;
+    drop(pending);
+    for (run_id, metric_key) in rows {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM dl.metric_points WHERE run_id = ? AND metric_key = ?)",
+            [&run_id, &metric_key],
+            |row| row.get(0),
+        )?;
+        if exists {
+            connection.execute(
+                "UPDATE seex_series_directory SET status = 'published' WHERE run_id = ? AND metric_key = ?",
+                [&run_id, &metric_key],
+            )?;
+        } else {
+            connection.execute(
+                "DELETE FROM seex_series_directory WHERE run_id = ? AND metric_key = ?",
+                [&run_id, &metric_key],
+            )?;
+            connection.execute(
+                "DELETE FROM seex_metric_keys WHERE metric_key = ? AND NOT EXISTS (
+                     SELECT 1 FROM seex_series_directory WHERE metric_key = ?
+                 )",
+                [&metric_key, &metric_key],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn record_write_timing(stage: &str, elapsed: std::time::Duration) {
+    if std::env::var_os("SEEX_WRITE_TIMING").is_some() {
+        eprintln!(
+            "seex_write_timing,pid={},stage={stage},elapsed_ns={}",
+            std::process::id(),
+            elapsed.as_nanos()
+        );
+    }
+}
+
+/// Retries a pending terminal flush while the caller holds the catalog write lock.
+pub(crate) fn flush_pending_in_locked_connection(
+    connection: &duckdb::Connection,
+) -> Result<bool, StorageError> {
+    let marker_started = std::time::Instant::now();
+    let pending_result = connection.query_row(
+        "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+        [],
+        |row| row.get::<_, i64>(0),
+    );
+    record_write_timing("flush_pending_marker_read", marker_started.elapsed());
+    let pending = pending_result?;
+    if pending == 0 {
+        return Ok(false);
+    }
+    let sql_started = std::time::Instant::now();
+    let flush_result = connection
+        .execute_batch("CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');");
+    record_write_timing("flush_recovery_sql", sql_started.elapsed());
+    flush_result?;
+    let marker_started = std::time::Instant::now();
+    let clear_result = connection.execute(
+        "UPDATE seex_storage_metadata SET value = 0 WHERE key = 'flush_pending'",
+        [],
+    );
+    record_write_timing("flush_pending_marker_clear", marker_started.elapsed());
+    clear_result?;
+    Ok(true)
 }
 
 fn verify_catalog_exists(catalog_path: &Path) -> Result<(), StorageError> {
@@ -379,7 +512,7 @@ pub fn attach_ducklake_with_backend(
         catalog_backend,
         catalog_path,
         data_path,
-        NativeConnectionMode::ReadWrite,
+        NativeConnectionMode::Write,
     )
 }
 
@@ -490,7 +623,7 @@ fn create_s3_secret_statement(config: &S3ConnectionConfig) -> String {
 }
 
 pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), StorageError> {
-    connection.execute_batch(
+    connection.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS seex_projects (
              project_id VARCHAR NOT NULL,
              name VARCHAR NOT NULL,
@@ -528,8 +661,75 @@ pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), 
              last_value_f64 DOUBLE NOT NULL,
              min_value_f64 DOUBLE NOT NULL,
              max_value_f64 DOUBLE NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS seex_storage_metadata (
+             key VARCHAR PRIMARY KEY,
+             value BIGINT NOT NULL
+         );
+         CREATE INDEX IF NOT EXISTS seex_runs_project_cursor
+             ON seex_runs(project_id, created_at, run_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS seex_projects_id
+             ON seex_projects(project_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS seex_runs_id
+             ON seex_runs(run_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS seex_aggregates_run_key
+             ON seex_metric_aggregates(run_id, metric_key);
+         CREATE TABLE IF NOT EXISTS seex_metric_keys (
+             metric_key VARCHAR PRIMARY KEY
+         );
+         CREATE TABLE IF NOT EXISTS seex_series_directory (
+             run_id VARCHAR NOT NULL,
+             metric_key VARCHAR NOT NULL,
+             status VARCHAR NOT NULL,
+             PRIMARY KEY (run_id, metric_key)
+         );
+         CREATE INDEX IF NOT EXISTS seex_series_pending
+             ON seex_series_directory(status);
+         CREATE INDEX IF NOT EXISTS seex_series_key
+             ON seex_series_directory(metric_key, run_id);
+         INSERT INTO seex_storage_metadata (key, value)
+         SELECT 'format_version', {STORAGE_FORMAT_VERSION}
+         WHERE NOT EXISTS (
+             SELECT 1 FROM seex_storage_metadata WHERE key = 'format_version'
+         );
+         INSERT INTO seex_storage_metadata (key, value)
+         SELECT 'flush_pending', 0
+         WHERE NOT EXISTS (
+             SELECT 1 FROM seex_storage_metadata WHERE key = 'flush_pending'
          );",
-    )?;
+    ))?;
+    Ok(())
+}
+
+fn validate_storage_format(connection: &duckdb::Connection) -> Result<(), StorageError> {
+    let version = connection
+        .query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'format_version'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|source| StorageError::StorageDuckDb {
+            operation: "reading native storage format marker",
+            name: "seex_storage_metadata".to_owned(),
+            source,
+        })?;
+    if version != STORAGE_FORMAT_VERSION {
+        return Err(StorageError::StorageFormatMismatch {
+            expected: STORAGE_FORMAT_VERSION,
+            found: version,
+        });
+    }
+    connection
+        .query_row(
+            "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|source| StorageError::StorageDuckDb {
+            operation: "reading native flush recovery marker",
+            name: "seex_storage_metadata".to_owned(),
+            source,
+        })?;
     Ok(())
 }
 
@@ -553,6 +753,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn catalog_creates_project_run_and_sequence_indexes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        let connection = open_native_connection_with_config(config.clone())?;
+        let catalog = sql_string_literal(config.catalog_path.to_string_lossy().as_ref());
+        let index_count: i64 = connection.query_row(
+            &format!(
+                "SELECT count(*) FROM sqlite_scan({catalog}, 'sqlite_master')
+             WHERE type = 'index' AND name IN (
+                 'seex_projects_id', 'seex_runs_id', 'seex_runs_project_cursor',
+                 'seex_series_pending', 'seex_series_key', 'seex_aggregates_run_key'
+             )"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(index_count, 6);
+        Ok(())
+    }
+
+    #[test]
     fn existing_connection_rejects_missing_catalog_without_creating_store() {
         let root_path = std::env::temp_dir().join(format!("seex-missing-{}", uuid::Uuid::new_v4()));
         let config = NativeStorageConfig::duckdb(&root_path, None, None);
@@ -566,6 +794,357 @@ mod tests {
         );
         assert_eq!(error.to_string(), "catalog not found: catalog.ducklake");
         assert!(!root_path.exists());
+    }
+
+    #[test]
+    fn existing_connection_rejects_catalog_without_storage_format_marker()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::duckdb(root.path(), None, None);
+        drop(open_native_connection_with_config(config.clone())?);
+        let connection = open_duckdb_connection()?;
+        attach_ducklake_with_backend(
+            &connection,
+            CatalogBackend::DuckDb,
+            config.catalog_path(),
+            &config.data_path,
+        )?;
+        connection.execute_batch("DROP TABLE seex_catalog.seex_storage_metadata;")?;
+        drop(connection);
+
+        let error = open_existing_native_connection_with_config(config).unwrap_err();
+        assert!(error.to_string().contains("native storage format marker"));
+
+        let writer_error = open_native_connection_with_config(NativeStorageConfig::duckdb(
+            root.path(),
+            None,
+            None,
+        ))
+        .expect_err("writers must reject stores without a format marker");
+        assert!(
+            writer_error
+                .to_string()
+                .contains("native storage format marker")
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "independent read-only verification of a retained large reporting store"]
+    fn verify_large_reporting_store() -> Result<(), Box<dyn std::error::Error>> {
+        let root = PathBuf::from(std::env::var("SEEX_LARGE_ROOT")?);
+        let expected: i64 = std::env::var("SEEX_LARGE_EXPECTED")?.parse()?;
+        let connection = open_existing_native_connection_with_config(
+            NativeStorageConfig::with_backend_and_s3_config(
+                CatalogBackend::Sqlite,
+                &root,
+                None,
+                None,
+                None,
+            ),
+        )?;
+        let actual: (i64, f64, i64, i64) = connection.query_row(
+            "SELECT count(*), sum(value_f64), min(step), max(step)
+             FROM dl.metric_points WHERE run_id='large-run' AND metric_key='loss'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(actual, (expected, expected as f64, 0, expected - 1));
+        let summary: i64 = connection.query_row(
+            "SELECT effective_count FROM seex_metric_aggregates WHERE run_id='large-run' AND metric_key='loss'",
+            [], |row| row.get(0),
+        )?;
+        assert_eq!(summary, expected);
+        let versions: (String, String) = connection.query_row(
+            "SELECT version(), extension_version FROM duckdb_extensions() WHERE extension_name='ducklake'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        println!(
+            "large_verified={actual:?},duckdb={},ducklake={}",
+            versions.0, versions.1
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "read-only Parquet RG diagnostic for a retained native store"]
+    fn retained_store_row_group_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::model::metric::{MetricQuery, ReductionPolicy};
+        let root = PathBuf::from(std::env::var("SEEX_DIAGNOSTIC_ROOT")?);
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            &root,
+            None,
+            None,
+            None,
+        );
+        let connection = open_existing_native_connection_with_config(config)?;
+        connection.execute_batch("SET enable_logging=true; SET logging_level='DEBUG';")?;
+        let query = MetricQuery::new(
+            crate::RunId::from_string("writer-0"),
+            crate::MetricKey::from_string("key-0"),
+            None,
+            None,
+            ReductionPolicy::screen_budget(1024, 1)?,
+        )?;
+        let result = crate::storage::ProjectMetricReader::new(&connection).query_metric(&query)?;
+        assert_eq!(result.source_row_count, 1024);
+        assert_eq!(result.points.len(), 512);
+        connection.execute_batch("SET enable_logging=false;")?;
+        let rows = connection
+            .prepare(
+                "SELECT event, count(*) FROM duckdb_logs_parsed('PhysicalOperator')
+             WHERE class = 'ParquetReader' GROUP BY event ORDER BY event",
+            )?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(
+            rows.iter()
+                .any(|(event, count)| event == "ReadRowGroup" && *count > 0)
+        );
+        for (event, count) in rows {
+            println!("retained_rg,event={event},count={count}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "diagnostic matrix: native batch size versus DuckLake inline limit"]
+    fn batch_inline_path_matrix() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::storage::{MetricWrite, ProjectConnection};
+        use std::time::Instant;
+
+        fn files(root: &Path) -> Result<(usize, u64), Box<dyn std::error::Error>> {
+            let mut pending = vec![root.to_path_buf()];
+            let (mut count, mut bytes) = (0, 0);
+            while let Some(dir) = pending.pop() {
+                for entry in std::fs::read_dir(dir)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        pending.push(entry.path());
+                    } else if entry.path().extension().is_some_and(|ext| ext == "parquet") {
+                        count += 1;
+                        bytes += entry.metadata()?.len();
+                    }
+                }
+            }
+            Ok((count, bytes))
+        }
+        fn catalog_bytes(root: &Path) -> (u64, u64) {
+            let size = |name: &str| {
+                std::fs::metadata(root.join(".seex").join(name))
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            };
+            (size("catalog.sqlite"), size("catalog.sqlite-wal"))
+        }
+        fn inline_rows(connection: &duckdb::Connection) -> Result<i64, Box<dyn std::error::Error>> {
+            let names = connection
+                .prepare(
+                    "SELECT table_name FROM information_schema.tables
+                 WHERE table_catalog = 'seex_catalog'
+                   AND regexp_full_match(table_name, 'ducklake_inlined_data_[0-9]+_[0-9]+')",
+                )?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut count = 0;
+            for name in names {
+                count += connection.query_row(
+                    &format!(
+                        "SELECT count(*) FROM seex_catalog.main.\"{}\"",
+                        name.replace('"', "\"\"")
+                    ),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?;
+            }
+            Ok(count)
+        }
+        let started = Instant::now();
+        for keys in [1, 32] {
+            for limit in [1024, 4096, 8192, 16384] {
+                for batch in [256, 4096, 8192, 16384] {
+                    if started.elapsed().as_secs() >= 110 {
+                        return Err("inline matrix budget exceeded".into());
+                    }
+                    let root = tempfile::tempdir()?;
+                    let config = NativeStorageConfig::with_backend_and_s3_config(
+                        CatalogBackend::Sqlite,
+                        root.path(),
+                        None,
+                        None,
+                        None,
+                    );
+                    let store = ProjectConnection::with_catalog_write_lock(
+                        open_native_connection_with_config(config.clone())?,
+                        config.clone(),
+                    );
+                    store.execute_batch(
+                        "INSERT INTO seex_projects VALUES ('probe', 'probe', now());",
+                    )?;
+                    let run = store.create_run(
+                        &crate::ProjectId::from_string("probe"),
+                        "probe",
+                        crate::RunId::from_string("probe-run"),
+                    )?;
+                    store.execute_batch(&format!(
+                        "CALL dl.set_option('data_inlining_row_limit', {limit}, table_name => 'metric_points');"
+                    ))?;
+                    let versions: (String, String) = store.query_row(
+                        "SELECT version(), extension_version FROM duckdb_extensions() WHERE extension_name='ducklake'",
+                        [], |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    println!(
+                        "inline_cell,keys={keys},limit={limit},batch={batch},duckdb={},ducklake={}",
+                        versions.0, versions.1
+                    );
+                    for start in (0..16384).step_by(batch) {
+                        let end = (start + batch).min(16384);
+                        let rows = (start..end)
+                            .map(|step| MetricWrite {
+                                run_id: run.run_id.as_str().to_owned(),
+                                metric_key: format!("key-{}", step % keys),
+                                step: step as i64,
+                                value_f64: 1.0,
+                                timestamp_millis: 1_700_000_000_000,
+                                ingested_at_millis: 1_700_000_000_000,
+                            })
+                            .collect::<Vec<_>>();
+                        let append = Instant::now();
+                        store.append_metric_batch(&rows)?;
+                        let append_ns = append.elapsed().as_nanos();
+                        let read = open_existing_native_connection_with_config(config.clone())?;
+                        let count: i64 =
+                            read.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+                                row.get(0)
+                            })?;
+                        assert_eq!(count, end as i64);
+                        let inline = inline_rows(&read)?;
+                        let (file_count, bytes) = files(&root.path().join(".seex/data"))?;
+                        let (catalog_bytes, wal_bytes) = catalog_bytes(root.path());
+                        println!(
+                            "inline_commit,keys={keys},limit={limit},batch={batch},rows={end},inline={inline},files={file_count},bytes={bytes},catalog_bytes={catalog_bytes},wal_bytes={wal_bytes},append_ns={append_ns}"
+                        );
+                    }
+                    let flush = Instant::now();
+                    store.flush_metric_points()?;
+                    let flush_ns = flush.elapsed().as_nanos();
+                    let read = open_existing_native_connection_with_config(config)?;
+                    let (count, sum): (i64, f64) = read.query_row(
+                        "SELECT count(*), sum(value_f64) FROM dl.metric_points",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?;
+                    assert_eq!((count, sum), (16384, 16384.0));
+                    assert_eq!(inline_rows(&read)?, 0);
+                    let (file_count, bytes) = files(&root.path().join(".seex/data"))?;
+                    let (catalog_bytes, wal_bytes) = catalog_bytes(root.path());
+                    println!(
+                        "inline_final,keys={keys},limit={limit},batch={batch},files={file_count},bytes={bytes},catalog_bytes={catalog_bytes},wal_bytes={wal_bytes},flush_ns={flush_ns}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "diagnostic: observe cached writer after another connection flushes"]
+    fn cached_writer_after_external_inline_flush() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::with_backend_and_s3_config(
+            CatalogBackend::Sqlite,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        let cached = open_native_connection_with_config(config.clone())?;
+        let insert = "INSERT INTO dl.metric_points VALUES
+            ('probe-run', 'loss', 'loss', 0, now(), 1.0, now())";
+        cached.execute_batch(insert)?;
+        let before: i64 = cached.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+            row.get(0)
+        })?;
+        assert_eq!(before, 1);
+        let external = open_existing_writer_connection_with_config(config.clone())?;
+        external.execute_batch(
+            "CALL ducklake_flush_inlined_data('dl', table_name => 'metric_points');",
+        )?;
+        drop(external);
+        // Failure here is diagnostic evidence, not an accepted production fallback.
+        let read = cached.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+            row.get::<_, i64>(0)
+        });
+        eprintln!("cached_writer_after_flush_read={read:?}");
+        if let Ok(count) = read {
+            assert_eq!(count, 1);
+        }
+        let append = cached.execute_batch(insert);
+        eprintln!("cached_writer_after_flush_append={append:?}");
+        let expected = if append.is_ok() { 2 } else { 1 };
+        drop(cached);
+        let fresh = open_existing_writer_connection_with_config(config.clone())?;
+        let fresh_count: i64 =
+            fresh.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(fresh_count, expected);
+        drop(fresh);
+        let reopened_reader = open_existing_native_connection_with_config(config)?;
+        let reader_count: i64 =
+            reopened_reader.query_row("SELECT count(*) FROM dl.metric_points", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(reader_count, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn older_stores_are_rejected_by_readers_and_writers() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for version in [1, 2, 3, 4] {
+            let root = tempfile::tempdir()?;
+            let config = NativeStorageConfig::duckdb(root.path(), None, None);
+            let connection = open_native_connection_with_config(config.clone())?;
+            connection.execute(
+                "UPDATE seex_storage_metadata SET value = ? WHERE key = 'format_version'",
+                [version],
+            )?;
+            drop(connection);
+
+            for error in [
+                open_existing_native_connection_with_config(config.clone()).unwrap_err(),
+                open_native_connection_with_config(config).unwrap_err(),
+            ] {
+                assert!(
+                    matches!(
+                        error,
+                        StorageError::StorageFormatMismatch {
+                            expected: 5,
+                            found
+                        } if found == version
+                    ),
+                    "unexpected format error: {error:?}",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn writer_open_skips_flush_without_pending_marker() -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let config = NativeStorageConfig::duckdb(root.path(), None, None);
+        drop(open_native_connection_with_config(config.clone())?);
+        let metric_points_path = config.data_path.join("main").join("metric_points");
+        std::fs::create_dir_all(metric_points_path.parent().expect("metric_points parent"))?;
+        std::fs::write(&metric_points_path, b"flush must not run")?;
+
+        drop(open_native_connection_with_config(config)?);
+        Ok(())
     }
 
     #[test]
@@ -691,7 +1270,7 @@ mod tests {
         let statement = adapter.attach_ducklake_statement(
             Path::new("catalog.ducklake"),
             Path::new("data"),
-            NativeConnectionMode::ReadWrite,
+            NativeConnectionMode::Write,
         );
         let read_only = adapter.attach_ducklake_statement(
             Path::new("catalog.ducklake"),
@@ -715,7 +1294,7 @@ mod tests {
         let writer = adapter.attach_ducklake_statement(
             Path::new("catalog.sqlite"),
             Path::new("data"),
-            NativeConnectionMode::ReadWrite,
+            NativeConnectionMode::Write,
         );
         let reader = adapter.attach_ducklake_statement(
             Path::new("catalog.sqlite"),
@@ -862,7 +1441,7 @@ mod tests {
             let statement = adapter.attach_ducklake_statement(
                 Path::new("catalog.ducklake"),
                 Path::new("s3://bucket/prefix"),
-                NativeConnectionMode::ReadWrite,
+                NativeConnectionMode::Write,
             );
 
             assert!(statement.contains("DATA_PATH 's3://bucket/prefix'"));

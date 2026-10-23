@@ -17,8 +17,11 @@ external format.
   identity semantics is incompatible.
 - Readers must ignore unknown compatible columns.
 - Writers must preserve the long metric-point table shape for numeric metrics.
-- Metric query semantics remain last-write-wins by `(run_id, metric_key, step)`
-  using `ingested_at` as the ordering timestamp.
+- Native v5 metric queries preserve every observation, including repeated
+  `(run_id, metric_key, step)` tuples. Step order is ascending; equal-Step order
+  is unspecified. `ingested_at` does not select winners. The physical columns
+  are unchanged from v3, but the semantic change is incompatible: older Native
+  stores are rejected without migration. See [ADR 0019](adr/0019-append-only-metric-observations.md).
 - `metric_key_encoded` is an additive a2 partition column. It must remain a
   reversible RFC 3986 percent-encoding of `metric_key` for partition discovery.
 

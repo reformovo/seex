@@ -17,7 +17,7 @@ use crate::model::run::RunId;
     reason = "retained for crate-local reporter acceptance tests"
 )]
 const DEFAULT_METRIC_BUFFER_CAPACITY: usize = 65_536;
-const METRIC_BATCH_MAX_REPORTS: usize = 8_192;
+const METRIC_BATCH_MAX_REPORTS: usize = 16_384;
 const METRIC_BATCH_MAX_AGE: Duration = Duration::from_millis(10);
 const WRITER_MAX_RETRIES: usize = 5;
 const WRITER_INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(50);
@@ -1179,6 +1179,39 @@ mod tests {
             receiver.try_recv().is_ok(),
             "one report should remain after the size-capped batch"
         );
+    }
+
+    #[test]
+    fn collect_metric_batch_preserves_atomic_mapping_at_threshold() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        sender
+            .send(MetricBatch {
+                reports: (0..METRIC_BATCH_MAX_REPORTS).map(metric_report).collect(),
+            })
+            .unwrap();
+        sender
+            .send(MetricBatch {
+                reports: vec![metric_report(42)],
+            })
+            .unwrap();
+        let mut batch = vec![metric_report(0)];
+        let queued = AtomicUsize::new(METRIC_BATCH_MAX_REPORTS + 1);
+        collect_metric_batch(&receiver, &mut batch, &queued);
+        // Whole mapping batches stay atomic. The threshold can overshoot by
+        // at most one admitted mapping; it is not a strict point cap.
+        assert_eq!(batch.len(), METRIC_BATCH_MAX_REPORTS + 1);
+        assert_eq!(queued.load(Ordering::Acquire), 1);
+        assert_eq!(receiver.try_recv().unwrap().reports.len(), 1);
+    }
+
+    #[test]
+    fn collect_metric_batch_flushes_low_rate_input_without_filling_threshold() {
+        let (_sender, receiver) = mpsc::sync_channel(1);
+        let mut batch = vec![metric_report(0)];
+        let queued = AtomicUsize::new(0);
+        collect_metric_batch(&receiver, &mut batch, &queued);
+        assert_eq!(batch.len(), 1);
+        assert_eq!(queued.load(Ordering::Acquire), 0);
     }
 
     #[test]

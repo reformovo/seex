@@ -18,8 +18,14 @@ pub(in crate::desktop::app) fn detail_canvas(
     emphasized_run: Option<RunRef>,
     visible_runs: std::rc::Rc<[RunRef]>,
 ) -> impl gpui::Styled + gpui::IntoElement {
+    #[cfg(feature = "test-support")]
+    let painted_adapter = std::rc::Rc::clone(&adapter);
     canvas(
         move |bounds, window, _| {
+            #[cfg(feature = "test-support")]
+            {
+                adapter.borrow_mut().detail_prepaint = Some((bounds, window.content_mask().bounds));
+            }
             let resized = adapter.borrow().detail_bounds != Some(bounds);
             let prepared = adapter.borrow_mut().prepare(
                 &snapshot,
@@ -39,6 +45,8 @@ pub(in crate::desktop::app) fn detail_canvas(
             prepared
         },
         move |bounds, prepared, window, _| {
+            #[cfg(feature = "test-support")]
+            let path_count = prepared.paths.len();
             window.with_content_mask(Some(ContentMask { bounds }), |window| {
                 let grid = prepared.theme.colors.chart_grid;
                 for index in 0..=5 {
@@ -58,6 +66,11 @@ pub(in crate::desktop::app) fn detail_canvas(
                     window.paint_path(path, color);
                 }
             });
+            #[cfg(feature = "test-support")]
+            {
+                painted_adapter.borrow_mut().detail_painted =
+                    Some((revision, viewport, path_count));
+            }
         },
     )
 }

@@ -37,6 +37,11 @@ pub enum Error {
         maximum: usize,
     },
     MetricQueueFull,
+    CatalogWriteLockTimeout,
+    StorageFormatMismatch {
+        expected: i64,
+        found: i64,
+    },
     RunClosed {
         run_id: String,
     },
@@ -98,6 +103,13 @@ impl fmt::Display for Error {
                 )
             }
             Self::MetricQueueFull => formatter.write_str("Seex metric queue is full"),
+            Self::CatalogWriteLockTimeout => {
+                formatter.write_str("timed out waiting for the catalog write lock")
+            }
+            Self::StorageFormatMismatch { expected, found } => write!(
+                formatter,
+                "unsupported native storage format version {found}; expected {expected}"
+            ),
             Self::RunClosed { run_id } => write!(formatter, "Run is closed: {run_id}"),
             Self::StepRegression { cursor, attempted } => write!(
                 formatter,
@@ -141,6 +153,10 @@ impl From<crate::engine::EngineError> for Error {
             EngineError::DuplicateRunIdentity { run_id } => Self::DuplicateRunIdentity { run_id },
             EngineError::InvalidRunTransition { run_id, .. } => Self::InvalidRunState { run_id },
             EngineError::MetricQueueFull => Self::MetricQueueFull,
+            EngineError::CatalogWriteLockTimeout => Self::CatalogWriteLockTimeout,
+            EngineError::StorageFormatMismatch { expected, found } => {
+                Self::StorageFormatMismatch { expected, found }
+            }
             EngineError::InvalidMetricBatch { count } => Self::MetricMappingTooLarge {
                 count,
                 maximum: 8_192,

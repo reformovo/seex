@@ -1,8 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
 use std::path::{Path, PathBuf};
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::task::{Poll, Waker};
 use std::thread::{self, JoinHandle};
@@ -12,7 +13,7 @@ use std::thread::{self, JoinHandle};
 ))]
 use std::time::{Duration, Instant};
 
-#[cfg(all(feature = "desktop", target_os = "macos"))]
+#[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
 use seex::MetricKey;
 use seex::ReaderInterrupt;
 
@@ -26,6 +27,91 @@ use crate::domain::DataSourceId;
 /// Monotonically increasing identity for one read request.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Generation(pub u64);
+
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+#[derive(Clone, Debug)]
+pub(crate) struct ReadTraceEvent {
+    pub source_id: DataSourceId,
+    pub generation: Generation,
+    pub kind: ReadKind,
+    pub phase: &'static str,
+    pub at: std::time::Instant,
+}
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+#[derive(Default)]
+struct ReadTrace {
+    events: Vec<ReadTraceEvent>,
+    dropped: usize,
+}
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+static READ_TRACE: OnceLock<Mutex<ReadTrace>> = OnceLock::new();
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+static READ_TRACE_STRIDE: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+fn trace_selected(generation: Generation, stride: u64) -> bool {
+    stride != 0
+        && generation
+            .0
+            .wrapping_mul(0x9e3779b97f4a7c15)
+            .rotate_left(23)
+            .is_multiple_of(stride)
+}
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+pub(crate) fn reset_read_trace() {
+    let stride = std::env::var("SEEX_READ_TRACE_STRIDE")
+        .map_or(8, |s| s.parse::<u64>().expect("positive trace stride"));
+    assert!(stride > 0, "trace stride must be positive");
+    READ_TRACE_STRIDE.store(0, Ordering::Release);
+    *READ_TRACE
+        .get_or_init(|| Mutex::new(ReadTrace::default()))
+        .lock()
+        .unwrap() = ReadTrace {
+        events: Vec::with_capacity(4096),
+        dropped: 0,
+    };
+    READ_TRACE_STRIDE.store(stride, Ordering::Release);
+}
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+pub(crate) fn read_trace() -> (Vec<ReadTraceEvent>, usize, u64) {
+    let state = READ_TRACE.get().unwrap().lock().unwrap();
+    (
+        state.events.clone(),
+        state.dropped,
+        READ_TRACE_STRIDE.load(Ordering::Acquire),
+    )
+}
+#[cfg(all(feature = "test-support", target_os = "macos"))]
+pub(crate) fn trace_read(
+    source_id: &DataSourceId,
+    generation: Generation,
+    kind: ReadKind,
+    phase: &'static str,
+) {
+    if !trace_selected(generation, READ_TRACE_STRIDE.load(Ordering::Acquire)) {
+        return;
+    }
+    let mut state = READ_TRACE.get().unwrap().lock().unwrap();
+    if state.events.len() == 4096 {
+        state.dropped += 1;
+        return;
+    }
+    state.events.push(ReadTraceEvent {
+        source_id: source_id.clone(),
+        generation,
+        kind,
+        phase,
+        at: std::time::Instant::now(),
+    });
+}
+
+#[cfg(all(feature = "test-support", not(target_os = "macos")))]
+pub(crate) fn trace_read(
+    _source_id: &DataSourceId,
+    _generation: Generation,
+    _kind: ReadKind,
+    _phase: &'static str,
+) {
+}
 
 /// Independent result streams routed by source and panel coordinators.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -99,6 +185,7 @@ pub struct ReadEvent {
     pub source_id: DataSourceId,
     pub generation: Generation,
     pub kind: ReadKind,
+    pub metric_key: Option<String>,
     pub result: Result<ReadSnapshot, WorkerError>,
 }
 
@@ -110,6 +197,8 @@ pub struct WorkerClosed;
 #[derive(Default)]
 struct ReadEventState {
     queue: VecDeque<ReadEvent>,
+    #[cfg(feature = "test-support")]
+    peak: usize,
     waker: Option<Waker>,
     sender_closed: bool,
     receiver_alive: bool,
@@ -130,13 +219,41 @@ impl ReadEventChannel {
 struct ReadEventSender(Arc<ReadEventChannel>);
 
 impl ReadEventSender {
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    fn cancel(
+        &self,
+        source_id: &DataSourceId,
+        generation: Generation,
+        kind: ReadKind,
+        metric_key: &MetricKey,
+    ) {
+        let mut state = self.0.lock();
+        state.queue.retain(|event| {
+            event.source_id != *source_id
+                || event.kind != kind
+                || event.metric_key.as_deref() != Some(metric_key.as_str())
+                || event.generation > generation
+        });
+    }
+
     fn send(&self, event: ReadEvent) -> bool {
         let waker = {
             let mut state = self.0.lock();
             if !state.receiver_alive {
                 return false;
             }
+            #[cfg(feature = "test-support")]
+            trace_read(
+                &event.source_id,
+                event.generation,
+                event.kind,
+                "event_queued",
+            );
             state.queue.push_back(event);
+            #[cfg(feature = "test-support")]
+            {
+                state.peak = state.peak.max(state.queue.len());
+            }
             state.waker.take()
         };
         self.0.available.notify_one();
@@ -231,6 +348,44 @@ impl Drop for ReadEventReceiver {
     }
 }
 
+// Process-global pause for serialized opt-in Detail integration tests, before SQL.
+#[cfg(feature = "test-support")]
+static TEST_READ_PAUSE: (Mutex<(bool, usize)>, Condvar) = (Mutex::new((false, 0)), Condvar::new());
+#[cfg(all(test, feature = "test-support", target_os = "macos"))]
+pub(crate) struct TestReadPause;
+#[cfg(all(test, feature = "test-support", target_os = "macos"))]
+impl TestReadPause {
+    pub(crate) fn arm() -> Self {
+        let mut state = TEST_READ_PAUSE.0.lock().unwrap();
+        assert!(!state.0, "read pause already armed");
+        *state = (true, 0);
+        Self
+    }
+    pub(crate) fn entered(&self) -> usize {
+        TEST_READ_PAUSE.0.lock().unwrap().1
+    }
+}
+#[cfg(all(test, feature = "test-support", target_os = "macos"))]
+impl Drop for TestReadPause {
+    fn drop(&mut self) {
+        TEST_READ_PAUSE.0.lock().unwrap().0 = false;
+        TEST_READ_PAUSE.1.notify_all();
+    }
+}
+#[cfg(feature = "test-support")]
+fn pause_registered_read_for_test(kind: ReadKind) {
+    if kind != ReadKind::Detail {
+        return;
+    }
+    let mut state = TEST_READ_PAUSE.0.lock().unwrap();
+    if state.0 {
+        state.1 += 1;
+        while state.0 {
+            state = TEST_READ_PAUSE.1.wait(state).unwrap();
+        }
+    }
+}
+
 struct TaggedRequest {
     source_id: DataSourceId,
     generation: Generation,
@@ -246,7 +401,7 @@ struct RequestKey {
     metric_key: Option<String>,
 }
 
-#[cfg(all(feature = "desktop", target_os = "macos"))]
+#[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
 impl RequestKey {
     fn metric(source_id: DataSourceId, kind: ReadKind, metric_key: &MetricKey) -> Self {
         Self {
@@ -336,14 +491,14 @@ impl RequestRegistry {
     #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     fn cancel(&mut self, identity: &RequestIdentity) -> Vec<ReaderInterrupt> {
         let value = (identity.generation, identity.token);
-        if self
-            .latest
-            .get(&identity.key)
-            .is_some_and(|latest| value <= *latest)
-        {
+        let Some(latest) = self.latest.get(&identity.key).copied() else {
+            return Vec::new();
+        };
+        if value <= latest {
             return Vec::new();
         }
-        self.latest.insert(identity.key.clone(), value);
+        // Absence invalidates queued/running tokens without retaining a tombstone.
+        self.latest.remove(&identity.key);
         self.active
             .remove(&identity.key)
             .filter(|active| (active.generation, active.token) < value)
@@ -366,6 +521,13 @@ impl RequestRegistry {
             .is_some_and(|active| (active.generation, active.token) == value)
         {
             self.active.remove(&identity.key);
+        }
+    }
+
+    fn release(&mut self, identity: &RequestIdentity) {
+        let value = (identity.generation, identity.token);
+        if self.latest.get(&identity.key) == Some(&value) {
+            self.latest.remove(&identity.key);
         }
     }
 
@@ -394,8 +556,10 @@ impl Drop for RequestTicket {
 
 /// Handle for a bounded set of background readers with thread-owned sessions.
 pub struct ReadWorker {
-    requests: Option<Sender<TaggedRequest>>,
+    requests: Option<RequestSender>,
     events: Option<ReadEventReceiver>,
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    event_sender: Arc<ReadEventSender>,
     threads: Vec<JoinHandle<()>>,
     outstanding: Arc<AtomicUsize>,
     registry: Arc<Mutex<RequestRegistry>>,
@@ -470,19 +634,20 @@ impl ReadWorker {
         gate: Arc<ReadConcurrencyGate>,
     ) -> Result<Self, std::io::Error> {
         let sessions = Arc::new(ReadSessionPool::new(root_path.to_path_buf()));
-        let (request_tx, request_rx) = mpsc::channel();
+        let (request_tx, requests) = request_channel();
         let (event_tx, event_rx) = read_event_channel();
         let worker_count = gate.limit.min(MAX_WORKERS_PER_SOURCE);
         #[cfg(feature = "test-support")]
         let superseded_reads = Arc::new(AtomicUsize::new(0));
-        let requests = Arc::new(Mutex::new(RequestQueue {
-            receiver: request_rx,
-            pending: PendingRequests {
-                #[cfg(feature = "test-support")]
-                superseded_reads: Some(Arc::clone(&superseded_reads)),
-                ..PendingRequests::default()
-            },
-        }));
+        #[cfg(feature = "test-support")]
+        {
+            requests
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pending
+                .superseded_reads = Some(Arc::clone(&superseded_reads));
+        }
         let events = Arc::new(event_tx);
         let outstanding = Arc::new(AtomicUsize::new(0));
         let registry = Arc::new(Mutex::new(RequestRegistry::default()));
@@ -502,6 +667,8 @@ impl ReadWorker {
         Ok(Self {
             requests: Some(request_tx),
             events: Some(event_rx),
+            #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+            event_sender: Arc::clone(&events),
             threads,
             outstanding,
             registry,
@@ -533,11 +700,19 @@ impl ReadWorker {
             request,
             _ticket: ticket,
         };
-        let interrupts = self
+        #[cfg(feature = "test-support")]
+        trace_read(
+            &tagged.source_id,
+            generation,
+            tagged.request.kind(),
+            "enqueue",
+        );
+        // Serialize registration and enqueue with cancellation (registry -> queue).
+        let mut registry = self
             .registry
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .mark_latest(&RequestIdentity::new(&tagged));
+            .unwrap_or_else(|error| error.into_inner());
+        let interrupts = registry.mark_latest(&RequestIdentity::new(&tagged));
         if let Some(interrupts) = interrupts {
             for interrupt in interrupts {
                 interrupt.interrupt();
@@ -550,7 +725,7 @@ impl ReadWorker {
             .map_err(|_| WorkerClosed)
     }
 
-    #[cfg(all(feature = "desktop", target_os = "macos"))]
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
     pub(crate) fn cancel(
         &self,
         source_id: DataSourceId,
@@ -559,15 +734,33 @@ impl ReadWorker {
         metric_key: &MetricKey,
     ) {
         let identity = RequestIdentity {
-            key: RequestKey::metric(source_id, kind, metric_key),
+            key: RequestKey::metric(source_id.clone(), kind, metric_key),
             generation,
             token: RequestToken(self.next_token.fetch_add(1, Ordering::Relaxed)),
         };
+        #[cfg(feature = "test-support")]
+        trace_read(
+            &identity.key.source_id,
+            identity.generation,
+            identity.key.kind,
+            "cancel_called",
+        );
         let interrupts = self
             .registry
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .cancel(&identity);
+        self.event_sender
+            .cancel(&source_id, generation, kind, metric_key);
+        if let Some(sender) = &self.requests {
+            sender
+                .0
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .pending
+                .cancel(&identity);
+        }
         for interrupt in interrupts {
             interrupt.interrupt();
         }
@@ -576,6 +769,32 @@ impl ReadWorker {
     /// Transfers the event stream to an event-driven integration.
     pub fn take_event_receiver(&mut self) -> Option<ReadEventReceiver> {
         self.events.take()
+    }
+
+    /// Outstanding tickets, shared active permits, and queued completion events.
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn queue_depths(&self) -> [usize; 3] {
+        [
+            self.outstanding.load(Ordering::Acquire),
+            *self
+                .gate
+                .active
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+            self.event_sender.0.lock().queue.len(),
+        ]
+    }
+
+    /// Lifetime pending/active/completion high-water marks, not simultaneous depths.
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    pub(crate) fn queue_peaks(&self) -> [usize; 3] {
+        [
+            self.requests
+                .as_ref()
+                .map_or(0, |s| s.0.state.lock().unwrap().peak),
+            self.gate.peak.load(Ordering::Relaxed),
+            self.event_sender.0.lock().peak,
+        ]
     }
 
     #[cfg(feature = "test-support")]
@@ -707,6 +926,25 @@ impl PendingRequests {
         }
     }
 
+    #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+    fn cancel(&mut self, identity: &RequestIdentity) {
+        let retained = |request: &TaggedRequest| {
+            let candidate = RequestIdentity::new(request);
+            candidate.key != identity.key
+                || (candidate.generation, candidate.token) >= (identity.generation, identity.token)
+        };
+        if self
+            .discover
+            .as_ref()
+            .is_some_and(|request| !retained(request))
+        {
+            self.discover = None;
+        }
+        self.overview.retain(&retained);
+        self.detail.retain(&retained);
+        self.inspector.retain(retained);
+    }
+
     fn take_next(&mut self) -> Option<TaggedRequest> {
         self.discover
             .take()
@@ -757,33 +995,91 @@ fn push_curve_request(pending: &mut Vec<TaggedRequest>, tagged: TaggedRequest) -
     }
 }
 
-struct RequestQueue {
-    receiver: Receiver<TaggedRequest>,
+#[derive(Default)]
+struct RequestQueueState {
     pending: PendingRequests,
+    #[cfg(feature = "test-support")]
+    peak: usize,
+    closed: bool,
 }
 
-fn next_request(queue: &Mutex<RequestQueue>) -> Option<TaggedRequest> {
-    let mut queue = queue.lock().unwrap_or_else(|error| error.into_inner());
-    loop {
-        while let Ok(request) = queue.receiver.try_recv() {
-            queue.pending.push(request);
+#[derive(Default)]
+struct RequestQueue {
+    state: Mutex<RequestQueueState>,
+    available: Condvar,
+}
+
+struct RequestSender(Arc<RequestQueue>);
+
+fn request_channel() -> (RequestSender, Arc<RequestQueue>) {
+    let queue = Arc::new(RequestQueue::default());
+    (RequestSender(Arc::clone(&queue)), queue)
+}
+
+impl RequestSender {
+    fn send(&self, request: TaggedRequest) -> Result<(), WorkerClosed> {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if state.closed {
+            return Err(WorkerClosed);
         }
-        if let Some(request) = queue.pending.take_next() {
+        state.pending.push(request);
+        #[cfg(feature = "test-support")]
+        {
+            let pending = &state.pending;
+            let depth = usize::from(pending.discover.is_some())
+                + pending.overview.len()
+                + pending.detail.len()
+                + pending.inspector.len();
+            state.peak = state.peak.max(depth);
+        }
+        drop(state);
+        self.0.available.notify_one();
+        Ok(())
+    }
+}
+
+impl Drop for RequestSender {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.closed = true;
+        state.pending = PendingRequests::default();
+        drop(state);
+        self.0.available.notify_all();
+    }
+}
+
+fn next_request(queue: &RequestQueue) -> Option<TaggedRequest> {
+    let mut state = queue
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    loop {
+        if let Some(request) = state.pending.take_next() {
             return Some(request);
         }
-        let request = queue.receiver.recv().ok()?;
-        queue.pending.push(request);
+        if state.closed {
+            return None;
+        }
+        state = queue
+            .available
+            .wait(state)
+            .unwrap_or_else(|error| error.into_inner());
     }
 }
 
-fn request_is_superseded(queue: &Mutex<RequestQueue>, identity: &RequestIdentity) -> bool {
-    let Ok(mut queue) = queue.try_lock() else {
+fn request_is_superseded(queue: &RequestQueue, identity: &RequestIdentity) -> bool {
+    let Ok(state) = queue.state.try_lock() else {
         return false;
     };
-    while let Ok(request) = queue.receiver.try_recv() {
-        queue.pending.push(request);
-    }
-    queue.pending.has_newer(identity)
+    state.pending.has_newer(identity)
 }
 
 fn request_is_current(registry: &Mutex<RequestRegistry>, identity: &RequestIdentity) -> bool {
@@ -795,7 +1091,7 @@ fn request_is_current(registry: &Mutex<RequestRegistry>, identity: &RequestIdent
 
 fn worker_loop(
     sessions: Arc<ReadSessionPool>,
-    requests: Arc<Mutex<RequestQueue>>,
+    requests: Arc<RequestQueue>,
     events: Arc<ReadEventSender>,
     gate: Arc<ReadConcurrencyGate>,
     registry: Arc<Mutex<RequestRegistry>>,
@@ -806,6 +1102,13 @@ fn worker_loop(
         let _permit = gate.acquire();
         if request_is_superseded(&requests, &identity) || !request_is_current(&registry, &identity)
         {
+            #[cfg(feature = "test-support")]
+            trace_read(
+                &identity.key.source_id,
+                identity.generation,
+                identity.key.kind,
+                "discarded",
+            );
             continue;
         }
         let Some(event) = execute(
@@ -821,11 +1124,13 @@ fn worker_loop(
         ) else {
             continue;
         };
-        let registry = registry.lock().unwrap_or_else(|error| error.into_inner());
-        if !registry.is_current(&identity) {
+        let mut registry_guard = registry.lock().unwrap_or_else(|error| error.into_inner());
+        if !registry_guard.is_current(&identity) {
             continue;
         }
-        if !events.send(event) {
+        let delivered = events.send(event);
+        registry_guard.release(&identity);
+        if !delivered {
             return;
         }
     }
@@ -839,6 +1144,13 @@ fn execute(
     registry: &Mutex<RequestRegistry>,
     mut is_superseded: impl FnMut() -> bool,
 ) -> Option<ReadEvent> {
+    #[cfg(feature = "test-support")]
+    trace_read(
+        &identity.key.source_id,
+        identity.generation,
+        identity.key.kind,
+        "start",
+    );
     let TaggedRequest {
         source_id,
         generation,
@@ -863,8 +1175,30 @@ fn execute(
                 return Ok(None);
             }
             registered = true;
-            active_session.reader().refresh_diagnostics(generation.0);
-            let result = execute_read(active_session, &request, &mut is_superseded);
+            #[cfg(feature = "test-support")]
+            pause_registered_read_for_test(kind);
+            let result = execute_read(
+                active_session,
+                &request,
+                &mut is_superseded,
+                &mut |handle| {
+                    registry
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .begin(identity, vec![handle])
+                },
+                &mut |phase| {
+                    #[cfg(feature = "test-support")]
+                    trace_read(
+                        &identity.key.source_id,
+                        identity.generation,
+                        identity.key.kind,
+                        phase,
+                    );
+                    #[cfg(not(feature = "test-support"))]
+                    let _ = phase;
+                },
+            );
             if !retried_storage_error
                 && result.as_ref().is_err_and(is_retryable_storage_error)
                 && !is_superseded()
@@ -884,6 +1218,13 @@ fn execute(
             return result;
         }
     })();
+    #[cfg(feature = "test-support")]
+    trace_read(
+        &identity.key.source_id,
+        identity.generation,
+        identity.key.kind,
+        "finish",
+    );
     let current = request_is_current(registry, identity);
     if registered {
         registry
@@ -899,10 +1240,17 @@ fn execute(
         Ok(None) => return None,
         Err(error) => Err(error),
     };
+    let metric_key = match &request {
+        ReadRequest::Overview(request) => Some(request.selection.metric_key.as_str().to_owned()),
+        ReadRequest::Detail(request) => Some(request.selection.metric_key.as_str().to_owned()),
+        ReadRequest::Inspector(request) => Some(request.metric_key.as_str().to_owned()),
+        ReadRequest::Discover(_) => None,
+    };
     Some(ReadEvent {
         source_id,
         generation,
         kind,
+        metric_key,
         result,
     })
 }
@@ -911,17 +1259,23 @@ fn execute_read(
     session: &ReadSession,
     request: &ReadRequest,
     is_superseded: &mut impl FnMut() -> bool,
+    register: &mut dyn FnMut(ReaderInterrupt) -> bool,
+    trace: &mut dyn FnMut(&'static str),
 ) -> Result<Option<ReadSnapshot>, WorkerError> {
     Ok(Some(match request {
         ReadRequest::Discover(request) => ReadSnapshot::Catalog(session.discover(request)?),
         ReadRequest::Overview(request) => {
-            let Some(snapshot) = session.query_overview_until(request, is_superseded)? else {
+            let Some(snapshot) =
+                session.query_overview_until(request, is_superseded, register, trace)?
+            else {
                 return Ok(None);
             };
             ReadSnapshot::Overview(snapshot)
         }
         ReadRequest::Detail(request) => {
-            let Some(snapshot) = session.query_detail_until(request, is_superseded)? else {
+            let Some(snapshot) =
+                session.query_detail_until(request, is_superseded, register, trace)?
+            else {
                 return Ok(None);
             };
             ReadSnapshot::Detail(snapshot)
@@ -958,10 +1312,28 @@ mod tests {
 
     use super::{
         DataSourceId, DiscoveryRequest, Generation, OverviewRequest, PendingRequests,
-        ReadConcurrencyGate, ReadKind, ReadRequest, ReadSessionPool, ReadWorker, RequestIdentity,
-        RequestKey, RequestQueue, RequestRegistry, RequestTicket, RequestToken, TaggedRequest,
-        execute, next_request, read_event_channel, request_is_superseded,
+        ReadConcurrencyGate, ReadEvent, ReadKind, ReadRequest, ReadSessionPool, ReadWorker,
+        RequestIdentity, RequestKey, RequestRegistry, RequestTicket, RequestToken, TaggedRequest,
+        WorkerError, execute, next_request, read_event_channel, request_channel,
+        request_is_superseded,
     };
+
+    #[cfg(all(feature = "test-support", target_os = "macos"))]
+    #[test]
+    fn trace_sampling_is_generation_stable_and_disabled_at_zero() {
+        let selected: Vec<_> = (1..1024)
+            .map(|g| super::trace_selected(Generation(g), 8))
+            .collect();
+        assert!(selected.iter().any(|v| *v) && selected.iter().any(|v| !v));
+        for generation in 1..1024 {
+            assert!(!super::trace_selected(Generation(generation), 0));
+            assert!(super::trace_selected(Generation(generation), 1));
+            assert_eq!(
+                super::trace_selected(Generation(generation), 8),
+                selected[generation as usize - 1]
+            );
+        }
+    }
 
     fn overview_request(metric: &str) -> ReadRequest {
         ReadRequest::Overview(OverviewRequest {
@@ -977,8 +1349,8 @@ mod tests {
 
     #[test]
     fn dropping_worker_does_not_wait_for_running_thread() {
-        let (request_tx, _request_rx) = mpsc::channel();
-        let (_event_tx, event_rx) = read_event_channel();
+        let (request_tx, _request_rx) = request_channel();
+        let (event_tx, event_rx) = read_event_channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::channel();
         let thread = thread::spawn(move || {
@@ -988,6 +1360,8 @@ mod tests {
         let worker = ReadWorker {
             requests: Some(request_tx),
             events: Some(event_rx),
+            #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+            event_sender: Arc::new(event_tx),
             threads: vec![thread],
             outstanding: Arc::new(AtomicUsize::new(1)),
             registry: Arc::new(Mutex::new(RequestRegistry::default())),
@@ -1032,6 +1406,118 @@ mod tests {
         );
     }
 
+    /// Boundary probe, not a desktop/SQL benchmark: pause dequeue while the
+    /// viewport advances, then release it and discard cancelled identities.
+    #[test]
+    fn ten_thousand_metric_scroll_keeps_only_retained_pending_requests() {
+        const METRICS: usize = 10_000;
+        const WINDOW: usize = 6; // Four visible rows plus two Overview prefetch rows.
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let mut pending = PendingRequests::default();
+        let mut registry = RequestRegistry::default();
+        let mut retained = Vec::<RequestIdentity>::new();
+        let mut generation = 0;
+        let mut peak_pending = 0;
+        let started = std::time::Instant::now();
+        // Visit every identity, jump to tail, reverse, and return to the head.
+        let starts = (0..METRICS)
+            .step_by(WINDOW)
+            .chain([METRICS - WINDOW, METRICS / 2, 0]);
+        for start in starts {
+            for identity in retained.drain(..) {
+                let cancellation = RequestIdentity {
+                    key: identity.key,
+                    generation: identity.generation,
+                    token: RequestToken(identity.token.0 + 1),
+                };
+                assert!(registry.cancel(&cancellation).is_empty());
+                pending.cancel(&cancellation);
+            }
+            for metric in start..(start + WINDOW).min(METRICS) {
+                generation += 1;
+                let request = TaggedRequest {
+                    source_id: DataSourceId::new("source").unwrap(),
+                    generation: Generation(generation),
+                    token: RequestToken(generation * 2),
+                    request: overview_request(&format!("metric-{metric}")),
+                    _ticket: RequestTicket::tracked(Arc::clone(&outstanding)),
+                };
+                let identity = RequestIdentity::new(&request);
+                registry.mark_latest(&identity);
+                pending.push(request);
+                retained.push(identity);
+            }
+            peak_pending = peak_pending.max(pending.overview.len());
+            assert!(retained.len() <= WINDOW);
+            assert!(registry.active.is_empty()); // Controlled reader is paused.
+        }
+        let enqueue_elapsed = started.elapsed();
+        assert_eq!(peak_pending, WINDOW);
+        assert_eq!(outstanding.load(Ordering::Acquire), WINDOW);
+        assert_eq!(registry.latest.len(), WINDOW);
+        let mut executed = 0;
+        let mut cancelled = 0;
+        while let Some(request) = pending.take_next() {
+            let identity = RequestIdentity::new(&request);
+            if registry.is_current(&identity) {
+                assert!(registry.begin(&identity, Vec::new()));
+                assert_eq!(registry.active.len(), 1);
+                registry.finish(&identity);
+                registry.release(&identity);
+                executed += 1;
+            } else {
+                cancelled += 1;
+            }
+        }
+        assert_eq!((executed, cancelled), (WINDOW, 0));
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
+        assert!(registry.active.is_empty());
+        // Cancellation tombstones and completed identities are released on drain.
+        assert!(registry.latest.is_empty());
+        eprintln!(
+            "worker boundary: metrics={METRICS} window={WINDOW} peak_pending={peak_pending} \
+             active_peak=1 executed={executed} cancelled={cancelled} drained_pending=0 \
+             retained_registry={} enqueue_cancel_ms={:.3}; no curve payloads allocated",
+            registry.latest.len(),
+            enqueue_elapsed.as_secs_f64() * 1_000.,
+        );
+    }
+
+    #[test]
+    fn completed_event_queue_grows_when_consumer_is_paused() {
+        let (sender, receiver) = read_event_channel();
+        for generation in 0..10_000 {
+            assert!(sender.send(super::ReadEvent {
+                source_id: DataSourceId::new("source").unwrap(),
+                generation: Generation(generation),
+                kind: ReadKind::Overview,
+                metric_key: Some(format!("metric-{generation}")),
+                result: Err(super::WorkerError::SessionUnavailable),
+            }));
+        }
+        let state = receiver.0.lock();
+        assert_eq!(state.queue.len(), 10_000);
+        #[cfg(feature = "test-support")]
+        assert_eq!(state.peak, 10_000);
+        drop(state);
+        for generation in 0..10_000 {
+            sender.cancel(
+                &DataSourceId::new("source").unwrap(),
+                Generation(generation),
+                ReadKind::Overview,
+                &MetricKey::from_string(format!("metric-{generation}")),
+            );
+        }
+        let state = receiver.0.lock();
+        assert!(state.queue.is_empty());
+        #[cfg(feature = "test-support")]
+        assert_eq!(
+            state.peak, 10_000,
+            "draining must not erase the high-water mark"
+        );
+        // Error-only events deliberately measure slots, not curve points/RSS.
+    }
+
     #[test]
     fn pending_curve_requests_coalesce_per_metric_panel() {
         #[cfg(feature = "test-support")]
@@ -1068,7 +1554,7 @@ mod tests {
 
     #[test]
     fn request_queue_serves_distinct_metrics_to_parallel_consumers() {
-        let (request_tx, request_rx) = mpsc::channel();
+        let (request_tx, queue) = request_channel();
         for (generation, metric) in [(1, "loss"), (2, "accuracy")] {
             request_tx
                 .send(TaggedRequest {
@@ -1080,10 +1566,8 @@ mod tests {
                 })
                 .expect("test request queue should remain open");
         }
-        let queue = Arc::new(Mutex::new(RequestQueue {
-            receiver: request_rx,
-            pending: PendingRequests::default(),
-        }));
+        #[cfg(feature = "test-support")]
+        assert_eq!(queue.state.lock().unwrap().peak, 2);
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let (acquired_tx, acquired_rx) = mpsc::channel();
         let consumers = (0..2)
@@ -1122,7 +1606,7 @@ mod tests {
 
     #[test]
     fn queued_newer_generation_supersedes_before_execution() {
-        let (request_tx, request_rx) = mpsc::channel();
+        let (request_tx, queue) = request_channel();
         let current = TaggedRequest {
             source_id: DataSourceId::new("source").expect("test alias should be valid"),
             generation: Generation(1),
@@ -1140,12 +1624,9 @@ mod tests {
                 _ticket: RequestTicket::default(),
             })
             .expect("test queue should remain open");
-        let queue = Mutex::new(RequestQueue {
-            receiver: request_rx,
-            pending: PendingRequests::default(),
-        });
 
         assert!(request_is_superseded(&queue, &identity));
+        queue.state.lock().unwrap().pending.cancel(&identity);
         assert_eq!(
             next_request(&queue).map(|request| request.generation),
             Some(Generation(2))
@@ -1174,6 +1655,321 @@ mod tests {
         assert!(registry.cancel(&cancellation).is_empty());
         assert!(!registry.is_current(&identity));
         assert!(registry.active.is_empty());
+        assert!(registry.latest.is_empty());
+    }
+
+    #[test]
+    fn ten_thousand_scroll_cancel_drain_keeps_worker_queues_bounded() {
+        let root = tempfile::tempdir().unwrap();
+        let gate = Arc::new(ReadConcurrencyGate::new(1));
+        let pause = gate.acquire();
+        let worker = ReadWorker::spawn_with_gate(root.path(), Arc::clone(&gate)).unwrap();
+        let source = DataSourceId::new("source").unwrap();
+        for metric in 0..10_000 {
+            let name = format!("metric-{metric}");
+            let generation = Generation(metric as u64 + 1);
+            worker
+                .submit(source.clone(), generation, overview_request(&name))
+                .unwrap();
+            worker.event_sender.send(ReadEvent {
+                source_id: source.clone(),
+                generation,
+                kind: ReadKind::Overview,
+                metric_key: Some(name.clone()),
+                result: Err(WorkerError::SessionUnavailable),
+            });
+            worker.cancel(
+                source.clone(),
+                generation,
+                ReadKind::Overview,
+                &MetricKey::from_string(name),
+            );
+            let request_depth = worker.outstanding.load(Ordering::Acquire);
+            let event_depth = worker.event_sender.0.lock().queue.len();
+            assert!(request_depth <= 1, "request depth grew to {request_depth}");
+            assert_eq!(
+                event_depth, 0,
+                "cancelled event remained at iteration {metric}"
+            );
+        }
+        drop(pause);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while worker.outstanding.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled work did not drain"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(worker.event_sender.0.lock().queue.is_empty());
+        assert!(worker.registry.lock().unwrap().latest.is_empty());
+    }
+
+    #[test]
+    fn cancelled_worker_transport_drains_without_opening_storage() {
+        let root = tempfile::tempdir().unwrap(); // No native store: no SQL should execute.
+        let gate = Arc::new(ReadConcurrencyGate::new(1));
+        let pause = gate.acquire();
+        let worker = ReadWorker::spawn_with_gate(root.path(), Arc::clone(&gate)).unwrap();
+        let source = DataSourceId::new("source").unwrap();
+        for metric in 0..10_000 {
+            let name = format!("metric-{metric}");
+            worker
+                .submit(source.clone(), Generation(metric), overview_request(&name))
+                .unwrap();
+            worker.cancel(
+                source.clone(),
+                Generation(metric),
+                ReadKind::Overview,
+                &MetricKey::from_string(name),
+            );
+            assert!(worker.registry.lock().unwrap().latest.is_empty());
+            assert!(worker.outstanding.load(Ordering::Acquire) <= 1);
+        }
+        // At most one request has left the cancellable queue and is gate-blocked.
+        assert!(worker.outstanding.load(Ordering::Acquire) <= 1);
+        drop(pause);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while worker.outstanding.load(Ordering::Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled transport did not drain"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(worker.events.as_ref().unwrap().0.lock().queue.is_empty());
+        assert!(worker.registry.lock().unwrap().active.is_empty());
+    }
+
+    #[test]
+    fn worker_publishes_failure_before_releasing_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let worker = ReadWorker::spawn(root.path()).unwrap();
+        worker
+            .submit(
+                DataSourceId::new("source").unwrap(),
+                Generation(1),
+                overview_request("loss"),
+            )
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let mut events = worker.events.as_ref().unwrap().0.lock();
+            if let Some(event) = events.queue.pop_front() {
+                assert_eq!(event.generation, Generation(1));
+                assert!(event.result.is_err()); // Empty directory, no native store.
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker did not publish failure"
+            );
+            drop(events);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(worker.registry.lock().unwrap().latest.is_empty());
+    }
+
+    #[test]
+    fn completed_request_releases_registry_identity() {
+        let identity = RequestIdentity {
+            key: RequestKey {
+                source_id: DataSourceId::new("source").unwrap(),
+                kind: ReadKind::Overview,
+                metric_key: Some("loss".to_owned()),
+            },
+            generation: Generation(1),
+            token: RequestToken(1),
+        };
+        let mut registry = RequestRegistry::default();
+        registry.mark_latest(&identity);
+        assert!(registry.begin(&identity, Vec::new()));
+        registry.finish(&identity);
+        // Retry teardown must not invalidate the identity before publication.
+        assert!(registry.is_current(&identity));
+        let newer = RequestIdentity {
+            key: identity.key.clone(),
+            generation: Generation(2),
+            token: RequestToken(2),
+        };
+        registry.mark_latest(&newer);
+        registry.release(&identity);
+        registry.cancel(&identity); // Delayed cancellation must preserve newer work.
+        assert!(registry.is_current(&newer));
+        registry.release(&newer);
+        assert!(registry.latest.is_empty());
+        assert!(registry.active.is_empty());
+    }
+
+    #[test]
+    fn cancel_executing_sql_releases_worker_slot_for_queued_curve() {
+        let root = tempfile::tempdir().unwrap();
+        let client = seex::Client::builder(root.path()).open().unwrap();
+        let run = client
+            .start_run(seex::RunOptions::new("project").id("worker-sql-probe"))
+            .unwrap();
+        run.log_with(
+            [("loss", 1.), ("next", 2.)],
+            seex::LogOptions::new().step(0),
+        )
+        .unwrap();
+        run.finish().unwrap();
+        client.shutdown().unwrap();
+        let source = DataSourceId::new("source").unwrap();
+        let request = |metric| {
+            let mut request = overview_request(metric);
+            if let ReadRequest::Overview(curve) = &mut request {
+                curve.selection.runs.push(crate::domain::RunRef::new(
+                    source.clone(),
+                    seex::ProjectId::from_string("project"),
+                    run.run_id().clone(),
+                ));
+            }
+            request
+        };
+        let mut probe = seex::Reader::arm_executing_query_probe(
+            run.run_id().clone(),
+            MetricKey::from_string("loss"),
+        );
+        let gate = Arc::new(ReadConcurrencyGate::new(1));
+        let mut worker = ReadWorker::spawn_with_gate(root.path(), gate.clone()).unwrap();
+        worker
+            .submit(source.clone(), Generation(1), request("loss"))
+            .unwrap();
+        probe.wait_until_running(Duration::from_secs(10)).unwrap();
+        worker
+            .submit(source.clone(), Generation(2), request("next"))
+            .unwrap();
+        assert_eq!(worker.outstanding.load(Ordering::Acquire), 2);
+        assert_eq!(*gate.active.lock().unwrap(), 1);
+        worker.cancel(
+            source.clone(),
+            Generation(1),
+            ReadKind::Overview,
+            &MetricKey::from_string("loss"),
+        );
+        // This must be the worker interrupt, not the guard's failure-cleanup path.
+        assert!(probe.wait_interrupted(Duration::from_secs(10)).unwrap());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let idle = worker.outstanding.load(Ordering::Acquire) == 0
+                && *gate.active.lock().unwrap() == 0;
+            if idle && worker.event_sender.0.lock().queue.len() == 1 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "queued curve did not complete"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        let event = worker.event_sender.0.lock().queue.pop_front().unwrap();
+        assert_eq!(event.generation, Generation(2));
+        assert_eq!(event.metric_key.as_deref(), Some("next"));
+        let super::ReadSnapshot::Overview(snapshot) = event.result.unwrap() else {
+            panic!("expected curve");
+        };
+        assert_eq!(snapshot.series[0].returned_point_count, 1);
+        assert!(
+            snapshot.series[0]
+                .chart_series
+                .as_ref()
+                .is_some_and(|s| !s.points().is_empty())
+        );
+        assert!(worker.registry.lock().unwrap().active.is_empty());
+        assert!(worker.registry.lock().unwrap().latest.is_empty());
+        assert!(worker.event_sender.0.lock().queue.is_empty());
+        worker.requests.take();
+        for reader in worker.threads.drain(..) {
+            reader.join().unwrap();
+        }
+        drop(probe);
+    }
+
+    #[test]
+    fn cancel_registered_read_suppresses_completion_and_preserves_return_request() {
+        let root = tempfile::tempdir().unwrap();
+        let client = seex::Client::builder(root.path()).open().unwrap();
+        let run = client
+            .start_run(seex::RunOptions::new("project").id("run"))
+            .unwrap();
+        run.log_with([("loss", 1.)], seex::LogOptions::new().step(0))
+            .unwrap();
+        run.finish().unwrap();
+        client.shutdown().unwrap();
+        let sessions = ReadSessionPool::new(root.path().to_owned());
+        let source = DataSourceId::new("source").unwrap();
+        let mut request = overview_request("loss");
+        if let ReadRequest::Overview(request) = &mut request {
+            request.selection.runs.push(crate::domain::RunRef::new(
+                source.clone(),
+                seex::ProjectId::from_string("project"),
+                run.run_id().clone(),
+            ));
+        }
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let tagged = TaggedRequest {
+            source_id: source.clone(),
+            generation: Generation(1),
+            token: RequestToken(1),
+            request: request.clone(),
+            _ticket: RequestTicket::tracked(Arc::clone(&outstanding)),
+        };
+        let old = RequestIdentity::new(&tagged);
+        let cancel = RequestIdentity {
+            key: old.key.clone(),
+            generation: old.generation,
+            token: RequestToken(2),
+        };
+        let returned = TaggedRequest {
+            source_id: source,
+            generation: Generation(2),
+            token: RequestToken(3),
+            request,
+            _ticket: RequestTicket::default(),
+        };
+        let current = RequestIdentity::new(&returned);
+        let registry = Mutex::new(RequestRegistry::default());
+        registry.lock().unwrap().mark_latest(&old);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        thread::scope(|scope| {
+            let registry = &registry;
+            let sessions = &sessions;
+            let reader = scope.spawn(move || {
+                let mut paused = false;
+                execute(sessions, &mut None, tagged, &old, registry, || {
+                    if !paused {
+                        paused = true;
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                    }
+                    !super::request_is_current(registry, &old)
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert_eq!(registry.lock().unwrap().active.len(), 1);
+            for interrupt in registry.lock().unwrap().cancel(&cancel) {
+                interrupt.interrupt();
+            }
+            registry.lock().unwrap().mark_latest(&current);
+            release_tx.send(()).unwrap();
+            assert!(reader.join().unwrap().is_none());
+        });
+        assert_eq!(outstanding.load(Ordering::Acquire), 0);
+        assert!(registry.lock().unwrap().active.is_empty());
+        assert!(registry.lock().unwrap().is_current(&current));
+        let event = execute(&sessions, &mut None, returned, &current, &registry, || {
+            false
+        })
+        .unwrap();
+        assert_eq!(event.generation, Generation(2));
+        let super::ReadSnapshot::Overview(snapshot) = event.result.unwrap() else {
+            panic!("expected Overview");
+        };
+        assert_eq!(snapshot.series.len(), 1);
+        registry.lock().unwrap().release(&current);
+        assert!(registry.lock().unwrap().latest.is_empty());
     }
 
     #[test]
@@ -1262,11 +2058,13 @@ mod tests {
 
     #[test]
     fn event_receiver_can_only_be_taken_once() {
-        let (request_tx, _request_rx) = mpsc::channel();
-        let (_event_tx, event_rx) = read_event_channel();
+        let (request_tx, _request_rx) = request_channel();
+        let (event_tx, event_rx) = read_event_channel();
         let mut worker = ReadWorker {
             requests: Some(request_tx),
             events: Some(event_rx),
+            #[cfg(any(test, all(feature = "desktop", target_os = "macos")))]
+            event_sender: Arc::new(event_tx),
             threads: Vec::new(),
             outstanding: Arc::new(AtomicUsize::new(0)),
             registry: Arc::new(Mutex::new(RequestRegistry::default())),

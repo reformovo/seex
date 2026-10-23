@@ -182,6 +182,421 @@ fn scroll_metric_tracks(
     wait_for_benchmark(window, cx, active_curves_are_settled);
 }
 
+// TestPlatform state/readiness diagnostic, not a native frame/RSS measurement.
+fn scroll_and_drain(
+    window: WindowHandle<ViewerApp>,
+    cx: &mut VisualTestContext,
+    target: usize,
+    tail: bool,
+    extra_points: usize,
+) {
+    window
+        .update(cx, |viewer, _, cx| {
+            viewer.workspace.update(cx, |workspace, cx| {
+                workspace.metric_scroll.scroll_to(ListOffset {
+                    item_ix: target,
+                    offset_in_item: px(0.),
+                });
+                cx.notify();
+            });
+        })
+        .unwrap();
+    let started = Instant::now();
+    let mut peak = [0; 3];
+    loop {
+        cx.run_until_parked();
+        let ready = window.read_with(cx, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let active = snapshot.views.active();
+            let workspace = viewer.workspace.read(cx);
+            let viewport = workspace.track_viewport.borrow();
+            let depths = viewer.session.read(cx).sources.queue_depths();
+            for i in 0..3 { peak[i] = peak[i].max(depths[i]); }
+            let arrived = viewport.visible.contains(&target)
+                && (!tail || viewport.visible.end == active.panels.len());
+            let mut counts = [0; 3];
+            let mut covered = true;
+            let mut pending = false;
+            for (index, panel) in active.panels.iter().enumerate() {
+                let retained = viewport.overview.contains(&index)
+                    || active.selected_panel_id.as_ref() == Some(&panel.panel_id);
+                covered &= !retained || panel.overview.as_ref().is_some_and(|s| {
+                    active.runs.iter().all(|r| s.series.iter().any(|c| &c.run_ref == r))
+                });
+                pending |= panel.is_pending(ReadKind::Overview) || panel.is_pending(ReadKind::Detail);
+                assert!(panel.source_errors.is_empty(), "panel read failed");
+                for (snapshot, allowed, slot) in [(&panel.overview, retained, 0),
+                    (&panel.detail, viewport.visible.contains(&index), 1)] {
+                    if let Some(snapshot) = snapshot {
+                        assert!(allowed, "offscreen payload retained at {index}");
+                        counts[slot] += 1;
+                        counts[2] += snapshot.series.iter().filter_map(|s| s.chart_series.as_ref())
+                            .map(|s| s.points().len()).sum::<usize>();
+                    }
+                }
+            }
+            let limit = viewport.overview.len() + 1;
+            assert!(counts[0] <= limit && counts[1] <= viewport.visible.len());
+            assert!(counts[2] <= limit + viewport.visible.len() + extra_points, "fixture exceeded residency bound");
+            let ready = arrived && covered && !pending && depths == [0; 3];
+            assert!(ready || started.elapsed() < Duration::from_secs(15), "scroll/drain timeout target={target} visible={:?} arrived={arrived} covered={covered} pending={pending} depths={depths:?} counts={counts:?}", viewport.visible);
+            if ready { println!("SEEX_SCROLL_DRAIN target={target} visible={:?} ms={} view_payloads_points={counts:?} sampled_peak={peak:?}", viewport.visible, started.elapsed().as_millis()); }
+            ready
+        }).unwrap();
+        if ready {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "scroll/drain timeout target={target} peak={peak:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[gpui::test]
+#[ignore = "diagnostic overview scheduling profile"]
+fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
+    if cfg!(debug_assertions) {
+        panic!("requires --release");
+    }
+    let metric_count = benchmark_count("SEEX_DESKTOP_PROFILE_METRICS", 100);
+    let started = Instant::now();
+    let (root, project_id, run_id) = fixture_with_runs(metric_count, 1);
+    println!(
+        "SEEX_STAGE fixture metrics={metric_count} ms={}",
+        started.elapsed().as_millis()
+    );
+    cx.executor().allow_parking();
+    let (window, mut visual) = open_viewer_with_configured_source(cx, root.path().to_owned());
+    visual.simulate_resize(size(px(2_560.), px(1_800.)));
+    wait_for_viewer(window, &visual, source_catalog_loaded);
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            let source_id = first_source_id(viewer, cx);
+            viewer.toggle_run(RunRef::new(source_id, project_id, run_id), cx);
+        })
+        .expect("Viewer should remain open");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        visual.run_until_parked();
+        let available = window
+            .read_with(&visual, |viewer, cx| viewer.available_metric_keys(cx).len())
+            .unwrap();
+        if available == metric_count {
+            break;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "discovery did not settle: expected={metric_count} available={available}; no panel selection performed"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    println!("SEEX_STAGE discovery_ready metrics={metric_count}");
+    super::super::workspace::reset_schedule_diagnostics();
+    let selected = Instant::now();
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            viewer.dispatch_workbench_command(
+                WorkbenchCommand::SelectMetrics(viewer.available_metric_keys(cx)),
+                cx,
+            );
+        })
+        .expect("Viewer should remain open");
+    println!(
+        "SEEX_STAGE selection metrics={metric_count} ms={}",
+        selected.elapsed().as_millis()
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        visual.run_until_parked();
+        let state = window
+            .read_with(&visual, |viewer, cx| {
+                let snapshot = viewer.session_snapshot(cx);
+                let active = snapshot.views.active();
+                let visible = viewer
+                    .workspace
+                    .read(cx)
+                    .track_viewport
+                    .borrow()
+                    .visible
+                    .clone();
+                (
+                    active.panels.len(),
+                    visible.len(),
+                    active.panels[visible]
+                        .iter()
+                        .filter(|panel| panel.overview.is_some())
+                        .count(),
+                    active
+                        .panels
+                        .iter()
+                        .filter(|panel| panel.is_pending(ReadKind::Overview))
+                        .count(),
+                    active
+                        .panels
+                        .iter()
+                        .filter(|panel| !panel.source_errors.is_empty())
+                        .count(),
+                )
+            })
+            .unwrap();
+        let diagnostics = super::super::workspace::schedule_diagnostics();
+        if state.0 == metric_count && state.1 > 0 && state.1 == state.2 {
+            println!(
+                "SEEX_STAGE settled metrics={metric_count} since_selection_ms={} state={state:?} diagnostics={diagnostics:?}",
+                selected.elapsed().as_millis()
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Overview did not settle: state={state:?} diagnostics={diagnostics:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for (target, tail) in [
+        (metric_count - 1, true),
+        (metric_count / 2, false),
+        (0, false),
+    ] {
+        scroll_and_drain(window, &mut visual, target, tail, 0);
+    }
+}
+
+#[gpui::test]
+#[ignore = "diagnostic cancelled Detail reversal integration profile"]
+fn cancelled_detail_reversal_integration(cx: &mut TestAppContext) {
+    if cfg!(debug_assertions) {
+        panic!("requires --release");
+    }
+    let metric_count = benchmark_count("SEEX_DETAIL_REVERSAL_METRICS", 128);
+    assert!(
+        metric_count >= 128,
+        "needs separated head/middle/tail windows"
+    );
+    let root = tempfile::tempdir().unwrap();
+    let client = seex::Client::builder(root.path()).open().unwrap();
+    let run = client
+        .start_run(seex::RunOptions::new("project").id("run"))
+        .unwrap();
+    for start in (0..metric_count).step_by(1024) {
+        run.log_with(
+            (start..(start + 1024).min(metric_count)).map(|i| (format!("metric-{i:04}"), 1.)),
+            seex::LogOptions::new().step(0),
+        )
+        .unwrap();
+    }
+    for step in 1..4096 {
+        run.log_with(
+            [("metric-0000", (step as f64).sin())],
+            seex::LogOptions::new().step(step),
+        )
+        .unwrap();
+    }
+    run.finish().unwrap();
+    client.shutdown().unwrap();
+    let project_id = seex::ProjectId::from_string("project");
+    let run_id = run.run_id().clone();
+    cx.executor().allow_parking();
+    let (window, mut visual) = open_viewer_with_configured_source(cx, root.path().to_owned());
+    visual.simulate_resize(size(px(2_560.), px(1_800.)));
+    wait_for_viewer(window, &visual, source_catalog_loaded);
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            let source_id = first_source_id(viewer, cx);
+            viewer.toggle_run(RunRef::new(source_id, project_id, run_id), cx);
+        })
+        .unwrap();
+    wait_for_benchmark(window, &visual, |viewer, cx| {
+        viewer.available_metric_keys(cx).len() == metric_count
+    });
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            viewer.dispatch_workbench_command(
+                WorkbenchCommand::SelectMetrics(viewer.available_metric_keys(cx)),
+                cx,
+            );
+            viewer.select_metric(seex::MetricKey::from_string("metric-0000"), cx);
+        })
+        .unwrap();
+    wait_for_benchmark(window, &visual, |viewer, cx| {
+        let snapshot = viewer.session_snapshot(cx);
+        let active = snapshot.views.active();
+        let dense = active.panels[0].overview.as_ref();
+        active.panels[..33]
+            .iter()
+            .all(|panel| panel.overview.is_some())
+            && dense.is_some_and(|s| s.series[0].downsampled())
+    });
+    let pause = crate::data::worker::TestReadPause::arm();
+    window
+        .update(&mut visual, |viewer, _, cx| {
+            zoom_session_navigation(viewer, 2., cx);
+        })
+        .unwrap();
+    wait_for_viewer(window, &visual, |_, _| pause.entered() > 0);
+    let old_generation = window
+        .read_with(&visual, |viewer, cx| {
+            viewer.session_snapshot(cx).views.active().panels[0]
+                .detail_generation
+                .unwrap()
+        })
+        .unwrap();
+    for target in [metric_count - 1, metric_count / 2, 0, metric_count - 1, 0] {
+        window
+            .update(&mut visual, |viewer, _, cx| {
+                viewer.workspace.update(cx, |workspace, cx| {
+                    workspace.metric_scroll.scroll_to(ListOffset {
+                        item_ix: target,
+                        offset_in_item: px(0.),
+                    });
+                    cx.notify();
+                });
+            })
+            .unwrap();
+        visual.run_until_parked();
+        window
+            .read_with(&visual, |viewer, cx| {
+                let workspace = viewer.workspace.read(cx);
+                let viewport = workspace.track_viewport.borrow();
+                assert!(viewport.visible.contains(&target));
+                let snapshot = viewer.session_snapshot(cx);
+                let active = snapshot.views.active();
+                if target != 0 {
+                    assert!(active.panels[0].detail_generation.is_none());
+                    assert!(active.panels[0].detail.is_none());
+                }
+                let mut payloads = 0;
+                let mut points = 0;
+                for (index, panel) in active.panels.iter().enumerate() {
+                    let retained = viewport.overview.contains(&index)
+                        || active.selected_panel_id.as_ref() == Some(&panel.panel_id);
+                    for (curve, allowed) in [(&panel.overview, retained),
+                        (&panel.detail, viewport.visible.contains(&index))] {
+                        if let Some(curve) = curve {
+                            assert!(allowed, "offscreen View payload at {index}");
+                            payloads += 1;
+                            points += curve.series.iter().filter_map(|c| c.chart_series.as_ref())
+                                .map(|s| s.points().len()).sum::<usize>();
+                        }
+                    }
+                }
+                let max_payloads = viewport.overview.len() + 1 + viewport.visible.len();
+                assert!(payloads <= max_payloads);
+                // Only the first metric is dense; at most Overview + Detail for it.
+                assert!(points <= max_payloads + 2 * seex::MAX_CHART_POINTS);
+                println!("SEEX_REVERSAL_WINDOW metrics={metric_count} target={target} view_payloads={payloads} view_points={points}");
+            })
+            .unwrap();
+    }
+    let entered = pause.entered();
+    drop(pause);
+    let started = Instant::now();
+    wait_for_viewer(window, &visual, |viewer, cx| {
+        let snapshot = viewer.session_snapshot(cx);
+        let pending = snapshot
+            .views
+            .active()
+            .panels
+            .iter()
+            .any(|p| p.is_pending(ReadKind::Detail) || p.is_pending(ReadKind::Overview));
+        !pending && viewer.session.read(cx).sources.queue_depths() == [0; 3]
+    });
+    window
+        .read_with(&visual, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let active = snapshot.views.active();
+            let panel = &active.panels[0];
+            assert!(
+                panel.detail_revision > old_generation.0,
+                "cancelled generation was accepted"
+            );
+            let detail = panel
+                .detail
+                .as_ref()
+                .expect("returned dense metric needs Detail");
+            let series = detail.series[0].chart_series.as_ref().unwrap();
+            assert!(!series.points().is_empty());
+            let failures = active
+                .panels
+                .iter()
+                .filter(|p| !p.source_errors.is_empty())
+                .count();
+            assert_eq!(failures, 0);
+            let workspace = viewer.workspace.read(cx);
+            let viewport = workspace.track_viewport.borrow();
+            let mut payloads = 0;
+            let mut points = 0;
+            for (index, panel) in active.panels.iter().enumerate() {
+                let retained = viewport.overview.contains(&index)
+                    || active.selected_panel_id.as_ref() == Some(&panel.panel_id);
+                for (curve, allowed) in [(&panel.overview, retained),
+                    (&panel.detail, viewport.visible.contains(&index))] {
+                    if let Some(curve) = curve {
+                        assert!(allowed, "offscreen payload after drain at {index}");
+                        payloads += 1;
+                        points += curve.series.iter().filter_map(|c| c.chart_series.as_ref())
+                            .map(|s| s.points().len()).sum::<usize>();
+                    }
+                }
+            }
+            let limit = viewport.overview.len() + 1 + viewport.visible.len();
+            assert!(payloads <= limit && points <= limit + 2 * seex::MAX_CHART_POINTS);
+            println!("SEEX_REVERSAL_DRAIN metrics={metric_count} view_payloads={payloads} view_points={points}");
+        })
+        .unwrap();
+    println!(
+        "SEEX_ACTIVE_DETAIL_REVERSAL metrics={metric_count} entered={} drain_ms={}",
+        entered,
+        started.elapsed().as_millis()
+    );
+    let (snapshot_probe, adapter_probe) = window
+        .read_with(&visual, |viewer, cx| {
+            let snapshot = viewer.session_snapshot(cx);
+            let panel = &snapshot.views.active().panels[0];
+            let chart = viewer
+                .workspace
+                .read(cx)
+                .track_charts
+                .get(&panel.panel_id)
+                .unwrap();
+            let probes = chart.read(cx).retention_probes();
+            assert!(std::sync::Arc::ptr_eq(
+                &probes.0.upgrade().unwrap(),
+                panel.detail.as_ref().unwrap()
+            ));
+            probes
+        })
+        .unwrap();
+    scroll_and_drain(
+        window,
+        &mut visual,
+        metric_count - 1,
+        true,
+        2 * seex::MAX_CHART_POINTS,
+    );
+    visual.run_until_parked();
+    assert!(
+        snapshot_probe.upgrade().is_none(),
+        "old dense Detail snapshot still owned"
+    );
+    assert!(
+        adapter_probe.upgrade().is_none(),
+        "old chart/projection-cache owner still alive"
+    );
+    let peaks = window
+        .read_with(&visual, |viewer, cx| {
+            viewer.session.read(cx).sources.queue_peaks()
+        })
+        .unwrap();
+    assert!(peaks[0] > 0 && peaks[1] > 0 && peaks[2] > 0);
+    println!(
+        "SEEX_OWNER_RELEASE metrics={metric_count} snapshot_dropped=true adapter_dropped=true queue_peaks={peaks:?}"
+    );
+}
+
 #[gpui::test]
 #[ignore = "hardware-sensitive compact dual-View RSS benchmark"]
 fn compact_dual_view_peak_rss(cx: &mut TestAppContext) {

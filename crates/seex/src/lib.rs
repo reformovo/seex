@@ -39,9 +39,7 @@ mod native_engine_behavior;
 mod reader_parity;
 
 #[doc(hidden)]
-pub use crate::model::alignment::{
-    AlignedMetricPoint, AlignmentAxis, AlignmentQueryError, AlignmentViewport,
-};
+pub use crate::model::alignment::{AlignmentAxis, AlignmentQueryError, AlignmentViewport};
 pub use crate::model::comparison::{
     ComparisonOutcome, ComparisonPreference, ComparisonReport, ComparisonResult,
     EvidenceCompleteness, EvidenceReason, MetricComparisonResult, ObjectiveDirection,
@@ -57,7 +55,7 @@ pub use client::{
 pub use config::{CatalogBackend, S3Options};
 pub use error::{Error, Result};
 pub use reader::{
-    DesktopMetricEvidence, LocalReaderError, MetricAxis, MetricCoordinate, MetricQuery,
-    MetricQueryError, MetricRange, MetricSample, MetricSeries, MetricSeriesError, Reader,
-    ReaderBuilder, ReaderInterrupt, RelativeTime, Timestamp,
+    DesktopMetricEvidence, LocalReaderError, MAX_CHART_POINTS, MetricAxis, MetricCoordinate,
+    MetricQuery, MetricQueryError, MetricRange, MetricSample, MetricSeries, MetricSeriesError,
+    Reader, ReaderBuilder, ReaderInterrupt, RelativeTime, Timestamp,
 };

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::desktop::{
     ClearLockedCursor, Refresh, ResetView, ShowMetricInspector, ToggleBottomInspector,
-    ToggleMetricSidebar, ToggleProjectSidebar, UseElapsed, UseStep, ZoomIn, ZoomOut,
+    ToggleMetricSidebar, ToggleProjectSidebar, UseStep, ZoomIn, ZoomOut,
 };
 use gpui::{App, Context, Window};
 use seex::MetricKey;
@@ -43,6 +43,8 @@ pub(crate) enum WorkbenchCommand {
         selected: bool,
     },
     SelectMetric(MetricKey),
+    #[allow(dead_code, reason = "used by test-support and native diagnostics")]
+    SelectMetrics(Vec<MetricKey>),
     SelectPanel(MetricPanelId),
     RemoveMetric(MetricPanelId),
     ResizeMetric {
@@ -72,6 +74,26 @@ pub(crate) struct CommandEffect {
 }
 
 impl WorkbenchSession {
+    fn apply_metric_selection(
+        &mut self,
+        metric_keys: impl IntoIterator<Item = MetricKey>,
+    ) -> CommandEffect {
+        let previous = self.views.active().selected_panel_id.clone();
+        let previous_len = self.views.active().panels.len();
+        let panel_id = self
+            .views
+            .select_active_metrics(metric_keys)
+            .last()
+            .cloned();
+        let selected_panel_changed = panel_id.as_ref() != previous.as_ref();
+        CommandEffect {
+            changed: selected_panel_changed || self.views.active().panels.len() != previous_len,
+            selected_panel_changed,
+            panel_id,
+            ..CommandEffect::default()
+        }
+    }
+
     pub(crate) fn apply_command(&mut self, command: WorkbenchCommand) -> CommandEffect {
         let selection = self.snapshot();
         let effect = match command {
@@ -256,16 +278,9 @@ impl WorkbenchSession {
                     ..CommandEffect::default()
                 }
             }
-            WorkbenchCommand::SelectMetric(metric_key) => {
-                let previous = self.views.active().selected_panel_id.clone();
-                let panel_id = self.views.select_active_metric(metric_key);
-                let selected_panel_changed = previous.as_ref() != Some(&panel_id);
-                CommandEffect {
-                    changed: selected_panel_changed,
-                    selected_panel_changed,
-                    panel_id: Some(panel_id),
-                    ..CommandEffect::default()
-                }
+            WorkbenchCommand::SelectMetric(metric_key) => self.apply_metric_selection([metric_key]),
+            WorkbenchCommand::SelectMetrics(metric_keys) => {
+                self.apply_metric_selection(metric_keys)
             }
             WorkbenchCommand::SelectPanel(panel_id) => {
                 let previous = self.views.active().selected_panel_id.clone();
@@ -433,7 +448,7 @@ impl ViewerApp {
                     self.request_inspector(cx);
                 }
             }
-            WorkbenchCommand::SelectMetric(_) => {
+            WorkbenchCommand::SelectMetric(_) | WorkbenchCommand::SelectMetrics(_) => {
                 let Some(_) = effect.panel_id else {
                     return;
                 };
@@ -703,17 +718,6 @@ impl ViewerApp {
             cx.notify();
         });
         self.dispatch_workbench_command(WorkbenchCommand::SelectAxis(AlignmentAxis::Step), cx);
-        cx.notify();
-    }
-    pub(super) fn on_elapsed(&mut self, _: &UseElapsed, _: &mut Window, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |workspace, cx| {
-            workspace.axis_picker_open = false;
-            cx.notify();
-        });
-        self.dispatch_workbench_command(
-            WorkbenchCommand::SelectAxis(AlignmentAxis::ElapsedTime),
-            cx,
-        );
         cx.notify();
     }
     pub(super) fn available_metric_keys(&self, cx: &gpui::App) -> Vec<MetricKey> {

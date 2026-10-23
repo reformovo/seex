@@ -117,6 +117,32 @@ impl<'connection> NativeWriteStore<'connection> {
         timestamp: DateTime<Utc>,
         ingested_at: DateTime<Utc>,
     ) -> Result<MetricPoint, StorageError> {
+        self.connection.execute_batch("BEGIN TRANSACTION")?;
+        let directory_result: Result<(), StorageError> = (|| {
+            self.connection.execute(
+                "INSERT INTO seex_metric_keys(metric_key)
+                 SELECT ? WHERE NOT EXISTS (SELECT 1 FROM seex_metric_keys WHERE metric_key = ?)",
+                [metric_key.as_str(), metric_key.as_str()],
+            )?;
+            self.connection.execute(
+                "INSERT INTO seex_series_directory(run_id, metric_key, status)
+                 SELECT ?, ?, 'pending' WHERE NOT EXISTS (
+                     SELECT 1 FROM seex_series_directory WHERE run_id = ? AND metric_key = ?
+                 )",
+                [
+                    run_id.as_str(),
+                    metric_key.as_str(),
+                    run_id.as_str(),
+                    metric_key.as_str(),
+                ],
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = directory_result {
+            let _ = self.connection.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+        self.connection.execute_batch("COMMIT")?;
         self.connection.execute(
             "INSERT INTO dl.metric_points
                  (run_id, metric_key, metric_key_encoded, step, timestamp, value_f64, ingested_at)
@@ -130,6 +156,11 @@ impl<'connection> NativeWriteStore<'connection> {
                 value_f64,
                 timestamp_as_rfc3339(ingested_at),
             ),
+        )?;
+        self.connection.execute(
+            "UPDATE seex_series_directory SET status = 'published'
+             WHERE run_id = ? AND metric_key = ? AND status = 'pending'",
+            [run_id.as_str(), metric_key.as_str()],
         )?;
         Ok(MetricPoint {
             run_id: run_id.clone(),
@@ -151,18 +182,17 @@ impl<'connection> NativeWriteStore<'connection> {
             "INSERT INTO seex_metric_aggregates
                  (run_id, metric_key, effective_count, last_step, last_value_f64,
                   min_value_f64, max_value_f64)
-             SELECT run_id, metric_key, count(*), arg_max(step, step), arg_max(value_f64, step),
-                    min(value_f64), max(value_f64)
-             FROM (
-                 SELECT *,
-                        row_number() OVER (
-                            PARTITION BY run_id, metric_key, step
-                            ORDER BY ingested_at DESC, rowid DESC
-                        ) AS write_rank
-                 FROM dl.metric_points
-                 WHERE run_id = ?
-             )
-             WHERE write_rank = 1
+             SELECT run_id, metric_key, count(*), max(step),
+                    -- SQLite cannot persist IEEE non-finite values in scalar
+                    -- columns; chart diagnostics still inspect the source rows.
+                    CASE WHEN isfinite(arg_max(value_f64, step))
+                         THEN arg_max(value_f64, step) ELSE 0.0 END,
+                    CASE WHEN isfinite(min(value_f64))
+                         THEN min(value_f64) ELSE 0.0 END,
+                    CASE WHEN isfinite(max(value_f64))
+                         THEN max(value_f64) ELSE 0.0 END
+             FROM dl.metric_points
+             WHERE run_id = ?
              GROUP BY run_id, metric_key",
             [run_id.as_str()],
         )?;
@@ -182,6 +212,47 @@ impl<'connection> NativeWriteStore<'connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summaries_count_all_observations_running_and_finalized()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let connection = duckdb::Connection::open_in_memory()?;
+        connection.execute_batch(
+            "CREATE SCHEMA dl;
+             CREATE TABLE dl.metric_points (run_id VARCHAR, metric_key VARCHAR,
+                 step BIGINT, value_f64 DOUBLE);
+             INSERT INTO dl.metric_points VALUES
+                 ('run-1', 'loss', 1, -10.0), ('run-1', 'loss', 1, 10.0),
+                 ('run-1', 'loss', 2, 3.0), ('run-1', 'loss', 2, 4.0);
+             CREATE TABLE seex_runs (run_id VARCHAR, status VARCHAR);
+             INSERT INTO seex_runs VALUES ('run-1', 'running');
+             CREATE TABLE seex_metric_aggregates (run_id VARCHAR, metric_key VARCHAR,
+                 effective_count UBIGINT, last_step BIGINT, last_value_f64 DOUBLE,
+                 min_value_f64 DOUBLE, max_value_f64 DOUBLE);",
+        )?;
+        let run_id = RunId::from_string("run-1");
+        let key = MetricKey::from_string("loss");
+        let reader = crate::storage::ProjectMetricReader::new(&connection);
+        let running = reader.list_metrics(&run_id, RunStatus::Running)?;
+        assert_eq!(
+            running,
+            reader.query_metric_summaries(std::slice::from_ref(&run_id), &key)?
+        );
+        NativeWriteStore::new(&connection).rebuild_metric_aggregates_for_run(&run_id)?;
+        connection.execute_batch("UPDATE seex_runs SET status = 'finished'")?;
+        let finalized = reader.list_metrics(&run_id, RunStatus::Finished)?;
+        let summaries = reader.query_metric_summaries(std::slice::from_ref(&run_id), &key)?;
+        assert_eq!(finalized, summaries);
+        assert_eq!(running.len(), 1);
+        for aggregate in running.iter().chain(&finalized) {
+            assert_eq!(aggregate.effective_count, 4);
+            assert_eq!(aggregate.last_step, Step::new(2));
+            assert!([3.0, 4.0].contains(&aggregate.last_value_f64));
+            assert_eq!(aggregate.min_value_f64, -10.0);
+            assert_eq!(aggregate.max_value_f64, 10.0);
+        }
+        Ok(())
+    }
 
     #[test]
     fn percent_encode_metric_key_preserves_unreserved_ascii() {

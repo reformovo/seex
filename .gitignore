@@ -13,6 +13,11 @@ target/
 # Virtual environments
 .venv/
 
+# Local P3 layout diagnostics (catalogs, Parquet, profiles)
+/.tmp/p3-*/
+# Local Native v5 diagnostics; never commit stores or raw captures.
+/.tmp/v5-*
+
 # Local environment files
 .env
 .env.*

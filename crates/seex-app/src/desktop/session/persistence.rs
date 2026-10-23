@@ -60,7 +60,13 @@ impl WorkbenchSession {
             bottom_inspector_height: document.layout.bottom_inspector_height.clamp(56., 2_000.),
         };
         if !issues.is_empty() {
-            self.transient_error = Some(issues.join("; "));
+            self.transient_error = Some(
+                issues
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
         }
         let available_source_ids = self
             .sources

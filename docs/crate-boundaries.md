@@ -28,7 +28,7 @@ and the accepted [SDK design](single-crate-rust-sdk.md).
   I/O, schema validation, reduction, and storage errors.
 - **The private `seex` engine module** owns Run lifecycle, atomic report admission,
   the bounded writer queue, finalization, diagnostics, comparison, and ranking.
-- **`seex-python`** maps the facade to typed Python Run, Api, and Arrow surfaces.
+- **`seex-python`** maps the facade to the typed Python Run writing surface.
   It contains no product, query, or storage policy.
 - **`seex-plot`** owns renderer-independent geometry and interaction. It remains
   independent of storage and GPUI.
@@ -47,30 +47,27 @@ all-feature tests there.
 
 ## Reader Query Contract
 
-The public Reader accepts a typed axis and half-open range plus an optional
-strict `max_points`; it never accepts pixels. Every implementation applies
-last-write-wins before optional reduction and returns real samples with source
-count, downsampled state, completeness, and reasons. Chart code projects every
-point returned by Reader and does not downsample again.
+The public Reader accepts Step ranges plus a required strict `max_points` from
+2 through `MAX_CHART_POINTS` (1024); it never accepts pixels or an unbounded
+query. Every implementation preserves repeated observations before reduction and
+returns real samples with observation count, downsampled state, completeness, and
+reasons. Relative-time and timestamp chart entry points are rejected in P0.
 
-Desktop converts its closed viewport into crate-private options that may add one
-strict real neighbor on either side while preserving the public point bound.
-Step, relative-time, and timestamp coordinates are derived after
-last-write-wins. The native reader resolves time origins from Run metadata. The
-standalone Parquet reader remains fact-only and reports missing metadata as
-incomplete evidence.
+Desktop converts its closed viewport into crate-private options while preserving
+the 1024 point bound. Step coordinates retain repeated observations; equal-Step
+order is unspecified.
 
-Full-span and narrow queries use distinct physical plans. The protected
-full-span plan remains unchanged while narrow Step selection can filter before
-materialization and reduction without discarding replacements. Whole-series
-diagnostics are separate from viewport selection. Superseded requests may
-interrupt only the cloned connection and current request token that own them;
-stale results never enter a Viewer snapshot.
+Sampled queries use one filtered physical shape. Identity plus half-open Step
+bounds are applied before materialization, non-finite values are filtered in
+SQL, and native LTTB reduces the remaining observations without choosing
+replacement winners. Detail and Overview differ only in their bounds; there is
+no separate full-span/narrow plan and no out-of-view neighbor discovery.
+Completeness follows the Run lifecycle. Superseded requests may interrupt only
+the cloned connection and current request token that own them; stale results
+never enter a Viewer snapshot.
 
 The native project store is the authoritative read source for catalog discovery
-and inline plus Parquet-backed facts. A standalone Parquet dataset is a
-compatibility source for flushed facts only and does not imply project or run
-discovery.
+and inline plus Parquet-backed facts.
 
 ## Viewer Entity Boundary
 

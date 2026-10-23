@@ -12,6 +12,8 @@
 - Declare the files you will edit before changing code. Keep normal tasks to <=5 files and <=200 changed lines unless the user expands scope.
 - Use the root `rust-toolchain.toml` as the single Rust toolchain source for local development and CI; update it deliberately when upgrading Rust.
 - Preserve the native storage boundaries described in `docs/native-storage-boundary.md`.
+- Keep the first-release native store local: SQLite WAL catalog and DuckLake-managed local data; reject legacy DuckDB catalog and S3 configuration at public entry points.
+- Native v5 is append-only: preserve repeated Step observations, never select LWW winners or use physical position as a persisted order. Summaries count all observations; reject older stores without migration. See `docs/adr/0019-append-only-metric-observations.md`.
 - Keep Python code typed; update `python/seex/_seex.pyi` when exposing new Python API from Rust.
 - Type-check all Python code under `python/`, `scripts/`, and `tests/`; keep suppressions narrow and inline for deliberate type-contract violations.
 - Add or update tests for new behavior. Rust logic should have Rust tests where possible; Python-facing behavior should have `pytest` coverage.
