@@ -236,12 +236,12 @@ mod tests {
         let running = reader.list_metrics(&run_id, RunStatus::Running)?;
         assert_eq!(
             running,
-            reader.query_metric_summaries(&[run_id.clone()], &key)?
+            reader.query_metric_summaries(std::slice::from_ref(&run_id), &key)?
         );
         NativeWriteStore::new(&connection).rebuild_metric_aggregates_for_run(&run_id)?;
         connection.execute_batch("UPDATE seex_runs SET status = 'finished'")?;
         let finalized = reader.list_metrics(&run_id, RunStatus::Finished)?;
-        let summaries = reader.query_metric_summaries(&[run_id.clone()], &key)?;
+        let summaries = reader.query_metric_summaries(std::slice::from_ref(&run_id), &key)?;
         assert_eq!(finalized, summaries);
         assert_eq!(running.len(), 1);
         for aggregate in running.iter().chain(&finalized) {

@@ -14,14 +14,14 @@ const STORAGE_FORMAT_VERSION: i64 = 5;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NativeConnectionMode {
-    ReadWrite,
-    ReadWriteExisting,
+    Write,
+    WriteExisting,
     ReadOnly,
 }
 
 impl NativeConnectionMode {
     const fn must_exist(self) -> bool {
-        !matches!(self, Self::ReadWrite)
+        !matches!(self, Self::Write)
     }
 }
 
@@ -152,16 +152,14 @@ impl CatalogAdapter {
             .map(|clause| format!("                 {clause},\n"))
             .unwrap_or_default();
         let read_only_clause = match mode {
-            NativeConnectionMode::ReadWrite | NativeConnectionMode::ReadWriteExisting => {
-                String::new()
-            }
+            NativeConnectionMode::Write | NativeConnectionMode::WriteExisting => String::new(),
             NativeConnectionMode::ReadOnly => "                 READ_ONLY,\n".to_owned(),
         };
         let metadata_parameters = match (self.backend, mode) {
             (CatalogBackend::DuckDb, _) => String::new(),
             (
                 CatalogBackend::Sqlite,
-                NativeConnectionMode::ReadWrite | NativeConnectionMode::ReadWriteExisting,
+                NativeConnectionMode::Write | NativeConnectionMode::WriteExisting,
             ) => format!(
                 "                 METADATA_PARAMETERS MAP {{'busy_timeout': \
                  '{SQLITE_BUSY_TIMEOUT_MS}', 'journal_mode': '{SQLITE_JOURNAL_MODE}'}},\n"
@@ -275,7 +273,7 @@ pub fn open_native_connection(root_path: &Path) -> Result<duckdb::Connection, St
 pub fn open_native_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<duckdb::Connection, StorageError> {
-    open_native_connection_with_mode(config, NativeConnectionMode::ReadWrite)
+    open_native_connection_with_mode(config, NativeConnectionMode::Write)
 }
 
 pub fn open_existing_native_connection_with_config(
@@ -287,7 +285,7 @@ pub fn open_existing_native_connection_with_config(
 pub(crate) fn open_existing_writer_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<duckdb::Connection, StorageError> {
-    open_native_connection_with_mode(config, NativeConnectionMode::ReadWriteExisting)
+    open_native_connection_with_mode(config, NativeConnectionMode::WriteExisting)
 }
 
 pub(crate) fn open_existing_client_connection_with_config(
@@ -397,7 +395,7 @@ fn open_native_connection_with_mode(
         "connection_format_setup_or_validate",
         phase_started.elapsed(),
     );
-    if matches!(mode, NativeConnectionMode::ReadWrite) {
+    if matches!(mode, NativeConnectionMode::Write) {
         flush_pending_in_locked_connection(&connection)?;
         repair_pending_series(&connection)?;
     }
@@ -514,7 +512,7 @@ pub fn attach_ducklake_with_backend(
         catalog_backend,
         catalog_path,
         data_path,
-        NativeConnectionMode::ReadWrite,
+        NativeConnectionMode::Write,
     )
 }
 
@@ -1272,7 +1270,7 @@ mod tests {
         let statement = adapter.attach_ducklake_statement(
             Path::new("catalog.ducklake"),
             Path::new("data"),
-            NativeConnectionMode::ReadWrite,
+            NativeConnectionMode::Write,
         );
         let read_only = adapter.attach_ducklake_statement(
             Path::new("catalog.ducklake"),
@@ -1296,7 +1294,7 @@ mod tests {
         let writer = adapter.attach_ducklake_statement(
             Path::new("catalog.sqlite"),
             Path::new("data"),
-            NativeConnectionMode::ReadWrite,
+            NativeConnectionMode::Write,
         );
         let reader = adapter.attach_ducklake_statement(
             Path::new("catalog.sqlite"),
@@ -1443,7 +1441,7 @@ mod tests {
             let statement = adapter.attach_ducklake_statement(
                 Path::new("catalog.ducklake"),
                 Path::new("s3://bucket/prefix"),
-                NativeConnectionMode::ReadWrite,
+                NativeConnectionMode::Write,
             );
 
             assert!(statement.contains("DATA_PATH 's3://bucket/prefix'"));

@@ -5,8 +5,7 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use gpui::{
-    App, AppContext, Application, Bounds, ListOffset, Window, WindowBounds, WindowHandle,
-    WindowOptions, px, size,
+    App, AppContext, Application, Bounds, ListOffset, Window, WindowBounds, WindowOptions, px, size,
 };
 
 #[derive(Clone)]
@@ -31,7 +30,9 @@ fn pulse(
 }
 
 pub(in crate::desktop) fn run(root: PathBuf) {
-    assert!(!cfg!(debug_assertions), "native profile requires --release");
+    if cfg!(debug_assertions) {
+        panic!("native profile requires --release");
+    }
     let metric_count = std::env::var("SEEX_NATIVE_PROFILE_METRICS")
         .expect("metric count required")
         .parse::<usize>()
@@ -116,7 +117,6 @@ pub(in crate::desktop) fn run(root: PathBuf) {
                 println!("SEEX_NATIVE_CONFIG read_capacity={read_capacity} metrics={metric_count}");
                 viewer.open_configured_sources(vec![source], cx);
                 schedule(
-                    handle,
                     State {
                         project_id,
                         run_id,
@@ -437,8 +437,7 @@ fn print_motion_cohorts(traces: &[MotionTrace]) {
         } else {
             matching
                 .iter()
-                .filter(|e| e.at <= cutoff)
-                .last()
+                .rfind(|e| e.at <= cutoff)
                 .map_or("unmatched", |e| e.phase)
         };
         *last_stage.entry(last).or_default() += 1;
@@ -569,7 +568,7 @@ fn print_read_trace(since: Option<Instant>, stage: usize) {
     }
 }
 
-fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Window) {
+fn schedule(mut state: State, window: &mut Window) {
     pulse(&state.heartbeat, state.stage, "refresh", &state.status);
     window.refresh();
     pulse(&state.heartbeat, state.stage, "await_frame", &state.status);
@@ -663,10 +662,10 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
                     let n = snapshot.views.active().panels.len();
                     if elapsed >= Duration::from_secs(3) {
                         advance = true;
-                    } else if state.frames.len() % 3 == 0 {
+                    } else if state.frames.len().is_multiple_of(3) {
                         state.motion_steps += 1;
                         let forward = state.motion_steps * 4 % n.saturating_sub(14).max(1);
-                        let target = if state.stage == 6 || state.motion_steps % 2 == 0 { forward } else { n - 1 - forward };
+                        let target = if state.stage == 6 || state.motion_steps.is_multiple_of(2) { forward } else { n - 1 - forward };
                         state.traces.push(MotionTrace::new(target));
                         viewer.workspace.update(cx, |workspace, cx| {
                             workspace.metric_scroll.scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.) });
@@ -719,7 +718,7 @@ fn schedule(handle: WindowHandle<ViewerApp>, mut state: State, window: &mut Wind
             println!("SEEX_NATIVE_RESULT ok={} stage={} status={}", !timed_out, state.stage, state.status);
             cx.quit();
         } else {
-            schedule(handle, state, window);
+            schedule(state, window);
         }
     });
 }

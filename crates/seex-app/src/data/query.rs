@@ -307,6 +307,10 @@ impl PanelStageProfile {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the read request phases are threaded explicitly to keep call sites visible"
+)]
 fn query_curves(
     session: &ReadSession,
     selection: &CurveSelection,

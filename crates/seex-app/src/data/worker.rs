@@ -54,8 +54,7 @@ fn trace_selected(generation: Generation, stride: u64) -> bool {
             .0
             .wrapping_mul(0x9e3779b97f4a7c15)
             .rotate_left(23)
-            % stride
-            == 0
+            .is_multiple_of(stride)
 }
 #[cfg(feature = "test-support")]
 pub(crate) fn reset_read_trace() {
@@ -343,9 +342,9 @@ impl Drop for ReadEventReceiver {
 // Process-global pause for serialized opt-in Detail integration tests, before SQL.
 #[cfg(feature = "test-support")]
 static TEST_READ_PAUSE: (Mutex<(bool, usize)>, Condvar) = (Mutex::new((false, 0)), Condvar::new());
-#[cfg(feature = "test-support")]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) struct TestReadPause;
-#[cfg(feature = "test-support")]
+#[cfg(all(test, feature = "test-support"))]
 impl TestReadPause {
     pub(crate) fn arm() -> Self {
         let mut state = TEST_READ_PAUSE.0.lock().unwrap();
@@ -357,7 +356,7 @@ impl TestReadPause {
         TEST_READ_PAUSE.0.lock().unwrap().1
     }
 }
-#[cfg(feature = "test-support")]
+#[cfg(all(test, feature = "test-support"))]
 impl Drop for TestReadPause {
     fn drop(&mut self) {
         TEST_READ_PAUSE.0.lock().unwrap().0 = false;

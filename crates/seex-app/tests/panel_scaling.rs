@@ -103,8 +103,8 @@ fn value(state: &mut u64) -> f64 {
 #[test]
 fn panel_contract_and_values() {
     assert_eq!(request(16).selection.runs.len(), 16);
-    assert_eq!(is_detail("overview").unwrap(), false);
-    assert_eq!(is_detail("detail").unwrap(), true);
+    assert!(!is_detail("overview").unwrap());
+    assert!(is_detail("detail").unwrap());
     assert!(is_detail("typo").is_err());
     for (case, count) in [
         ("full", 1_000_001),

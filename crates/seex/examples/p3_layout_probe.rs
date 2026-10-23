@@ -11,7 +11,9 @@ fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn data_stats(path: &Path) -> Result<(usize, usize, u64, Vec<u64>), Box<dyn Error>> {
+type LayoutStats = (usize, usize, u64, Vec<u64>);
+
+fn data_stats(path: &Path) -> Result<LayoutStats, Box<dyn Error>> {
     let mut stack = vec![path.to_owned()];
     let mut files = Vec::new();
     let mut directories = 0;

@@ -162,7 +162,7 @@ impl DetailChart {
         )
     }
 
-    #[cfg(feature = "test-support")]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn retention_probes(
         &self,
     ) -> (

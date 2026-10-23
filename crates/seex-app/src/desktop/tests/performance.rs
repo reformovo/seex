@@ -257,7 +257,9 @@ fn scroll_and_drain(
 #[gpui::test]
 #[ignore = "diagnostic overview scheduling profile"]
 fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
-    assert!(!cfg!(debug_assertions), "requires --release");
+    if cfg!(debug_assertions) {
+        panic!("requires --release");
+    }
     let metric_count = benchmark_count("SEEX_DESKTOP_PROFILE_METRICS", 100);
     let started = Instant::now();
     let (root, project_id, run_id) = fixture_with_runs(metric_count, 1);
@@ -366,7 +368,9 @@ fn overview_schedule_diagnostic(cx: &mut TestAppContext) {
 #[gpui::test]
 #[ignore = "diagnostic cancelled Detail reversal integration profile"]
 fn cancelled_detail_reversal_integration(cx: &mut TestAppContext) {
-    assert!(!cfg!(debug_assertions), "requires --release");
+    if cfg!(debug_assertions) {
+        panic!("requires --release");
+    }
     let metric_count = benchmark_count("SEEX_DETAIL_REVERSAL_METRICS", 128);
     assert!(
         metric_count >= 128,

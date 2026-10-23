@@ -401,7 +401,9 @@ mod tests {
     #[test]
     #[ignore = "read-only production SQL plans; release and local fixture required"]
     fn production_query_plans() -> Result<(), Box<dyn std::error::Error>> {
-        assert!(!cfg!(debug_assertions), "requires --release");
+        if cfg!(debug_assertions) {
+            return Err("requires --release".into());
+        }
         let root = std::path::PathBuf::from(std::env::var("SEEX_PANEL_ROOT")?).canonicalize()?;
         assert!(root.ends_with(".tmp/v5-panel-million/store"));
         let output = std::path::PathBuf::from(std::env::var("SEEX_STORAGE_PROFILE_OUT")?);
@@ -514,7 +516,9 @@ mod tests {
             }
         }
 
-        assert!(!cfg!(debug_assertions), "requires --release");
+        if cfg!(debug_assertions) {
+            return Err("requires --release".into());
+        }
         let root = std::path::PathBuf::from(std::env::var("SEEX_PANEL_ROOT")?).canonicalize()?;
         assert!(root.ends_with(".tmp/v5-panel-million/store"));
         let output = std::path::PathBuf::from(std::env::var("SEEX_STORAGE_PROFILE_OUT")?);

@@ -30,7 +30,7 @@ impl Drop for ScheduleTimer {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) fn reset_schedule_diagnostics() {
     SCHEDULE_CALLS.store(0, Ordering::Relaxed);
     SCHEDULE_PANEL_SCANS.store(0, Ordering::Relaxed);
@@ -39,7 +39,7 @@ pub(crate) fn reset_schedule_diagnostics() {
     SCHEDULE_NS.store(0, Ordering::Relaxed);
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(all(test, feature = "test-support"))]
 pub(crate) fn schedule_diagnostics() -> (u64, u64, u64, u64, u64) {
     (
         SCHEDULE_CALLS.load(Ordering::Relaxed),

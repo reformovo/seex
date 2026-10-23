@@ -360,7 +360,7 @@ mod tests {
         let selected = select_indices(&axes, &values, 4).unwrap();
         assert_eq!(selected.first(), Some(&0));
         assert_eq!(selected.last(), Some(&5));
-        assert!(selected.iter().any(|index| *index == 3));
+        assert!(selected.contains(&3));
     }
 
     #[test]
