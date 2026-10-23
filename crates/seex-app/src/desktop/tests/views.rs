@@ -457,7 +457,10 @@ fn refresh_and_resize_replace_snapshots_after_sqlite_appends(cx: &mut TestAppCon
         viewer.active_navigation(cx).selected_viewport() == Some(viewport)
     });
     append_loss_points(root.path(), &[(75, 0.6)]);
-    cx.simulate_resize(size(px(1_000.), px(700.)));
+    let refresh = cx
+        .debug_bounds("refresh-view")
+        .expect("Refresh should render");
+    cx.simulate_click(refresh.center(), Modifiers::default());
     wait_for_viewer(window, &cx, |viewer, cx| {
         first_panel_curve_state(viewer, cx).is_some_and(|state| state.overview_source_count == 4)
     });
@@ -472,8 +475,16 @@ fn refresh_and_resize_replace_snapshots_after_sqlite_appends(cx: &mut TestAppCon
     assert!(resized.detail_revision > refreshed.detail_revision);
     assert!(!Arc::ptr_eq(&refreshed.overview, &resized.overview));
     assert!(!Arc::ptr_eq(&refreshed.detail, &resized.detail));
+
+    cx.simulate_resize(size(px(1_000.), px(700.)));
     cx.refresh().expect("updated curves should render");
     assert!(cx.debug_bounds("metric-canvas:loss").is_some());
+    let after_resize = window
+        .read_with(&cx, first_panel_curve_state)
+        .expect("viewer should remain open")
+        .expect("resized curves should remain loaded");
+    assert!(Arc::ptr_eq(&resized.overview, &after_resize.overview));
+    assert!(Arc::ptr_eq(&resized.detail, &after_resize.detail));
 
     finish_loss_run(root.path());
     let refresh = cx
