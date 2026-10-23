@@ -700,7 +700,7 @@ fn matching_terminal_call_retries_an_incomplete_flush() -> Result<(), Box<dyn st
     fs::write(&metric_points_path, b"not a directory")?;
 
     assert!(matches!(run.finish(), Err(Error::MetricFlushFailed)));
-    assert_eq!(run.status(), seex::RunStatus::Finished);
+    assert_eq!(run.status(), seex::RunStatus::Running);
     assert!(matches!(
         run.fail(),
         Err(Error::TerminalOutcomeConflict { .. })

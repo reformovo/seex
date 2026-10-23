@@ -272,7 +272,15 @@ impl NativeClient {
                 to: "flushed",
             });
         }
+        self.flush_pending_data(run_id, timeout, true)
+    }
 
+    fn flush_pending_data(
+        &self,
+        run_id: &RunId,
+        timeout: Option<Duration>,
+        only_pending: bool,
+    ) -> Result<(), EngineError> {
         let deadline = timeout.map(|timeout| Instant::now() + timeout);
         self.reporter.set_flush_running(run_id);
         let _flush_guard = match self.acquire_flush_lock(deadline) {
@@ -288,7 +296,11 @@ impl NativeClient {
         }
 
         let connection = self.connection()?;
-        let (result, timed_out) = connection.flush_pending_metric_points_with_deadline(deadline);
+        let (result, timed_out) = if only_pending {
+            connection.flush_pending_metric_points_with_deadline(deadline)
+        } else {
+            connection.flush_metric_points_with_deadline(deadline)
+        };
         drop(connection);
         if timed_out {
             self.reporter.set_flush_timed_out(run_id);
@@ -427,6 +439,10 @@ impl NativeClient {
         let active_run = self.acquire_run_writer(run_id)?;
         active_run.close_admission()?;
         if let Err(error) = self.reporter.drain(timeout) {
+            active_run.open_admission()?;
+            return Err(error);
+        }
+        if let Err(error) = self.flush_pending_data(run_id, timeout, false) {
             active_run.open_admission()?;
             return Err(error);
         }
@@ -1240,7 +1256,7 @@ mod tests {
     }
 
     #[test]
-    fn finalization_flush_failure_keeps_terminal_state_and_updates_diagnostics()
+    fn finalization_flush_failure_keeps_run_running_and_updates_diagnostics()
     -> Result<(), Box<dyn std::error::Error>> {
         let root_path = std::env::temp_dir().join(format!("seex-client-{}", uuid::Uuid::new_v4()));
         let client = NativeClient::open(&root_path)?;
@@ -1275,7 +1291,7 @@ mod tests {
             matches!(finish, Err(EngineError::MetricFlush { .. })),
             "expected finalization to surface MetricFlush, got {finish:?}",
         );
-        assert_eq!(stored.status, RunStatus::Finished);
+        assert_eq!(stored.status, RunStatus::Running);
         assert_eq!(
             diagnostics.last_flush_run_id.as_deref(),
             Some("run-flush-failure"),
@@ -1285,6 +1301,10 @@ mod tests {
             diagnostics.last_flush_error.as_deref(),
             Some("flush metric_points failed"),
         );
+
+        std::fs::remove_file(&metric_points_path)?;
+        let finished = client.finish_run(&run.run_id)?;
+        assert_eq!(finished.status, RunStatus::Finished);
         std::fs::remove_dir_all(root_path)?;
         Ok(())
     }
@@ -1325,7 +1345,21 @@ mod tests {
         std::fs::write(&metric_points_path, b"flush failure")?;
         let finish = client.finish_run(&run.run_id);
         assert!(matches!(finish, Err(EngineError::MetricFlush { .. })));
-        assert_eq!(client.get_run(&run.run_id)?.status, RunStatus::Finished);
+        assert_eq!(client.get_run(&run.run_id)?.status, RunStatus::Running);
+
+        // Simulate a store that persisted a terminal status and recovery marker
+        // before its inline data was flushed.
+        {
+            let connection = client.connection()?;
+            connection.execute(
+                "UPDATE seex_runs SET status = 'finished' WHERE run_id = 'run-recovery'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE seex_storage_metadata SET value = 1 WHERE key = 'flush_pending'",
+                [],
+            )?;
+        }
         client.shutdown(None)?;
 
         let config = NativeStorageConfig::with_backend_and_s3_config(
