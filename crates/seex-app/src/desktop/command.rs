@@ -43,6 +43,7 @@ pub(crate) enum WorkbenchCommand {
         selected: bool,
     },
     SelectMetric(MetricKey),
+    #[allow(dead_code, reason = "used by test-support and native diagnostics")]
     SelectMetrics(Vec<MetricKey>),
     SelectPanel(MetricPanelId),
     RemoveMetric(MetricPanelId),
