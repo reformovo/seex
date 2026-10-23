@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
 use std::path::{Path, PathBuf};
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -28,7 +28,7 @@ use crate::domain::DataSourceId;
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Generation(pub u64);
 
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 #[derive(Clone, Debug)]
 pub(crate) struct ReadTraceEvent {
     pub source_id: DataSourceId,
@@ -37,15 +37,15 @@ pub(crate) struct ReadTraceEvent {
     pub phase: &'static str,
     pub at: std::time::Instant,
 }
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 #[derive(Default)]
 struct ReadTrace {
     events: Vec<ReadTraceEvent>,
     dropped: usize,
 }
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 static READ_TRACE: OnceLock<Mutex<ReadTrace>> = OnceLock::new();
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 static READ_TRACE_STRIDE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "test-support")]
 fn trace_selected(generation: Generation, stride: u64) -> bool {
@@ -56,7 +56,7 @@ fn trace_selected(generation: Generation, stride: u64) -> bool {
             .rotate_left(23)
             .is_multiple_of(stride)
 }
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 pub(crate) fn reset_read_trace() {
     let stride = std::env::var("SEEX_READ_TRACE_STRIDE")
         .map_or(8, |s| s.parse::<u64>().expect("positive trace stride"));
@@ -71,7 +71,7 @@ pub(crate) fn reset_read_trace() {
     };
     READ_TRACE_STRIDE.store(stride, Ordering::Release);
 }
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 pub(crate) fn read_trace() -> (Vec<ReadTraceEvent>, usize, u64) {
     let state = READ_TRACE.get().unwrap().lock().unwrap();
     (
@@ -80,7 +80,7 @@ pub(crate) fn read_trace() -> (Vec<ReadTraceEvent>, usize, u64) {
         READ_TRACE_STRIDE.load(Ordering::Acquire),
     )
 }
-#[cfg(feature = "test-support")]
+#[cfg(all(feature = "test-support", target_os = "macos"))]
 pub(crate) fn trace_read(
     source_id: &DataSourceId,
     generation: Generation,
@@ -102,6 +102,15 @@ pub(crate) fn trace_read(
         phase,
         at: std::time::Instant::now(),
     });
+}
+
+#[cfg(all(feature = "test-support", not(target_os = "macos")))]
+pub(crate) fn trace_read(
+    _source_id: &DataSourceId,
+    _generation: Generation,
+    _kind: ReadKind,
+    _phase: &'static str,
+) {
 }
 
 /// Independent result streams routed by source and panel coordinators.
@@ -342,9 +351,9 @@ impl Drop for ReadEventReceiver {
 // Process-global pause for serialized opt-in Detail integration tests, before SQL.
 #[cfg(feature = "test-support")]
 static TEST_READ_PAUSE: (Mutex<(bool, usize)>, Condvar) = (Mutex::new((false, 0)), Condvar::new());
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(all(test, feature = "test-support", target_os = "macos"))]
 pub(crate) struct TestReadPause;
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(all(test, feature = "test-support", target_os = "macos"))]
 impl TestReadPause {
     pub(crate) fn arm() -> Self {
         let mut state = TEST_READ_PAUSE.0.lock().unwrap();
@@ -356,7 +365,7 @@ impl TestReadPause {
         TEST_READ_PAUSE.0.lock().unwrap().1
     }
 }
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(all(test, feature = "test-support", target_os = "macos"))]
 impl Drop for TestReadPause {
     fn drop(&mut self) {
         TEST_READ_PAUSE.0.lock().unwrap().0 = false;
