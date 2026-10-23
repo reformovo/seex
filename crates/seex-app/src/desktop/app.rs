@@ -1255,9 +1255,11 @@ fn load_and_preflight_sources(
     project_root: Option<PathBuf>,
     home: Option<PathBuf>,
 ) -> Result<(SourceConfiguration, Vec<ConfiguredSource>), String> {
-    let configuration =
-        SourceConfiguration::load_for_scope_at(project_root.as_deref(), home.as_deref())
-            .map_err(|error| error.to_string())?;
+    let configuration = match home {
+        Some(home) => SourceConfiguration::load_for_scope_at(project_root.as_deref(), Some(&home)),
+        None => SourceConfiguration::load_for_scope(project_root.as_deref()),
+    }
+    .map_err(|error| error.to_string())?;
     let sources = configuration.configured_sources();
     for source in &sources {
         let preflight =
