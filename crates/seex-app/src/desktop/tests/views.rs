@@ -10,7 +10,7 @@ use seex::{
 use super::super::test_support::*;
 use super::*;
 use crate::data::query::CurveSnapshot;
-use crate::desktop::UseElapsed;
+use crate::desktop::UseStep;
 use crate::desktop::app::command::{CommandEffect, WorkbenchCommand};
 
 #[test]
@@ -76,13 +76,13 @@ fn typed_view_commands_own_the_view_lifecycle() {
 fn view_actions_dispatch_through_the_focused_root(cx: &mut TestAppContext) {
     let (window, mut cx) = open_viewer(cx, None);
 
-    cx.dispatch_action(UseElapsed);
+    cx.dispatch_action(UseStep);
 
     assert_eq!(
         window
             .read_with(&cx, |viewer, cx| viewer.active_navigation(cx).axis())
             .expect("viewer should remain open"),
-        AlignmentAxis::ElapsedTime
+        AlignmentAxis::Step
     );
 }
 
@@ -634,7 +634,7 @@ fn empty_view_keeps_the_converged_shell_and_opens_metric_picker(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn axis_picker_switches_the_view_to_elapsed_time(cx: &mut TestAppContext) {
+fn axis_picker_keeps_step_and_disables_elapsed_time(cx: &mut TestAppContext) {
     let (root, project_id, run_id) = fixture(1);
     cx.executor().allow_parking();
     let (window, mut cx) = open_viewer_with_configured_source(cx, root.path().to_path_buf());
@@ -649,21 +649,20 @@ fn axis_picker_switches_the_view_to_elapsed_time(cx: &mut TestAppContext) {
         .debug_bounds("axis-picker")
         .expect("axis picker should render beside Add Metric");
     cx.simulate_click(picker.center(), Modifiers::default());
+    assert!(
+        cx.debug_bounds("axis-step").is_some(),
+        "the enabled Step axis should remain available"
+    );
     let time = cx
         .debug_bounds("axis-time")
-        .expect("axis menu should offer Elapsed time");
+        .expect("Elapsed time should remain visible but disabled");
     cx.simulate_click(time.center(), Modifiers::default());
-    wait_for_viewer(window, &cx, |viewer, cx| {
-        viewer.active_navigation(cx).axis() == AlignmentAxis::ElapsedTime
-            && viewer
-                .session_snapshot(cx)
-                .views
-                .active()
-                .panels
-                .first()
-                .and_then(|panel| panel.overview.as_ref())
-                .and_then(|snapshot| snapshot.real_range)
-                .is_some_and(|range| range.start() >= 0 && range.end() < 60_000)
-    });
+    cx.run_until_parked();
+    assert_eq!(
+        window
+            .read_with(&cx, |viewer, cx| viewer.active_navigation(cx).axis())
+            .expect("viewer should remain open"),
+        AlignmentAxis::Step
+    );
     assert!(cx.debug_bounds("viewport-ruler").is_some());
 }

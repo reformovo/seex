@@ -28,7 +28,6 @@ actions!(
         ZoomIn,
         ZoomOut,
         UseStep,
-        UseElapsed,
         ActivateSelection,
         Quit
     ]
@@ -123,7 +122,6 @@ fn menus() -> Vec<Menu> {
                 MenuItem::action("Show Metric Inspector", ShowMetricInspector),
                 MenuItem::separator(),
                 MenuItem::action("Step", UseStep),
-                MenuItem::action("Elapsed Time", UseElapsed),
             ],
         },
     ]

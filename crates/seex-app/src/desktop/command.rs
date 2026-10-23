@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::desktop::{
     ClearLockedCursor, Refresh, ResetView, ShowMetricInspector, ToggleBottomInspector,
-    ToggleMetricSidebar, ToggleProjectSidebar, UseElapsed, UseStep, ZoomIn, ZoomOut,
+    ToggleMetricSidebar, ToggleProjectSidebar, UseStep, ZoomIn, ZoomOut,
 };
 use gpui::{App, Context, Window};
 use seex::MetricKey;
@@ -717,17 +717,6 @@ impl ViewerApp {
             cx.notify();
         });
         self.dispatch_workbench_command(WorkbenchCommand::SelectAxis(AlignmentAxis::Step), cx);
-        cx.notify();
-    }
-    pub(super) fn on_elapsed(&mut self, _: &UseElapsed, _: &mut Window, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |workspace, cx| {
-            workspace.axis_picker_open = false;
-            cx.notify();
-        });
-        self.dispatch_workbench_command(
-            WorkbenchCommand::SelectAxis(AlignmentAxis::ElapsedTime),
-            cx,
-        );
         cx.notify();
     }
     pub(super) fn available_metric_keys(&self, cx: &gpui::App) -> Vec<MetricKey> {

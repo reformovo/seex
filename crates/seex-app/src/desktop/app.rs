@@ -1541,7 +1541,6 @@ impl Render for ViewerApp {
             .on_action(cx.listener(Self::on_zoom_in))
             .on_action(cx.listener(Self::on_zoom_out))
             .on_action(cx.listener(Self::on_step))
-            .on_action(cx.listener(Self::on_elapsed))
             .flex()
             .size_full()
             .bg(theme.colors.window)
