@@ -30,5 +30,8 @@ target/
 # Deepwork progress files (local session state)
 .slim/deepwork/
 
-# Agent CLI files
-.agents/
+# Agent CLI files; the project-shared land skill is tracked
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/land/
