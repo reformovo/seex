@@ -95,13 +95,7 @@ impl Fixture {
     fn open_with_timestamp_order(decreasing: bool) -> Result<Self, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let connection = ProjectConnection::new(open_native_connection_with_config(
-            NativeStorageConfig::with_backend_and_s3_config(
-                CatalogBackend::Sqlite,
-                root.path(),
-                None,
-                None,
-                None,
-            ),
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, root.path(), None, None),
         )?);
         let created_at = crate::storage::time::current_timestamp("created_at")?;
         let project = Project {

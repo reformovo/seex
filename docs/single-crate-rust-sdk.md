@@ -88,8 +88,8 @@ common model types.
 - `Reader` opens an existing store without starting a writer and owns discovery,
   unified axis-aware metric queries, summaries, comparison, and ranking. Query
   callers choose the range and maximum returned point count; Reader does not
-  accept pixels or derive a budget from a screen. A local-only constructor lets
-  Desktop reject S3 before credential resolution.
+  accept pixels or derive a budget from a screen. Desktop opens the store through
+  the local-only constructor.
 - Public errors keep matchable configuration, queue, writer, drain, flush,
   closed-Run, step-regression, query, and sanitized storage variants without
   exposing DuckDB error types.
@@ -116,8 +116,8 @@ seex.init(
 - `resume=None`, `False`, or `"never"` creates; `True` or `"allow"` resumes a
   running Run or creates when absent; `"must"` requires an explicit existing,
   resumable ID. `"auto"` is unsupported.
-- `Settings` owns catalog, data path, queue, and S3 options. Secrets are redacted
-  from representations and errors.
+- `Settings` owns catalog, data path, and queue options. Only local filesystem
+  paths are accepted; there is no object-storage configuration surface.
 - The first surface excludes `entity`, `config`, `tags`, `notes`, `group`,
   `job_type`, online `mode`, media, and artifacts; they need separate product
   and schema decisions.
@@ -226,7 +226,7 @@ compatibility with a W&B Rust SDK.
 | Run ID and display name | `id=` identifies a Run; `name=` is its display name | `create_run(project_id, name, run_id=None)` | Python `id=` defaults to a UUID and `name=` defaults to that ID; equivalent Rust options | **Partial.** The concepts align, but Seex IDs address its native catalog rather than W&B cloud paths. |
 | Entity/team namespace | `entity=` selects a user or team namespace | No equivalent | No equivalent | **Unsupported.** Seex has Projects but no cloud entity/workspace hierarchy. |
 | Config, tags, notes, group, job type | `config=`, `tags=`, `notes=`, `group=`, and `job_type=` plus mutable Run metadata | No equivalent catalog fields or public methods | Explicitly excluded from the first surface | **Unsupported.** Adding them requires separate product and schema decisions. |
-| Execution mode | `mode=` selects `"online"`, `"offline"`, `"disabled"`, or `"shared"`, with related Settings | Native storage is configured directly; there is no W&B mode | No `mode=`; `seex.Settings` owns catalog, data path, queue, and S3 options | **Partial.** Seex is local/native even when its Parquet data path is S3-compatible; this is not W&B offline mode or later cloud sync. |
+| Execution mode | `mode=` selects `"online"`, `"offline"`, `"disabled"`, or `"shared"`, with related Settings | Native storage is configured directly; there is no W&B mode | No `mode=`; `seex.Settings` owns catalog, data path, and queue options | **Partial.** Seex is local/native; its Parquet data path is always a local filesystem path. |
 | Settings object | `wandb.Settings` configures W&B SDK behavior | Keyword storage options on `seex.init` and `.seex/config.toml` | `seex.Settings` for native storage and queue configuration | **Partial.** The class name and role are similar, but fields, precedence, and effects are intentionally Seex-specific. |
 
 ### Metric logging
@@ -260,7 +260,7 @@ compatibility with a W&B Rust SDK.
 | W&B only | Media, `wandb.Table`, plots, histograms, and rich typed values | **Unsupported.** The first Seex logging surface accepts only numeric metric points. |
 | W&B only | Artifacts, files, registries, lineage, and `use_artifact` / `log_artifact` | **Unsupported.** Model checkpoints and artifact durability are outside the metric Parquet boundary. |
 | W&B only | Sweeps, agents, launch jobs, alerts, reports, automations, integrations, and model `watch` / `unwatch` | **Unsupported.** Seex does not emulate the W&B cloud orchestration or collaboration ecosystem. |
-| Seex only | DuckLake catalog plus local or S3-compatible Parquet data paths | **Shipped storage behavior; proposed facade.** The Parquet schema remains the product compatibility boundary. |
+| Seex only | DuckLake catalog plus a local Parquet data path | **Shipped storage behavior; proposed facade.** The Parquet schema remains the product compatibility boundary. |
 | Seex only | Writer diagnostics and explicit drain/flush outcomes | **Shipped** on `Client`; target Python exposes advanced Run diagnostics and retries finalization through the matching terminal operation. Orphan discovery moves to CLI/admin recovery. |
 | Seex only | Arrow PyCapsule metric results | **Shipped** through separate table methods; proposed `MetricSeries` implements the protocol directly so duplicate table query methods disappear. |
 
@@ -324,8 +324,8 @@ paired A/B improvement contract in ADR 0015 and ROADMAP U0.
 - Verify `seex-plot` has no GPUI, storage, or SDK dependency.
 - Run `cargo package -p seex` and build the package independently; it contains
   no path dependency, PyO3, Desktop, or Plot source.
-- Run Python format/lint, Pyright, pytest, wheel/sdist smoke, CLI JSON, catalog
-  parity, and MinIO/S3 acceptance.
+- Run Python format/lint, Pyright, pytest, wheel/sdist smoke, CLI JSON, and
+  catalog parity.
 - Cover Project get-or-create races, resume policies, context outcomes, cloned
   RunHandle races, cursor/commit behavior, atomic queue failure, finalization
   barriers, and Reader/Desktop parity.

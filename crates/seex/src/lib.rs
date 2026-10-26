@@ -52,10 +52,10 @@ pub use client::{
     Client, ClientBuilder, ClientDiagnostics, FlushState, LogOptions, ResumePolicy, RunHandle,
     RunOptions, WriterState,
 };
-pub use config::{CatalogBackend, S3Options};
+pub use config::CatalogBackend;
 pub use error::{Error, Result};
 pub use reader::{
-    DesktopMetricEvidence, LocalReaderError, MAX_CHART_POINTS, MetricAxis, MetricCoordinate,
-    MetricQuery, MetricQueryError, MetricRange, MetricSample, MetricSeries, MetricSeriesError,
-    Reader, ReaderBuilder, ReaderInterrupt, RelativeTime, Timestamp,
+    DesktopMetricEvidence, MAX_CHART_POINTS, MetricAxis, MetricCoordinate, MetricQuery,
+    MetricQueryError, MetricRange, MetricSample, MetricSeries, MetricSeriesError, Reader,
+    ReaderBuilder, ReaderInterrupt, RelativeTime, Timestamp,
 };

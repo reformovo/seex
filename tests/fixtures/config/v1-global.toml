@@ -2,16 +2,7 @@
 schema_version = 1
 catalog_backend = "duckdb"
 catalog_path = ".seex/global-catalog.ducklake"
-data_path = "s3://global-bucket/metrics"
-
-[s3]
-endpoint = "objects.example.com"
-access_key_id = "global-access-key"
-secret_access_key = "global-secret"
-session_token = "global-session"
-region = "us-east-1"
-path_style = false
-use_ssl = true
+data_path = ".seex/global-data"
 
 [sources.research]
 path = "experiments"

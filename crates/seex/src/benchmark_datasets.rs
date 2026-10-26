@@ -117,7 +117,6 @@ fn ensure_reader_benchmark_dataset(
         backend,
         Some(catalog_path.clone()),
         Some(data_path.clone()),
-        None,
         65_536,
     )?;
     let project_id = ProjectId::from_string("reader-benchmark");
@@ -127,13 +126,7 @@ fn ensure_reader_benchmark_dataset(
     client.shutdown(None)?;
     drop(client);
     let connection = ProjectConnection::new(open_native_connection_with_config(
-        NativeStorageConfig::with_backend_and_s3_config(
-            backend,
-            root,
-            Some(catalog_path),
-            Some(data_path),
-            None,
-        ),
+        NativeStorageConfig::with_backend(backend, root, Some(catalog_path), Some(data_path)),
     )?);
     connection.execute(
         "INSERT INTO dl.metric_points

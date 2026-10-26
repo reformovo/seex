@@ -7,7 +7,6 @@ use crate::storage::{CatalogWriteGuard, StorageError};
 
 const DUCKLAKE_ALIAS: &str = "dl";
 const DUCKDB_CATALOG_ALIAS: &str = "seex_catalog";
-const S3_SECRET_NAME: &str = "seex_s3";
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 30_000;
 const SQLITE_JOURNAL_MODE: &str = "WAL";
 const STORAGE_FORMAT_VERSION: i64 = 5;
@@ -53,7 +52,6 @@ pub struct NativeStorageConfig {
     catalog_backend: CatalogBackend,
     catalog_path: PathBuf,
     data_path: PathBuf,
-    s3_connection: Option<S3ConnectionConfig>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -70,38 +68,6 @@ type NativeReadRegistry = HashMap<NativeReadIdentity, Weak<Mutex<duckdb::Connect
 static NATIVE_READ_DATABASES: OnceLock<Mutex<NativeReadRegistry>> = OnceLock::new();
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct S3ConnectionConfig {
-    pub endpoint: String,
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub session_token: Option<String>,
-    pub region: Option<String>,
-    pub path_style: Option<bool>,
-    pub use_ssl: Option<bool>,
-}
-
-impl S3ConnectionConfig {
-    pub fn new(
-        endpoint: String,
-        access_key_id: String,
-        secret_access_key: String,
-        session_token: Option<String>,
-        region: Option<String>,
-        path_style: Option<bool>,
-        use_ssl: Option<bool>,
-    ) -> Self {
-        Self {
-            endpoint,
-            access_key_id,
-            secret_access_key,
-            session_token,
-            region,
-            path_style,
-            use_ssl,
-        }
-    }
-}
-
 struct CatalogAdapter {
     backend: CatalogBackend,
     default_catalog_filename: &'static str,
@@ -201,21 +167,14 @@ impl NativeStorageConfig {
         catalog_path: Option<PathBuf>,
         data_path: Option<PathBuf>,
     ) -> Self {
-        Self::with_backend_and_s3_config(
-            CatalogBackend::DuckDb,
-            root_path,
-            catalog_path,
-            data_path,
-            None,
-        )
+        Self::with_backend(CatalogBackend::DuckDb, root_path, catalog_path, data_path)
     }
 
-    pub fn with_backend_and_s3_config(
+    pub fn with_backend(
         catalog_backend: CatalogBackend,
         root_path: &Path,
         catalog_path: Option<PathBuf>,
         data_path: Option<PathBuf>,
-        s3_connection: Option<S3ConnectionConfig>,
     ) -> Self {
         let seex_path = root_path.join(".seex");
         let adapter = catalog_backend.adapter();
@@ -224,7 +183,6 @@ impl NativeStorageConfig {
             catalog_path: catalog_path
                 .unwrap_or_else(|| seex_path.join(adapter.default_catalog_filename)),
             data_path: data_path.unwrap_or_else(|| seex_path.join("data")),
-            s3_connection,
         }
     }
 
@@ -303,7 +261,6 @@ pub(crate) fn open_existing_client_connection_with_config(
 pub(crate) fn open_shared_existing_local_connection_with_config(
     config: NativeStorageConfig,
 ) -> Result<(duckdb::Connection, NativeReadDatabase), StorageError> {
-    debug_assert!(!is_s3_data_path(&config.data_path));
     let identity = NativeReadIdentity {
         catalog_backend: config.catalog_backend,
         catalog_path: config.catalog_path.clone(),
@@ -355,7 +312,7 @@ fn open_native_connection_with_mode(
             source,
         })?;
     }
-    if !must_exist && !is_s3_data_path(&config.data_path) {
+    if !must_exist {
         std::fs::create_dir_all(&config.data_path).map_err(|source| StorageError::Storage {
             operation: "creating data directory",
             name: path_basename(&config.data_path),
@@ -365,11 +322,6 @@ fn open_native_connection_with_mode(
     let phase_started = std::time::Instant::now();
     let connection = open_duckdb_connection()?;
     record_write_timing("connection_duckdb_open", phase_started.elapsed());
-    if is_s3_data_path(&config.data_path)
-        && let Some(s3_connection) = config.s3_connection.as_ref()
-    {
-        configure_s3_connection(&connection, s3_connection)?;
-    }
     let phase_started = std::time::Instant::now();
     attach_ducklake_with_backend_and_mode(
         &connection,
@@ -565,59 +517,6 @@ fn open_duckdb_connection() -> Result<duckdb::Connection, StorageError> {
     Ok(duckdb::Connection::open_in_memory()?)
 }
 
-fn configure_s3_connection(
-    connection: &duckdb::Connection,
-    config: &S3ConnectionConfig,
-) -> Result<(), StorageError> {
-    connection
-        .execute_batch("INSTALL httpfs; LOAD httpfs;")
-        .map_err(|source| StorageError::StorageDuckDb {
-            operation: "loading DuckDB HTTPFS extension",
-            name: "s3 data path".to_owned(),
-            source,
-        })?;
-
-    connection
-        .execute_batch(&create_s3_secret_statement(config))
-        .map_err(|source| StorageError::StorageDuckDb {
-            operation: "configuring DuckDB S3 secret",
-            name: "s3 data path".to_owned(),
-            source,
-        })?;
-    Ok(())
-}
-
-fn create_s3_secret_statement(config: &S3ConnectionConfig) -> String {
-    let mut options = vec![
-        "TYPE s3".to_owned(),
-        format!("KEY_ID {}", sql_string_literal(&config.access_key_id)),
-        format!("SECRET {}", sql_string_literal(&config.secret_access_key)),
-        format!("ENDPOINT {}", sql_string_literal(&config.endpoint)),
-    ];
-    if let Some(session_token) = config.session_token.as_ref() {
-        options.push(format!(
-            "SESSION_TOKEN {}",
-            sql_string_literal(session_token)
-        ));
-    }
-    if let Some(region) = config.region.as_ref() {
-        options.push(format!("REGION {}", sql_string_literal(region)));
-    }
-    if let Some(path_style) = config.path_style {
-        let url_style = if path_style { "path" } else { "vhost" };
-        options.push(format!("URL_STYLE {}", sql_string_literal(url_style)));
-    }
-    if let Some(use_ssl) = config.use_ssl {
-        options.push(format!("USE_SSL {}", sql_boolean_literal(use_ssl)));
-    }
-    format!(
-        "CREATE OR REPLACE SECRET {S3_SECRET_NAME} (
-             {}
-         );",
-        options.join(",\n             ")
-    )
-}
-
 pub fn initialize_storage_tables(connection: &duckdb::Connection) -> Result<(), StorageError> {
     connection.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS seex_projects (
@@ -729,19 +628,11 @@ fn validate_storage_format(connection: &duckdb::Connection) -> Result<(), Storag
     Ok(())
 }
 
-fn sql_boolean_literal(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
-}
-
 fn path_basename(path: &Path) -> String {
     path.file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("storage path")
         .to_owned()
-}
-
-pub fn is_s3_data_path(path: &Path) -> bool {
-    path.to_string_lossy().starts_with("s3://")
 }
 
 #[cfg(test)]
@@ -752,13 +643,8 @@ mod tests {
     fn catalog_creates_project_run_and_sequence_indexes() -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::Sqlite,
-            root.path(),
-            None,
-            None,
-            None,
-        );
+        let config =
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, root.path(), None, None);
         let connection = open_native_connection_with_config(config.clone())?;
         let catalog = sql_string_literal(config.catalog_path.to_string_lossy().as_ref());
         let index_count: i64 = connection.query_row(
@@ -831,13 +717,7 @@ mod tests {
         let root = PathBuf::from(std::env::var("SEEX_LARGE_ROOT")?);
         let expected: i64 = std::env::var("SEEX_LARGE_EXPECTED")?.parse()?;
         let connection = open_existing_native_connection_with_config(
-            NativeStorageConfig::with_backend_and_s3_config(
-                CatalogBackend::Sqlite,
-                &root,
-                None,
-                None,
-                None,
-            ),
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, &root, None, None),
         )?;
         let actual: (i64, f64, i64, i64) = connection.query_row(
             "SELECT count(*), sum(value_f64), min(step), max(step)
@@ -867,13 +747,7 @@ mod tests {
     fn retained_store_row_group_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
         use crate::model::metric::{MetricQuery, ReductionPolicy};
         let root = PathBuf::from(std::env::var("SEEX_DIAGNOSTIC_ROOT")?);
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::Sqlite,
-            &root,
-            None,
-            None,
-            None,
-        );
+        let config = NativeStorageConfig::with_backend(CatalogBackend::Sqlite, &root, None, None);
         let connection = open_existing_native_connection_with_config(config)?;
         connection.execute_batch("SET enable_logging=true; SET logging_level='DEBUG';")?;
         let query = MetricQuery::new(
@@ -966,10 +840,9 @@ mod tests {
                         return Err("inline matrix budget exceeded".into());
                     }
                     let root = tempfile::tempdir()?;
-                    let config = NativeStorageConfig::with_backend_and_s3_config(
+                    let config = NativeStorageConfig::with_backend(
                         CatalogBackend::Sqlite,
                         root.path(),
-                        None,
                         None,
                         None,
                     );
@@ -1050,13 +923,8 @@ mod tests {
     #[ignore = "diagnostic: observe cached writer after another connection flushes"]
     fn cached_writer_after_external_inline_flush() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::Sqlite,
-            root.path(),
-            None,
-            None,
-            None,
-        );
+        let config =
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, root.path(), None, None);
         let cached = open_native_connection_with_config(config.clone())?;
         let insert = "INSERT INTO dl.metric_points VALUES
             ('probe-run', 'loss', 'loss', 0, now(), 1.0, now())";
@@ -1343,13 +1211,7 @@ mod tests {
         let new_root = tempfile::tempdir()?;
         let new_catalog_path = new_root.path().join(".seex/catalog.sqlite");
         let new_config = || {
-            NativeStorageConfig::with_backend_and_s3_config(
-                CatalogBackend::Sqlite,
-                new_root.path(),
-                None,
-                None,
-                None,
-            )
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, new_root.path(), None, None)
         };
 
         drop(open_native_connection_with_config(new_config())?);
@@ -1373,10 +1235,9 @@ mod tests {
         create_legacy_sqlite_catalog(legacy_root.path())?;
         assert_eq!(sqlite_journal_mode(&legacy_catalog_path)?, "delete");
         let legacy_config = || {
-            NativeStorageConfig::with_backend_and_s3_config(
+            NativeStorageConfig::with_backend(
                 CatalogBackend::Sqlite,
                 legacy_root.path(),
-                None,
                 None,
                 None,
             )
@@ -1427,110 +1288,6 @@ mod tests {
 
         assert_eq!(project_count, 0);
         Ok(())
-    }
-
-    #[test]
-    fn catalog_adapters_accept_s3_data_path() {
-        let adapters = [CatalogAdapter::duckdb(), CatalogAdapter::sqlite()];
-
-        for adapter in adapters {
-            let statement = adapter.attach_ducklake_statement(
-                Path::new("catalog.ducklake"),
-                Path::new("s3://bucket/prefix"),
-                NativeConnectionMode::Write,
-            );
-
-            assert!(statement.contains("DATA_PATH 's3://bucket/prefix'"));
-        }
-    }
-
-    #[test]
-    fn local_data_path_does_not_configure_httpfs_or_s3_secret()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root_path =
-            std::env::temp_dir().join(format!("seex-bootstrap-{}", uuid::Uuid::new_v4()));
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::DuckDb,
-            &root_path,
-            None,
-            None,
-            Some(s3_test_config()),
-        );
-        let connection = open_native_connection_with_config(config)?;
-
-        let httpfs_loaded: bool = connection.query_row(
-            "SELECT loaded
-             FROM duckdb_extensions()
-             WHERE extension_name = 'httpfs'",
-            [],
-            |row| row.get(0),
-        )?;
-        let secret_count: i64 =
-            connection.query_row("SELECT count(*) FROM duckdb_secrets()", [], |row| {
-                row.get(0)
-            })?;
-
-        assert!(!httpfs_loaded);
-        assert_eq!(secret_count, 0);
-        std::fs::remove_dir_all(root_path)?;
-        Ok(())
-    }
-
-    #[test]
-    fn configure_s3_connection_creates_temporary_redacted_secret()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let connection = open_duckdb_connection()?;
-        let config = s3_test_config();
-
-        configure_s3_connection(&connection, &config)?;
-
-        let (name, secret_type, persistent, storage, secret_string): (
-            String,
-            String,
-            bool,
-            String,
-            String,
-        ) = connection.query_row(
-            "SELECT name, type, persistent, storage, secret_string
-             FROM duckdb_secrets()",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            },
-        )?;
-
-        assert_eq!(name, S3_SECRET_NAME);
-        assert_eq!(secret_type, "s3");
-        assert!(!persistent);
-        assert_eq!(storage, "memory");
-        assert!(secret_string.contains("endpoint=127.0.0.1:9000"));
-        assert!(secret_string.contains("key_id=seex-key"));
-        assert!(secret_string.contains("region=us-east-1"));
-        assert!(secret_string.contains("secret=redacted"));
-        assert!(secret_string.contains("session_token=redacted"));
-        assert!(secret_string.contains("url_style=path"));
-        assert!(secret_string.contains("use_ssl=false"));
-        assert!(!secret_string.contains("seex-secret"));
-        assert!(!secret_string.contains("seex-session"));
-        Ok(())
-    }
-
-    fn s3_test_config() -> S3ConnectionConfig {
-        S3ConnectionConfig::new(
-            "127.0.0.1:9000".to_owned(),
-            "seex-key".to_owned(),
-            "seex-secret".to_owned(),
-            Some("seex-session".to_owned()),
-            Some("us-east-1".to_owned()),
-            Some(true),
-            Some(false),
-        )
     }
 
     #[test]

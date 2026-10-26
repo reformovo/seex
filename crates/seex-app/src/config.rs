@@ -848,7 +848,7 @@ mod tests {
         let saved = fs::read_to_string(&path)?;
         assert!(saved.contains("# Shared schema-v1 fixture"));
         assert!(saved.contains("catalog_path = \".seex/global-catalog.ducklake\""));
-        assert!(saved.contains("secret_access_key = \"global-secret\""));
+        assert!(saved.contains("data_path = \".seex/global-data\""));
         assert!(saved.contains("preserved = \"unknown application setting\""));
         let parsed = saved.parse::<DocumentMut>()?;
         assert_eq!(

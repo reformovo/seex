@@ -83,8 +83,8 @@ directories remain untouched; initialize a new `.seex` store instead.
 
 `Settings` configures `catalog_backend`, `catalog_path`, `data_path`, and
 `metric_queue_capacity`. This release accepts only the local SQLite catalog and
-a local `data_path`; S3 settings are rejected when the native store opens, and
-credential values are redacted from `repr(settings)`.
+a local `data_path`; remote `s3://` data and catalog paths are rejected when
+the native store opens, and no object-storage settings are accepted.
 
 Project-local storage settings can live in `./.seex/config.toml`. Relative
 `data_path` and `catalog_path` values in this file are resolved from the project

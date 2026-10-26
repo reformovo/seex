@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::config::{CatalogBackend, S3Options};
+use crate::config::CatalogBackend;
 use crate::engine::query::NativeQueryStore;
 use crate::error::{Error, Result as SdkResult};
 use crate::model::comparison::{
@@ -20,10 +20,10 @@ use crate::model::metric::{
 use crate::model::run::{Run, RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 use crate::storage::bootstrap::{
-    NativeReadDatabase, NativeStorageConfig, is_s3_data_path,
-    open_existing_native_connection_with_config, open_shared_existing_local_connection_with_config,
+    NativeReadDatabase, NativeStorageConfig, open_existing_native_connection_with_config,
+    open_shared_existing_local_connection_with_config,
 };
-use crate::storage::config::{S3ConnectionOverrides, resolve_init_config, resolve_storage_config};
+use crate::storage::config::resolve_init_config;
 use crate::storage::{ProjectConnection, ProjectMetricReader, StorageError};
 
 /// Builder for opening one existing native store read-only.
@@ -32,7 +32,6 @@ pub struct ReaderBuilder {
     catalog_backend: Option<CatalogBackend>,
     catalog_path: Option<PathBuf>,
     data_path: Option<PathBuf>,
-    s3: S3Options,
 }
 
 /// Maximum number of real points returned for one chart curve.
@@ -40,31 +39,6 @@ pub const MAX_CHART_POINTS: usize = 1_024;
 /// Maximum number of Runs returned by one discovery request.
 pub const MAX_RUN_PAGE_SIZE: usize = 100;
 const MAX_RUN_METADATA_CACHE: usize = 4_096;
-
-/// Failure while opening a Reader restricted to local data.
-#[doc(hidden)]
-#[derive(Debug)]
-pub enum LocalReaderError {
-    UnsupportedS3,
-    Sdk(Error),
-}
-
-impl fmt::Display for LocalReaderError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnsupportedS3 => formatter.write_str("S3 data paths are unsupported"),
-            Self::Sdk(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl std::error::Error for LocalReaderError {}
-
-impl From<Error> for LocalReaderError {
-    fn from(error: Error) -> Self {
-        Self::Sdk(error)
-    }
-}
 
 /// Cloneable cancellation capability for one Reader connection.
 #[doc(hidden)]
@@ -159,7 +133,6 @@ impl ReaderBuilder {
             catalog_backend: None,
             catalog_path: None,
             data_path: None,
-            s3: S3Options::default(),
         }
     }
 
@@ -181,12 +154,6 @@ impl ReaderBuilder {
         self
     }
 
-    /// Supplies connection-local S3 overrides for an S3 data path.
-    pub fn s3_options(mut self, value: S3Options) -> Self {
-        self.s3 = value;
-        self
-    }
-
     /// Opens the configured store without starting a writer.
     ///
     /// # Errors
@@ -194,55 +161,30 @@ impl ReaderBuilder {
     /// Returns [`Error::Configuration`] for invalid effective configuration or
     /// [`Error::Storage`] when the existing native store cannot be opened.
     pub fn open(self) -> SdkResult<Reader> {
-        self.open_impl(false).map_err(|error| match error {
-            LocalReaderError::UnsupportedS3 => Error::UnsupportedQuery,
-            LocalReaderError::Sdk(error) => error,
-        })
+        self.open_impl(false)
     }
 
     /// Opens the configured native store only when its data path is local.
     #[doc(hidden)]
-    pub fn open_local(self) -> std::result::Result<Reader, LocalReaderError> {
+    pub fn open_local(self) -> SdkResult<Reader> {
         self.open_impl(true)
     }
 
-    fn open_impl(self, local_only: bool) -> std::result::Result<Reader, LocalReaderError> {
+    fn open_impl(self, local_only: bool) -> SdkResult<Reader> {
         let root_path = self.root_path;
-        if local_only {
-            let storage = resolve_storage_config(
-                &root_path,
-                self.data_path.clone(),
-                self.catalog_backend.map(CatalogBackend::as_name),
-                self.catalog_path.clone(),
-            )
-            .map_err(|_| Error::Configuration)?;
-            if storage.data_path.as_deref().is_some_and(is_s3_data_path) {
-                return Err(LocalReaderError::UnsupportedS3);
-            }
-        }
         let resolved = resolve_init_config(
             &root_path,
             self.data_path,
             self.catalog_backend.map(CatalogBackend::as_name),
             self.catalog_path,
             1,
-            S3ConnectionOverrides {
-                endpoint: self.s3.endpoint,
-                access_key_id: self.s3.access_key_id,
-                secret_access_key: self.s3.secret_access_key,
-                session_token: self.s3.session_token,
-                region: self.s3.region,
-                path_style: self.s3.path_style,
-                use_ssl: self.s3.use_ssl,
-            },
         )
         .map_err(|_| Error::Configuration)?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
+        let config = NativeStorageConfig::with_backend(
             resolved.catalog_backend,
             &root_path,
             resolved.catalog_path,
             resolved.data_path,
-            resolved.s3_connection,
         );
         let retry_config = config.clone();
         let (connection, native_database) = if local_only {
@@ -1179,10 +1121,9 @@ mod tests {
     #[test]
     fn run_pages_reject_unbounded_limits() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
+        let config = NativeStorageConfig::with_backend(
             crate::storage::bootstrap::CatalogBackend::Sqlite,
             root.path(),
-            None,
             None,
             None,
         );
@@ -1512,10 +1453,9 @@ mod tests {
     #[test]
     fn run_metadata_cache_does_not_grow_with_pages() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
+        let config = NativeStorageConfig::with_backend(
             crate::storage::bootstrap::CatalogBackend::Sqlite,
             root.path(),
-            None,
             None,
             None,
         );
@@ -1658,13 +1598,7 @@ mod tests {
 
         let root = tempfile::tempdir()?;
         let connection = ProjectConnection::new(open_native_connection_with_config(
-            NativeStorageConfig::with_backend_and_s3_config(
-                CatalogBackend::Sqlite,
-                root.path(),
-                None,
-                None,
-                None,
-            ),
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, root.path(), None, None),
         )?);
         let project_id = ProjectId::from_string("project-1");
         let created_at = crate::storage::time::current_timestamp("created_at")?;

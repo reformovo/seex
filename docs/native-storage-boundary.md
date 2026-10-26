@@ -35,7 +35,8 @@ The default project-local store is:
 ```
 
 Users may override `catalog_path` and `data_path` independently with local
-filesystem paths. S3 and DuckDB catalog configuration are rejected. An
+filesystem paths; remote (URI) paths are rejected and no object-storage
+configuration exists. An
 explicit `catalog_path` is used as provided. Newly created stores carry a
 `seex_storage_metadata` format marker; an existing store with a missing or
 unsupported marker is rejected instead of initialized or migrated. Format v2

@@ -8,22 +8,18 @@ import pytest
 import seex
 
 
-def test_settings_are_typed_and_redact_credentials(tmp_path: pathlib.Path) -> None:
+def test_settings_expose_local_storage_fields(tmp_path: pathlib.Path) -> None:
     settings = seex.Settings(
         catalog_backend="sqlite",
+        catalog_path=tmp_path / "catalog.sqlite",
         data_path=tmp_path / "data",
-        s3_access_key_id="credential-a",
-        s3_secret_access_key="credential-b",
-        s3_session_token="credential-c",
     )
 
-    rendered = repr(settings)
     assert settings.catalog_backend == "sqlite"
+    assert settings.catalog_path == tmp_path / "catalog.sqlite"
     assert settings.data_path == tmp_path / "data"
-    assert "credential-a" not in rendered
-    assert "credential-b" not in rendered
-    assert "credential-c" not in rendered
-    assert rendered.count("[REDACTED]") == 3
+    assert settings.metric_queue_capacity == 65536
+    assert not hasattr(settings, "s3_endpoint")
 
 
 @pytest.mark.parametrize("capacity", [0, 1_048_577])
@@ -37,7 +33,7 @@ def test_settings_rejects_legacy_duckdb_catalog_backend() -> None:
         seex.Settings(catalog_backend="duckdb")  # type: ignore[reportArgumentType]
 
 
-def test_init_rejects_s3_data_path(tmp_path: pathlib.Path) -> None:
+def test_init_rejects_remote_data_path(tmp_path: pathlib.Path) -> None:
     with pytest.raises(seex.InvalidConfigurationError, match="configuration is invalid"):
         seex.init(
             project="project-1",

@@ -724,13 +724,8 @@ mod tests {
     #[test]
     fn metric_key_prefix_pages_are_exact_and_stable() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::Sqlite,
-            root.path(),
-            None,
-            None,
-            None,
-        );
+        let config =
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, root.path(), None, None);
         let store = ProjectConnection::new(open_native_connection_with_config(config)?);
         for key in ["loss", "loss/train", "loss/val", "other", "零/损失"] {
             store.execute("INSERT INTO seex_metric_keys VALUES (?)", [key])?;
@@ -756,13 +751,8 @@ mod tests {
     #[test]
     fn run_page_cursor_handles_equal_creation_times() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::Sqlite,
-            root.path(),
-            None,
-            None,
-            None,
-        );
+        let config =
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, root.path(), None, None);
         let connection = ProjectConnection::new(open_native_connection_with_config(config)?);
         for index in 0..105 {
             connection.execute(
@@ -785,13 +775,8 @@ mod tests {
     fn series_directory_publishes_only_actual_sequences_and_repairs_pending()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::Sqlite,
-            root.path(),
-            None,
-            None,
-            None,
-        );
+        let config =
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, root.path(), None, None);
         let connection = open_native_connection_with_config(config.clone())?;
         let store = ProjectConnection::with_catalog_write_lock(connection, config.clone());
         store.execute(

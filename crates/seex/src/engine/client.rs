@@ -8,7 +8,7 @@ use crate::storage::{ProjectConnection, RunWriterGuard};
 
 use crate::engine::EngineError;
 use crate::engine::bootstrap::{
-    CatalogBackend, NativeStorageConfig, S3ConnectionConfig, catalog_lock_namespace,
+    CatalogBackend, NativeStorageConfig, catalog_lock_namespace,
     open_existing_client_connection_with_config, open_native_connection_with_config,
 };
 #[cfg(test)]
@@ -56,7 +56,6 @@ impl NativeClient {
             CatalogBackend::DuckDb,
             catalog_path,
             data_path,
-            None,
             metric_queue_capacity,
         )
     }
@@ -66,7 +65,6 @@ impl NativeClient {
         catalog_backend: CatalogBackend,
         catalog_path: Option<PathBuf>,
         data_path: Option<PathBuf>,
-        s3_connection: Option<S3ConnectionConfig>,
         metric_queue_capacity: usize,
     ) -> Result<Self, EngineError> {
         Self::open_with_catalog_backend_storage_config_mode(
@@ -74,7 +72,6 @@ impl NativeClient {
             catalog_backend,
             catalog_path,
             data_path,
-            s3_connection,
             metric_queue_capacity,
             false,
         )
@@ -85,18 +82,12 @@ impl NativeClient {
         catalog_backend: CatalogBackend,
         catalog_path: Option<PathBuf>,
         data_path: Option<PathBuf>,
-        s3_connection: Option<S3ConnectionConfig>,
         metric_queue_capacity: usize,
         must_exist: bool,
     ) -> Result<Self, EngineError> {
         let root_path = path.as_ref().to_path_buf();
-        let storage_config = NativeStorageConfig::with_backend_and_s3_config(
-            catalog_backend,
-            &root_path,
-            catalog_path,
-            data_path,
-            s3_connection,
-        );
+        let storage_config =
+            NativeStorageConfig::with_backend(catalog_backend, &root_path, catalog_path, data_path);
         let catalog_path = storage_config.catalog_path().to_owned();
         let connection = if must_exist {
             open_existing_client_connection_with_config(storage_config.clone())?
@@ -1317,7 +1308,6 @@ mod tests {
             CatalogBackend::Sqlite,
             None,
             None,
-            None,
             65_536,
         )?;
         let project = client.create_project(
@@ -1362,13 +1352,8 @@ mod tests {
         }
         client.shutdown(None)?;
 
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::Sqlite,
-            &root_path,
-            None,
-            None,
-            None,
-        );
+        let config =
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, &root_path, None, None);
         let reader =
             crate::storage::bootstrap::open_existing_native_connection_with_config(config)?;
         let pending: i64 = reader.query_row(
@@ -1390,7 +1375,6 @@ mod tests {
             CatalogBackend::Sqlite,
             None,
             None,
-            None,
             65_536,
         );
         assert!(
@@ -1399,13 +1383,7 @@ mod tests {
         );
 
         let reader = crate::storage::bootstrap::open_existing_native_connection_with_config(
-            NativeStorageConfig::with_backend_and_s3_config(
-                CatalogBackend::Sqlite,
-                &root_path,
-                None,
-                None,
-                None,
-            ),
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, &root_path, None, None),
         )?;
         let pending_after_failure: i64 = reader.query_row(
             "SELECT value FROM seex_storage_metadata WHERE key = 'flush_pending'",
@@ -1422,7 +1400,6 @@ mod tests {
             CatalogBackend::Sqlite,
             None,
             None,
-            None,
             65_536,
             true,
         )?;
@@ -1431,13 +1408,8 @@ mod tests {
             .join("metric_key_encoded=train%252Floss");
         assert!(partition_contains_parquet(&partition_path)?);
         recovered.shutdown(None)?;
-        let config = NativeStorageConfig::with_backend_and_s3_config(
-            CatalogBackend::Sqlite,
-            &root_path,
-            None,
-            None,
-            None,
-        );
+        let config =
+            NativeStorageConfig::with_backend(CatalogBackend::Sqlite, &root_path, None, None);
         let connection = open_native_connection_with_config(config.clone())?;
         connection.execute(
             "UPDATE seex_storage_metadata SET value = 1 WHERE key = 'flush_pending'",

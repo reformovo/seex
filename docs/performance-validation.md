@@ -78,8 +78,7 @@ trend observations.
 
 - Reporting: `bench_log_throughput.py` is the sole admission benchmark. Run
   only the affected Rust or Python boundary and mode. `bench_log_persistence.py`
-  emits local drain/persistence and finalization samples; S3/OSS is observation
-  only.
+  emits local drain/persistence and finalization samples.
 - Query: the Reader benchmark uses 1 Run × 1 Metric × 1,000,000 points. Select
   only the affected backend, axis, and full/narrow range. Narrow Step changes
   normally use DuckDB narrow as primary and DuckDB full as protected.

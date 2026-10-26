@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use toml::Table;
 
-use crate::storage::bootstrap::{CatalogBackend, S3ConnectionConfig, is_s3_data_path};
+use crate::storage::bootstrap::CatalogBackend;
 
 const MAX_METRIC_QUEUE_CAPACITY: i64 = 1_048_576;
 const CONFIG_SCHEMA_VERSION: i64 = 1;
@@ -32,7 +32,6 @@ pub struct ResolvedInitConfig {
     pub catalog_path: Option<PathBuf>,
     pub data_path: Option<PathBuf>,
     pub metric_queue_capacity: usize,
-    pub s3_connection: Option<S3ConnectionConfig>,
 }
 
 /// Storage paths and catalog backend resolved without object-store credentials.
@@ -40,17 +39,6 @@ pub struct ResolvedStorageConfig {
     pub catalog_backend: CatalogBackend,
     pub catalog_path: Option<PathBuf>,
     pub data_path: Option<PathBuf>,
-}
-
-#[derive(Default)]
-pub struct S3ConnectionOverrides {
-    pub endpoint: Option<String>,
-    pub access_key_id: Option<String>,
-    pub secret_access_key: Option<String>,
-    pub session_token: Option<String>,
-    pub region: Option<String>,
-    pub path_style: Option<bool>,
-    pub use_ssl: Option<bool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,11 +57,6 @@ pub enum InitConfigError {
         source: toml::de::Error,
     },
 
-    #[error(
-        "global config.toml containing S3 credentials must have owner-only read/write permissions"
-    )]
-    InsecureGlobalSecretPermissions,
-
     #[error("{0}")]
     Invalid(String),
 }
@@ -84,7 +67,6 @@ pub fn resolve_init_config(
     catalog_backend: Option<&str>,
     catalog_path: Option<PathBuf>,
     metric_queue_capacity: i64,
-    s3_overrides: S3ConnectionOverrides,
 ) -> Result<ResolvedInitConfig, InitConfigError> {
     let layers = load_config_layers(root_path)?;
     let storage = resolve_storage_config_from_layers(
@@ -95,38 +77,21 @@ pub fn resolve_init_config(
         &layers,
     )?;
     let metric_queue_capacity = validate_metric_queue_capacity(metric_queue_capacity)?;
-    let s3_connection = if storage.data_path.as_deref().is_some_and(is_s3_data_path) {
-        let s3 = merge_s3_tables(&layers)?;
-        Some(resolve_s3_connection_from_table(s3.as_ref(), s3_overrides)?)
-    } else {
-        None
-    };
 
     Ok(ResolvedInitConfig {
         catalog_backend: storage.catalog_backend,
         catalog_path: storage.catalog_path,
         data_path: storage.data_path,
         metric_queue_capacity,
-        s3_connection,
     })
 }
 
-/// Resolves native catalog and data paths without reading S3 credentials.
+/// Resolves native catalog and data paths from layered configuration.
 ///
 /// # Errors
 ///
 /// Returns [`InitConfigError`] when the project configuration cannot be read or
 /// contains an invalid catalog backend or path.
-pub fn resolve_storage_config(
-    root_path: &Path,
-    data_path: Option<PathBuf>,
-    catalog_backend: Option<&str>,
-    catalog_path: Option<PathBuf>,
-) -> Result<ResolvedStorageConfig, InitConfigError> {
-    let layers = load_config_layers(root_path)?;
-    resolve_storage_config_from_layers(root_path, data_path, catalog_backend, catalog_path, &layers)
-}
-
 fn resolve_storage_config_from_layers(
     root_path: &Path,
     data_path: Option<PathBuf>,
@@ -176,9 +141,6 @@ fn load_config_document(
     let table = content
         .parse::<Table>()
         .map_err(|source| InitConfigError::ParseConfig { scope, source })?;
-    if scope == "global" && contains_s3_credentials(&table) {
-        validate_global_secret_permissions(config_path)?;
-    }
     match table
         .get("schema_version")
         .and_then(toml::Value::as_integer)
@@ -191,39 +153,6 @@ fn load_config_document(
             "{scope} config.toml schema_version must be {CONFIG_SCHEMA_VERSION}"
         ))),
     }
-}
-
-fn contains_s3_credentials(config: &Table) -> bool {
-    config
-        .get("s3")
-        .and_then(toml::Value::as_table)
-        .is_some_and(|s3| {
-            ["access_key_id", "secret_access_key", "session_token"]
-                .into_iter()
-                .any(|key| s3.contains_key(key))
-        })
-}
-
-#[cfg(unix)]
-fn validate_global_secret_permissions(config_path: &Path) -> Result<(), InitConfigError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mode = fs::metadata(config_path)
-        .map_err(|source| InitConfigError::ReadConfig {
-            scope: "global",
-            source,
-        })?
-        .permissions()
-        .mode();
-    if mode & 0o077 != 0 || mode & 0o600 != 0o600 {
-        return Err(InitConfigError::InsecureGlobalSecretPermissions);
-    }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn validate_global_secret_permissions(_config_path: &Path) -> Result<(), InitConfigError> {
-    Ok(())
 }
 
 fn resolve_layered_data_path(
@@ -367,100 +296,6 @@ fn validate_metric_queue_capacity(value: i64) -> Result<usize, InitConfigError> 
         .map_err(|_| invalid("metric_queue_capacity must be between 1 and 1048576"))
 }
 
-fn resolve_s3_connection_from_table(
-    s3: Option<&Table>,
-    explicit: S3ConnectionOverrides,
-) -> Result<S3ConnectionConfig, InitConfigError> {
-    Ok(S3ConnectionConfig::new(
-        required_s3_string(
-            optional_s3_string(explicit.endpoint, s3, "endpoint", "s3_endpoint")?,
-            "s3_endpoint",
-        )?,
-        required_s3_string(
-            optional_s3_string(
-                explicit.access_key_id,
-                s3,
-                "access_key_id",
-                "s3_access_key_id",
-            )?,
-            "s3_access_key_id",
-        )?,
-        required_s3_string(
-            optional_s3_string(
-                explicit.secret_access_key,
-                s3,
-                "secret_access_key",
-                "s3_secret_access_key",
-            )?,
-            "s3_secret_access_key",
-        )?,
-        optional_s3_string(
-            explicit.session_token,
-            s3,
-            "session_token",
-            "s3_session_token",
-        )?,
-        optional_s3_string(explicit.region, s3, "region", "s3_region")?,
-        optional_bool(
-            explicit.path_style,
-            s3,
-            "path_style",
-            "config.toml s3.path_style",
-        )?,
-        optional_bool(explicit.use_ssl, s3, "use_ssl", "config.toml s3.use_ssl")?,
-    ))
-}
-
-fn merge_s3_tables(layers: &ConfigLayers) -> Result<Option<Table>, InitConfigError> {
-    let mut merged = Table::new();
-    let mut found = false;
-    for document in [layers.global.as_ref(), layers.project.as_ref()]
-        .into_iter()
-        .flatten()
-    {
-        let Some(table) = s3_table(Some(&document.table))? else {
-            continue;
-        };
-        found = true;
-        for (key, value) in table {
-            merged.insert(key.clone(), value.clone());
-        }
-    }
-    Ok(found.then_some(merged))
-}
-
-fn s3_table(config: Option<&Table>) -> Result<Option<&Table>, InitConfigError> {
-    let Some(config) = config else {
-        return Ok(None);
-    };
-    let Some(value) = config.get("s3") else {
-        return Ok(None);
-    };
-    value
-        .as_table()
-        .ok_or_else(|| invalid("config.toml s3 must be a table"))
-        .map(Some)
-}
-
-fn optional_s3_string(
-    explicit: Option<String>,
-    config: Option<&Table>,
-    key: &str,
-    explicit_name: &str,
-) -> Result<Option<String>, InitConfigError> {
-    if explicit.is_some() {
-        return validate_s3_string(explicit, explicit_name);
-    }
-    let Some(value) = config
-        .map(|config| optional_string(config, key, &format!("config.toml s3.{key}")))
-        .transpose()?
-        .flatten()
-    else {
-        return Ok(None);
-    };
-    validate_s3_string(Some(value), explicit_name)
-}
-
 fn optional_string(
     config: &Table,
     key: &str,
@@ -474,44 +309,6 @@ fn optional_string(
         .map(ToOwned::to_owned)
         .ok_or_else(|| invalid(format!("{label} must be a string")))
         .map(Some)
-}
-
-fn optional_bool(
-    explicit: Option<bool>,
-    config: Option<&Table>,
-    key: &str,
-    label: &str,
-) -> Result<Option<bool>, InitConfigError> {
-    if explicit.is_some() {
-        return Ok(explicit);
-    }
-    let Some(config) = config else {
-        return Ok(None);
-    };
-    let Some(value) = config.get(key) else {
-        return Ok(None);
-    };
-    value
-        .as_bool()
-        .ok_or_else(|| invalid(format!("{label} must be a boolean")))
-        .map(Some)
-}
-
-fn required_s3_string(value: Option<String>, name: &str) -> Result<String, InitConfigError> {
-    value.ok_or_else(|| invalid(format!("{name} is required when data_path is s3://")))
-}
-
-fn validate_s3_string(
-    value: Option<String>,
-    name: &str,
-) -> Result<Option<String>, InitConfigError> {
-    let Some(value) = value else {
-        return Ok(None);
-    };
-    if value.trim().is_empty() {
-        return Err(invalid(format!("{name} must not be empty")));
-    }
-    Ok(Some(value))
 }
 
 fn is_uri_path(path: &Path) -> bool {
@@ -545,15 +342,6 @@ mod tests {
             home.join(".seex/config.toml"),
             include_str!("../../tests/fixtures/config/v1-global.toml"),
         )?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-
-            fs::set_permissions(
-                home.join(".seex/config.toml"),
-                fs::Permissions::from_mode(0o600),
-            )?;
-        }
         fs::write(
             root.join(".seex/config.toml"),
             include_str!("../../tests/fixtures/config/v1-project.toml"),
@@ -580,39 +368,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn global_s3_credentials_require_owner_only_permissions()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let home = test_directory("global-secret-permissions");
-        let config_path = home.join(".seex/config.toml");
-        fs::create_dir_all(
-            config_path
-                .parent()
-                .ok_or("config path should have a parent")?,
-        )?;
-        fs::write(
-            &config_path,
-            include_str!("../../tests/fixtures/config/v1-global.toml"),
-        )?;
-        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o644))?;
-
-        let error = load_config_layers_from(&home.join("project"), Some(&home))
-            .err()
-            .ok_or("shared secret permissions should fail")?;
-        assert!(matches!(
-            error,
-            InitConfigError::InsecureGlobalSecretPermissions
-        ));
-
-        fs::set_permissions(&config_path, fs::Permissions::from_mode(0o600))?;
-        assert!(load_config_layers_from(&home.join("project"), Some(&home)).is_ok());
-        fs::remove_dir_all(home)?;
-        Ok(())
-    }
-
     #[test]
     fn loaded_config_requires_schema_version_one() -> Result<(), Box<dyn std::error::Error>> {
         let root = test_directory("config-version");
@@ -629,98 +384,6 @@ mod tests {
         );
         fs::remove_dir_all(root)?;
         Ok(())
-    }
-
-    #[test]
-    fn schema_v1_s3_tables_merge_global_project_and_explicit_fields() -> Result<(), InitConfigError>
-    {
-        let layers = ConfigLayers {
-            global: Some(ConfigDocument {
-                table: parse_config(include_str!("../../tests/fixtures/config/v1-global.toml")),
-                base_path: PathBuf::from("home"),
-            }),
-            project: Some(ConfigDocument {
-                table: parse_config(include_str!("../../tests/fixtures/config/v1-project.toml")),
-                base_path: PathBuf::from("project"),
-            }),
-        };
-        let merged = merge_s3_tables(&layers)?;
-        let resolved = resolve_s3_connection_from_table(
-            merged.as_ref(),
-            S3ConnectionOverrides {
-                endpoint: Some("explicit.example.com".to_owned()),
-                ..S3ConnectionOverrides::default()
-            },
-        )?;
-
-        assert_eq!(resolved.endpoint, "explicit.example.com");
-        assert_eq!(resolved.access_key_id, "global-access-key");
-        assert_eq!(resolved.secret_access_key, "global-secret");
-        assert_eq!(resolved.region.as_deref(), Some("eu-west-1"));
-        assert_eq!(resolved.path_style, Some(false));
-        Ok(())
-    }
-
-    #[test]
-    fn s3_config_merges_explicit_keywords_over_file_values() {
-        let config = parse_config(
-            r#"
-            data_path = "s3://bucket/seex"
-
-            [s3]
-            endpoint = "from-config:9000"
-            access_key_id = "from-config"
-            secret_access_key = "from-config-secret"
-            path_style = false
-            use_ssl = true
-            "#,
-        );
-
-        let resolved = resolve_s3_connection_from_table(
-            s3_table(Some(&config)).expect("s3 table should resolve"),
-            S3ConnectionOverrides {
-                endpoint: Some("override:9000".to_owned()),
-                path_style: Some(true),
-                ..S3ConnectionOverrides::default()
-            },
-        )
-        .expect("s3 config should resolve");
-
-        assert_eq!(resolved.endpoint, "override:9000");
-        assert_eq!(resolved.access_key_id, "from-config");
-        assert_eq!(resolved.secret_access_key, "from-config-secret");
-        assert_eq!(resolved.path_style, Some(true));
-        assert_eq!(resolved.use_ssl, Some(true));
-    }
-
-    #[test]
-    fn s3_config_skips_explicit_invalid_file_values() {
-        let config = parse_config(
-            r#"
-            [s3]
-            endpoint = 123
-            access_key_id = "from-config"
-            secret_access_key = "from-config-secret"
-            path_style = "yes"
-            use_ssl = true
-            "#,
-        );
-
-        let resolved = resolve_s3_connection_from_table(
-            s3_table(Some(&config)).expect("s3 table should resolve"),
-            S3ConnectionOverrides {
-                endpoint: Some("override:9000".to_owned()),
-                path_style: Some(true),
-                ..S3ConnectionOverrides::default()
-            },
-        )
-        .expect("explicit fields should suppress invalid file values");
-
-        assert_eq!(resolved.endpoint, "override:9000");
-        assert_eq!(resolved.access_key_id, "from-config");
-        assert_eq!(resolved.secret_access_key, "from-config-secret");
-        assert_eq!(resolved.path_style, Some(true));
-        assert_eq!(resolved.use_ssl, Some(true));
     }
 
     #[test]
@@ -790,7 +453,7 @@ mod tests {
     }
 
     #[test]
-    fn init_config_rejects_s3_data_path() {
+    fn init_config_rejects_remote_data_path() {
         let root_path = std::env::temp_dir().join(format!("seex-config-{}", uuid::Uuid::new_v4()));
 
         let error = match resolve_init_config(
@@ -799,9 +462,8 @@ mod tests {
             Some("sqlite"),
             None,
             1024,
-            S3ConnectionOverrides::default(),
         ) {
-            Ok(_) => panic!("S3 data paths must be rejected in the local-only P1 store"),
+            Ok(_) => panic!("remote data paths must be rejected in the local-only store"),
             Err(error) => error,
         };
 

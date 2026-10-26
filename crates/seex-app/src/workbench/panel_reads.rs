@@ -682,7 +682,7 @@ mod tests {
         let completed = coordinator.apply(detail_event(
             failed.source_id.clone(),
             1,
-            Err(WorkerError::Source(SourceError::UnsupportedS3)),
+            Err(WorkerError::Source(SourceError::Sdk(seex::Error::Storage))),
         ));
         let PanelReadOutcome::Completed(completed) = completed else {
             panic!("all source responses should complete the panel read");
