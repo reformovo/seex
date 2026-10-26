@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import shutil
 import statistics
 import sys
 import tempfile
 import time
-import tomllib
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -20,14 +17,6 @@ DEFAULT_REPEATS = 30
 DEFAULT_QUEUE_CAPACITY = 65_536
 DEFAULT_DRAIN_TIMEOUT_SECONDS = 120.0
 DEFAULT_DRAIN_POLL_SECONDS = 0.01
-
-_StorageTarget = tuple[Path, dict[str, str], Path | None]
-
-
-@dataclasses.dataclass(frozen=True)
-class ObjectStorageConfig:
-    path: Path
-    data_path: str
 
 
 def main() -> int:
@@ -45,7 +34,6 @@ def main() -> int:
             drain_timeout=args.drain_timeout,
             drain_poll_seconds=args.drain_poll_seconds,
             metric_key=args.metric_key,
-            object_storage_configs=args.object_storage_config,
         )
         emit_performance_records(result)
         print("SEEX_RSS_PHASE cycles_done", flush=True)
@@ -96,17 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
         help=(f"seconds to sleep between diagnostics polls while draining (default: {DEFAULT_DRAIN_POLL_SECONDS})"),
     )
     parser.add_argument(
-        "--object-storage-config",
-        action="append",
-        default=[],
-        type=object_storage_config,
-        metavar="CONFIG_TOML",
-        help=(
-            "project config.toml for an S3-compatible data path; repeat to "
-            "benchmark multiple S3/OSS targets alongside local storage"
-        ),
-    )
-    parser.add_argument(
         "--path",
         type=Path,
         default=None,
@@ -138,58 +115,33 @@ def run_benchmark(
     drain_timeout: float | None,
     drain_poll_seconds: float,
     metric_key: str,
-    object_storage_configs: Sequence[ObjectStorageConfig] = (),
 ) -> dict[str, Any]:
     import seex
 
-    targets: list[_StorageTarget] = [
-        (project_root, {"kind": "local"}, None),
-    ]
-    targets.extend(
-        (
-            project_root / f"object-storage-{config_index + 1}",
-            {
-                "kind": "s3_compatible",
-                "data_path": config.data_path,
-                "config_path": str(config.path),
-            },
-            config.path,
-        )
-        for config_index, config in enumerate(object_storage_configs)
-    )
-    repeat_results_by_target: list[list[dict[str, Any]]] = [[] for _ in targets]
+    target_root = project_root
+    repeat_results: list[dict[str, Any]] = []
     for repeat_index in range(repeats):
-        # Rotate the first target so process warmup does not always favor OSS.
-        for target_offset in range(len(targets)):
-            target_index = (repeat_index + target_offset) % len(targets)
-            target_root, _, config_path = targets[target_index]
-            repeat_results_by_target[target_index].append(
-                run_once(
-                    seex_module=seex,
-                    project_path=target_root / f"repeat-{repeat_index + 1}",
-                    config_path=config_path,
-                    repeat_index=repeat_index,
-                    reports=reports,
-                    queue_capacity=queue_capacity,
-                    drain_timeout=drain_timeout,
-                    drain_poll_seconds=drain_poll_seconds,
-                    metric_key=metric_key,
-                )
+        repeat_results.append(
+            run_once(
+                seex_module=seex,
+                project_path=target_root / f"repeat-{repeat_index + 1}",
+                repeat_index=repeat_index,
+                reports=reports,
+                queue_capacity=queue_capacity,
+                drain_timeout=drain_timeout,
+                drain_poll_seconds=drain_poll_seconds,
+                metric_key=metric_key,
             )
-
-    target_results = [
-        target_result(
-            project_root=target_root,
-            storage=storage,
-            reports=reports,
-            queue_capacity=queue_capacity,
-            metric_key=metric_key,
-            repeat_results=repeat_results,
         )
-        for (target_root, storage, _), repeat_results in zip(targets, repeat_results_by_target, strict=True)
-    ]
-    result = target_results[0]
-    result["object_storage_results"] = target_results[1:]
+
+    result = target_result(
+        project_root=target_root,
+        storage={"kind": "local"},
+        reports=reports,
+        queue_capacity=queue_capacity,
+        metric_key=metric_key,
+        repeat_results=repeat_results,
+    )
     result["environment"] = {
         "python": sys.version.replace("\n", " "),
         "seex_version": getattr(seex, "__version__", "unknown"),
@@ -223,7 +175,6 @@ def run_once(
     *,
     seex_module: Any,
     project_path: Path,
-    config_path: Path | None,
     repeat_index: int,
     reports: int,
     queue_capacity: int,
@@ -231,20 +182,15 @@ def run_once(
     drain_poll_seconds: float,
     metric_key: str,
 ) -> dict[str, Any]:
-    staged_config = stage_config(project_path, config_path)
     setup_started = time.perf_counter()
-    try:
-        settings = seex_module.Settings(metric_queue_capacity=queue_capacity)
-        run = seex_module.init(
-            project=f"bench-project-{repeat_index + 1}",
-            dir=project_path,
-            id=f"bench-run-{repeat_index + 1}",
-            name="persistence",
-            settings=settings,
-        )
-    finally:
-        if staged_config is not None:
-            staged_config.unlink(missing_ok=True)
+    settings = seex_module.Settings(metric_queue_capacity=queue_capacity)
+    run = seex_module.init(
+        project=f"bench-project-{repeat_index + 1}",
+        dir=project_path,
+        id=f"bench-run-{repeat_index + 1}",
+        name="persistence",
+        settings=settings,
+    )
     setup_seconds = time.perf_counter() - setup_started
 
     admission_started = time.perf_counter()
@@ -280,15 +226,6 @@ def run_once(
         "diagnostics_after_finalization": diagnostics_after_finalization,
         "diagnostics_after_shutdown": diagnostics_after_shutdown,
     }
-
-
-def stage_config(project_path: Path, config_path: Path | None) -> Path | None:
-    if config_path is None:
-        return None
-    destination = project_path / ".seex" / "config.toml"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(config_path, destination)
-    return destination
 
 
 def wait_for_drain(
@@ -390,21 +327,6 @@ def non_negative_float(value: str) -> float:
     if parsed < 0.0:
         raise argparse.ArgumentTypeError("must be non-negative")
     return parsed
-
-
-def object_storage_config(value: str) -> ObjectStorageConfig:
-    path = Path(value)
-    try:
-        config = tomllib.loads(path.read_text(encoding="utf-8"))
-    except OSError as error:
-        raise argparse.ArgumentTypeError(f"could not read object-storage config {value!r}: {error}") from error
-    except tomllib.TOMLDecodeError as error:
-        raise argparse.ArgumentTypeError(f"invalid TOML in object-storage config {value!r}: {error}") from error
-
-    data_path = config.get("data_path")
-    if not isinstance(data_path, str) or not data_path.startswith("s3://"):
-        raise argparse.ArgumentTypeError("object-storage config data_path must be an s3:// URI")
-    return ObjectStorageConfig(path=path, data_path=data_path)
 
 
 if __name__ == "__main__":

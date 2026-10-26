@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use seex::{LocalReaderError, Project, Reader, ReaderInterrupt};
+use seex::{Project, Reader, ReaderInterrupt};
 
 use crate::data::{CatalogSnapshot, DiscoveryRequest};
 
@@ -10,8 +10,6 @@ use crate::data::{CatalogSnapshot, DiscoveryRequest};
 pub enum SourceError {
     #[error("Source directory does not exist: {0}")]
     InvalidDirectory(PathBuf),
-    #[error("S3 data paths are unsupported by seex-app")]
-    UnsupportedS3,
     #[error(transparent)]
     Sdk(#[from] seex::Error),
 }
@@ -52,8 +50,8 @@ impl ReadSession {
     ///
     /// # Errors
     ///
-    /// Returns a configuration error for an S3 data path before any credential
-    /// resolution. Other configuration and storage failures are preserved.
+    /// Returns a configuration error for a remote data path. Other
+    /// configuration and storage failures are preserved.
     pub fn open_existing(root_path: &Path) -> Result<Self, SourceError> {
         let reader = open_local_reader(root_path)?;
         Ok(Self {
@@ -167,10 +165,7 @@ impl ReadSession {
 fn open_local_reader(root_path: &Path) -> Result<Reader, SourceError> {
     Reader::builder(root_path)
         .open_local()
-        .map_err(|error| match error {
-            LocalReaderError::UnsupportedS3 => SourceError::UnsupportedS3,
-            LocalReaderError::Sdk(error) => SourceError::Sdk(error),
-        })
+        .map_err(SourceError::Sdk)
 }
 
 #[cfg(test)]
@@ -184,8 +179,7 @@ mod tests {
     use super::{DiscoveryRequest, ReadSession, SourceError, SourcePreflight};
 
     #[test]
-    fn s3_is_rejected_before_missing_credentials_are_resolved()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn remote_data_path_is_rejected() -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let config_dir = root.path().join(".seex");
         fs::create_dir(&config_dir)?;

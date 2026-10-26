@@ -65,9 +65,6 @@ pub enum Error {
     CatalogNotFound {
         name: String,
     },
-    LttbExtensionUnavailable {
-        message: String,
-    },
     Storage,
 }
 
@@ -132,9 +129,6 @@ impl fmt::Display for Error {
             Self::ClientClosed => formatter.write_str("Seex client is closed"),
             Self::UnsupportedQuery => formatter.write_str("Reader query is not yet supported"),
             Self::CatalogNotFound { name } => write!(formatter, "catalog not found: {name}"),
-            Self::LttbExtensionUnavailable { message } => {
-                write!(formatter, "DuckDB LTTB extension is unavailable: {message}")
-            }
             Self::Storage => formatter.write_str("Seex storage operation failed"),
         }
     }
@@ -174,9 +168,6 @@ impl From<crate::engine::EngineError> for Error {
             EngineError::StorageFailure(crate::storage::StorageError::CatalogNotFound { name }) => {
                 Self::CatalogNotFound { name }
             }
-            EngineError::StorageFailure(
-                crate::storage::StorageError::LttbExtensionUnavailable { message },
-            ) => Self::LttbExtensionUnavailable { message },
             _ => Self::Storage,
         }
     }

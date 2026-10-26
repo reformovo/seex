@@ -77,8 +77,8 @@ release.
 - **Parquet schema**: The open compatibility boundary for native metric data.
 - **Catalog backend**: The database engine DuckLake uses for metadata in native
   mode. DuckDB is the default backend; SQLite is also supported locally.
-- **Data path**: The location where DuckLake writes Parquet data files; local
-  filesystem by default, S3-compatible object storage when configured.
+- **Data path**: The local filesystem location where DuckLake writes Parquet
+  data files.
 - **Catalog path**: The local path or connection target used for DuckLake
   catalog metadata.
 - **DuckLake**: The required native storage engine. It is a core

@@ -419,10 +419,9 @@ mod tests {
                 .starts_with("v5-")
         );
         std::fs::create_dir(&output)?; // Refuse overwriting old evidence.
-        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
+        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend(
             crate::storage::bootstrap::CatalogBackend::Sqlite,
             &root,
-            None,
             None,
             None,
         );
@@ -534,10 +533,9 @@ mod tests {
                 .starts_with("v5-")
         );
         std::fs::create_dir(&output)?; // Refuse overwriting old evidence.
-        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend_and_s3_config(
+        let config = crate::storage::bootstrap::NativeStorageConfig::with_backend(
             crate::storage::bootstrap::CatalogBackend::Sqlite,
             &root,
-            None,
             None,
             None,
         );

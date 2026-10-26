@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::config::{CatalogBackend, S3Options};
+use crate::config::CatalogBackend;
 use crate::engine::client::NativeClient;
 use crate::engine::client::NativeRun;
 use crate::engine::reporting::MetricReporterDiagnostics;
@@ -13,7 +13,7 @@ use crate::model::metric::{MetricKey, Step};
 use crate::model::run::{RunId, RunStatus};
 use crate::model::types::{Project, ProjectId};
 use crate::storage::ProjectCreateGuard;
-use crate::storage::config::{S3ConnectionOverrides, resolve_init_config};
+use crate::storage::config::resolve_init_config;
 
 const DEFAULT_METRIC_QUEUE_CAPACITY: usize = 65_536;
 const MAX_METRICS_PER_LOG: usize = 8_192;
@@ -25,7 +25,6 @@ pub struct ClientBuilder {
     catalog_path: Option<PathBuf>,
     data_path: Option<PathBuf>,
     metric_queue_capacity: usize,
-    s3: S3Options,
 }
 
 impl ClientBuilder {
@@ -36,7 +35,6 @@ impl ClientBuilder {
             catalog_path: None,
             data_path: None,
             metric_queue_capacity: DEFAULT_METRIC_QUEUE_CAPACITY,
-            s3: S3Options::default(),
         }
     }
 
@@ -60,11 +58,6 @@ impl ClientBuilder {
         self
     }
 
-    pub fn s3_options(mut self, value: S3Options) -> Self {
-        self.s3 = value;
-        self
-    }
-
     /// Opens or creates the configured native store.
     ///
     /// # Errors
@@ -80,15 +73,6 @@ impl ClientBuilder {
             self.catalog_backend.map(CatalogBackend::as_name),
             self.catalog_path,
             capacity,
-            S3ConnectionOverrides {
-                endpoint: self.s3.endpoint,
-                access_key_id: self.s3.access_key_id,
-                secret_access_key: self.s3.secret_access_key,
-                session_token: self.s3.session_token,
-                region: self.s3.region,
-                path_style: self.s3.path_style,
-                use_ssl: self.s3.use_ssl,
-            },
         )
         .map_err(|_| Error::Configuration)?;
         let inner = NativeClient::open_with_catalog_backend_storage_config(
@@ -96,7 +80,6 @@ impl ClientBuilder {
             resolved.catalog_backend,
             resolved.catalog_path,
             resolved.data_path,
-            resolved.s3_connection,
             resolved.metric_queue_capacity,
         )
         .map_err(Error::from)?;

@@ -28,11 +28,6 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Run Rust tests
         run: cargo test --workspace --all-features
-      - name: Validate online and explicit offline LTTB loading
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-        run: >-
-          cargo test -p seex lttb_online_and_explicit_offline_paths --
-          --ignored --nocapture
 
   python:
     name: Python checks
@@ -54,70 +49,6 @@ jobs:
         run: uv run pyright
       - name: Run Python tests
         run: uv run pytest
-
-  minio:
-    name: MinIO/S3 acceptance
-    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
-    needs: [linux]
-    runs-on: ubuntu-latest
-    env:
-      SEEX_MINIO_ENDPOINT: localhost:9000
-      SEEX_MINIO_BUCKET: seex-ci
-      SEEX_MINIO_ACCESS_KEY_ID: seex-ci
-      SEEX_MINIO_SECRET_ACCESS_KEY: seex-ci-secret
-      SEEX_MINIO_REGION: us-east-1
-      SEEX_MINIO_USE_SSL: "false"
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - name: Download built wheel
-        uses: actions/download-artifact@v7
-        with:
-          name: wheels-linux-x86_64
-          path: dist
-      - name: Install built wheel and test dependencies
-        run: uv pip install --system pytest dist/*.whl
-      - name: Start MinIO
-        run: |
-          docker run --detach --name seex-minio \
-            --publish 9000:9000 \
-            --env MINIO_ROOT_USER="$SEEX_MINIO_ACCESS_KEY_ID" \
-            --env MINIO_ROOT_PASSWORD="$SEEX_MINIO_SECRET_ACCESS_KEY" \
-            minio/minio:RELEASE.2025-09-07T16-13-09Z \
-            server /data
-          for attempt in {1..30}; do
-            if curl --fail --silent \
-              http://localhost:9000/minio/health/ready > /dev/null; then
-              exit 0
-            fi
-            sleep 1
-          done
-          docker logs seex-minio
-          exit 1
-      - name: Install MinIO client and create bucket
-        run: |
-          sudo curl --fail --location --silent --show-error \
-            --output /usr/local/bin/mc \
-            https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-08-13T08-35-41Z
-          sudo chmod +x /usr/local/bin/mc
-          mc --version
-          mc alias set seex \
-            http://localhost:9000 \
-            "$SEEX_MINIO_ACCESS_KEY_ID" \
-            "$SEEX_MINIO_SECRET_ACCESS_KEY"
-          mc mb "seex/$SEEX_MINIO_BUCKET"
-      - name: Run S3 acceptance for both catalog backends
-        run: python -m pytest tests/test_minio_acceptance.py
-      - name: Run local acceptance for both catalog backends
-        run: python -m pytest tests/test_catalog_backend_parity.py
-      - name: Accept partition pruning for both catalog backends
-        run: python scripts/accept_minio_partition_pruning.py
-      - name: Validate bounded Reader behavior from the wheel
-        run: python scripts/rc_lttb_validation.py
 
   linux:
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
@@ -369,7 +300,7 @@ jobs:
     name: Release guard
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, minio, linux, musllinux, windows, macos, sdist, wheel-smoke, viewer-macos-aarch64]
+    needs: [check, linux, musllinux, windows, macos, sdist, wheel-smoke, viewer-macos-aarch64]
     steps:
       - uses: actions/checkout@v6
       - name: Download Python artifacts only

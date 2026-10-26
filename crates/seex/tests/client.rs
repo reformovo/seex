@@ -4,8 +4,7 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use seex::{
-    CatalogBackend, Client, Error, LogOptions, Reader, ResumePolicy, RunOptions, S3Options,
-    WriterState,
+    CatalogBackend, Client, Error, LogOptions, Reader, ResumePolicy, RunOptions, WriterState,
 };
 
 #[test]
@@ -44,30 +43,13 @@ fn builder_rejects_invalid_queue_capacity() {
 }
 
 #[test]
-fn s3_debug_output_redacts_credentials() {
-    let options = S3Options::new()
-        .endpoint("https://objects.example")
-        .access_key_id("visible-key")
-        .secret_access_key("secret-value")
-        .session_token("session-value");
-    let rendered = format!("{options:?}");
-
-    assert!(rendered.contains("[REDACTED]"));
-    assert!(!rendered.contains("visible-key"));
-    assert!(!rendered.contains("secret-value"));
-    assert!(!rendered.contains("session-value"));
-}
-
-#[test]
 fn configuration_errors_redact_credentials() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     fs::create_dir(root.path().join(".seex"))?;
     let secret = "must-not-escape";
     fs::write(
         root.path().join(".seex/config.toml"),
-        format!(
-            "schema_version = 1\ncatalog_backend = \"invalid\"\n[s3]\nsecret_access_key = \"{secret}\"\n"
-        ),
+        format!("schema_version = 1\ncatalog_backend = \"invalid\"\nunknown = \"{secret}\"\n"),
     )?;
 
     let error = match Client::builder(root.path()).open() {

@@ -118,7 +118,6 @@ impl From<crate::storage::StorageError> for EngineError {
             StorageError::QueryMaxPointsTooLarge { max_points } => {
                 Self::MetricQueryMaxPointsTooLarge { max_points }
             }
-            error @ StorageError::LttbExtensionUnavailable { .. } => Self::StorageFailure(error),
             StorageError::InvalidRunStatus { status } => Self::InvalidRunStatus { status },
             StorageError::InvalidTimestamp { field, millis } => {
                 Self::InvalidTimestamp { field, millis }
