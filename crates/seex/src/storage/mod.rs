@@ -73,8 +73,6 @@ pub enum StorageError {
     InvalidIdentity,
     #[error("metric query max_points is too large for DuckDB: {max_points}")]
     QueryMaxPointsTooLarge { max_points: usize },
-    #[error("DuckDB LTTB extension is unavailable: {message}")]
-    LttbExtensionUnavailable { message: String },
     #[error("invalid stored run status: {status}")]
     InvalidRunStatus { status: String },
     #[error("invalid stored timestamp for {field}: {millis}")]

@@ -562,11 +562,7 @@ pub fn setup_duckdb_catalog_adapter(
 }
 
 fn open_duckdb_connection() -> Result<duckdb::Connection, StorageError> {
-    let mut config = duckdb::Config::default();
-    if std::env::var_os("SEEX_LTTB_EXTENSION_PATH").is_some() {
-        config = config.allow_unsigned_extensions()?;
-    }
-    Ok(duckdb::Connection::open_in_memory_with_flags(config)?)
+    Ok(duckdb::Connection::open_in_memory()?)
 }
 
 fn configure_s3_connection(

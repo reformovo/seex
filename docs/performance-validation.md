@@ -87,9 +87,7 @@ trend observations.
   round-trips, and the four-way read path. CPU remains a separate calibrated
   chart benchmark.
 
-The MinIO partition-pruning script is Acceptance: each catalog backend performs
-one query and must return the expected result while reading no unrelated
-Run/Metric partition. LTTB validation and wheel smoke are release Acceptance.
+Wheel smoke is release Acceptance.
 
 ## Historical entry observation
 

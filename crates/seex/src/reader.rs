@@ -852,9 +852,6 @@ impl From<&Run> for RunMetadata {
 fn public_storage_error(error: StorageError) -> Error {
     match error {
         StorageError::CatalogNotFound { name } => Error::CatalogNotFound { name },
-        StorageError::LttbExtensionUnavailable { message } => {
-            Error::LttbExtensionUnavailable { message }
-        }
         StorageError::RunNotFound { run_id } => Error::RunNotFound { run_id },
         _ => Error::Storage,
     }
