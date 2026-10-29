@@ -197,7 +197,7 @@ pub(super) fn workbench_document(
         .map(|view| TomlAnalysisView {
             name: view.name.clone(),
             runs: view.runs.iter().map(&save_run).collect(),
-            baseline: view.baseline.as_ref().map(&save_run),
+            baseline: view.baseline.as_ref().map(save_run),
             pinned_runs: view.pinned_runs.iter().map(&save_run).collect(),
             metrics: view
                 .panels

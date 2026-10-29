@@ -126,5 +126,8 @@ Runtime dependencies:
 - Curve sampling uses the bundled Seex-native LTTB selector; no external DuckDB
   LTTB extension is required. Chart queries require an explicit `max_points`
   from 2 through 1024, and the bound is strict.
-- Seex embeds DuckDB 1.5.4. DuckDB extension binaries are specific to a DuckDB
-  version and platform; use the bundled native path for offline deployment.
+- Seex embeds DuckDB 2.0.0 (via `duckdb-rs` 1.20000.1). DuckDB extension binaries
+  are specific to a DuckDB version and platform; the bundled native path installs
+  the matching `ducklake` extension on first open, and offline deployments must
+  provide it. Stores keep the SQLite catalog and Parquet layout, so the engine
+  upgrade needs no store migration.

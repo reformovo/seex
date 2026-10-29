@@ -87,7 +87,9 @@ pub(crate) fn select_timed(
     let mut reducer = OrderedLttb::new(expected_rows, budget);
     loop {
         let started = std::time::Instant::now();
-        let Some(chunk) = statement.step() else { break };
+        let Some(chunk) = statement.step()? else {
+            break;
+        };
         fetch += started.elapsed();
         let started = std::time::Instant::now();
         let batch = RecordBatch::from(&chunk);
@@ -165,7 +167,7 @@ mod tests {
         let mut probe = connection.prepare(sql)?;
         probe.execute([])?;
         let mut chunks = 0;
-        while probe.step().is_some() {
+        while probe.step()?.is_some() {
             chunks += 1;
         }
         assert!(chunks > 1, "fixture must cross Arrow batch boundaries");

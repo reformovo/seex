@@ -45,7 +45,7 @@
 ## Commands
 
 - Rust type-check: `cargo check`
-- Rust tests: `cargo test`
+- Rust tests: `cargo test --release` (debug DuckDB builds abort on DuckLake teardown; see `docs/reference/duckdb-2.0-upgrade.md`)
 - Python format: `uv run --group linting ruff format --check python scripts tests`
 - Python lint: `uv run --group linting ruff check python scripts tests`
 - Python type-check: `uv run pyright`

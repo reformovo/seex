@@ -59,8 +59,10 @@ cache-keys = [
     {file = "crates/*/Cargo.toml"},
     {file = "**/*.rs"},
 ]
-# Uncomment to build rust code in development mode
-config-settings = { build-args = '--profile=dev' }
+# Keep maturin's default (release) backend profile for uv sync / uv run. Debug
+# DuckDB builds abort on DuckLake teardown (https://github.com/duckdb/ducklake/issues/1050),
+# so dev-profile test runs cannot use the native store. For local Rust debugging use
+# `maturin develop --profile dev`, but native-store Python tests need release.
 
 [tool.maturin]
 manifest-path = "crates/seex-python/Cargo.toml"
