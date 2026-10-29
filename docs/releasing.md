@@ -48,7 +48,7 @@ rg -n '0\.1\.0(-beta\.[0-9]+|b[0-9]+)|v0\.1\.0-beta\.[0-9]+' \
 ```console
 cargo fmt --all --check
 cargo check --workspace --all-features
-cargo test --workspace --all-features
+cargo test --release --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 uv run --group linting ruff format --check python scripts tests
 uv run --group linting ruff check python scripts tests
@@ -59,7 +59,7 @@ git diff --check
 
 Run a performance comparison only for a measured hot path, following `docs/performance-validation.md`.
 
-Build from the application crate directory. In `cargo-bundle 0.11.0`, icon paths are relative to the current directory; the workspace root silently omits the icon.
+Build from the application crate directory. In `cargo-bundle 0.12.0`, icon paths are relative to the current directory; the workspace root silently omits the icon.
 
 ```console
 (cd crates/seex-app && cargo bundle --release --format osx)

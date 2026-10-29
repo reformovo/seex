@@ -90,7 +90,7 @@ one. They mirror the PR quality jobs in `.github/workflows/ci.yml` (`rust` and
 cargo fmt --all -- --check
 cargo check --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo test --release --workspace --all-features
 uv sync --group testing-extra --group linting
 uv run --group linting ruff format --check python scripts tests
 uv run --group linting ruff check python scripts tests
@@ -196,7 +196,7 @@ gh pr create --repo reformovo/seex --base main \
 - `cargo fmt --all -- --check`
 - `cargo check --workspace --all-features`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `cargo test --workspace --all-features`
+- `cargo test --release --workspace --all-features`
 - `uv run --group linting ruff format --check python scripts tests`
 - `uv run --group linting ruff check python scripts tests`
 - `uv run pyright`
