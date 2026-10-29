@@ -26,8 +26,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Run Rust tests
-        run: cargo test --workspace --all-features
+      - name: Run Rust tests (release)
+        run: cargo test --release --workspace --all-features
 
   python:
     name: Python checks
