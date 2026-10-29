@@ -295,7 +295,7 @@ struct MetricReporterInner {
 impl MetricReporterInner {
     fn reserve_queue_points(&self, count: usize) -> bool {
         self.queued_points
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current
                     .checked_add(count)
                     .filter(|next| *next <= self.queue_capacity)
