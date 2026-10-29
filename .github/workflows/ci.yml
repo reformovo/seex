@@ -55,19 +55,13 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
+        # DuckDB 2.0 publishes the ducklake extension only for amd64 and arm64,
+        # so other architectures cannot install it at runtime.
         platform:
           - runner: ubuntu-22.04
             target: x86_64
           - runner: ubuntu-22.04
-            target: x86
-          - runner: ubuntu-22.04
             target: aarch64
-          - runner: ubuntu-22.04
-            target: armv7
-          - runner: ubuntu-22.04
-            target: s390x
-          - runner: ubuntu-22.04
-            target: ppc64le
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -91,15 +85,13 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
+        # DuckDB 2.0 publishes the ducklake extension only for amd64 and arm64
+        # musl, so other architectures cannot install it at runtime.
         platform:
           - runner: ubuntu-22.04
             target: x86_64
           - runner: ubuntu-22.04
-            target: x86
-          - runner: ubuntu-22.04
             target: aarch64
-          - runner: ubuntu-22.04
-            target: armv7
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -123,13 +115,11 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       matrix:
+        # 32-bit Windows has no DuckDB 2.0 ducklake extension.
         platform:
           - runner: windows-latest
             target: x64
             python_arch: x64
-          - runner: windows-latest
-            target: x86
-            python_arch: x86
           - runner: windows-11-arm
             target: aarch64
             python_arch: arm64
@@ -154,6 +144,9 @@ jobs:
   macos:
     if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.platform.runner }}
+    env:
+      # DuckDB 2.0 uses aligned new/delete, which needs macOS 10.13 or newer.
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
     strategy:
       matrix:
         platform:

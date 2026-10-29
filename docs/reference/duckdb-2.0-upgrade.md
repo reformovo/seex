@@ -90,6 +90,25 @@ on macOS produces misaligned dylibs），由 LLVM 更新 PR
 **已解决**：`rust-toolchain.toml` 升到 1.99.1 后，默认 `strip = true` 构建的
 wheel 可正常导入，Python 测试通过。不再需要 `CARGO_PROFILE_RELEASE_STRIP=none`。
 
+## 平台覆盖（DuckDB 2.0 限制）
+
+DuckDB 2.0 官方只为部分平台发布 `ducklake` 扩展（探测
+`extensions.duckdb.org/v2.0.0/<platform>/ducklake.duckdb_extension.gz`）：
+
+| 平台 | 扩展 | CI wheel |
+| --- | --- | --- |
+| linux_amd64 / linux_arm64 / 两者 musl | 200 | 保留 |
+| osx_amd64 / osx_arm64 | 200 | 保留，部署目标 10.13 |
+| windows_amd64 / windows_arm64 | 200 | 保留 |
+| linux_ppc64le / linux_s390x / linux_armv7 / linux_i686 | 404 | 移除 |
+
+ppc64le 另外还存在 DuckDB 源码在 GCC 上的编译错误
+（`SerializationData` 默认移动构造的 exception-specification 不一致），即使
+扩展可用也需要上游修复。macOS x86_64 需要 `MACOSX_DEPLOYMENT_TARGET=10.13`，
+否则 DuckDB 2.0 的 aligned new/delete 无法编译。
+
+b5 发布过 ppc64le/s390x/armv7/32 位 x86 wheel，b6 起不再提供。
+
 ## 落地步骤
 
 1. 升级 `duckdb` 到 `~1.20000.1`（已含 #917/#918 修复），确认无需
