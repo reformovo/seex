@@ -5134,7 +5134,7 @@ dependencies = [
 
 [[package]]
 name = "seex"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "chrono",
  "duckdb",
@@ -5146,7 +5146,7 @@ dependencies = [
 
 [[package]]
 name = "seex-app"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "gpui",
  "seex",
@@ -5158,11 +5158,11 @@ dependencies = [
 
 [[package]]
 name = "seex-plot"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 
 [[package]]
 name = "seex-python"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 dependencies = [
  "chrono",
  "pyo3",

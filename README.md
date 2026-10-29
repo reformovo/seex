@@ -9,7 +9,7 @@ backed by Rust, PyO3, DuckDB, and DuckLake.
 > releases will not preserve compatibility, and compatibility and migration
 > commitments begin with the future 1.x line.
 
-Seex 0.1.0b6 beta surface:
+Seex 0.1.0b7 beta surface:
 
 - use the typed Run writing surface from Python or Rust
 - log run-scoped numeric metric mappings with explicit or implicit steps
@@ -19,14 +19,14 @@ Seex 0.1.0b6 beta surface:
 - preserve every repeated Step observation in the append-only v5 store
 - keep the Parquet schema as the long-term compatibility boundary
 
-Install the Python beta with `pip install seex==0.1.0b6`, or add the Rust SDK
-with `cargo add seex@0.1.0-beta.6`.
+Install the Python beta with `pip install seex==0.1.0b7`, or add the Rust SDK
+with `cargo add seex@0.1.0-beta.7`.
 
 Known limits: this release opens only native v5 stores created with the bundled
 SQLite catalog and local data path. Legacy DuckDB catalogs, S3 data paths, and
 older store formats are rejected without migration. Charts are Step-only; the
 Elapsed time control is visibly disabled. See the
-[0.1.0b6 release notes](docs/release-notes/0.1.0b6.md) for the full
+[0.1.0b7 release notes](docs/release-notes/0.1.0b7.md) for the full
 compatibility and performance limits.
 
 Quickstart:

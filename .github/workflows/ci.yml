@@ -189,7 +189,7 @@ jobs:
           xcrun --find metallib
           xcrun metal --version
       - name: Install cargo-bundle
-        run: cargo install cargo-bundle --version 0.11.0 --locked
+        run: cargo install cargo-bundle --version 0.12.0 --locked
       - name: Build Viewer app bundle
         working-directory: crates/seex-app
         run: cargo bundle --release --format osx
