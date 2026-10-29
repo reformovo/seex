@@ -107,6 +107,9 @@ ppc64le 另外还存在 DuckDB 源码在 GCC 上的编译错误
 扩展可用也需要上游修复。macOS x86_64 需要 `MACOSX_DEPLOYMENT_TARGET=10.13`，
 否则 DuckDB 2.0 的 aligned new/delete 无法编译。
 
+Linux aarch64 改为在原生 arm64 runner（`ubuntu-24.04-arm`）上构建：manylinux
+交叉工具链是 GCC 7.5，无法编译 DuckDB 2.0 的 C++17 源码。
+
 b5 发布过 ppc64le/s390x/armv7/32 位 x86 wheel，b6 起不再提供。
 
 ## 落地步骤
